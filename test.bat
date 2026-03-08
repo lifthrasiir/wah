@@ -3,7 +3,7 @@ setlocal enabledelayedexpansion
 set cflags=
 if "%1" == "-g" (
     shift
-    set cflags=-D WAH_DEBUG
+    set cflags=-D WAH_DEBUG -g
 )
 set run=0
 for %%i in (wah_test_%1*.c) do (

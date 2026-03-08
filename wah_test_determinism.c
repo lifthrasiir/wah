@@ -1,5 +1,7 @@
 #define WAH_IMPLEMENTATION
 #include "wah.h"
+// Include wah_testutils.c for wah_parse_module_from_spec
+#include "wah_testutils.c"
 #include <stdio.h>
 #include <string.h>
 #include <math.h> // For isnan, though we'll use bit patterns for comparison
@@ -32,137 +34,48 @@ static const uint32_t NON_CANONICAL_F32_NAN_BITS = 0x7fa00000U; // Example: qNaN
 static const union { uint32_t i; float f; } non_canonical_f32_nan_union = { .i = NON_CANONICAL_F32_NAN_BITS };
 #define NON_CANONICAL_F32_NAN non_canonical_f32_nan_union.f
 
-// Test WASM binary for f32.store and f32.const
-// (module
-//   (memory (export "mem") 1)
-//   (func (export "test_store") (param f32) (result f32)
-//     local.get 0
-//     i32.const 0
-//     f32.store
-//     i32.const 0
-//     f32.load
-//   )
-//   (func (export "test_const") (result f32)
-//     f32.const <NON_CANONICAL_F32_NAN>
-//   )
-// )
-// This is a hand-assembled WASM binary.
-// Magic: 0x6d736100 (WASM_MAGIC_NUMBER)
-// Version: 0x01000000 (WASM_VERSION)
-static const uint8_t test_wasm_binary[] = {
-    0x00, 0x61, 0x73, 0x6d, // Magic
-    0x01, 0x00, 0x00, 0x00, // Version
-
-    // Type Section (1)
-    0x01, // Section ID
-    0x30, // Section Size (48 bytes)
-    0x09, // Number of types
-        // Type 0: (func (param f32) (result f32))
-        0x60, 0x01, 0x7d, 0x01, 0x7d,
-        // Type 1: (func (result f32))
-        0x60, 0x00, 0x01, 0x7d,
-        // Type 2: (func (param i32) (result i32))
-        0x60, 0x01, 0x7f, 0x01, 0x7f,
-        // Type 3: (func (param i64 i64) (result i64))
-        0x60, 0x02, 0x7e, 0x7e, 0x01, 0x7e,
-        // Type 4: (func (param f32 f32) (result f32))
-        0x60, 0x02, 0x7d, 0x7d, 0x01, 0x7d,
-        // Type 5: (func (param f32) (result f32)) - same as Type 0
-        0x60, 0x01, 0x7d, 0x01, 0x7d,
-        // Type 6: (func (param f64 f64) (result f64))
-        0x60, 0x02, 0x7c, 0x7c, 0x01, 0x7c,
-        // Type 7: (func (param f32) (result f64))
-        0x60, 0x01, 0x7d, 0x01, 0x7c,
-        // Type 8: (func (param f64) (result f32))
-        0x60, 0x01, 0x7c, 0x01, 0x7d,
-
-    // Function Section (3)
-    0x03, // Section ID
-    0x0a, // Section Size (10 bytes) - UPDATED
-    0x09, // Number of functions
-    0x00, // Function 0 (test_store) uses type 0
-    0x01, // Function 1 (test_const) uses type 1
-    0x02, // Function 2 (test_f32_reinterpret_nan) uses type 2
-    0x03, // Function 3 (test_f64_add_nan) uses type 3
-    0x04, // Function 4 (test_f32_add_nan) uses type 4
-    0x05, // Function 5 (test_f32_sqrt_nan) uses type 5
-    0x06, // Function 6 (test_f64_min_nan) uses type 6
-    0x07, // Function 7 (test_f64_promote_f32_nan_canonicalization) uses type 7
-    0x08, // Function 8 (test_f32_demote_f64_nan_canonicalization) uses type 8
-
-    // Memory Section (5)
-    0x05, // Section ID
-    0x03, // Section Size (3 bytes)
-    0x01, // Number of memories
-    0x00, // Flags (min only)
-    0x01, // Min pages (1)
-
-    // Export Section (7)
-    0x07, // Section ID
-    0xe0, 0x01, // Section Size (224 bytes)
-    0x0a, // Number of exports
-        // Export 0: "mem" (memory 0)
-        0x03, 'm', 'e', 'm', 0x02, 0x00,
-        // Export 1: "test_store" (func 0)
-        0x0a, 't', 'e', 's', 't', '_', 's', 't', 'o', 'r', 'e', 0x00, 0x00,
-        // Export 2: "test_const" (func 1)
-        0x0a, 't', 'e', 's', 't', '_', 'c', 'o', 'n', 's', 't', 0x00, 0x01,
-        // Export 3: "test_f32_reinterpret_nan" (func 2)
-        0x18, 't', 'e', 's', 't', '_', 'f', '3', '2', '_', 'r', 'e', 'i', 'n', 't', 'e', 'r', 'p', 'r', 'e', 't', '_', 'n', 'a', 'n', 0x00, 0x02,
-        // Export 4: "test_f64_add_nan" (func 3)
-        0x10, 't', 'e', 's', 't', '_', 'f', '6', '4', '_', 'a', 'd', 'd', '_', 'n', 'a', 'n', 0x00, 0x03,
-        // Export 5: "test_f32_add_nan" (func 4)
-        0x10, 't', 'e', 's', 't', '_', 'f', '3', '2', '_', 'a', 'd', 'd', '_', 'n', 'a', 'n', 0x00, 0x04,
-        // Export 6: "test_f32_sqrt_nan" (func 5)
-        0x11, 't', 'e', 's', 't', '_', 'f', '3', '2', '_', 's', 'q', 'r', 't', '_', 'n', 'a', 'n', 0x00, 0x05,
-        // Export 7: "test_f64_min_nan" (func 6)
-        0x10, 't', 'e', 's', 't', '_', 'f', '6', '4', '_', 'm', 'i', 'n', '_', 'n', 'a', 'n', 0x00, 0x06,
-        // Export 8: "test_f64_promote_f32_nan_canonicalization" (func 7)
-        0x29, 't', 'e', 's', 't', '_', 'f', '6', '4', '_', 'p', 'r', 'o', 'm', 'o', 't', 'e', '_', 'f', '3', '2', '_', 'n', 'a', 'n', '_', 'c', 'a', 'n', 'o', 'n', 'i', 'c', 'a', 'l', 'i', 'z', 'a', 't', 'i', 'o', 'n', 0x00, 0x07,
-        // Export 9: "test_f32_demote_f64_nan_canonicalization" (func 8)
-        0x28, 't', 'e', 's', 't', '_', 'f', '3', '2', '_', 'd', 'e', 'm', 'o', 't', 'e', '_', 'f', '6', '4', '_', 'n', 'a', 'n', '_', 'c', 'a', 'n', 'o', 'n', 'i', 'c', 'a', 'l', 'i', 'z', 'a', 't', 'i', 'o', 'n', 0x00, 0x08,
-
-    // Code Section (10)
-    0x0A, // Section ID
-    0x4c, // Section Size (76 bytes)
-    0x09, // Number of code bodies
-        // Code Body 0: test_store
-        0x0E, 0x00, 0x41, 0x00, 0x20, 0x00, 0x38, 0x00, 0x00, 0x41, 0x00, 0x2a, 0x00, 0x00, 0x0b,
-        // Code Body 1: test_const
-        0x07, 0x00, 0x43,
-        (NON_CANONICAL_F32_NAN_BITS >> 0) & 0xFF,
-        (NON_CANONICAL_F32_NAN_BITS >> 8) & 0xFF,
-        (NON_CANONICAL_F32_NAN_BITS >> 16) & 0xFF,
-        (NON_CANONICAL_F32_NAN_BITS >> 24) & 0xFF,
-        0x0b,
-        // Code Body 2: test_f32_reinterpret_nan
-        0x06, // Body Size (6 bytes)
-        0x00, // Local count (0)
-        0x20, 0x00, // local.get 0
-        0xbe, // f32.reinterpret_i32
-        0xbc, // i32.reinterpret_f32
-        0x0b, // end
-        // Code Body 3: test_f64_add_nan
-        0x0a, // Body Size (10 bytes)
-        0x00, // Local count (0)
-        0x20, 0x00, // local.get 0
-        0xbf, // f64.reinterpret_i64
-        0x20, 0x01, // local.get 1
-        0xbf, // f64.reinterpret_i64
-        0xa0, // f64.add
-        0xbd, // i64.reinterpret_f64
-        0x0b, // end
-        // Code Body 4: test_f32_add_nan
-        0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x92, 0x0b,
-        // Code Body 5: test_f32_sqrt_nan
-        0x05, 0x00, 0x20, 0x00, 0x91, 0x0b,
-        // Code Body 6: test_f64_min_nan
-        0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0xa4, 0x0b,
-        // Code Body 7: test_f64_promote_f32_nan_canonicalization
-        0x05, 0x00, 0x20, 0x00, 0xbb, 0x0b,
-        // Code Body 8: test_f32_demote_f64_nan_canonicalization
-        0x05, 0x00, 0x20, 0x00, 0xb6, 0x0b,
-};
+// Helper function to create the shared test module
+static wah_error_t create_test_module(wah_module_t *module) {
+    return wah_parse_module_from_spec(module, "wasm \
+        types {[ \
+            fn [f32] [f32], \
+            fn [] [f32], \
+            fn [i32] [i32], \
+            fn [i64, i64] [i64], \
+            fn [f32, f32] [f32], \
+            fn [f32] [f32], \
+            fn [f64, f64] [f64], \
+            fn [f32] [f64], \
+            fn [f64] [f32], \
+        ]} \
+        funcs {[ 0, 1, 2, 3, 4, 5, 6, 7, 8 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        exports {[ \
+            {'mem'} mem# 0, \
+            {'test_store'} fn# 0, \
+            {'test_const'} fn# 1, \
+            {'test_f32_reinterpret_nan'} fn# 2, \
+            {'test_f64_add_nan'} fn# 3, \
+            {'test_f32_add_nan'} fn# 4, \
+            {'test_f32_sqrt_nan'} fn# 5, \
+            {'test_f64_min_nan'} fn# 6, \
+            {'test_f64_promote_f32_nan_canonicalization'} fn# 7, \
+            {'test_f32_demote_f64_nan_canonicalization'} fn# 8, \
+        ]} \
+        code {[ \
+            {[] i32.const 0 local.get 0 f32.store align=4 offset=0 i32.const 0 f32.load align=4 offset=0 end}, \
+            {[] f32.const %i32 end}, \
+            {[] local.get 0 f32.reinterpret_i32 i32.reinterpret_f32 end}, \
+            {[] local.get 0 f64.reinterpret_i64 local.get 1 f64.reinterpret_i64 f64.add i64.reinterpret_f64 end}, \
+            {[] local.get 0 local.get 1 f32.add end}, \
+            {[] local.get 0 f32.sqrt end}, \
+            {[] local.get 0 local.get 1 f64.min end}, \
+            {[] local.get 0 f64.promote_f32 end}, \
+            {[] local.get 0 f32.demote_f64 end}, \
+        ]}",
+        NON_CANONICAL_F32_NAN_BITS
+    );
+}
 
 static wah_error_t test_f32_store_canonicalization() {
     printf("Testing f32.store canonicalization...\n");
@@ -171,7 +84,7 @@ static wah_error_t test_f32_store_canonicalization() {
     wah_error_t err;
     wah_value_t result;
 
-    err = wah_parse_module(test_wasm_binary, sizeof(test_wasm_binary), &module);
+    err = create_test_module(&module);
     if (err != WAH_OK) {
         fprintf(stderr, "Error parsing module: %s\n", wah_strerror(err));
         return err;
@@ -216,7 +129,7 @@ static wah_error_t test_f32_const_canonicalization() {
     wah_error_t err;
     wah_value_t result;
 
-    err = wah_parse_module(test_wasm_binary, sizeof(test_wasm_binary), &module);
+    err = create_test_module(&module);
     if (err != WAH_OK) {
         fprintf(stderr, "Error re-parsing module for test_const: %s\n", wah_strerror(err));
         return err;
@@ -259,7 +172,7 @@ static wah_error_t test_f32_reinterpret_nan_canonicalization() {
     wah_error_t err;
     wah_value_t result;
 
-    err = wah_parse_module(test_wasm_binary, sizeof(test_wasm_binary), &module);
+    err = create_test_module(&module);
     if (err != WAH_OK) {
         fprintf(stderr, "Error re-parsing module for f32_reinterpret_nan: %s\n", wah_strerror(err));
         return err;
@@ -304,7 +217,7 @@ static wah_error_t test_f64_add_nan_canonicalization() {
     wah_error_t err;
     wah_value_t result;
 
-    err = wah_parse_module(test_wasm_binary, sizeof(test_wasm_binary), &module);
+    err = create_test_module(&module);
     if (err != WAH_OK) {
         fprintf(stderr, "Error re-parsing module for f64_add_nan: %s\n", wah_strerror(err));
         return err;
@@ -350,7 +263,7 @@ static wah_error_t test_f32_add_nan_canonicalization() {
     wah_error_t err;
     wah_value_t result;
 
-    err = wah_parse_module(test_wasm_binary, sizeof(test_wasm_binary), &module);
+    err = create_test_module(&module);
     if (err != WAH_OK) {
         fprintf(stderr, "Error re-parsing module for f32_add_nan: %s\n", wah_strerror(err));
         return err;
@@ -396,7 +309,7 @@ static wah_error_t test_f32_sqrt_nan_canonicalization() {
     wah_error_t err;
     wah_value_t result;
 
-    err = wah_parse_module(test_wasm_binary, sizeof(test_wasm_binary), &module);
+    err = create_test_module(&module);
     if (err != WAH_OK) {
         fprintf(stderr, "Error re-parsing module for f32_sqrt_nan: %s\n", wah_strerror(err));
         return err;
@@ -440,7 +353,7 @@ static wah_error_t test_f64_min_nan_canonicalization() {
     wah_exec_context_t exec_ctx;
     wah_error_t err;
 
-    err = wah_parse_module(test_wasm_binary, sizeof(test_wasm_binary), &module);
+    err = create_test_module(&module);
     if (err != WAH_OK) {
         fprintf(stderr, "Error re-parsing module for f64_min_nan: %s\n", wah_strerror(err));
         return err;
@@ -489,7 +402,7 @@ static wah_error_t test_f64_promote_f32_nan_canonicalization() {
     wah_exec_context_t exec_ctx;
     wah_error_t err;
 
-    err = wah_parse_module(test_wasm_binary, sizeof(test_wasm_binary), &module);
+    err = create_test_module(&module);
     if (err != WAH_OK) {
         fprintf(stderr, "Error parsing module: %s\n", wah_strerror(err));
         return err;
@@ -536,7 +449,7 @@ static wah_error_t test_f32_demote_f64_nan_canonicalization() {
     wah_exec_context_t exec_ctx;
     wah_error_t err;
 
-    err = wah_parse_module(test_wasm_binary, sizeof(test_wasm_binary), &module);
+    err = create_test_module(&module);
     if (err != WAH_OK) {
         fprintf(stderr, "Error parsing module: %s\n", wah_strerror(err));
         return err;

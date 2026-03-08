@@ -22,6 +22,7 @@ typedef enum {
     WAH_ERROR_MEMORY_OUT_OF_BOUNDS,
     WAH_ERROR_NOT_FOUND,
     WAH_ERROR_MISUSE,
+    WAH_ERROR_BAD_SPEC, // wah_testutils.c only
     WAH_OK_BUT_MULTI_RETURN,
 } wah_error_t;
 
@@ -693,6 +694,7 @@ const char *wah_strerror(wah_error_t err) {
         case WAH_ERROR_MEMORY_OUT_OF_BOUNDS: return "Memory access out of bounds";
         case WAH_ERROR_NOT_FOUND: return "Item not found";
         case WAH_ERROR_MISUSE: return "API misused: invalid arguments";
+        case WAH_ERROR_BAD_SPEC: return "Invalid DSL spec";
         case WAH_OK_BUT_MULTI_RETURN: return "Function succeeded but returned multiple values (only first value available)";
         default: return "Unknown error";
     }

@@ -3,57 +3,15 @@
 #include <stdlib.h>
 #include <stdbool.h>
 #include "wah.h"
+#include "wah_testutils.c"
 
 // A WebAssembly binary with a start section that sets a global variable.
-// (module
-//   (global $g (mut i32) (i32.const 0))
-//   (func $start_func
-//     (global.set $g (i32.const 42))
-//   )
-//   (start $start_func)
-// )
-const uint8_t start_section_wasm[] = {
-    0x00, 0x61, 0x73, 0x6d, // magic
-    0x01, 0x00, 0x00, 0x00, // version
-
-    // Type section
-    0x01, // section ID
-    0x04, // section size
-    0x01, // num types
-    0x60, // func type (void -> void)
-    0x00, // num params
-    0x00, // num results
-
-    // Function section
-    0x03, // section ID
-    0x02, // section size
-    0x01, // num functions
-    0x00, // type index 0 (void -> void)
-
-    // Global section
-    0x06, // section ID
-    0x06, // section size
-    0x01, // num globals
-    0x7f, // i32
-    0x01, // mutable
-    0x41, 0x00, // i32.const 0
-    0x0b, // end
-
-    // Start section
-    0x08, // section ID
-    0x01, // section size
-    0x00, // start function index (function 0)
-
-    // Code section
-    0x0a, // section ID
-    0x08, // section size
-    0x01, // num code bodies
-    0x06, // code body size (for the first function)
-    0x00, // num locals
-    0x41, 0x2a, // i32.const 42
-    0x24, 0x00, // global.set 0
-    0x0b, // end
-};
+static const char *start_section_wasm_spec = "wasm \
+    types {[ fn [] [] ]} \
+    funcs {[ 0 ]} \
+    globals {[ i32 mut i32.const 0 end ]} \
+    start { 0 } \
+    code {[ {[] i32.const 42 global.set 0 end } ]}";
 
 // --- Start Section Test ---
 
@@ -64,7 +22,7 @@ int test_start_section() {
 
     printf("--- Testing Start Section ---\n");
     printf("Parsing start_section_wasm module...\n");
-    err = wah_parse_module((const uint8_t *)start_section_wasm, sizeof(start_section_wasm), &module);
+    err = wah_parse_module_from_spec(&module, start_section_wasm_spec);
     if (err != WAH_OK) {
         fprintf(stderr, "Error parsing module with start section: %s\n", wah_strerror(err));
         return 0;
@@ -103,28 +61,16 @@ int test_zero_return_functions() {
     printf("\n--- Testing Zero Return Functions ---\n");
 
     // Simple void function: () -> ()
-    static const uint8_t wasm_binary[] = {
-        // Magic + Version
-        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-
-        // Type Section (id 1), size 4 (0x04)
-        0x01, 0x04, 0x01,
-        0x60, 0x00, 0x00, // () -> ()
-
-        // Function Section (id 3), size 2 (0x02)
-        0x03, 0x02, 0x01,
-        0x00, // type index 0
-
-        // Code Section (id 10), size 4 (0x04)
-        0x0a, 0x04, 0x01,
-        0x02, 0x00, 0x0b // empty function: just end
-    };
+    static const char *wasm_binary_spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] end } ]}";
 
     wah_module_t module;
     wah_exec_context_t ctx;
     wah_error_t err;
 
-    err = wah_parse_module((const uint8_t *)wasm_binary, sizeof(wasm_binary), &module);
+    err = wah_parse_module_from_spec(&module, wasm_binary_spec);
     if (err != WAH_OK) {
         printf("[x] Parse error: %s\n", wah_strerror(err));
         return 0;
@@ -184,28 +130,16 @@ int test_single_return_functions() {
     printf("\n--- Testing Single Return Functions ---\n");
 
     // Function that returns i32 constant 42
-    static const uint8_t wasm_binary[] = {
-        // Magic + Version
-        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-
-        // Type Section (id 1), size 5 (0x05)
-        0x01, 0x05, 0x01,
-        0x60, 0x00, 0x01, 0x7f, // () -> i32
-
-        // Function Section (id 3), size 2 (0x02)
-        0x03, 0x02, 0x01,
-        0x00, // type index 0
-
-        // Code Section (id 10), size 6 (0x06)
-        0x0a, 0x06, 0x01,
-        0x04, 0x00, 0x41, 0x2a, 0x0b // i32.const 42, end
-    };
+    static const char *wasm_binary_spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] i32.const 42 end } ]}";
 
     wah_module_t module;
     wah_exec_context_t ctx;
     wah_error_t err;
 
-    err = wah_parse_module((const uint8_t *)wasm_binary, sizeof(wasm_binary), &module);
+    err = wah_parse_module_from_spec(&module, wasm_binary_spec);
     if (err != WAH_OK) {
         printf("[x] Parse error: %s\n", wah_strerror(err));
         return 0;
@@ -255,46 +189,30 @@ int test_single_return_functions() {
 int test_multiple_return_with_existing_functions() {
     printf("\n--- Testing Multiple Return API with Existing Functions ---\n");
 
-    // Copy the working globals binary from wah_test_globals.c
-    static const uint8_t wasm_binary[] = {
-        // Magic + Version
-        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-
-        // Type Section (id 1), size 17 (0x11)
-        0x01, 0x11, 0x04,
-        0x60, 0x00, 0x01, 0x7e, // 0: () -> i64
-        0x60, 0x01, 0x7e, 0x00, // 1: (i64) -> ()
-        0x60, 0x00, 0x01, 0x7d, // 2: () -> f32
-        0x60, 0x01, 0x7d, 0x00, // 3: (f32) -> ()
-
-        // Function Section (id 3), size 5 (0x05)
-        0x03, 0x05, 0x04,
-        0x00, 0x01, 0x02, 0x03,
-
-        // Global Section (id 6), size 15 (0x0f)
-        0x06, 0x0f, 0x02,
-        // global 0: i64, mutable, init: i64.const 200
-        0x7e, 0x01, 0x42, 0xc8, 0x01, 0x0b,
-        // global 1: f32, mutable, init: f32.const 1.5
-        0x7d, 0x01, 0x43, 0x00, 0x00, 0xc0, 0x3f, 0x0b,
-
-        // Code Section (id 10), size 25 (0x19)
-        0x0a, 0x19, 0x04,
-        // func 0 body (get_i64): size 4, locals 0, code: global.get 0; end
-        0x04, 0x00, 0x23, 0x00, 0x0b,
-        // func 1 body (set_i64): size 6, locals 0, code: local.get 0; global.set 0; end
-        0x06, 0x00, 0x20, 0x00, 0x24, 0x00, 0x0b,
-        // func 2 body (get_f32): size 4, locals 0, code: global.get 1; end
-        0x04, 0x00, 0x23, 0x01, 0x0b,
-        // func 3 body (set_f32): size 6, locals 0, code: local.get 0; global.set 1; end
-        0x06, 0x00, 0x20, 0x00, 0x24, 0x01, 0x0b,
-    };
+    static const char *wasm_binary_spec = "wasm \
+        types {[ \
+            fn [] [i64], \
+            fn [i64] [], \
+            fn [] [f32], \
+            fn [f32] [], \
+        ]} \
+        funcs {[ 0, 1, 2, 3 ]} \
+        globals {[ \
+            i64 mut i64.const 200 end, \
+            f32 mut f32.const 1.5f32 end, \
+        ]} \
+        code {[ \
+            {[] global.get 0 end}, \
+            {[] local.get 0 global.set 0 end}, \
+            {[] global.get 1 end}, \
+            {[] local.get 0 global.set 1 end}, \
+        ]}";
 
     wah_module_t module;
     wah_exec_context_t ctx;
     wah_error_t err;
 
-    err = wah_parse_module((const uint8_t *)wasm_binary, sizeof(wasm_binary), &module);
+    err = wah_parse_module_from_spec(&module, wasm_binary_spec);
     if (err != WAH_OK) {
         printf("❌ Parse error: %s\n", wah_strerror(err));
         return 0;
@@ -341,45 +259,30 @@ int test_multi_return_buffer_validation() {
     printf("\n--- Testing Multi-Return Buffer Validation ---\n");
 
     // Use the same working binary from other tests for buffer validation
-    static const uint8_t wasm_binary[] = {
-        // Magic + Version
-        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-
-        // Type Section (id 1), size 17 (0x11)
-        0x01, 0x11, 0x04,
-        0x60, 0x00, 0x01, 0x7e, // 0: () -> i64
-        0x60, 0x01, 0x7e, 0x00, // 1: (i64) -> ()
-        0x60, 0x00, 0x01, 0x7d, // 2: () -> f32
-        0x60, 0x01, 0x7d, 0x00, // 3: (f32) -> ()
-
-        // Function Section (id 3), size 5 (0x05)
-        0x03, 0x05, 0x04,
-        0x00, 0x01, 0x02, 0x03,
-
-        // Global Section (id 6), size 15 (0x0f)
-        0x06, 0x0f, 0x02,
-        // global 0: i64, mutable, init: i64.const 200
-        0x7e, 0x01, 0x42, 0xc8, 0x01, 0x0b,
-        // global 1: f32, mutable, init: f32.const 1.5
-        0x7d, 0x01, 0x43, 0x00, 0x00, 0xc0, 0x3f, 0x0b,
-
-        // Code Section (id 10), size 25 (0x19)
-        0x0a, 0x19, 0x04,
-        // func 0 body (get_i64): size 4, locals 0, code: global.get 0; end
-        0x04, 0x00, 0x23, 0x00, 0x0b,
-        // func 1 body (set_i64): size 6, locals 0, code: local.get 0; global.set 0; end
-        0x06, 0x00, 0x20, 0x00, 0x24, 0x00, 0x0b,
-        // func 2 body (get_f32): size 4, locals 0, code: global.get 1; end
-        0x04, 0x00, 0x23, 0x01, 0x0b,
-        // func 3 body (set_f32): size 6, locals 0, code: local.get 0; global.set 1; end
-        0x06, 0x00, 0x20, 0x00, 0x24, 0x01, 0x0b,
-    };
+    static const char *wasm_binary_spec = "wasm \
+        types {[ \
+            fn [] [i64], \
+            fn [i64] [], \
+            fn [] [f32], \
+            fn [f32] [], \
+        ]} \
+        funcs {[ 0, 1, 2, 3 ]} \
+        globals {[ \
+            i64 mut i64.const 200 end, \
+            f32 mut f32.const 1.5f32 end, \
+        ]} \
+        code {[ \
+            {[] global.get 0 end}, \
+            {[] local.get 0 global.set 0 end}, \
+            {[] global.get 1 end}, \
+            {[] local.get 0 global.set 1 end}, \
+        ]}";
 
     wah_module_t module;
     wah_exec_context_t ctx;
     wah_error_t err;
 
-    err = wah_parse_module((const uint8_t *)wasm_binary, sizeof(wasm_binary), &module);
+    err = wah_parse_module_from_spec(&module, wasm_binary_spec);
     if (err != WAH_OK) {
         printf("[x] Parse error: %s (buffer validation test skipped)\n", wah_strerror(err));
         return 0;
@@ -393,7 +296,7 @@ int test_multi_return_buffer_validation() {
     }
 
     // Test with insufficient buffer (should return validation error)
-    wah_value_t results[0]; // No space for result
+    wah_value_t results[1]; // No space for result, but [0] warns
     uint32_t actual_results;
     err = wah_call_multi(&ctx, &module, 0, NULL, 0, results, 0, &actual_results);
     if (err == WAH_ERROR_VALIDATION_FAILED) {

@@ -4,107 +4,25 @@
 
 #define WAH_IMPLEMENTATION
 #include "wah.h"
-
-// This WASM module contains a function type with zero parameters and zero results.
-// This is used to test that the parser correctly handles zero-count vectors,
-// specifically avoiding `malloc(0)` which has implementation-defined behavior.
-static const uint8_t wasm_binary_zero_params[] = {
-    // Magic + Version
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-
-    // Type Section: 1 type, () -> ()
-    0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-
-    // Function Section: 1 function, type 0
-    0x03, 0x02, 0x01, 0x00,
-
-    // Code Section: 1 function body
-    0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b, // size 2, 0 locals, end
-};
-
-// This WASM module has a function section but no code section.
-// This should result in WAH_ERROR_VALIDATION_FAILED because module->function_count will be > 0
-// but module->code_count will be 0.
-static const uint8_t wasm_binary_func_no_code_section[] = {
-    // Magic + Version
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-
-    // Type Section: 1 type, () -> ()
-    0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-
-    // Function Section: 1 function, type 0
-    0x03, 0x02, 0x01, 0x00,
-};
-
-// This WASM module has a code section but no function section.
-// This should result in WAH_ERROR_VALIDATION_FAILED because module->function_count will be 0
-// but the code section count will be > 0.
-static const uint8_t wasm_binary_code_no_func_section[] = {
-    // Magic + Version
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-
-    // Type Section: 1 type, () -> ()
-    0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-
-    // Code Section: 1 function body (but no function section declared)
-    0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b, // size 2, 0 locals, end
-};
-
-// This WASM module has a datacount section but no data section.
-// This should result in WAH_ERROR_VALIDATION_FAILED.
-static const uint8_t wasm_binary_datacount_no_data_section[] = {
-  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x60,
-  0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x0c, 0x02, 0x80, 0x02
-};
-
-// This WASM module has the Memory Section before the Table Section (invalid order)
-static const uint8_t wasm_binary_invalid_section_order_mem_table[] = {
-    // Magic + Version
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
-
-    // Type Section
-    0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-
-    // Memory Section (ID 5) - Should come after Table Section (ID 4)
-    0x05, 0x04, // Section ID 5, size 4
-    0x01,       // 1 memory
-    0x00,       // flags (fixed size)
-    0x01,       // min_pages = 1
-
-    // Table Section (ID 4)
-    0x04, 0x04, // Section ID 4, size 4
-    0x01,       // 1 table
-    0x70,       // elem_type = funcref
-    0x00,       // flags (fixed size)
-    0x01,       // min_elements = 1
-
-    // Function Section
-    0x03, 0x02, 0x01, 0x00,
-
-    // Code Section
-    0x0a, 0x04, 0x01, 0x02, 0x00, 0x0b,
-};
-
-#define REPEAT10(x) x,x,x,x,x,x,x,x,x,x
-#define REPEAT100(x) REPEAT10(REPEAT10(x))
-#define REPEAT1000(x) REPEAT10(REPEAT10(REPEAT10(x)))
-
-// This WASM module is known to cause a validation failure due to an oversized code body.
-static const uint8_t wasm_binary_malformed_code_body_size[] = {
-    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x60,
-    0x02, 0x7f, 0x7f, 0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x0a, 0x01,
-    0x06, 0x30, 0x30, 0x30, 0x30, 0x30, 0x30, 0x00, 0x00, 0x0a, 0x30, 0x01,
-    0xae, 0xff, 0xfa, 0x30, 0x8d, 0x8e, 0x30, 0x30, 0x30, 0x30, 0x30,
-    REPEAT1000(0x30), REPEAT1000(0x30), REPEAT1000(0x30), REPEAT1000(0x30), // 4000x `0x30,`
-    REPEAT10(0x30), REPEAT10(0x30), REPEAT10(0x30), REPEAT10(0x30), REPEAT10(0x30), // 50x `0x30,`
-};
+#include "wah_testutils.c"
 
 static int test_malformed_code_body_size_wasm() {
     printf("Running test_malformed_code_body_size_wasm...\n");
     wah_module_t module;
     memset(&module, 0, sizeof(wah_module_t));
 
-    wah_error_t err = wah_parse_module(wasm_binary_malformed_code_body_size, sizeof(wasm_binary_malformed_code_body_size), &module);
+#define REPEAT10(x) x x x x x x x x x x
+#define REPEAT100(x) REPEAT10(REPEAT10(x))
+#define REPEAT1000(x) REPEAT10(REPEAT10(REPEAT10(x)))
+
+    // This WASM module is known to cause a validation failure due to an oversized code body.
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [i32 i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'000000'} fn# 0 ]} \
+        code %'3001aefffa308d8e3030303030" \
+        REPEAT1000("30") REPEAT1000("30") REPEAT1000("30") REPEAT1000("30") \
+        REPEAT10("30") REPEAT10("30") REPEAT10("30") REPEAT10("30") REPEAT10("30") "'");
 
     if (err != WAH_ERROR_VALIDATION_FAILED) {
         fprintf(stderr, "Assertion failed: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
@@ -121,7 +39,13 @@ static int test_zero_params_zero_results_func_type() {
     wah_module_t module;
     memset(&module, 0, sizeof(wah_module_t));
 
-    wah_error_t err = wah_parse_module(wasm_binary_zero_params, sizeof(wasm_binary_zero_params), &module);
+    // This WASM module contains a function type with zero parameters and zero results.
+    // This is used to test that the parser correctly handles zero-count vectors,
+    // specifically avoiding `malloc(0)` which has implementation-defined behavior.
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] end} ]}");
 
     if (err == WAH_OK) {
         printf("  - PASSED: Module with zero-count types parsed successfully.\n");
@@ -139,7 +63,13 @@ static int test_invalid_section_order_mem_table() {
     wah_module_t module;
     memset(&module, 0, sizeof(wah_module_t));
 
-    wah_error_t err = wah_parse_module(wasm_binary_invalid_section_order_mem_table, sizeof(wasm_binary_invalid_section_order_mem_table), &module);
+    // This WASM module has the Memory Section before the Table Section (invalid order)
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        memories {[ limits.i32/1 1 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] end} ]}");
     if (err != WAH_ERROR_VALIDATION_FAILED) {
         fprintf(stderr, "Assertion failed: Expected WAH_ERROR_VALIDATION_FAILED for invalid section order, got %s\n", wah_strerror(err));
         wah_free_module(&module);
@@ -149,6 +79,13 @@ static int test_invalid_section_order_mem_table() {
     printf("  - PASSED: Invalid section order (Memory before Table) correctly failed validation.\n");
     return 0;
 }
+
+static const char *wasm_binary_invalid_element_segment_func_idx_spec = "wasm \
+    types {[ fn [] [] ]} \
+    funcs {[ 0 ]} \
+    tables {[ funcref limits.i32/1 1 ]} \
+    elements {[ elem.active.table#0 { i32.const 0 end } 0 1 ]} \
+    code {[ {[] nop end } ]}";
 
 int test_invalid_element_segment_func_idx() {
     printf("Running test_invalid_element_segment_func_idx...\n");
@@ -160,58 +97,11 @@ int test_invalid_element_segment_func_idx() {
     //   (table $0 1 funcref)
     //   (elem $0 (i32.const 0) $f0 $f1) ;; $f1 does not exist, func_idx 1 is out of bounds
     // )
-    const uint8_t wasm_binary[] = {
-        0x00, 0x61, 0x73, 0x6D, // Magic
-        0x01, 0x00, 0x00, 0x00, // Version
-
-        // Type Section (id 1)
-        0x01, // Section ID
-        0x04, // Section Size
-        0x01, // Count of types
-        0x60, // Func type
-        0x00, // Param count
-        0x00, // Result count
-
-        // Function Section (id 3)
-        0x03, // Section ID
-        0x02, // Section Size
-        0x01, // Count of functions
-        0x00, // Type index 0 for function 0
-
-        // Table Section (id 4)
-        0x04, // Section ID
-        0x04, // Section Size
-        0x01, // Count of tables
-        0x70, // funcref type
-        0x00, // flags: not resizable
-        0x01, // min elements: 1
-
-        // Element Section (id 9)
-        0x09, // Section ID
-        0x08, // Section Size
-        0x01, // Count of element segments
-        0x00, // Table index 0
-        0x41, // opcode i32.const
-        0x00, // value 0
-        0x0B, // opcode end
-        0x02, // num_elems: 2
-        0x00, // func_idx 0 (valid)
-        0x01, // func_idx 1 (INVALID - only 1 function exists)
-
-        // Code Section (id 10)
-        0x0A, // Section ID
-        0x05, // Section Size
-        0x01, // Count of code bodies
-        0x02, // Code body size for function 0
-        0x00, // Num locals
-        0x01, // Nop opcode
-        0x0B, // End opcode
-    };
 
     wah_module_t module;
     memset(&module, 0, sizeof(wah_module_t));
 
-    wah_error_t err = wah_parse_module(wasm_binary, sizeof(wasm_binary), &module);
+    wah_error_t err = wah_parse_module_from_spec(&module, wasm_binary_invalid_element_segment_func_idx_spec);
 
     // Expecting validation failure due to out-of-bounds function index
     if (err != WAH_ERROR_VALIDATION_FAILED) {
@@ -231,7 +121,12 @@ int test_code_section_no_function_section() {
     wah_module_t module;
     memset(&module, 0, sizeof(wah_module_t));
 
-    wah_error_t err = wah_parse_module(wasm_binary_code_no_func_section, sizeof(wasm_binary_code_no_func_section), &module);
+    // This WASM module has a code section but no function section.
+    // This should result in WAH_ERROR_VALIDATION_FAILED because module->function_count will be 0
+    // but the code section count will be > 0.
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        code {[ {[] end} ]}");
 
     if (err != WAH_ERROR_VALIDATION_FAILED) {
         fprintf(stderr, "Assertion failed: Expected WAH_ERROR_VALIDATION_FAILED for code section without function section, got %s\n", wah_strerror(err));
@@ -249,7 +144,12 @@ int test_function_section_no_code_section() {
     wah_module_t module;
     memset(&module, 0, sizeof(wah_module_t));
 
-    wah_error_t err = wah_parse_module(wasm_binary_func_no_code_section, sizeof(wasm_binary_func_no_code_section), &module);
+    // This WASM module has a function section but no code section.
+    // This should result in WAH_ERROR_VALIDATION_FAILED because module->function_count will be > 0
+    // but module->code_count will be 0.
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]}");
 
     if (err != WAH_ERROR_VALIDATION_FAILED) {
         fprintf(stderr, "Assertion failed: Expected WAH_ERROR_VALIDATION_FAILED for function section without code section, got %s\n", wah_strerror(err));
@@ -266,46 +166,17 @@ int test_function_section_no_code_section() {
 // and a code section using memory.init. This should fail validation currently.
 static int test_parse_data_no_datacount_memory_init_fails() {
     printf("Running test_parse_data_no_datacount_memory_init_fails...\n");
-    const uint8_t wasm_binary[] = {
-        0x00, 0x61, 0x73, 0x6d, // Magic
-        0x01, 0x00, 0x00, 0x00, // Version
-
-        // Type section (1)
-        0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-
-        // Function section (3)
-        0x03, 0x02, 0x01, 0x00,
-
-        // Memory section (5)
-        0x05, 0x03, 0x01, 0x00, 0x01,
-
-        // Export section (7)
-        0x07, 0x16, 0x02, // Section ID, size, count
-        0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00, // Export "memory"
-        0x09, 't', 'e', 's', 't', '_', 'f', 'u', 'n', 'c', 0x00, 0x00, // Export "test_func"
-
-        // Code section (10)
-        0x0a, 0x0e, 0x01, // Section ID, size, count
-        0x0c, // Code size for func 0
-        0x00, // 0 locals
-        0x41, 0x00, // i32.const 0
-        0x41, 0x00, // i32.const 0
-        0x41, 0x05, // i32.const 5
-        0xfc, 0x08, 0x00, 0x00, // memory.init 0 0
-        0x0b, // end
-
-        // Data section (11)
-        0x0b, 0x0b, 0x01, // Section ID, size, count
-        0x00, // Flags (active, memory 0)
-        0x41, 0x00, 0x0b, // Offset expression (i32.const 0 end)
-        0x05, // Data length
-        'h', 'e', 'l', 'l', 'o' // Data bytes
-    };
 
     wah_module_t module;
     memset(&module, 0, sizeof(wah_module_t));
 
-    wah_error_t err = wah_parse_module(wasm_binary, sizeof(wasm_binary), &module);
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        exports {[ {'memory'} mem# 0, {'test_func'} fn# 0 ]} \
+        code {[ {[] i32.const 0 i32.const 0 i32.const 5 memory.init 0 0 end} ]} \
+        data {[ data.active.table#0 i32.const 0 end {'hello'} ]}");
     if (err != WAH_OK) {
         fprintf(stderr, "ERROR: test_parse_data_no_datacount_memory_init_fails FAILED, but should have PASSED! Error: %s\n", wah_strerror(err));
         exit(1);
@@ -319,46 +190,17 @@ static int test_parse_data_no_datacount_memory_init_fails() {
 // No datacount section, one data segment (index 0), but memory.init tries to use data_idx 1.
 static int test_deferred_data_validation_failure() {
     printf("Running test_deferred_data_validation_failure...\n");
-    const uint8_t wasm_binary[] = {
-        0x00, 0x61, 0x73, 0x6d, // Magic
-        0x01, 0x00, 0x00, 0x00, // Version
-
-        // Type section (1)
-        0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-
-        // Function section (3)
-        0x03, 0x02, 0x01, 0x00,
-
-        // Memory section (5)
-        0x05, 0x03, 0x01, 0x00, 0x01,
-
-        // Export section (7)
-        0x07, 0x16, 0x02, // Section ID, size, count
-        0x06, 'm', 'e', 'm', 'o', 'r', 'y', 0x02, 0x00, // Export "memory"
-        0x09, 't', 'e', 's', 't', '_', 'f', 'u', 'n', 'c', 0x00, 0x00, // Export "test_func"
-
-        // Code section (10)
-        0x0a, 0x0e, 0x01, // Section ID, size, count
-        0x0c, // Code body size for func 0
-        0x00, // 0 locals
-        0x41, 0x00, // i32.const 0 (dest_offset)
-        0x41, 0x00, // i32.const 0 (src_offset)
-        0x41, 0x05, // i32.const 5 (size)
-        0xfc, 0x08, 0x01, 0x00, // memory.init data_idx=1, mem_idx=0 (data_idx 1 is out of bounds)
-        0x0b, // end
-
-        // Data section (11)
-        0x0b, 0x0b, 0x01, // Section ID, size, count (only 1 data segment)
-        0x00, // Flags (active, memory 0)
-        0x41, 0x00, 0x0b, // Offset expression (i32.const 0 end)
-        0x05, // Data length
-        'h', 'e', 'l', 'l', 'o' // Data bytes
-    };
 
     wah_module_t module;
     memset(&module, 0, sizeof(wah_module_t));
 
-    wah_error_t err = wah_parse_module(wasm_binary, sizeof(wasm_binary), &module);
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        exports {[ {'memory'} mem# 0, {'test_func'} fn# 0 ]} \
+        code {[ {[] i32.const 0 i32.const 0 i32.const 5 memory.init 1 0 end } ]} \
+        data {[ data.active.table#0 i32.const 0 end {'hello'} ]}");
     if (err != WAH_ERROR_VALIDATION_FAILED) {
         fprintf(stderr, "ERROR: test_deferred_data_validation_failure FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
         wah_free_module(&module);
@@ -372,28 +214,14 @@ static int test_deferred_data_validation_failure() {
 // Test case for an unused opcode (0x09) in the code section
 static int test_unused_opcode_validation_failure() {
     printf("Running test_unused_opcode_validation_failure...\n");
-    const uint8_t wasm_binary[] = {
-        0x00, 0x61, 0x73, 0x6d, // Magic
-        0x01, 0x00, 0x00, 0x00, // Version
-
-        // Type section (1)
-        0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // (func) -> ()
-
-        // Function section (3)
-        0x03, 0x02, 0x01, 0x00, // func 0 uses type 0
-
-        // Code section (10)
-        0x0a, 0x05, 0x01, // Section ID, size, count
-        0x03, // Code body size for func 0 (0 locals + 2 bytes for opcode + end)
-        0x00, // 0 locals
-        0x09, // Unused opcode (0x09)
-        0x0b, // End opcode
-    };
 
     wah_module_t module;
     memset(&module, 0, sizeof(wah_module_t));
 
-    wah_error_t err = wah_parse_module(wasm_binary, sizeof(wasm_binary), &module);
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] %'09' end} ]}");
     if (err != WAH_ERROR_VALIDATION_FAILED) {
         fprintf(stderr, "ERROR: test_unused_opcode_validation_failure FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
         wah_free_module(&module);
@@ -411,7 +239,9 @@ static int test_datacount_no_data_section() {
     wah_module_t module;
     memset(&module, 0, sizeof(wah_module_t));
 
-    wah_error_t err = wah_parse_module(wasm_binary_datacount_no_data_section, sizeof(wasm_binary_datacount_no_data_section), &module);
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [i32] [i32] ]} \
+        datacount { 2 }");
     if (err != WAH_ERROR_VALIDATION_FAILED) {
         fprintf(stderr, "ERROR: test_datacount_no_data_section FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
         wah_free_module(&module);
@@ -427,31 +257,13 @@ static int test_datacount_no_data_section() {
 static int test_end_opcode_not_at_end() {
     printf("Running test_end_opcode_not_at_end...\n");
 
-    // WASM binary with END opcode followed by additional bytes
-    const uint8_t wasm_binary_end_with_extra[] = {
-        0x00, 0x61, 0x73, 0x6d, // Magic
-        0x01, 0x00, 0x00, 0x00, // Version
-
-        // Type section (1)
-        0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // (func) -> ()
-
-        // Function section (3)
-        0x03, 0x02, 0x01, 0x00, // func 0 uses type 0
-
-        // Code section (10)
-        0x0a, 0x07, 0x01, // Section ID, size, count
-        0x05, // Code body size for func 0
-        0x00, // 0 locals
-        0x01, // nop opcode
-        0x0b, // END opcode (not at end)
-        0x41, 0x00, // i32.const 0 (extra byte after END)
-    };
-
     wah_module_t module;
     memset(&module, 0, sizeof(wah_module_t));
 
-    wah_error_t err = wah_parse_module(wasm_binary_end_with_extra, sizeof(wasm_binary_end_with_extra), &module);
-
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] nop end i32.const 0} ]}");
     // This should fail validation because END is not the last opcode
     if (err != WAH_ERROR_VALIDATION_FAILED) {
         fprintf(stderr, "ERROR: test_end_opcode_not_at_end FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
@@ -468,29 +280,13 @@ static int test_end_opcode_not_at_end() {
 static int test_multiple_end_opcodes() {
     printf("Running test_multiple_end_opcodes...\n");
 
-    // WASM binary with multiple END opcodes
-    const uint8_t wasm_binary_multiple_end[] = {
-        0x00, 0x61, 0x73, 0x6d, // Magic
-        0x01, 0x00, 0x00, 0x00, // Version
-
-        // Type section (1)
-        0x01, 0x04, 0x01, 0x60, 0x00, 0x00, // (func) -> ()
-
-        // Function section (3)
-        0x03, 0x02, 0x01, 0x00, // func 0 uses type 0
-
-        // Code section (10)
-        0x0a, 0x05, 0x01, // Section ID, size, count
-        0x03, // Code body size for func 0 (locals + 2 END opcodes)
-        0x00, // 0 locals
-        0x0b, // First END opcode
-        0x0b, // Second END opcode (extra)
-    };
-
     wah_module_t module;
     memset(&module, 0, sizeof(wah_module_t));
 
-    wah_error_t err = wah_parse_module(wasm_binary_multiple_end, sizeof(wasm_binary_multiple_end), &module);
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] end end} ]}");
 
     // This should fail validation because there are multiple END opcodes
     if (err != WAH_ERROR_VALIDATION_FAILED) {

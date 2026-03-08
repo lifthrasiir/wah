@@ -5,209 +5,34 @@
 
 #define WAH_IMPLEMENTATION
 #include "wah.h"
+#include "wah_testutils.c"
 
-// A simple WebAssembly binary for testing i32.load and i32.store
-// This binary defines:
-// - A memory section with 1 page (64KB)
-// - Two function types:
-//   - (i32, i32) -> () for store_val
-//   - (i32) -> (i32) for load_val
-// - Two functions:
-//   - func 0: store_val (address, value)
-//   - func 1: load_val (address)
-// - Export section to export "store" and "load" functions
-static const uint8_t wasm_binary_memory_test[] = {
-    0x00, 0x61, 0x73, 0x6D, // Magic number
-    0x01, 0x00, 0x00, 0x00, // Version
-
-    // Type Section (1)
-    0x01, // Section ID
-    0x0B, // Section size (11 bytes)
-    0x02, // Number of types
-        // Type 0: (i32, i32) -> ()
-        0x60, // Function type
-        0x02, // 2 parameters
-        0x7F, // i32
-        0x7F, // i32
-        0x00, // 0 results
-        // Type 1: (i32) -> (i32)
-        0x60, // Function type
-        0x01, // 1 parameter
-        0x7F, // i32
-        0x01, // 1 result
-        0x7F, // i32
-
-    // Import Section (2) - None for this test
-
-    // Function Section (3)
-    0x03, // Section ID
-    0x03, // Section size (3 bytes)
-    0x02, // Number of functions
-    0x00, // Function 0 uses type 0 (store_val)
-    0x01, // Function 1 uses type 1 (load_val)
-
-    // Table Section (4) - None for this test
-
-    // Memory Section (5)
-    0x05, // Section ID
-    0x03, // Section size (3 bytes)
-    0x01, // Number of memories
-    0x00, // Flags (0x00 for fixed size)
-    0x01, // Initial pages (1 page = 64KB)
-
-    // Global Section (6) - None for this test
-
-    // Export Section (7)
-    0x07, // Section ID
-    0x10, // Section size (16 bytes)
-    0x02, // Number of exports
-        // Export "store" (func 0)
-        0x05, // Length of name "store"
-        's', 't', 'o', 'r', 'e',
-        0x00, // Export kind: Function
-        0x00, // Function index 0
-        // Export "load" (func 1)
-        0x04, // Length of name "load"
-        'l', 'o', 'a', 'd',
-        0x00, // Export kind: Function
-        0x01, // Function index 1
-
-    // Start Section (8) - None for this test
-    // Element Section (9) - None for this test
-
-    // Code Section (10)
-    0x0A, // Section ID
-    0x13, // Section size (19 bytes)
-    0x02, // Number of code bodies
-
-        // Code body 0: store_val (address, value)
-        0x09, // Body size (9 bytes)
-        0x00, // No local variables
-        0x20, 0x00, // local.get 0 (address)
-        0x20, 0x01, // local.get 1 (value)
-        0x36, 0x02, 0x00, // i32.store align=2 (2^2=4), offset=0
-        0x0B, // end
-
-        // Code body 1: load_val (address)
-        0x07, // Body size (7 bytes)
-        0x00, // No local variables
-        0x20, 0x00, // local.get 0 (address)
-        0x28, 0x02, 0x00, // i32.load align=2 (2^2=4), offset=0
-        0x0B, // end
-};
-
-static const uint8_t wasm_binary_memory_ops_test[] = {
-  0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x10, 0x03, 0x60,
-  0x00, 0x01, 0x7f, 0x60, 0x01, 0x7f, 0x01, 0x7f, 0x60, 0x03, 0x7f, 0x7f,
-  0x7f, 0x00, 0x03, 0x04, 0x03, 0x00, 0x01, 0x02, 0x05, 0x04, 0x01, 0x01,
-  0x01, 0x02, 0x07, 0x35, 0x04, 0x03, 0x6d, 0x65, 0x6d, 0x02, 0x00, 0x0f,
-  0x67, 0x65, 0x74, 0x5f, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x5f, 0x73,
-  0x69, 0x7a, 0x65, 0x00, 0x00, 0x0b, 0x67, 0x72, 0x6f, 0x77, 0x5f, 0x6d,
-  0x65, 0x6d, 0x6f, 0x72, 0x79, 0x00, 0x01, 0x0b, 0x66, 0x69, 0x6c, 0x6c,
-  0x5f, 0x6d, 0x65, 0x6d, 0x6f, 0x72, 0x79, 0x00, 0x02, 0x0a, 0x19, 0x03,
-  0x04, 0x00, 0x3f, 0x00, 0x0b, 0x06, 0x00, 0x20, 0x00, 0x40, 0x00, 0x0b,
-  0x0b, 0x00, 0x20, 0x00, 0x20, 0x01, 0x20, 0x02, 0xfc, 0x0b, 0x00, 0x0b
-};
-
-static const uint8_t wasm_binary_data_and_bulk_memory_test[] = {
-    0x00, 0x61, 0x73, 0x6D, 0x01, 0x00, 0x00, 0x00, // Magic + Version
-
-    // Type Section (1)
-    0x01, 0x0C, // Section ID (1), Size (12)
-        0x02, // Num Types (2)
-        // Type 0: (i32, i32, i32) -> () for copy_mem, init_mem_data0, init_mem_data1
-        0x60, 0x03, 0x7F, 0x7F, 0x7F, 0x00,
-        // Type 1: (i32) -> (i32) for get_byte
-        0x60, 0x01, 0x7F, 0x01, 0x7F,
-
-    // Function Section (3)
-    0x03, 0x05, // Section ID (3), Size (5)
-        0x04, // Num Functions (4) - Changed from 0x03 to 0x04
-        0x00, // Function 0 (init_mem_data0) uses Type 0
-        0x00, // Function 1 (init_mem_data1) uses Type 0
-        0x00, // Function 2 (copy_mem) uses Type 0
-        0x01, // Function 3 (get_byte) uses Type 1
-
-    // Memory Section (5)
-    0x05, 0x03, // Section ID (5), Size (3)
-        0x01, // Num Memories (1)
-        0x00, // Flags (0x00 for fixed size)
-        0x01, // Initial pages (1 page)
-
-    // Export Section (7)
-    0x07, 0x39, // Section ID (7), Size (57)
-        0x04, // Num Exports (4)
-        0x0E, 'i', 'n', 'i', 't', '_', 'm', 'e', 'm', '_', 'd', 'a', 't', 'a', '0', // "init_mem_data0"
-        0x00, // Export Kind: Function
-        0x00, // Function Index 0
-        0x08, 'c', 'o', 'p', 'y', '_', 'm', 'e', 'm', // "copy_mem"
-        0x00, // Export Kind: Function
-        0x01, // Function Index 1
-        0x08, 'g', 'e', 't', '_', 'b', 'y', 't', 'e', // "get_byte"
-        0x00, // Export Kind: Function
-        0x02, // Function Index 2
-        0x0E, 'i', 'n', 'i', 't', '_', 'm', 'e', 'm', '_', 'd', 'a', 't', 'a', '1', // "init_mem_data1"
-        0x00, // Export Kind: Function
-        0x03, // Function Index 3
-
-    // Data Count Section (12)
-    0x0C, 0x01, // Section ID (12), Size (1)
-        0x02, // Data Count (2)
-
-    // Code Section (10)
-    0x0A, 0x30, // Section ID (10), Size (48)
-        0x04, // Num Code Bodies (4)
-
-        // Code Body 0: init_mem_data0 (dest_offset, src_offset, size)
-        0x0C, // Body Size (12)
-        0x00, // No Local Variables
-            0x20, 0x00, // local.get 0 (dest_offset)
-            0x20, 0x01, // local.get 1 (src_offset)
-            0x20, 0x02, // local.get 2 (size)
-            0xFC, 0x08, 0x00, 0x00, // memory.init data_idx 0, mem_idx 0
-            0x0B, // end
-
-        // Code Body 1: init_mem_data1 (dest_offset, src_offset, size)
-        0x0C, // Body Size (12)
-        0x00, // No Local Variables
-            0x20, 0x00, // local.get 0 (dest_offset)
-            0x20, 0x01, // local.get 1 (src_offset)
-            0x20, 0x02, // local.get 2 (size)
-            0xFC, 0x08, 0x01, 0x00, // memory.init data_idx 1, mem_idx 0
-            0x0B, // end
-
-        // Code Body 2: copy_mem (dest, src, size)
-        0x0C, // Body Size (12)
-        0x00, // No Local Variables
-            0x20, 0x00, // local.get 0 (dest)
-            0x20, 0x01, // local.get 1 (src)
-            0x20, 0x02, // local.get 2 (size)
-            0xFC, 0x0A, 0x00, 0x00, // memory.copy dest_mem_idx 0, src_mem_idx 0
-            0x0B, // end
-
-        // Code Body 3: get_byte (addr)
-        0x07, // Body Size (7)
-        0x00, // No Local Variables
-            0x20, 0x00, // local.get 0 (addr)
-            0x2C, 0x00, 0x00, // i32.load8_u align=0, offset=0
-            0x0B, // end
-
-    // Data Section (11)
-    0x0B, 0x10, // Section ID (11), Size (16)
-        0x02, // Num Data Segments (2)
-
-        // Data Segment 0: Active, offset 0, data [1, 2, 3, 4]
-        0x00, // Flags (active, memory index 0)
-        0x41, 0x00, // i32.const 0 (offset)
-        0x0B, // end
-        0x04, // Data Length (4)
-        0x01, 0x02, 0x03, 0x04, // Data Bytes
-
-        // Data Segment 1: Passive, data [5, 6, 7, 8]
-        0x01, // Flags (passive)
-        0x04, // Data Length (4)
-        0x05, 0x06, 0x07, 0x08, // Data Bytes
-};
+// DSL spec for data and bulk memory operations test module
+static const char *wasm_data_and_bulk_memory_spec =
+    "wasm \
+    types {[ \
+        fn [i32, i32, i32] [], \
+        fn [i32] [i32], \
+    ]} \
+    funcs {[ 0, 0, 0, 1 ]} \
+    memories {[ limits.i32/1 1 ]} \
+    exports {[ \
+        {'init_mem_data0'} fn# 0, \
+        {'init_mem_data1'} fn# 1, \
+        {'copy_mem'} fn# 2, \
+        {'get_byte'} fn# 3, \
+    ]} \
+    datacount { 2 } \
+    code {[ \
+        {[] local.get 0 local.get 1 local.get 2 memory.init 0 0 end}, \
+        {[] local.get 0 local.get 1 local.get 2 memory.init 1 0 end}, \
+        {[] local.get 0 local.get 1 local.get 2 memory.copy 0 0 end}, \
+        {[] local.get 0 i32.load8_u align=1 offset=0 end}, \
+    ]} \
+    data {[ \
+        data.active.table#0 i32.const 0 end {%'01020304'}, \
+        data.passive {%'05060708'}, \
+    ]}";
 
 void wah_test_data_and_bulk_memory_ops() {
     wah_module_t module;
@@ -218,8 +43,9 @@ void wah_test_data_and_bulk_memory_ops() {
 
     printf("\nRunning data segments and bulk memory operations tests...\n");
 
-    // Test 1: Parse module
-    err = wah_parse_module(wasm_binary_data_and_bulk_memory_test, sizeof(wasm_binary_data_and_bulk_memory_test), &module);
+    // Test 1: Parse module using DSL
+    err = wah_parse_module_from_spec(&module, wasm_data_and_bulk_memory_spec);
+    printf("%s\n", wah_strerror(err));
     assert(err == WAH_OK && "Failed to parse data and bulk memory ops module");
     printf("Data and bulk memory ops module parsed successfully.\n");
     assert(module.memory_count == 1 && "Expected 1 memory section");
@@ -349,7 +175,21 @@ int main() {
     printf("Running memory tests...\n");
 
     // Test 1: Parse module
-    err = wah_parse_module(wasm_binary_memory_test, sizeof(wasm_binary_memory_test), &module);
+    err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ \
+            fn [i32, i32] [], \
+            fn [i32] [i32], \
+        ]} \
+        funcs {[ 0, 1 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        exports {[ \
+            {'store'} fn# 0, \
+            {'load'} fn# 1, \
+        ]} \
+        code {[ \
+            {[] local.get 0 local.get 1 i32.store align=4 offset=0 end}, \
+            {[] local.get 0 i32.load align=4 offset=0 end}, \
+        ]}");
     assert(err == WAH_OK && "Failed to parse module");
     printf("Module parsed successfully.\n");
     assert(module.memory_count == 1 && "Expected 1 memory section");
@@ -430,7 +270,25 @@ int main() {
     printf("\nRunning memory operations tests (size, grow, fill)...\n");
 
     // Test 8: Parse new module for memory operations
-    err = wah_parse_module(wasm_binary_memory_ops_test, sizeof(wasm_binary_memory_ops_test), &module);
+    err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ \
+            fn [] [i32], \
+            fn [i32] [i32], \
+            fn [i32, i32, i32] [], \
+        ]} \
+        funcs {[ 0, 1, 2 ]} \
+        memories {[ limits.i32/2 1 2 ]} \
+        exports {[ \
+            {'mem'} mem# 0, \
+            {'get_memory_size'} fn# 0, \
+            {'grow_memory'} fn# 1, \
+            {'fill_memory'} fn# 2, \
+        ]} \
+        code {[ \
+            {[] memory.size 0 end}, \
+            {[] local.get 0 memory.grow 0 end}, \
+            {[] local.get 0 local.get 1 local.get 2 memory.fill 0 end}, \
+        ]}");
     if (err != WAH_OK) {
         printf("Failed to parse memory ops module. Error: %s\n", wah_strerror(err));
     }

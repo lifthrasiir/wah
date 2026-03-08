@@ -1,5 +1,6 @@
 #define WAH_IMPLEMENTATION
 #include "wah.h"
+#include "wah_testutils.c"
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
@@ -47,70 +48,21 @@
 
 int test_basic_exports() {
     printf("Running test_basic_exports...\n");
-    // (func $add (param i32 i32) (result i32) (i32.add))
-    // (global $g (mut i32) (i32.const 0))
-    // (memory (export "mem") 1)
-    // (table (export "tbl") 1 funcref)
-    // (export "add" (func $add))
-    // (export "g" (global $g))
-
-    uint8_t wasm_binary[] = {
-        WASM_HEADER,
-
-        // Type Section (1 type: func(i32, i32) -> i32)
-        0x01, 0x07, // section id, size
-        0x01, // count
-        0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F,
-
-        // Function Section (1 function, type index 0)
-        0x03, 0x02, // section id, size
-        0x01, // count
-        0x00, // type index 0
-
-        // Table Section (1 table, min 1 funcref)
-        0x04, 0x04, // section id, size
-        0x01, // count
-        0x70, // elem_type (funcref)
-        0x00, // flags (no max)
-        0x01, // min elements
-
-        // Memory Section (1 memory, min 1 page)
-        0x05, 0x03, // section id, size
-        0x01, // count
-        0x00, // flags (no max)
-        0x01, // min pages
-
-        // Global Section (1 global: i32 mutable, init 0)
-        0x06, 0x06, // section id, size
-        0x01, // count
-        0x7F, 0x01, 0x41, 0x00, 0x0B,
-
-        // Export Section (4 exports: "add" func, "g" global, "mem" memory, "tbl" table)
-        0x07, 0x17, // section id, size
-        0x04, // count
-
-        // Export 0: "add" func 0
-        0x03, 'a', 'd', 'd', 0x00, 0x00,
-        // Export 1: "g" global 0
-        0x01, 'g', 0x03, 0x00,
-        // Export 2: "mem" memory 0
-        0x03, 'm', 'e', 'm', 0x02, 0x00,
-        // Export 3: "tbl" table 0
-        0x03, 't', 'b', 'l', 0x01, 0x00,
-
-        // Code Section (1 code body)
-        0x0A, 0x09, // section id, size
-        0x01, // count
-        0x07, // code body size (0x00 for locals count + 7 bytes for instructions)
-        0x00, // locals count
-        0x20, 0x00, // local.get 0
-        0x20, 0x01, // local.get 1
-        0x6A, // i32.add
-        0x0B,
-    };
 
     wah_module_t module;
-    wah_error_t err = wah_parse_module(wasm_binary, sizeof(wasm_binary), &module);
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [i32, i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        globals {[ i32 mut i32.const 0 end ]} \
+        exports {[ \
+            {'add'} fn# 0, \
+            {'g'} global# 0, \
+            {'mem'} mem# 0, \
+            {'tbl'} table# 0, \
+        ]} \
+        code {[ {[] local.get 0 local.get 1 i32.add end } ]}");
     TEST_ASSERT_WAH_OK(err, "Failed to parse basic exports module");
 
     TEST_ASSERT_EQ(wah_module_num_exports(&module), 4, "Incorrect export count");
@@ -181,43 +133,17 @@ int test_basic_exports() {
 
 int test_duplicate_export_names() {
     printf("Running test_duplicate_export_names...\n");
+
     // Export "add" twice
-
-    uint8_t wasm_binary[] = {
-        WASM_HEADER,
-
-        // Type Section (1 type: func(i32, i32) -> i32)
-        0x01, 0x07, // section id, size
-        0x01, // count
-        0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F,
-
-        // Function Section (1 function, type index 0)
-        0x03, 0x02, // section id, size
-        0x01, // count
-        0x00, // type index 0
-
-        // Export Section (2 exports: "add" func 0, "add" func 0)
-        0x07, 0x0D, // section id, size
-        0x02, // count
-
-        // Export 0: "add" func 0
-        0x03, 'a', 'd', 'd', 0x00, 0x00,
-        // Export 1: "add" func 0 (duplicate)
-        0x03, 'a', 'd', 'd', 0x00, 0x00,
-
-        // Code Section (1 code body)
-        0x0A, 0x09, // section id, size
-        0x01, // count
-        0x07, // code body size
-        0x00, // locals count
-        0x20, 0x00, // local.get 0
-        0x20, 0x01, // local.get 1
-        0x6A, // i32.add
-        0x0B,
-    };
-
     wah_module_t module;
-    wah_error_t err = wah_parse_module(wasm_binary, sizeof(wasm_binary), &module);
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [i32, i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        exports {[ \
+            {'add'} fn# 0, \
+            {'add'} fn# 0, \
+        ]} \
+        code {[ {[] local.get 0 local.get 1 i32.add end } ]}");
     TEST_ASSERT_WAH_ERROR(WAH_ERROR_VALIDATION_FAILED, err, "Parsing module with duplicate export names should fail");
 
     wah_free_module(&module); // Should be safe to call even if parsing failed
@@ -229,48 +155,22 @@ int test_invalid_export_kind_or_index() {
     printf("Running test_invalid_export_kind_or_index...\n");
 
     // Test 1: Invalid export kind (e.g., 0x04 which is not defined)
-    uint8_t wasm_binary_invalid_kind[] = {
-        WASM_HEADER,
-
-        // Type Section (1 type: func(i32, i32) -> i32)
-        0x01, 0x07, 0x01, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F,
-        // Function Section (1 function, type index 0)
-        0x03, 0x02, 0x01, 0x00,
-
-        // Export Section (1 export: "bad" kind 0x04, index 0)
-        0x07, 0x07, // section id, size
-        0x01, // count
-        0x03, 'b', 'a', 'd', 0x04, 0x00, // Invalid kind 0x04
-
-        // Code Section (1 code body)
-        0x0A, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6A, 0x0B,
-    };
-
     wah_module_t module_invalid_kind;
-    wah_error_t err = wah_parse_module(wasm_binary_invalid_kind, sizeof(wasm_binary_invalid_kind), &module_invalid_kind);
+    wah_error_t err = wah_parse_module_from_spec(&module_invalid_kind, "wasm \
+        types {[ fn [i32, i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'bad'} 4 0 ]} \
+        code {[ {[] local.get 0 local.get 1 i32.add end } ]}");
     TEST_ASSERT_WAH_ERROR(WAH_ERROR_VALIDATION_FAILED, err, "Parsing module with invalid export kind should fail");
     wah_free_module(&module_invalid_kind);
 
     // Test 2: Export function with out-of-bounds index
-    uint8_t wasm_binary_invalid_func_idx[] = {
-        WASM_HEADER,
-
-        // Type Section (1 type: func(i32, i32) -> i32)
-        0x01, 0x07, 0x01, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F,
-        // Function Section (1 function, type index 0)
-        0x03, 0x02, 0x01, 0x00,
-
-        // Export Section (1 export: "bad_func" func 1 (out of bounds))
-        0x07, 0x0C, // section id, size
-        0x01, // count
-        0x08, 'b', 'a', 'd', '_', 'f', 'u', 'n', 'c', 0x00, 0x01, // Index 1, but only 1 function (index 0)
-
-        // Code Section (1 code body)
-        0x0A, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6A, 0x0B,
-    };
-
     wah_module_t module_invalid_func_idx;
-    err = wah_parse_module(wasm_binary_invalid_func_idx, sizeof(wasm_binary_invalid_func_idx), &module_invalid_func_idx);
+    err = wah_parse_module_from_spec(&module_invalid_func_idx, "wasm \
+        types {[ fn [i32, i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'bad_func'} fn# 1 ]} \
+        code {[ {[] local.get 0 local.get 1 i32.add end } ]}");
     TEST_ASSERT_WAH_ERROR(WAH_ERROR_VALIDATION_FAILED, err, "Parsing module with out-of-bounds function export index should fail");
     wah_free_module(&module_invalid_func_idx);
 
@@ -280,27 +180,14 @@ int test_invalid_export_kind_or_index() {
 
 int test_non_utf8_export_name() {
     printf("Running test_non_utf8_export_name...\n");
+
     // Export name with invalid UTF-8 sequence (e.g., 0xFF)
-
-    uint8_t wasm_binary[] = {
-        WASM_HEADER,
-
-        // Type Section (1 type: func(i32, i32) -> i32)
-        0x01, 0x07, 0x01, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F,
-        // Function Section (1 function, type index 0)
-        0x03, 0x02, 0x01, 0x00,
-
-        // Export Section (1 export: "bad\xFFname" func 0)
-        0x07, 0x0B, // section id, size
-        0x01, // count
-        0x07, 'b', 'a', 'd', 0xFF, 'n', 'a', 'm', 'e', 0x00, 0x00,
-
-        // Code Section (1 code body)
-        0x0A, 0x06, 0x01, 0x04, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6A, 0x0B,
-    };
-
     wah_module_t module;
-    wah_error_t err = wah_parse_module(wasm_binary, sizeof(wasm_binary), &module);
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [i32, i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'bad' %'ff' 'name'} fn# 0 ]} \
+        code {[ {[] local.get 0 local.get 1 i32.add end } ]}");
     TEST_ASSERT_WAH_ERROR(WAH_ERROR_VALIDATION_FAILED, err, "Parsing module with non-UTF8 export name should fail");
 
     wah_free_module(&module);
@@ -310,21 +197,13 @@ int test_non_utf8_export_name() {
 
 int test_module_no_exports() {
     printf("Running test_module_no_exports...\n");
+
     // Module with no export section
-
-    uint8_t wasm_binary[] = {
-        WASM_HEADER,
-
-        // Type Section (1 type: func(i32, i32) -> i32)
-        0x01, 0x07, 0x01, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F,
-        // Function Section (1 function, type index 0)
-        0x03, 0x02, 0x01, 0x00,
-        // Code Section (1 code body)
-        0x0A, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6A, 0x0B,
-    };
-
     wah_module_t module;
-    wah_error_t err = wah_parse_module(wasm_binary, sizeof(wasm_binary), &module);
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [i32, i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] local.get 0 local.get 1 i32.add end } ]}");
     TEST_ASSERT_WAH_OK(err, "Failed to parse module with no exports");
 
     TEST_ASSERT_EQ(wah_module_num_exports(&module), 0, "Export count should be 0 for module with no exports");
@@ -345,19 +224,11 @@ int test_wah_module_entry_non_exported() {
     printf("Running test_wah_module_entry_non_exported...\n");
     // Test wah_module_entry for a function that is not exported
 
-    uint8_t wasm_binary[] = {
-        WASM_HEADER,
-
-        // Type Section (1 type: func(i32, i32) -> i32)
-        0x01, 0x07, 0x01, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F,
-        // Function Section (1 function, type index 0)
-        0x03, 0x02, 0x01, 0x00,
-        // Code Section (1 code body)
-        0x0A, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6A, 0x0B,
-    };
-
     wah_module_t module;
-    wah_error_t err = wah_parse_module(wasm_binary, sizeof(wasm_binary), &module);
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [i32, i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] local.get 0 local.get 1 i32.add end } ]}");
     TEST_ASSERT_WAH_OK(err, "Failed to parse module for non-exported entry test");
 
     wah_entry_t entry;
@@ -376,21 +247,13 @@ int test_wah_module_entry_non_exported() {
 
 int test_wah_module_entry_invalid_id() {
     printf("Running test_wah_module_entry_invalid_id...\n");
+
     // Test wah_module_entry with invalid entry IDs
-
-    uint8_t wasm_binary[] = {
-        WASM_HEADER,
-
-        // Type Section (1 type: func(i32, i32) -> i32)
-        0x01, 0x07, 0x01, 0x60, 0x02, 0x7F, 0x7F, 0x01, 0x7F,
-        // Function Section (1 function, type index 0)
-        0x03, 0x02, 0x01, 0x00,
-        // Code Section (1 code body)
-        0x0A, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6A, 0x0B,
-    };
-
     wah_module_t module;
-    wah_error_t err = wah_parse_module(wasm_binary, sizeof(wasm_binary), &module);
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [i32, i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] local.get 0 local.get 1 i32.add end } ]}");
     TEST_ASSERT_WAH_OK(err, "Failed to parse module for invalid entry ID test");
 
     wah_entry_t entry;
@@ -414,26 +277,12 @@ int test_export_name_with_null_byte() {
     printf("Running test_export_name_with_null_byte...\n");
 
     // Export name: "bad\x00name" (length 8)
-    uint8_t wasm_binary[] = {
-        WASM_HEADER,
-
-        // Type Section (1 type: func() -> void)
-        0x01, 0x04, 0x01, 0x60, 0x00, 0x00,
-
-        // Function Section (1 function, type index 0)
-        0x03, 0x02, 0x01, 0x00,
-
-        // Export Section (1 export: "bad\x00name" func 0)
-        0x07, 0x0C, // section id, size
-        0x01, // count
-        0x08, 'b', 'a', 'd', 0x00, 'n', 'a', 'm', 'e', 0x00, 0x00,
-
-        // Code Section (1 code body)
-        0x0A, 0x04, 0x01, 0x02, 0x00, 0x0B,
-    };
-
     wah_module_t module;
-    wah_error_t err = wah_parse_module(wasm_binary, sizeof(wasm_binary), &module);
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'bad' %'00' 'name'} fn# 0 ]} \
+        code {[ {[] end } ]}");
     TEST_ASSERT_WAH_OK(err, "Failed to parse module with null byte in export name");
 
     TEST_ASSERT_EQ(wah_module_num_exports(&module), 1, "Incorrect export count");
