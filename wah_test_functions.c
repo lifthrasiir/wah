@@ -86,7 +86,7 @@ int test_zero_return_functions() {
     // Test wah_call with zero return function
     wah_value_t result;
     memset(&result, 0xFF, sizeof(wah_value_t)); // Initialize with garbage to verify zeroization
-    err = wah_call(&ctx, &module, 0, NULL, 0, &result);
+    err = wah_call(&ctx, 0, NULL, 0, &result);
     if (err == WAH_OK) {
         // Verify that result is properly zeroized
         bool is_zeroed = (result.i32 == 0 && result.i64 == 0 && result.f32 == 0.0f && result.f64 == 0.0);
@@ -109,7 +109,7 @@ int test_zero_return_functions() {
     // Test wah_call_multi with zero return function
     wah_value_t results[1];
     uint32_t actual_results;
-    err = wah_call_multi(&ctx, &module, 0, NULL, 0, results, 1, &actual_results);
+    err = wah_call_multi(&ctx, 0, NULL, 0, results, 1, &actual_results);
     if (err == WAH_OK && actual_results == 0) {
         printf("[v] wah_call_multi with zero return: actual_results=%u (expected 0)\n", actual_results);
     } else {
@@ -154,7 +154,7 @@ int test_single_return_functions() {
 
     // Test wah_call with single return function
     wah_value_t result;
-    err = wah_call(&ctx, &module, 0, NULL, 0, &result);
+    err = wah_call(&ctx, 0, NULL, 0, &result);
     if (err == WAH_OK && result.i32 == 42) {
         printf("[v] wah_call with single return: i32=%d (expected 42)\n", result.i32);
     } else {
@@ -168,7 +168,7 @@ int test_single_return_functions() {
     // Test wah_call_multi with single return function
     wah_value_t results[1];
     uint32_t actual_results;
-    err = wah_call_multi(&ctx, &module, 0, NULL, 0, results, 1, &actual_results);
+    err = wah_call_multi(&ctx, 0, NULL, 0, results, 1, &actual_results);
     if (err == WAH_OK && actual_results == 1 && results[0].i32 == 42) {
         printf("[v] wah_call_multi with single return: i32=%d, count=%u\n",
                results[0].i32, actual_results);
@@ -228,7 +228,7 @@ int test_multiple_return_with_existing_functions() {
     // Test function 0: get_i64 with wah_call_multi (should return WAH_OK)
     wah_value_t results[1];
     uint32_t actual_results;
-    err = wah_call_multi(&ctx, &module, 0, NULL, 0, results, 1, &actual_results);
+    err = wah_call_multi(&ctx, 0, NULL, 0, results, 1, &actual_results);
     if (err == WAH_OK) {
         printf("[v] wah_call_multi with single return: i64=%lld, count=%u\n",
                (long long)results[0].i64, actual_results);
@@ -239,7 +239,7 @@ int test_multiple_return_with_existing_functions() {
     // Test function 2: get_f32 with wah_call_multi
     wah_value_t f32_results[1];
     uint32_t f32_actual_results;
-    err = wah_call_multi(&ctx, &module, 2, NULL, 0, f32_results, 1, &f32_actual_results);
+    err = wah_call_multi(&ctx, 2, NULL, 0, f32_results, 1, &f32_actual_results);
     if (err == WAH_OK) {
         printf("[v] wah_call_multi get_f32: result=%.2f, count=%u\n",
                f32_results[0].f32, f32_actual_results);
@@ -298,7 +298,7 @@ int test_multi_return_buffer_validation() {
     // Test with insufficient buffer (should return validation error)
     wah_value_t results[1]; // No space for result, but [0] warns
     uint32_t actual_results;
-    err = wah_call_multi(&ctx, &module, 0, NULL, 0, results, 0, &actual_results);
+    err = wah_call_multi(&ctx, 0, NULL, 0, results, 0, &actual_results);
     if (err == WAH_ERROR_VALIDATION_FAILED) {
         printf("[v] Insufficient buffer correctly returned error: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&ctx);

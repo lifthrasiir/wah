@@ -53,14 +53,14 @@ void wah_test_table_indirect_call() {
     // Test call_indirect_add (calls add_one indirectly)
     wah_value_t params_add[1] = {{.i32 = 10}};
     wah_value_t result_add;
-    err = wah_call(&exec_ctx, &module, call_indirect_add_func_idx, params_add, 1, &result_add);
+    err = wah_call(&exec_ctx, call_indirect_add_func_idx, params_add, 1, &result_add);
     assert(err == WAH_OK);
     assert(result_add.i32 == 11);
 
     // Test call_indirect_sub (calls sub_one indirectly)
     wah_value_t params_sub[1] = {{.i32 = 10}};
     wah_value_t result_sub;
-    err = wah_call(&exec_ctx, &module, call_indirect_sub_func_idx, params_sub, 1, &result_sub);
+    err = wah_call(&exec_ctx, call_indirect_sub_func_idx, params_sub, 1, &result_sub);
     assert(err == WAH_OK);
     assert(result_sub.i32 == 9);
 

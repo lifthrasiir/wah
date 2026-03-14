@@ -39,7 +39,7 @@ int main() {
     params[1].i32 = 20;
 
     printf("Interpreting function %u with params %d and %d...\n", func_idx, params[0].i32, params[1].i32);
-    err = wah_call(&ctx, &module, func_idx, params, 2, &result);
+    err = wah_call(&ctx, func_idx, params, 2, &result);
     if (err != WAH_OK) {
         fprintf(stderr, "Error interpreting function: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&ctx);
@@ -52,7 +52,7 @@ int main() {
     params[0].i32 = 5;
     params[1].i32 = 7;
     printf("Interpreting function %u with params %d and %d...\n", func_idx, params[0].i32, params[1].i32);
-    err = wah_call(&ctx, &module, func_idx, params, 2, &result);
+    err = wah_call(&ctx, func_idx, params, 2, &result);
     if (err != WAH_OK) {
         fprintf(stderr, "Error interpreting function: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&ctx);

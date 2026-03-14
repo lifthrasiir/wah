@@ -142,14 +142,13 @@ static wah_error_t wah_test_setup_context(
 static wah_error_t wah_test_execute_function(
     const char* test_name,
     wah_exec_context_t* ctx,
-    wah_module_t* module,
     wah_value_t* out_result
 ) {
     wah_error_t err;
     uint32_t func_idx = 0; // Assuming the test function is always at index 0
 
     printf("Interpreting function %u...\n", func_idx);
-    err = wah_call(ctx, module, func_idx, NULL, 0, out_result);
+    err = wah_call(ctx, func_idx, NULL, 0, out_result);
     if (err != WAH_OK) {
         fprintf(stderr, "Error interpreting function for %s: %s\n", test_name, wah_strerror(err));
         return err;
@@ -261,7 +260,7 @@ void test_v128_load_store() {
     wah_value_t result;
     uint8_t expected_v128_val[] = {0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00};
 
-    err = wah_test_execute_function(test_name, &ctx, &module, &result);
+    err = wah_test_execute_function(test_name, &ctx, &result);
     if (err != WAH_OK) {
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
@@ -305,7 +304,7 @@ void test_v128_const() {
     wah_value_t result;
     uint8_t expected_v128_val[] = {0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10};
 
-    err = wah_test_execute_function(test_name, &ctx, &module, &result);
+    err = wah_test_execute_function(test_name, &ctx, &result);
     if (err != WAH_OK) {
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
@@ -442,7 +441,7 @@ wah_error_t run_v128_load_test(const char* test_name, const uint8_t* wasm_binary
     }
 
     wah_value_t result;
-    err = wah_test_execute_function(test_name, &ctx, &module, &result);
+    err = wah_test_execute_function(test_name, &ctx, &result);
     if (err != WAH_OK) {
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
@@ -479,7 +478,7 @@ wah_error_t run_simd_binary_op_test(const char* test_name, const uint8_t* wasm_b
     }
 
     wah_value_t result;
-    err = wah_test_execute_function(test_name, &ctx, &module, &result);
+    err = wah_test_execute_function(test_name, &ctx, &result);
     if (err != WAH_OK) {
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
@@ -520,7 +519,7 @@ wah_error_t run_simd_ternary_op_test(const char* test_name, const uint8_t* wasm_
     }
 
     wah_value_t result;
-    err = wah_test_execute_function(test_name, &ctx, &module, &result);
+    err = wah_test_execute_function(test_name, &ctx, &result);
     if (err != WAH_OK) {
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
@@ -581,7 +580,7 @@ wah_error_t run_simd_unary_op_test(const char* test_name, const uint8_t* wasm_bi
     }
 
     wah_value_t result;
-    err = wah_test_execute_function(test_name, &ctx, &module, &result);
+    err = wah_test_execute_function(test_name, &ctx, &result);
     if (err != WAH_OK) {
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
@@ -618,7 +617,7 @@ wah_error_t run_simd_binary_op_i32_shift_test(const char* test_name, const uint8
     }
 
     wah_value_t result;
-    err = wah_test_execute_function(test_name, &ctx, &module, &result);
+    err = wah_test_execute_function(test_name, &ctx, &result);
     if (err != WAH_OK) {
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
@@ -644,7 +643,7 @@ wah_error_t run_simd_shuffle_swizzle_test(const char* test_name, const uint8_t* 
     }
 
     wah_value_t result;
-    err = wah_test_execute_function(test_name, &ctx, &module, &result);
+    err = wah_test_execute_function(test_name, &ctx, &result);
     if (err != WAH_OK) {
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
@@ -677,7 +676,7 @@ wah_error_t run_simd_extract_lane_test(const char* test_name, const uint8_t* was
     }
 
     wah_value_t result;
-    err = wah_test_execute_function(test_name, &ctx, &module, &result);
+    err = wah_test_execute_function(test_name, &ctx, &result);
     if (err != WAH_OK) {
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
@@ -731,7 +730,7 @@ wah_error_t run_simd_replace_lane_test(const char* test_name, const uint8_t* was
     }
 
     wah_value_t result;
-    err = wah_test_execute_function(test_name, &ctx, &module, &result);
+    err = wah_test_execute_function(test_name, &ctx, &result);
     if (err != WAH_OK) {
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
@@ -764,7 +763,7 @@ wah_error_t run_simd_splat_test(const char* test_name, const uint8_t* wasm_binar
     }
 
     wah_value_t result;
-    err = wah_test_execute_function(test_name, &ctx, &module, &result);
+    err = wah_test_execute_function(test_name, &ctx, &result);
     if (err != WAH_OK) {
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
@@ -933,7 +932,7 @@ wah_error_t run_simd_any_true_test(const char* test_name, const uint8_t* wasm_bi
     }
 
     wah_value_t result;
-    err = wah_test_execute_function(test_name, &ctx, &module, &result);
+    err = wah_test_execute_function(test_name, &ctx, &result);
     if (err != WAH_OK) {
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);

@@ -116,7 +116,7 @@ static void test_simple_block() {
     assert(err == WAH_OK);
 
     wah_value_t result;
-    err = wah_call(&ctx, &module, 0, NULL, 0, &result);
+    err = wah_call(&ctx, 0, NULL, 0, &result);
     assert(err == WAH_OK);
     assert(result.i32 == 42);
     printf("  - Simple block executed, result: %d\n", result.i32);
@@ -138,7 +138,7 @@ static void test_simple_if_const() {
     assert(err == WAH_OK);
 
     wah_value_t result;
-    err = wah_call(&ctx, &module, 0, NULL, 0, &result);
+    err = wah_call(&ctx, 0, NULL, 0, &result);
     assert(err == WAH_OK);
     assert(result.i32 == 42);
     printf("  - Execution succeeded, result: %d\n", result.i32);
@@ -161,14 +161,14 @@ static void test_if_else() {
     // Test if branch (param == 42)
     wah_value_t params[1] = {{.i32 = 42}};
     wah_value_t result;
-    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    err = wah_call(&ctx, 0, params, 1, &result);
     assert(err == WAH_OK);
     assert(result.i32 == 1);
     printf("  - If branch works (42 -> 1)\n");
 
     // Test else branch (param != 42)
     params[0].i32 = 99;
-    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    err = wah_call(&ctx, 0, params, 1, &result);
     assert(err == WAH_OK);
     assert(result.i32 == 0);
     printf("  - Else branch works (99 -> 0)\n");
@@ -195,7 +195,7 @@ static void test_loop() {
     // Test loop: sum of 0..4 = 0+1+2+3 = 6
     wah_value_t params[1] = {{.i32 = 4}};
     wah_value_t result;
-    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    err = wah_call(&ctx, 0, params, 1, &result);
     if (err != WAH_OK) {
         printf("  ERROR: Loop function call failed: %s\n", wah_strerror(err));
         assert(false);
@@ -208,7 +208,7 @@ static void test_loop() {
 
     // Test empty loop
     params[0].i32 = 0;
-    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    err = wah_call(&ctx, 0, params, 1, &result);
     assert(err == WAH_OK);
     assert(result.i32 == 0);
     printf("  - Empty loop works (sum 0.. = 0)\n");
@@ -369,35 +369,35 @@ static void test_br_table() {
 
     // Test case 0
     params[0].i32 = 0;
-    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    err = wah_call(&ctx, 0, params, 1, &result);
     assert(err == WAH_OK);
     assert(result.i32 == 10);
     printf("  - Case 0 -> 10 PASSED\n");
 
     // Test case 1
     params[0].i32 = 1;
-    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    err = wah_call(&ctx, 0, params, 1, &result);
     assert(err == WAH_OK);
     assert(result.i32 == 20);
     printf("  - Case 1 -> 20 PASSED\n");
 
     // Test case 2
     params[0].i32 = 2;
-    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    err = wah_call(&ctx, 0, params, 1, &result);
     assert(err == WAH_OK);
     assert(result.i32 == 30);
     printf("  - Case 2 -> 30 PASSED\n");
 
     // Test case 3 (default)
     params[0].i32 = 3;
-    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    err = wah_call(&ctx, 0, params, 1, &result);
     assert(err == WAH_OK);
     assert(result.i32 == 40);
     printf("  - Case 3 (default) -> 40 PASSED\n");
 
     // Test case 4 (default, out of bounds)
     params[0].i32 = 4;
-    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    err = wah_call(&ctx, 0, params, 1, &result);
     assert(err == WAH_OK);
     assert(result.i32 == 40);
     printf("  - Case 4 (default) -> 40 PASSED\n");
@@ -470,7 +470,7 @@ static void test_block_type_with_params_pass() {
     assert(err == WAH_OK);
     wah_value_t params[1] = {{.i32 = 10}};
     wah_value_t result;
-    err = wah_call(&ctx, &module, 0, params, 1, &result);
+    err = wah_call(&ctx, 0, params, 1, &result);
     assert(err == WAH_OK);
     assert(result.i32 == 11);
     printf("  - Block type with parameters executed, result: %d\n", result.i32);

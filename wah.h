@@ -162,10 +162,12 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
 void wah_exec_context_destroy(wah_exec_context_t *exec_ctx);
 
 // The main entry point to call a WebAssembly function.
-wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
+// func_idx can be either a function index or a wah_entry_id_t (always fits in uint64_t).
+wah_error_t wah_call(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
 
 // Entry point to call a WebAssembly function with multiple return values.
-wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *results, uint32_t max_results, uint32_t *actual_results);
+// func_idx can be either a function index or a wah_entry_id_t (always fits in uint64_t).
+wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *results, uint32_t max_results, uint32_t *actual_results);
 
 // --- Module Cleanup ---
 void wah_free_module(wah_module_t *module);
@@ -581,6 +583,10 @@ typedef struct {
     wah_validation_control_frame_t control_stack[WAH_MAX_CONTROL_DEPTH];
     uint32_t control_sp;
 } wah_validation_context_t;
+
+// --- Forward Declarations ---
+
+static wah_error_t wah_call_module(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
 
 // --- Helper Macros ---
 #define WAH_CHECK(expr) do { \
@@ -3219,7 +3225,7 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
 
     // If a start function is defined, call it.
     if (module->has_start_function) {
-        WAH_CHECK_GOTO(wah_call(exec_ctx, module, module->start_function_idx, NULL, 0, NULL), cleanup);
+        WAH_CHECK_GOTO(wah_call_module(exec_ctx, module, module->start_function_idx, NULL, 0, NULL), cleanup);
     }
 
     return WAH_OK;
@@ -4948,57 +4954,7 @@ cleanup:
     #pragma float_control(pop)
 #endif
 
-wah_error_t wah_call(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
-    WAH_ENSURE(func_idx < module->function_count, WAH_ERROR_UNKNOWN_SECTION);
-
-    const wah_func_type_t *func_type = &module->types[module->function_type_indices[func_idx]];
-    WAH_ENSURE(param_count == func_type->param_count, WAH_ERROR_VALIDATION_FAILED);
-
-    // Push initial params onto the value stack
-    for (uint32_t i = 0; i < param_count; ++i) {
-        WAH_ENSURE(exec_ctx->sp < exec_ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW); // Value stack overflow
-        exec_ctx->value_stack[exec_ctx->sp++] = params[i];
-    }
-
-    // Push the first frame. Locals offset is the current stack pointer before parameters.
-    WAH_CHECK(wah_push_frame(exec_ctx, func_idx, exec_ctx->sp - func_type->param_count));
-
-    // Reserve space for the function's own locals and initialize them to zero
-    uint32_t num_locals = exec_ctx->call_stack[0].code->local_count;
-    if (num_locals > 0) {
-        WAH_ENSURE(exec_ctx->sp + num_locals <= exec_ctx->value_stack_capacity, WAH_ERROR_OUT_OF_MEMORY);
-        memset(&exec_ctx->value_stack[exec_ctx->sp], 0, sizeof(wah_value_t) * num_locals);
-        exec_ctx->sp += num_locals;
-    }
-
-    // Run the main interpreter loop
-    WAH_CHECK(wah_run_interpreter(exec_ctx));
-
-    // After execution, handle results based on function return count
-    if (func_type->result_count == 0) {
-        // Zero return function - zeroize result for safety
-        if (result) {
-            memset(result, 0, sizeof(wah_value_t));
-        }
-        return WAH_OK;
-    } else if (func_type->result_count == 1) {
-        // Single return function - normal behavior
-        if (result && exec_ctx->sp > 0) {
-            *result = exec_ctx->value_stack[exec_ctx->sp - 1];
-        }
-        return WAH_OK;
-    } else {
-        // Multiple return function - return first value with special status
-        if (result && exec_ctx->sp >= func_type->result_count) {
-            *result = exec_ctx->value_stack[exec_ctx->sp - func_type->result_count];
-        } else if (result) {
-            memset(result, 0, sizeof(wah_value_t));
-        }
-        return WAH_OK_BUT_MULTI_RETURN;
-    }
-}
-
-wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *results, uint32_t max_results, uint32_t *actual_results) {
+static wah_error_t wah_call_module_multi(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *results, uint32_t max_results, uint32_t *actual_results) {
     WAH_ENSURE(func_idx < module->function_count, WAH_ERROR_UNKNOWN_SECTION);
 
     const wah_func_type_t *func_type = &module->types[module->function_type_indices[func_idx]];
@@ -5026,9 +4982,12 @@ wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, const wah_module_t *mod
     WAH_CHECK(wah_run_interpreter(exec_ctx));
 
     // After execution, copy multiple results from the stack
-    if (results && func_type->result_count > 0) {
-        // Check if the stack has enough values to pop
-        if (exec_ctx->sp >= func_type->result_count) {
+    if (results) {
+        if (func_type->result_count == 0) {
+            // Zero return function - zeroize results for safety
+            memset(results, 0, sizeof(wah_value_t) * max_results);
+            *actual_results = 0;
+        } else if (exec_ctx->sp >= func_type->result_count) {
             // Copy results in reverse order (last result is on top of stack)
             for (uint32_t i = 0; i < func_type->result_count; ++i) {
                 results[i] = exec_ctx->value_stack[exec_ctx->sp - func_type->result_count + i];
@@ -5042,6 +5001,41 @@ wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, const wah_module_t *mod
     }
 
     return WAH_OK;
+}
+
+static wah_error_t wah_call_module(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
+    if (!result) {
+        // Case where even a single return is not needed (void function)
+        uint32_t dummy;
+        return wah_call_module_multi(exec_ctx, module, func_idx, params, param_count, NULL, 0, &dummy);
+    }
+
+    uint32_t actual_results;
+    wah_error_t err = wah_call_module_multi(exec_ctx, module, func_idx, params, param_count, result, 1, &actual_results);
+
+    // Return WAH_OK_BUT_MULTI_RETURN for result_count > 1 (compatibility)
+    if (err == WAH_OK && actual_results > 1) {
+        err = WAH_OK_BUT_MULTI_RETURN;
+    }
+
+    return err;
+}
+
+wah_error_t wah_call(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
+    WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(exec_ctx->module, WAH_ERROR_MISUSE);
+
+    // func_idx is always uint32_t for functions (wah_entry_id_t values for functions always fit in uint32_t)
+    return wah_call_module(exec_ctx, exec_ctx->module, (uint32_t)func_idx, params, param_count, result);
+}
+
+wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *results, uint32_t max_results, uint32_t *actual_results) {
+    WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(exec_ctx->module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(actual_results, WAH_ERROR_MISUSE);
+
+    // func_idx is always uint32_t for functions (wah_entry_id_t values for functions always fit in uint32_t)
+    return wah_call_module_multi(exec_ctx, exec_ctx->module, (uint32_t)func_idx, params, param_count, results, max_results, actual_results);
 }
 
 // --- Module Cleanup Implementation ---

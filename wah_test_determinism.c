@@ -99,7 +99,7 @@ static wah_error_t test_f32_store_canonicalization() {
 
     wah_value_t param;
     param.f32 = NON_CANONICAL_F32_NAN;
-    err = wah_call(&exec_ctx, &module, 0, &param, 1, &result); // Call "test_store" (func_idx 0)
+    err = wah_call(&exec_ctx, 0, &param, 1, &result); // Call "test_store" (func_idx 0)
     if (err != WAH_OK) {
         fprintf(stderr, "Error calling test_store: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&exec_ctx);
@@ -142,7 +142,7 @@ static wah_error_t test_f32_const_canonicalization() {
         return err;
     }
 
-    err = wah_call(&exec_ctx, &module, 1, NULL, 0, &result); // Call "test_const" (func_idx 1)
+    err = wah_call(&exec_ctx, 1, NULL, 0, &result); // Call "test_const" (func_idx 1)
     if (err != WAH_OK) {
         fprintf(stderr, "Error calling test_const: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&exec_ctx);
@@ -187,7 +187,7 @@ static wah_error_t test_f32_reinterpret_nan_canonicalization() {
 
     wah_value_t param;
     param.i32 = NON_CANONICAL_F32_NAN_BITS; // Pass non-canonical NaN bit pattern as i32
-    err = wah_call(&exec_ctx, &module, 2, &param, 1, &result); // Call "test_f32_reinterpret_nan" (func_idx 2)
+    err = wah_call(&exec_ctx, 2, &param, 1, &result); // Call "test_f32_reinterpret_nan" (func_idx 2)
     if (err != WAH_OK) {
         fprintf(stderr, "Error calling test_f32_reinterpret_nan: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&exec_ctx);
@@ -233,7 +233,7 @@ static wah_error_t test_f64_add_nan_canonicalization() {
     wah_value_t params_f64[2];
     params_f64[0].i64 = (int64_t)NON_CANONICAL_F64_NAN_BITS_1;
     params_f64[1].i64 = (int64_t)NON_CANONICAL_F64_NAN_BITS_2;
-    err = wah_call(&exec_ctx, &module, 3, params_f64, 2, &result); // Call "test_f64_add_nan" (func_idx 3)
+    err = wah_call(&exec_ctx, 3, params_f64, 2, &result); // Call "test_f64_add_nan" (func_idx 3)
     if (err != WAH_OK) {
         fprintf(stderr, "Error calling test_f64_add_nan: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&exec_ctx);
@@ -279,7 +279,7 @@ static wah_error_t test_f32_add_nan_canonicalization() {
     wah_value_t params_f32[2];
     params_f32[0].f32 = NON_CANONICAL_F32_NAN;
     params_f32[1].f32 = NON_CANONICAL_F32_NAN;
-    err = wah_call(&exec_ctx, &module, 4, params_f32, 2, &result); // Call "test_f32_add_nan" (func_idx 4)
+    err = wah_call(&exec_ctx, 4, params_f32, 2, &result); // Call "test_f32_add_nan" (func_idx 4)
     if (err != WAH_OK) {
         fprintf(stderr, "Error calling test_f32_add_nan: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&exec_ctx);
@@ -324,7 +324,7 @@ static wah_error_t test_f32_sqrt_nan_canonicalization() {
 
     wah_value_t param;
     param.f32 = NON_CANONICAL_F32_NAN;
-    err = wah_call(&exec_ctx, &module, 5, &param, 1, &result); // Call "test_f32_sqrt_nan" (func_idx 5)
+    err = wah_call(&exec_ctx, 5, &param, 1, &result); // Call "test_f32_sqrt_nan" (func_idx 5)
     if (err != WAH_OK) {
         fprintf(stderr, "Error calling test_f32_sqrt_nan: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&exec_ctx);
@@ -370,7 +370,7 @@ static wah_error_t test_f64_min_nan_canonicalization() {
     params_f64_min[0].i64 = (int64_t)NON_CANONICAL_F64_NAN_BITS_1;
     params_f64_min[1].i64 = (int64_t)NON_CANONICAL_F64_NAN_BITS_2;
     wah_value_t result;
-    err = wah_call(&exec_ctx, &module, 6, params_f64_min, 2, &result); // Call "test_f64_min_nan" (func_idx 6)
+    err = wah_call(&exec_ctx, 6, params_f64_min, 2, &result); // Call "test_f64_min_nan" (func_idx 6)
     if (err != WAH_OK) {
         fprintf(stderr, "Error calling test_f64_min_nan: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&exec_ctx);
@@ -419,7 +419,7 @@ static wah_error_t test_f64_promote_f32_nan_canonicalization() {
     param.i32 = (int32_t)0x7f800001; // Signaling NaN with payload 1
 
     wah_value_t result;
-    err = wah_call(&exec_ctx, &module, 7, &param, 1, &result); // Call func_idx 7
+    err = wah_call(&exec_ctx, 7, &param, 1, &result); // Call func_idx 7
     if (err != WAH_OK) {
         fprintf(stderr, "Error calling test_f64_promote_f32_nan_canonicalization: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&exec_ctx);
@@ -466,7 +466,7 @@ static wah_error_t test_f32_demote_f64_nan_canonicalization() {
     param.i64 = (int64_t)0x7ff0000000000001ULL; // Signaling NaN with payload 1
 
     wah_value_t result;
-    err = wah_call(&exec_ctx, &module, 8, &param, 1, &result); // Call func_idx 8
+    err = wah_call(&exec_ctx, 8, &param, 1, &result); // Call func_idx 8
     if (err != WAH_OK) {
         fprintf(stderr, "Error calling test_f32_demote_f64_nan_canonicalization: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&exec_ctx);

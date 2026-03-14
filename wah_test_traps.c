@@ -32,7 +32,7 @@ int main() {
 
     params[0].i32 = 42;
     params[1].i32 = 0; // Division by zero
-    err = wah_call(&ctx, &module, 0, params, 2, &result);
+    err = wah_call(&ctx, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
         printf("- Correctly trapped on division by zero (%s)\n", wah_strerror(err));
     } else {
@@ -64,7 +64,7 @@ int main() {
 
     params[0].i32 = INT32_MIN;
     params[1].i32 = -1; // This causes overflow: INT_MIN / -1 = +2^31 (unrepresentable)
-    err = wah_call(&ctx, &module, 0, params, 2, &result);
+    err = wah_call(&ctx, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
         printf("- Correctly trapped on signed integer overflow (%s)\n", wah_strerror(err));
     } else {
@@ -96,7 +96,7 @@ int main() {
 
     params[0].i32 = 100;
     params[1].i32 = 0; // Division by zero
-    err = wah_call(&ctx, &module, 0, params, 2, &result);
+    err = wah_call(&ctx, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
         printf("- Correctly trapped on unsigned division by zero (%s)\n", wah_strerror(err));
     } else {
@@ -128,7 +128,7 @@ int main() {
 
     params[0].i32 = 7;
     params[1].i32 = 0; // Division by zero
-    err = wah_call(&ctx, &module, 0, params, 2, &result);
+    err = wah_call(&ctx, 0, params, 2, &result);
     if (err == WAH_ERROR_TRAP) {
         printf("- Correctly trapped on remainder by zero (%s)\n", wah_strerror(err));
     } else {
@@ -160,7 +160,7 @@ int main() {
 
     params[0].i32 = 20;
     params[1].i32 = 4; // Valid division: 20 / 4 = 5
-    err = wah_call(&ctx, &module, 0, params, 2, &result);
+    err = wah_call(&ctx, 0, params, 2, &result);
     if (err == WAH_OK) {
         printf("- Valid division works: 20 / 4 = %d\n", result.i32);
     } else {
@@ -192,7 +192,7 @@ int main() {
 
     params[0].i32 = INT32_MIN;
     params[1].i32 = -1; // This should return 0, not trap
-    err = wah_call(&ctx, &module, 0, params, 2, &result);
+    err = wah_call(&ctx, 0, params, 2, &result);
     if (err == WAH_OK && result.i32 == 0) {
         printf("- INT_MIN %% -1 correctly returns 0 (no trap)\n");
     } else {

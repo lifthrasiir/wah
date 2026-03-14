@@ -27,7 +27,7 @@ static int test_ref_null_funcref() {
         return 1;
     }
 
-    err = wah_call(&exec_ctx, &module, 0, NULL, 0, &result);
+    err = wah_call(&exec_ctx, 0, NULL, 0, &result);
     if (err != WAH_OK) {
         printf("  - FAILED: Could not call function: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&exec_ctx);
@@ -70,7 +70,7 @@ static int test_ref_null_externref() {
         return 1;
     }
 
-    err = wah_call(&exec_ctx, &module, 0, NULL, 0, &result);
+    err = wah_call(&exec_ctx, 0, NULL, 0, &result);
     if (err != WAH_OK) {
         printf("  - FAILED: Could not call function: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&exec_ctx);
@@ -113,7 +113,7 @@ static int test_ref_func() {
         return 1;
     }
 
-    err = wah_call(&exec_ctx, &module, 0, NULL, 0, &result);
+    err = wah_call(&exec_ctx, 0, NULL, 0, &result);
     if (err != WAH_OK) {
         printf("  - FAILED: Could not call function: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&exec_ctx);
@@ -156,7 +156,7 @@ static int test_ref_is_null() {
         return 1;
     }
 
-    err = wah_call(&exec_ctx, &module, 0, NULL, 0, &result);
+    err = wah_call(&exec_ctx, 0, NULL, 0, &result);
     if (err != WAH_OK) {
         printf("  - FAILED: Could not call function: %s\n", wah_strerror(err));
         wah_exec_context_destroy(&exec_ctx);

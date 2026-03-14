@@ -74,16 +74,16 @@ void wah_test_data_and_bulk_memory_ops() {
     params[0].i32 = dest_offset_1; // dest_offset
     params[1].i32 = src_offset_1;  // src_offset
     params[2].i32 = size_1;        // size
-    err = wah_call(&ctx, &module, 0, params, 3, NULL); // Call init_mem_data0 (func 0)
+    err = wah_call(&ctx, 0, params, 3, NULL); // Call init_mem_data0 (func 0)
     assert(err == WAH_OK && "Failed to call init_mem_data0 with src_offset 0");
     printf("memory.init successful. Initialized data segment 0 at memory offset %u from data segment offset %u.\n", dest_offset_1, src_offset_1);
 
     // Verify memory contents after memory.init
     params[0].i32 = dest_offset_1;
-    err = wah_call(&ctx, &module, 3, params, 1, &result); // Call get_byte (func 3)
+    err = wah_call(&ctx, 3, params, 1, &result); // Call get_byte (func 3)
     assert(err == WAH_OK && result.i32 == 0x01 && "Memory byte at offset 100 should be 0x01");
     params[0].i32 = dest_offset_1 + 1;
-    err = wah_call(&ctx, &module, 3, params, 1, &result);
+    err = wah_call(&ctx, 3, params, 1, &result);
     assert(err == WAH_OK && result.i32 == 0x02 && "Memory byte at offset 101 should be 0x02");
     printf("memory.init with src_offset 0 verification successful.\n");
 
@@ -94,16 +94,16 @@ void wah_test_data_and_bulk_memory_ops() {
     params[0].i32 = dest_offset_2; // dest_offset
     params[1].i32 = src_offset_2;  // src_offset
     params[2].i32 = size_2;        // size
-    err = wah_call(&ctx, &module, 1, params, 3, NULL); // Call init_mem_data1 (func 1)
+    err = wah_call(&ctx, 1, params, 3, NULL); // Call init_mem_data1 (func 1)
     assert(err == WAH_OK && "Failed to call init_mem_data1 with non-zero src_offset");
     printf("memory.init successful. Initialized data segment 1 at memory offset %u from data segment offset %u.\n", dest_offset_2, src_offset_2);
 
     // Verify memory contents after memory.init with non-zero src_offset
     params[0].i32 = dest_offset_2;
-    err = wah_call(&ctx, &module, 3, params, 1, &result); // Call get_byte (func 3)
+    err = wah_call(&ctx, 3, params, 1, &result); // Call get_byte (func 3)
     assert(err == WAH_OK && result.i32 == 0x06 && "Memory byte at offset 110 should be 0x06");
     params[0].i32 = dest_offset_2 + 1;
-    err = wah_call(&ctx, &module, 3, params, 1, &result);
+    err = wah_call(&ctx, 3, params, 1, &result);
     assert(err == WAH_OK && result.i32 == 0x07 && "Memory byte at offset 111 should be 0x07");
     printf("memory.init with non-zero src_offset verification successful.\n");
 
@@ -114,16 +114,16 @@ void wah_test_data_and_bulk_memory_ops() {
     params[0].i32 = copy_dest; // dest
     params[1].i32 = copy_src; // src
     params[2].i32 = copy_size; // size
-    err = wah_call(&ctx, &module, 2, params, 3, NULL); // Call copy_mem (func 2)
+    err = wah_call(&ctx, 2, params, 3, NULL); // Call copy_mem (func 2)
     assert(err == WAH_OK && "Failed to call copy_mem");
     printf("memory.copy successful. Copied %u bytes from %u to %u.\n", copy_size, copy_src, copy_dest);
 
     // Verify memory contents after memory.copy
     params[0].i32 = copy_dest;
-    err = wah_call(&ctx, &module, 3, params, 1, &result); // Call get_byte (func 3)
+    err = wah_call(&ctx, 3, params, 1, &result); // Call get_byte (func 3)
     assert(err == WAH_OK && result.i32 == 0x01 && "Memory byte at offset 200 should be 0x01");
     params[0].i32 = copy_dest + 1;
-    err = wah_call(&ctx, &module, 3, params, 1, &result);
+    err = wah_call(&ctx, 3, params, 1, &result);
     assert(err == WAH_OK && result.i32 == 0x02 && "Memory byte at offset 201 should be 0x02");
     printf("memory.copy verification successful.\n");
 
@@ -131,7 +131,7 @@ void wah_test_data_and_bulk_memory_ops() {
     params[0].i32 = WAH_WASM_PAGE_SIZE - 2; // dest_offset (2 bytes before end)
     params[1].i32 = 0; // src_offset
     params[2].i32 = 4; // size (will go out of bounds)
-    err = wah_call(&ctx, &module, 0, params, 3, NULL); // Call init_mem_data0 (func 0)
+    err = wah_call(&ctx, 0, params, 3, NULL); // Call init_mem_data0 (func 0)
     assert(err == WAH_ERROR_MEMORY_OUT_OF_BOUNDS && "Expected memory out-of-bounds error for memory.init (dest)");
     printf("memory.init out-of-bounds (dest) test successful.\n");
 
@@ -139,7 +139,7 @@ void wah_test_data_and_bulk_memory_ops() {
     params[0].i32 = 0; // dest_offset
     params[1].i32 = 3; // src_offset (data segment 0 has 4 bytes, 3 + 2 = 5 > 4)
     params[2].i32 = 2; // size
-    err = wah_call(&ctx, &module, 0, params, 3, NULL); // Call init_mem_data0 (func 0)
+    err = wah_call(&ctx, 0, params, 3, NULL); // Call init_mem_data0 (func 0)
     assert(err == WAH_ERROR_TRAP && "Expected trap for memory.init (src_offset out of bounds)");
     printf("memory.init out-of-bounds (src) test successful.\n");
 
@@ -147,7 +147,7 @@ void wah_test_data_and_bulk_memory_ops() {
     params[0].i32 = WAH_WASM_PAGE_SIZE - 2; // dest
     params[1].i32 = 0; // src
     params[2].i32 = 4; // size
-    err = wah_call(&ctx, &module, 2, params, 3, NULL); // Call copy_mem (func 2)
+    err = wah_call(&ctx, 2, params, 3, NULL); // Call copy_mem (func 2)
     assert(err == WAH_ERROR_MEMORY_OUT_OF_BOUNDS && "Expected memory out-of-bounds error for memory.copy (dest)");
     printf("memory.copy out-of-bounds (dest) test successful.\n");
 
@@ -155,7 +155,7 @@ void wah_test_data_and_bulk_memory_ops() {
     params[0].i32 = 0; // dest
     params[1].i32 = WAH_WASM_PAGE_SIZE - 2; // src
     params[2].i32 = 4; // size
-    err = wah_call(&ctx, &module, 2, params, 3, NULL); // Call copy_mem (func 2)
+    err = wah_call(&ctx, 2, params, 3, NULL); // Call copy_mem (func 2)
     assert(err == WAH_ERROR_MEMORY_OUT_OF_BOUNDS && "Expected memory out-of-bounds error for memory.copy (src)");
     printf("memory.copy out-of-bounds (src) test successful.\n");
 
@@ -207,7 +207,7 @@ int main() {
     int32_t test_value = 0xDEADBEEF;
     params[0].i32 = test_address;
     params[1].i32 = test_value;
-    err = wah_call(&ctx, &module, 0, params, 2, NULL); // Call store_val (func 0)
+    err = wah_call(&ctx, 0, params, 2, NULL); // Call store_val (func 0)
     assert(err == WAH_OK && "Failed to call store_val");
     printf("Stored 0x%X at address %u.\n", test_value, test_address);
 
@@ -218,7 +218,7 @@ int main() {
 
     // Test 4: Load the value
     params[0].i32 = test_address;
-    err = wah_call(&ctx, &module, 1, params, 1, &result); // Call load_val (func 1)
+    err = wah_call(&ctx, 1, params, 1, &result); // Call load_val (func 1)
     assert(err == WAH_OK && "Failed to call load_val");
     assert(result.i32 == test_value && "Loaded value does not match stored value");
     printf("Loaded 0x%X from address %u. Verification successful.\n", result.i32, test_address);
@@ -227,14 +227,14 @@ int main() {
     uint32_t oob_address_store = WAH_WASM_PAGE_SIZE - 2; // 2 bytes before end, trying to store 4 bytes
     params[0].i32 = oob_address_store;
     params[1].i32 = 0x12345678;
-    err = wah_call(&ctx, &module, 0, params, 2, NULL);
+    err = wah_call(&ctx, 0, params, 2, NULL);
     assert(err == WAH_ERROR_MEMORY_OUT_OF_BOUNDS && "Expected memory out-of-bounds error for store");
     printf("Memory out-of-bounds store test successful.\n");
 
     // Test 6: Memory out-of-bounds load
     uint32_t oob_address_load = WAH_WASM_PAGE_SIZE - 2; // 2 bytes before end, trying to load 4 bytes
     params[0].i32 = oob_address_load;
-    err = wah_call(&ctx, &module, 1, params, 1, &result);
+    err = wah_call(&ctx, 1, params, 1, &result);
     assert(err == WAH_ERROR_MEMORY_OUT_OF_BOUNDS && "Expected memory out-of-bounds error for load");
     printf("Memory out-of-bounds load test successful.\n");
 
@@ -253,13 +253,13 @@ int main() {
     // Store the value using the overflowed address
     params[0].i32 = base_addr_overflow;
     params[1].i32 = test_value_overflow;
-    err = wah_call(&ctx, &module, 0, params, 2, NULL); // Call store_val (func 0)
+    err = wah_call(&ctx, 0, params, 2, NULL); // Call store_val (func 0)
     assert(err == WAH_ERROR_MEMORY_OUT_OF_BOUNDS && "Expected memory out-of-bounds error for store with overflow address");
     printf("Memory out-of-bounds store test with overflow address successful.\n");
 
     // Load the value using the overflowed address
     params[0].i32 = base_addr_overflow;
-    err = wah_call(&ctx, &module, 1, params, 1, &result); // Call load_val (func 1)
+    err = wah_call(&ctx, 1, params, 1, &result); // Call load_val (func 1)
     assert(err == WAH_ERROR_MEMORY_OUT_OF_BOUNDS && "Expected memory out-of-bounds error for load with overflow address");
     printf("Memory out-of-bounds load test with overflow address successful.\n");
 
@@ -306,28 +306,28 @@ int main() {
     assert(ctx.memory_size == WAH_WASM_PAGE_SIZE && "Memory size should be 1 page for ops");
 
     // Test 10: memory.size - initial
-    err = wah_call(&ctx, &module, 0, NULL, 0, &result); // Call get_memory_size (func 0)
+    err = wah_call(&ctx, 0, NULL, 0, &result); // Call get_memory_size (func 0)
     assert(err == WAH_OK && "Failed to call get_memory_size");
     assert(result.i32 == 1 && "Initial memory size should be 1 page");
     printf("Initial memory size: %d pages. Test successful.\n", result.i32);
 
     // Test 11: memory.grow - success
     params[0].i32 = 1; // Grow by 1 page
-    err = wah_call(&ctx, &module, 1, params, 1, &result); // Call grow_memory (func 1)
+    err = wah_call(&ctx, 1, params, 1, &result); // Call grow_memory (func 1)
     assert(err == WAH_OK && "Failed to call grow_memory");
     assert(result.i32 == 1 && "grow_memory should return old size (1)");
     assert(ctx.memory_size == (2 * WAH_WASM_PAGE_SIZE) && "Memory size should be 2 pages");
     printf("Memory grown by 1 page. New size: %d pages. Test successful.\n", ctx.memory_size / WAH_WASM_PAGE_SIZE);
 
     // Test 12: memory.size - after grow
-    err = wah_call(&ctx, &module, 0, NULL, 0, &result); // Call get_memory_size (func 0)
+    err = wah_call(&ctx, 0, NULL, 0, &result); // Call get_memory_size (func 0)
     assert(err == WAH_OK && "Failed to call get_memory_size after grow");
     assert(result.i32 == 2 && "Memory size should be 2 pages after grow");
     printf("Memory size after grow: %d pages. Test successful.\n", result.i32);
 
     // Test 13: memory.grow - failure (exceed max_pages)
     params[0].i32 = 1; // Grow by 1 page (total 3, max 2)
-    err = wah_call(&ctx, &module, 1, params, 1, &result); // Call grow_memory (func 1)
+    err = wah_call(&ctx, 1, params, 1, &result); // Call grow_memory (func 1)
     assert(err == WAH_OK && "Failed to call grow_memory for failure test"); // Should return -1, not trap
     assert(result.i32 == -1 && "grow_memory should return -1 on failure");
     assert(ctx.memory_size == (2 * WAH_WASM_PAGE_SIZE) && "Memory size should remain 2 pages");
@@ -340,7 +340,7 @@ int main() {
     params[0].i32 = fill_offset; // offset
     params[1].i32 = fill_value;  // value
     params[2].i32 = fill_size;   // size
-    err = wah_call(&ctx, &module, 2, params, 3, NULL); // Call fill_memory (func 2)
+    err = wah_call(&ctx, 2, params, 3, NULL); // Call fill_memory (func 2)
     assert(err == WAH_OK && "Failed to call fill_memory");
     printf("Memory fill basic test successful. Filled %u bytes from offset %u with 0x%02X.\n", fill_size, fill_offset, fill_value);
 
@@ -356,7 +356,7 @@ int main() {
     params[0].i32 = oob_fill_offset;
     params[1].i32 = 0xBB;
     params[2].i32 = oob_fill_size;
-    err = wah_call(&ctx, &module, 2, params, 3, NULL);
+    err = wah_call(&ctx, 2, params, 3, NULL);
     assert(err == WAH_ERROR_MEMORY_OUT_OF_BOUNDS && "Expected memory out-of-bounds error for fill");
     printf("Memory fill out-of-bounds test successful.\n");
 

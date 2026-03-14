@@ -31,7 +31,7 @@ int run_test_##T(const char* test_name, const uint8_t* wasm_bytecode, size_t byt
         return 1; \
     } \
     \
-    err = wah_call(&ctx, &module, 0, params, param_count, &result); \
+    err = wah_call(&ctx, 0, params, param_count, &result); \
     if (expect_trap) { \
         if (err == WAH_ERROR_TRAP) { \
             printf("  %s: PASSED. Expected trap.\n", test_name); \
