@@ -8,7 +8,7 @@ if "%1" == "-g" (
 set run=0
 for %%i in (wah_test_%1*.c) do (
     echo ## Running %%i...
-    clang -W -Wall -Wextra -march=native %cflags% %%i -o %%~ni && %%~ni
+    clang -W -Wall -Wextra -march=native %cflags% %%i -o %%~ni.exe && %%~ni.exe && del %%~ni.exe
     if !errorlevel! neq 0 (
         echo.
         echo ## %%i failed.
