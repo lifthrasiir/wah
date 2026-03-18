@@ -1528,9 +1528,12 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
 
     module->type_count = count;
     WAH_MALLOC_ARRAY(module->types, count);
-    memset(module->types, 0, sizeof(wah_func_type_t) * count);
 
     for (uint32_t i = 0; i < count; ++i) {
+        // Initialize pointer fields for safe cleanup on parsing failure
+        module->types[i].param_types = NULL;
+        module->types[i].result_types = NULL;
+
         WAH_ENSURE(**ptr == 0x60, WAH_ERROR_VALIDATION_FAILED);
         (*ptr)++;
 
@@ -2070,7 +2073,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             frame->stack_height = vctx->current_stack_depth; // Store current stack height
 
             wah_func_type_t* bt = &frame->block_type;
-            memset(bt, 0, sizeof(wah_func_type_t));
+            *bt = (wah_func_type_t){0};
 
             if (block_type_val < 0) { // Value type
                 wah_type_t result_type = 0; // Initialize to a default invalid value
@@ -2343,8 +2346,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
 static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     wah_error_t err = WAH_OK;
-    wah_validation_context_t vctx;
-    memset(&vctx, 0, sizeof(wah_validation_context_t));
+    wah_validation_context_t vctx = {0};
 
     uint32_t count;
     // A code body entry requires at least 3 bytes (body_size, num_locals, END opcode).
@@ -2352,9 +2354,12 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
     WAH_ENSURE_GOTO(count == module->function_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
     module->code_count = count;
     WAH_MALLOC_ARRAY_GOTO(module->code_bodies, count, cleanup);
-    memset(module->code_bodies, 0, sizeof(wah_code_body_t) * count);
 
     for (uint32_t i = 0; i < count; ++i) {
+        // Initialize pointer fields for safe cleanup on parsing failure
+        module->code_bodies[i].local_types = NULL;
+        module->code_bodies[i].parsed_code = (wah_parsed_code_t){0};
+
         uint32_t body_size;
         WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &body_size), cleanup);
 
@@ -2395,11 +2400,12 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         // --- Validation Pass for Code Body ---
         const wah_func_type_t *func_type = &module->types[module->function_type_indices[i]];
 
-        memset(&vctx, 0, sizeof(wah_validation_context_t));
-        vctx.is_unreachable = false; // Functions start in a reachable state
-        vctx.module = module;
-        vctx.func_type = func_type;
-        vctx.total_locals = func_type->param_count + module->code_bodies[i].local_count;
+        vctx = (wah_validation_context_t){
+            .is_unreachable = false, // Functions start in a reachable state
+            .module = module,
+            .func_type = func_type,
+            .total_locals = func_type->param_count + module->code_bodies[i].local_count,
+        };
 
         const uint8_t *code_ptr_validation = module->code_bodies[i].code;
         const uint8_t *validation_end = code_ptr_validation + module->code_bodies[i].code_size;
@@ -2466,7 +2472,6 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
 
     module->global_count = count;
     WAH_MALLOC_ARRAY(module->globals, count);
-    memset(module->globals, 0, sizeof(wah_global_t) * count);
 
     for (uint32_t i = 0; i < count; ++i) {
         wah_type_t global_declared_type;
@@ -2528,7 +2533,6 @@ static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *
     module->memory_count = count;
     if (count > 0) {
         WAH_MALLOC_ARRAY(module->memories, count);
-        memset(module->memories, 0, sizeof(wah_memory_type_t) * count);
 
         for (uint32_t i = 0; i < count; ++i) {
             WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
@@ -2554,7 +2558,6 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
     module->table_count = count;
     if (count > 0) {
         WAH_MALLOC_ARRAY(module->tables, count);
-        memset(module->tables, 0, sizeof(wah_table_type_t) * count);
 
         for (uint32_t i = 0; i < count; ++i) {
             wah_type_t elem_type;
@@ -2598,7 +2601,6 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
     if (count == 0) return WAH_OK;
 
     WAH_MALLOC_ARRAY_GOTO(module->func_imports, count, cleanup);
-    memset(module->func_imports, 0, count * sizeof(wah_func_import_t));
 
     for (uint32_t i = 0; i < count; ++i) {
         // module_name
@@ -2673,7 +2675,6 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
     module->export_count = count;
     module->capacity_exports = count;  // For parsed modules, capacity equals count
     WAH_MALLOC_ARRAY_GOTO(module->exports, count, cleanup);
-    memset(module->exports, 0, sizeof(wah_export_t) * count);
 
     for (uint32_t i = 0; i < count; ++i) {
         wah_export_t *export_entry = &module->exports[i];
@@ -2763,10 +2764,10 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
     module->element_segment_count = count;
     if (count > 0) {
         WAH_MALLOC_ARRAY(module->element_segments, count);
-        memset(module->element_segments, 0, sizeof(wah_element_segment_t) * count);
 
         for (uint32_t i = 0; i < count; ++i) {
             wah_element_segment_t *segment = &module->element_segments[i];
+            segment->func_indices = NULL; // Initialize to NULL for safe cleanup
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->table_idx));
             WAH_ENSURE(segment->table_idx == 0, WAH_ERROR_VALIDATION_FAILED); // For now, only table 0 is supported
@@ -2816,10 +2817,10 @@ static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *se
 
     if (count > 0) {
         WAH_MALLOC_ARRAY(module->data_segments, count);
-        memset(module->data_segments, 0, sizeof(wah_data_segment_t) * count);
 
         for (uint32_t i = 0; i < count; ++i) {
             wah_data_segment_t *segment = &module->data_segments[i];
+            segment->data = NULL; // Initialize to NULL for safe cleanup
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->flags));
 
@@ -2874,7 +2875,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
     (void)module; (void)func_idx; // Suppress unused parameter warnings
 
     wah_error_t err = WAH_OK;
-    memset(parsed_code, 0, sizeof(wah_parsed_code_t));
+    *parsed_code = (wah_parsed_code_t){0};
 
     typedef struct { wah_opcode_t opcode; uint32_t target_idx; } wah_control_frame_t;
 
@@ -3361,7 +3362,7 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
     wah_error_t err = WAH_OK;
     WAH_ENSURE(wasm_binary && module && binary_size >= 8, WAH_ERROR_UNEXPECTED_EOF);
 
-    memset(module, 0, sizeof(wah_module_t)); // Initialize module struct
+    *module = (wah_module_t){0}; // Initialize module struct
 
     const uint8_t *ptr = wasm_binary;
     const uint8_t *end = wasm_binary + binary_size;
@@ -3437,13 +3438,8 @@ cleanup_parse:
 // --- Interpreter Implementation ---
 
 wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_module_t *module) {
-    memset(exec_ctx, 0, sizeof(wah_exec_context_t));
+    *exec_ctx = (wah_exec_context_t){0};
     wah_error_t err = WAH_OK;
-
-    // Initialize linkage fields
-    exec_ctx->linked_modules = NULL;
-    exec_ctx->linked_module_count = 0;
-    exec_ctx->linked_module_capacity = 0;
     exec_ctx->is_instantiated = false;
 
     exec_ctx->value_stack_capacity = WAH_DEFAULT_VALUE_STACK_SIZE;
@@ -3517,7 +3513,10 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
         exec_ctx->function_table_count = table_size;
         if (table_size > 0) {
             WAH_MALLOC_ARRAY_GOTO(exec_ctx->function_table, table_size, cleanup);
-            memset(exec_ctx->function_table, 0, table_size * sizeof(wah_function_t));
+            // Initialize import slots to NULL (host functions will be filled in later)
+            if (import_count > 0) {
+                memset(exec_ctx->function_table, 0, import_count * sizeof(wah_function_t));
+            }
             // Copy local/host functions at offset import_count
             for (uint32_t i = 0; i < module->total_function_count; i++) {
                 exec_ctx->function_table[import_count + i] = module->functions[i];
@@ -4457,16 +4456,14 @@ WAH_RUN(V128_LOAD64_SPLAT) V128_LOAD_SPLAT_OP(64)
 WAH_RUN(V128_LOAD32_ZERO) {
     V128_LOAD_COMMON(4);
     wah_v128_t *v = &ctx->value_stack[ctx->sp++].v128;
-    memset(v, 0, sizeof(wah_v128_t)); // Zero out the entire vector
-    v->u32[0] = wah_read_u32_le(ctx->memory_base + effective_addr);
+    *v = (wah_v128_t){.u64 = {wah_read_u32_le(ctx->memory_base + effective_addr), 0}};
     WAH_NEXT();
 }
 
 WAH_RUN(V128_LOAD64_ZERO) {
     V128_LOAD_COMMON(8);
     wah_v128_t *v = &ctx->value_stack[ctx->sp++].v128;
-    memset(v, 0, sizeof(wah_v128_t)); // Zero out the entire vector
-    v->u64[0] = wah_read_u64_le(ctx->memory_base + effective_addr);
+    *v = (wah_v128_t){.u64 = {wah_read_u64_le(ctx->memory_base + effective_addr), 0}};
     WAH_NEXT();
 }
 
@@ -5563,18 +5560,17 @@ void wah_free_module(wah_module_t *module) {
 wah_error_t wah_new_module(wah_module_t *mod) {
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
 
-    memset(mod, 0, sizeof(wah_module_t));
+    *mod = (wah_module_t){
+        .function_capacity = 16,
+        .total_function_count = 0,
+        .capacity_exports = 16,
+    };
 
     // Allocate initial unified functions[] array (all host functions for a new module)
-    mod->function_capacity = 16;
     WAH_MALLOC_ARRAY(mod->functions, mod->function_capacity);
-    memset(mod->functions, 0, mod->function_capacity * sizeof(wah_function_t));
-    mod->total_function_count = 0;
 
     // Allocate initial export array
-    mod->capacity_exports = 16;  // Start with capacity for 16 exports
     WAH_MALLOC_ARRAY(mod->exports, mod->capacity_exports);
-    memset(mod->exports, 0, mod->capacity_exports * sizeof(struct wah_export_s));
 
     return WAH_OK;
 }
@@ -5603,19 +5599,12 @@ wah_error_t wah_module_export_funcv(wah_module_t *mod, const char *name, size_t 
         uint32_t new_capacity = mod->capacity_exports * 2;
         WAH_REALLOC_ARRAY_GOTO(mod->exports, new_capacity, cleanup);
         mod->capacity_exports = new_capacity;
-
-        // Initialize new entries
-        for (uint32_t i = mod->export_count; i < mod->capacity_exports; ++i) {
-            memset(&mod->exports[i], 0, sizeof(struct wah_export_s));
-        }
     }
 
     // Grow functions[] array if needed
     if (mod->total_function_count >= mod->function_capacity) {
         uint32_t new_capacity = mod->function_capacity * 2;
         WAH_REALLOC_ARRAY_GOTO(mod->functions, new_capacity, cleanup);
-        memset(&mod->functions[mod->function_capacity], 0,
-               (new_capacity - mod->function_capacity) * sizeof(wah_function_t));
         mod->function_capacity = new_capacity;
     }
 
