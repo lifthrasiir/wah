@@ -1014,6 +1014,17 @@ static inline bool wah_is_valid_utf8(const char *s, size_t len) {
     return true;
 }
 
+// Helper function to duplicate a string
+static inline char* wah_strdup(const char* s) {
+    if (!s) return NULL;
+    size_t len = strlen(s);
+    char* copy = (char*)malloc(len + 1);
+    if (copy) {
+        memcpy(copy, s, len + 1);
+    }
+    return copy;
+}
+
 // Helper to read a uint8_t from a byte array in little-endian format
 static inline uint8_t wah_read_u8_le(const uint8_t *ptr) {
     return ptr[0];
@@ -5609,7 +5620,7 @@ wah_error_t wah_module_export_funcv(wah_module_t *mod, const char *name, size_t 
     }
 
     // Duplicate name and type arrays
-    WAH_ENSURE_GOTO(name_copy = strdup(name), WAH_ERROR_OUT_OF_MEMORY, cleanup);
+    WAH_ENSURE_GOTO(name_copy = wah_strdup(name), WAH_ERROR_OUT_OF_MEMORY, cleanup);
 
     if (nparams > 0) {
         WAH_MALLOC_ARRAY_GOTO(param_types_copy, nparams, cleanup);
@@ -5852,9 +5863,8 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
     }
 
     // Duplicate module name
-    char *name_copy;
-    WAH_MALLOC_ARRAY(name_copy, strlen(name) + 1);
-    strcpy(name_copy, name);
+    char *name_copy = wah_strdup(name);
+    WAH_ENSURE(name_copy, WAH_ERROR_OUT_OF_MEMORY);
 
     // Add to linked modules
     ctx->linked_modules[ctx->linked_module_count].name = name_copy;
