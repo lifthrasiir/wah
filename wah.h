@@ -1286,8 +1286,9 @@ static inline uint64_t wah_rotr_u64(uint64_t n, uint64_t shift) {
 }
 
 // nearest (round to nearest, ties to even)
+// XXX: Clang doesn't support __builtin_roundeven(f) without recent enough -march, so we opt in for known archs
 static inline float wah_nearest_f32(float f) {
-#if WAH_HAS_BUILTIN(__builtin_roundevenf) && defined(__clang__)
+#if WAH_HAS_BUILTIN(__builtin_roundevenf) && defined(__clang__) && defined(__SSE4_1__)
     return __builtin_roundevenf(f);
 #else
     if (isnan(f) || isinf(f) || f == 0.0f) return f;
@@ -1298,7 +1299,7 @@ static inline float wah_nearest_f32(float f) {
 }
 
 static inline double wah_nearest_f64(double d) {
-#if WAH_HAS_BUILTIN(__builtin_roundeven) && defined(__clang__)
+#if WAH_HAS_BUILTIN(__builtin_roundeven) && defined(__clang__) && defined(__SSE4_1__)
     return __builtin_roundeven(d);
 #else
     if (isnan(d) || isinf(d) || d == 0.0) return d;
