@@ -23,6 +23,7 @@ typedef enum {
     WAH_ERROR_NOT_FOUND = -11,
     WAH_ERROR_MISUSE = -12,
     WAH_ERROR_BAD_SPEC = -13,
+    WAH_ERROR_IMPORT_NOT_FOUND = -14,
     WAH_OK_BUT_MULTI_RETURN = 1,
 } wah_error_t;
 
@@ -109,6 +110,14 @@ typedef struct {
     } u;
 } wah_entry_t;
 
+typedef struct wah_func_import_s {
+    char *module_name;
+    size_t module_name_len;
+    char *field_name;
+    size_t field_name_len;
+    uint32_t type_index;
+} wah_func_import_t;
+
 typedef struct wah_module_s {
     uint32_t type_count;
     uint32_t function_count;
@@ -140,6 +149,10 @@ typedef struct wah_module_s {
     uint32_t total_function_count; // function_count + number of host functions
     uint32_t function_capacity;    // allocated capacity of functions[]
     struct wah_function_s *functions; // unified function array
+
+    // Import section
+    uint32_t import_function_count;
+    wah_func_import_t *func_imports; // [0..import_function_count-1]
 
     // Dynamic export array growth
     uint32_t capacity_exports;  // Capacity for dynamic export array growth
@@ -173,6 +186,10 @@ typedef struct wah_exec_context_s {
     uint32_t linked_module_count;
     uint32_t linked_module_capacity;
     bool is_instantiated;
+
+    // Runtime dispatch table (global function index space: imports + locals + hosts)
+    struct wah_function_s *function_table;
+    uint32_t function_table_count;
 } wah_exec_context_t;
 
 // Convert error code to human-readable string
@@ -624,6 +641,10 @@ typedef struct wah_function_s {
     wah_finalize_t finalize;
     size_t nparams, nresults;
     wah_type_t *param_types, *result_types; // owned
+
+    // WASM function fields (only valid when is_host == false)
+    uint32_t local_idx;                    // local index within fn_module->code_bodies[]
+    const struct wah_module_s *fn_module;  // owning module (NULL means ctx->module)
 } wah_function_t;
 
 typedef struct wah_export_s {
@@ -662,7 +683,8 @@ typedef struct wah_call_frame_s {
     const uint8_t *bytecode_ip;  // Instruction pointer into the parsed bytecode
     const struct wah_code_body_s *code; // The function body being executed
     uint32_t locals_offset;      // Offset into the shared value_stack for this frame's locals
-    uint32_t func_idx;           // Index of the function being executed
+    uint32_t func_idx;           // Local index of the function being executed (debug)
+    uint32_t result_count;       // Number of return values (used by RETURN/END)
 } wah_call_frame_t;
 
 // The main context for the entire WebAssembly interpretation.
@@ -1701,9 +1723,16 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_CALL: {
             uint32_t func_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &func_idx));
-            WAH_ENSURE(func_idx < vctx->module->function_count, WAH_ERROR_VALIDATION_FAILED);
-            // Type checking for call
-            const wah_func_type_t *called_func_type = &vctx->module->types[vctx->module->function_type_indices[func_idx]];
+            uint32_t total_func_idx_count = vctx->module->function_count + vctx->module->import_function_count;
+            WAH_ENSURE(func_idx < total_func_idx_count, WAH_ERROR_VALIDATION_FAILED);
+            // Type checking for call (note that we don't yet have function_table!)
+            const wah_func_type_t *called_func_type;
+            if (func_idx < vctx->module->import_function_count) {
+                called_func_type = &vctx->module->types[vctx->module->func_imports[func_idx].type_index];
+            } else {
+                uint32_t local_idx = func_idx - vctx->module->import_function_count;
+                called_func_type = &vctx->module->types[vctx->module->function_type_indices[local_idx]];
+            }
             // Pop parameters from type stack
             for (int32_t j = called_func_type->param_count - 1; j >= 0; --j) {
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, called_func_type->param_types[j]));
@@ -2288,7 +2317,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             // Read function index from bytecode
             uint32_t func_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &func_idx));
-            WAH_ENSURE(func_idx < vctx->module->function_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(func_idx < vctx->module->function_count + vctx->module->import_function_count, WAH_ERROR_VALIDATION_FAILED);
             WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_FUNCREF));
             break;
         }
@@ -2547,7 +2576,79 @@ static wah_error_t wah_parse_custom_section(const uint8_t **ptr, const uint8_t *
 }
 
 static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
-    return wah_parse_unimplemented_section(ptr, section_end, module);
+    wah_error_t err = WAH_OK;
+    uint32_t count = 0;
+    uint32_t import_func_count = 0;
+
+    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 4));
+
+    if (count == 0) return WAH_OK;
+
+    WAH_MALLOC_ARRAY_GOTO(module->func_imports, count, cleanup);
+    memset(module->func_imports, 0, count * sizeof(wah_func_import_t));
+
+    for (uint32_t i = 0; i < count; ++i) {
+        // module_name
+        uint32_t module_name_len;
+        WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &module_name_len), cleanup);
+        WAH_ENSURE_GOTO(*ptr + module_name_len <= section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
+        char *module_name;
+        WAH_MALLOC_ARRAY_GOTO(module_name, module_name_len + 1, cleanup);
+        memcpy(module_name, *ptr, module_name_len);
+        module_name[module_name_len] = '\0';
+        *ptr += module_name_len;
+
+        // field_name
+        uint32_t field_name_len;
+        WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &field_name_len), cleanup);
+        WAH_ENSURE_GOTO(*ptr + field_name_len <= section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
+        char *field_name;
+        WAH_MALLOC_ARRAY_GOTO(field_name, field_name_len + 1, cleanup);
+        memcpy(field_name, *ptr, field_name_len);
+        field_name[field_name_len] = '\0';
+        *ptr += field_name_len;
+
+        // kind
+        WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
+        uint8_t kind = *(*ptr)++;
+
+        if (kind == 0) {
+            // Function import
+            uint32_t type_index;
+            WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &type_index), cleanup);
+            WAH_ENSURE_GOTO(type_index < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+
+            wah_func_import_t *fi = &module->func_imports[import_func_count];
+            fi->module_name = module_name;
+            fi->module_name_len = module_name_len;
+            fi->field_name = field_name;
+            fi->field_name_len = field_name_len;
+            fi->type_index = type_index;
+            import_func_count++;
+        } else {
+            // table/memory/global imports: skip for now
+            free(module_name);
+            free(field_name);
+            err = WAH_ERROR_UNKNOWN_SECTION;
+            WAH_LOG("Non-function import kind=%u not supported", kind);
+            goto cleanup;
+        }
+    }
+
+    module->import_function_count = import_func_count;
+    return WAH_OK;
+
+cleanup:
+    if (module->func_imports) {
+        for (uint32_t i = 0; i < import_func_count; i++) {
+            free(module->func_imports[i].module_name);
+            free(module->func_imports[i].field_name);
+        }
+        free(module->func_imports);
+        module->func_imports = NULL;
+    }
+    module->import_function_count = 0;
+    return err;
 }
 
 static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
@@ -2600,7 +2701,7 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
         // Basic validation of index based on kind
         switch (export_entry->kind) {
             case 0: // Function
-                WAH_ENSURE_GOTO(export_entry->index < module->function_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                WAH_ENSURE_GOTO(export_entry->index < module->function_count + module->import_function_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
                 break;
             case 1: // Table
                 WAH_ENSURE_GOTO(export_entry->index < module->table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
@@ -2636,7 +2737,7 @@ cleanup:
 
 static wah_error_t wah_parse_start_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->start_function_idx));
-    WAH_ENSURE(module->start_function_idx < module->function_count, WAH_ERROR_VALIDATION_FAILED);
+    WAH_ENSURE(module->start_function_idx < module->function_count + module->import_function_count, WAH_ERROR_VALIDATION_FAILED);
     module->has_start_function = true;
     return WAH_OK;
 }
@@ -2679,7 +2780,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
                 WAH_MALLOC_ARRAY(segment->func_indices, segment->num_elems);
                 for (uint32_t j = 0; j < segment->num_elems; ++j) {
                     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->func_indices[j]));
-                    WAH_ENSURE(segment->func_indices[j] < module->function_count, WAH_ERROR_VALIDATION_FAILED);
+                    WAH_ENSURE(segment->func_indices[j] < module->function_count + module->import_function_count, WAH_ERROR_VALIDATION_FAILED);
                 }
             }
         }
@@ -2737,7 +2838,12 @@ static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *se
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->data_len));
 
             WAH_ENSURE(*ptr + segment->data_len <= section_end, WAH_ERROR_UNEXPECTED_EOF);
-            segment->data = *ptr;
+            if (segment->data_len > 0) {
+                uint8_t *data_copy;
+                WAH_MALLOC_ARRAY(data_copy, segment->data_len);
+                memcpy(data_copy, *ptr, segment->data_len);
+                segment->data = data_copy;
+            }
             *ptr += segment->data_len;
         }
     }
@@ -3390,6 +3496,26 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
         }
     }
 
+    // Build the runtime function_table (global index space: imports + locals + hosts).
+    // Import slots are zero-initialized here; wah_instantiate() fills them in.
+    {
+        uint32_t import_count = module->import_function_count;
+        uint32_t table_size = import_count + module->total_function_count;
+        exec_ctx->function_table_count = table_size;
+        if (table_size > 0) {
+            WAH_MALLOC_ARRAY_GOTO(exec_ctx->function_table, table_size, cleanup);
+            memset(exec_ctx->function_table, 0, table_size * sizeof(wah_function_t));
+            // Copy local/host functions at offset import_count
+            for (uint32_t i = 0; i < module->total_function_count; i++) {
+                exec_ctx->function_table[import_count + i] = module->functions[i];
+                if (!module->functions[i].is_host) {
+                    exec_ctx->function_table[import_count + i].local_idx = i;
+                    exec_ctx->function_table[import_count + i].fn_module = NULL; // = ctx->module
+                }
+            }
+        }
+    }
+
     // If a start function is defined, call it.
     if (module->has_start_function) {
         WAH_CHECK_GOTO(wah_call_module(exec_ctx, module, module->start_function_idx, NULL, 0, NULL), cleanup);
@@ -3408,6 +3534,7 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
     free(exec_ctx->call_stack);
     free(exec_ctx->globals);
     free(exec_ctx->memory_base);
+    free(exec_ctx->function_table);
     if (exec_ctx->tables) {
         for (uint32_t i = 0; i < exec_ctx->table_count; ++i) {
             free(exec_ctx->tables[i]);
@@ -3427,16 +3554,19 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
 }
 
 // Pushes a new call frame. This is an internal helper.
-static wah_error_t wah_push_frame(wah_exec_context_t *ctx, uint32_t func_idx, uint32_t locals_offset) {
+// local_idx: index into ctx->module->code_bodies[] for the function body.
+// result_count: number of return values (stored in frame for RETURN/END).
+static wah_error_t wah_push_frame(wah_exec_context_t *ctx, uint32_t local_idx, uint32_t locals_offset, uint32_t result_count) {
     WAH_ENSURE(ctx->call_depth < ctx->max_call_depth, WAH_ERROR_CALL_STACK_OVERFLOW);
 
-    const wah_code_body_t *code_body = &ctx->module->code_bodies[func_idx];
+    const wah_code_body_t *code_body = &ctx->module->code_bodies[local_idx];
     wah_call_frame_t *frame = &ctx->call_stack[ctx->call_depth++];
 
     frame->code = code_body;
     frame->bytecode_ip = code_body->parsed_code.bytecode;
     frame->locals_offset = locals_offset;
-    frame->func_idx = func_idx;
+    frame->func_idx = local_idx;
+    frame->result_count = result_count;
 
     return WAH_OK;
 }
@@ -3696,9 +3826,9 @@ WAH_RUN(CALL) {
     uint32_t called_func_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
 
-    // Dispatch based on function kind from the unified functions[] table
-    WAH_ENSURE_GOTO(called_func_idx < ctx->module->total_function_count, WAH_ERROR_NOT_FOUND, cleanup);
-    const wah_function_t *called_fn = &ctx->module->functions[called_func_idx];
+    // Dispatch via the runtime function_table (global index space)
+    WAH_ENSURE_GOTO(called_func_idx < ctx->function_table_count, WAH_ERROR_NOT_FOUND, cleanup);
+    const wah_function_t *called_fn = &ctx->function_table[called_func_idx];
 
     if (called_fn->is_host) {
         // Host function path
@@ -3721,15 +3851,19 @@ WAH_RUN(CALL) {
 
         frame->bytecode_ip = bytecode_ip;
     } else {
-        // Regular wasm function call
-        const wah_func_type_t *called_func_type = &ctx->module->types[ctx->module->function_type_indices[called_func_idx]];
-        const wah_code_body_t *called_code = &ctx->module->code_bodies[called_func_idx];
+        // WASM function call
+        const wah_module_t *fn_module = called_fn->fn_module ? called_fn->fn_module : ctx->module;
+        // Cross-module WASM calls not yet supported (globals/memory would differ)
+        WAH_ENSURE_GOTO(fn_module == ctx->module, WAH_ERROR_UNKNOWN_SECTION, cleanup);
+        uint32_t local_idx = called_fn->local_idx;
+        const wah_func_type_t *called_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
+        const wah_code_body_t *called_code = &fn_module->code_bodies[local_idx];
 
         uint32_t new_locals_offset = ctx->sp - called_func_type->param_count;
 
         frame->bytecode_ip = bytecode_ip;
 
-        WAH_CHECK_GOTO(wah_push_frame(ctx, called_func_idx, new_locals_offset), cleanup);
+        WAH_CHECK_GOTO(wah_push_frame(ctx, local_idx, new_locals_offset, called_func_type->result_count), cleanup);
 
         uint32_t num_locals = called_code->local_count;
         if (num_locals > 0) {
@@ -3763,9 +3897,9 @@ WAH_RUN(CALL_INDIRECT) {
     // Get actual_func_idx from table
     uint32_t actual_func_idx = (uint32_t)ctx->tables[table_idx][func_table_idx].i32;
 
-    // Dispatch based on function kind from the unified functions[] table
-    WAH_ENSURE_GOTO(actual_func_idx < ctx->module->total_function_count, WAH_ERROR_TRAP, cleanup);
-    const wah_function_t *actual_fn = &ctx->module->functions[actual_func_idx];
+    // Dispatch via the runtime function_table (global index space)
+    WAH_ENSURE_GOTO(actual_func_idx < ctx->function_table_count, WAH_ERROR_TRAP, cleanup);
+    const wah_function_t *actual_fn = &ctx->function_table[actual_func_idx];
 
     if (actual_fn->is_host) {
         // Host function path
@@ -3806,13 +3940,16 @@ WAH_RUN(CALL_INDIRECT) {
 
         frame->bytecode_ip = bytecode_ip;
     } else {
-        // Regular wasm function call
-        WAH_ENSURE_GOTO(actual_func_idx < ctx->module->function_count, WAH_ERROR_TRAP, cleanup); // Invalid function index in table
+        // WASM function call
+        const wah_module_t *fn_module = actual_fn->fn_module ? actual_fn->fn_module : ctx->module;
+        // Cross-module WASM calls not yet supported
+        WAH_ENSURE_GOTO(fn_module == ctx->module, WAH_ERROR_UNKNOWN_SECTION, cleanup);
+        uint32_t local_idx = actual_fn->local_idx;
 
         // Get expected function type (from instruction)
         const wah_func_type_t *expected_func_type = &ctx->module->types[type_idx];
-        // Get actual function type (from module's function type indices) (function_type_indices stores type_idx for each function)
-        const wah_func_type_t *actual_func_type = &ctx->module->types[ctx->module->function_type_indices[actual_func_idx]];
+        // Get actual function type (from local_idx)
+        const wah_func_type_t *actual_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
 
         // Type check: compare expected and actual function types
         WAH_ENSURE_GOTO(expected_func_type->param_count == actual_func_type->param_count &&
@@ -3826,13 +3963,13 @@ WAH_RUN(CALL_INDIRECT) {
             // Type mismatch (result type)
             WAH_ENSURE_GOTO(expected_func_type->result_types[i] == actual_func_type->result_types[i], WAH_ERROR_TRAP, cleanup);
         }
-        // Perform the call using actual_func_idx
-        const wah_code_body_t *called_code = &ctx->module->code_bodies[actual_func_idx];
-        uint32_t new_locals_offset = ctx->sp - expected_func_type->param_count; // Use expected_func_type for stack manipulation
+        // Perform the call using local_idx
+        const wah_code_body_t *called_code = &fn_module->code_bodies[local_idx];
+        uint32_t new_locals_offset = ctx->sp - expected_func_type->param_count;
 
         frame->bytecode_ip = bytecode_ip;
 
-        WAH_CHECK_GOTO(wah_push_frame(ctx, actual_func_idx, new_locals_offset), cleanup);
+        WAH_CHECK_GOTO(wah_push_frame(ctx, local_idx, new_locals_offset, actual_func_type->result_count), cleanup);
 
         uint32_t num_locals = called_code->local_count;
         if (num_locals > 0) {
@@ -3849,8 +3986,7 @@ WAH_RUN(CALL_INDIRECT) {
 }
 
 WAH_RUN(RETURN) {
-    const wah_func_type_t *func_type = &ctx->module->types[ctx->module->function_type_indices[frame->func_idx]];
-    uint32_t results_to_keep = func_type->result_count;
+    uint32_t results_to_keep = frame->result_count;
     wah_value_t result_val;
     if (results_to_keep == 1) {
         result_val = ctx->value_stack[ctx->sp - 1];
@@ -3869,8 +4005,7 @@ WAH_RUN(RETURN) {
 }
 
 WAH_RUN(END) { // End of function
-    const wah_func_type_t *func_type = &ctx->module->types[ctx->module->function_type_indices[frame->func_idx]];
-    uint32_t results_to_keep = func_type->result_count;
+    uint32_t results_to_keep = frame->result_count;
     wah_value_t result_val;
     if (results_to_keep == 1) {
         if (ctx->sp > frame->locals_offset) {
@@ -5206,9 +5341,9 @@ cleanup:
 #endif
 
 static wah_error_t wah_call_module_multi(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *results, uint32_t max_results, uint32_t *actual_results) {
-    // Dispatch based on function kind from the unified functions[] table
-    WAH_ENSURE(func_idx < module->total_function_count, WAH_ERROR_NOT_FOUND);
-    const wah_function_t *fn = &module->functions[func_idx];
+    // Dispatch via the runtime function_table (global index space)
+    WAH_ENSURE(func_idx < exec_ctx->function_table_count, WAH_ERROR_NOT_FOUND);
+    const wah_function_t *fn = &exec_ctx->function_table[func_idx];
 
     if (fn->is_host) {
         // Host function path
@@ -5224,10 +5359,9 @@ static wah_error_t wah_call_module_multi(wah_exec_context_t *exec_ctx, const wah
         return WAH_OK;
     }
 
-    // Regular wasm function call
-    WAH_ENSURE(func_idx < module->function_count, WAH_ERROR_UNKNOWN_SECTION);
-
-    const wah_func_type_t *func_type = &module->types[module->function_type_indices[func_idx]];
+    // WASM function call
+    uint32_t local_idx = fn->local_idx;
+    const wah_func_type_t *func_type = &module->types[module->function_type_indices[local_idx]];
     WAH_ENSURE(param_count == func_type->param_count, WAH_ERROR_VALIDATION_FAILED);
     WAH_ENSURE(max_results >= func_type->result_count, WAH_ERROR_VALIDATION_FAILED);
 
@@ -5238,7 +5372,7 @@ static wah_error_t wah_call_module_multi(wah_exec_context_t *exec_ctx, const wah
     }
 
     // Push the first frame. Locals offset is the current stack pointer before parameters.
-    WAH_CHECK(wah_push_frame(exec_ctx, func_idx, exec_ctx->sp - func_type->param_count));
+    WAH_CHECK(wah_push_frame(exec_ctx, local_idx, exec_ctx->sp - func_type->param_count, func_type->result_count));
 
     // Reserve space for the function's own locals and initialize them to zero
     uint32_t num_locals = exec_ctx->call_stack[0].code->local_count;
@@ -5323,6 +5457,14 @@ void wah_free_module(wah_module_t *module) {
     }
     free(module->function_type_indices);
 
+    if (module->func_imports) {
+        for (uint32_t i = 0; i < module->import_function_count; i++) {
+            free(module->func_imports[i].module_name);
+            free(module->func_imports[i].field_name);
+        }
+        free(module->func_imports);
+    }
+
     if (module->code_bodies) {
         for (uint32_t i = 0; i < module->code_count; ++i) {
             free(module->code_bodies[i].local_types);
@@ -5342,7 +5484,12 @@ void wah_free_module(wah_module_t *module) {
         free(module->element_segments);
     }
 
-    free(module->data_segments); // Free data segments
+    if (module->data_segments) {
+        for (uint32_t i = 0; i < module->data_segment_count; ++i) {
+            free((void *)module->data_segments[i].data);
+        }
+        free(module->data_segments);
+    }
 
     // Free exports. For host function exports the name is owned by functions[], freed below.
     if (module->exports) {
@@ -5697,16 +5844,61 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
 }
 
 wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
+    wah_error_t err = WAH_OK;
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(!ctx->is_instantiated, WAH_ERROR_MISUSE);  // Already instantiated
 
-    // Mark as instantiated
+    const wah_module_t *module = ctx->module;
+    uint32_t import_count = module->import_function_count;
+
+    // Resolve each function import from linked modules
+    for (uint32_t i = 0; i < import_count; i++) {
+        wah_func_import_t *fi = &module->func_imports[i];
+
+        // Find linked module by module_name
+        const wah_module_t *linked = NULL;
+        for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+            const char *linked_name = ctx->linked_modules[j].name;
+            if (strncmp(linked_name, fi->module_name, fi->module_name_len) == 0 &&
+                linked_name[fi->module_name_len] == '\0') {
+                linked = ctx->linked_modules[j].module;
+                break;
+            }
+        }
+        WAH_ENSURE_GOTO(linked != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+
+        // Find export by field_name (function kind)
+        const wah_export_t *exp = NULL;
+        for (uint32_t k = 0; k < linked->export_count; k++) {
+            if (linked->exports[k].kind == 0 &&
+                linked->exports[k].name_len == fi->field_name_len &&
+                memcmp(linked->exports[k].name, fi->field_name, fi->field_name_len) == 0) {
+                exp = &linked->exports[k];
+                break;
+            }
+        }
+        WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+
+        // exp->index is the global function index in the linked module.
+        // For host-only modules (import_function_count=0), global == local (functions[] index).
+        uint32_t linked_import_count = linked->import_function_count;
+        WAH_ENSURE_GOTO(exp->index >= linked_import_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        uint32_t linked_local_idx = exp->index - linked_import_count;
+        WAH_ENSURE_GOTO(linked_local_idx < linked->total_function_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+
+        const wah_function_t *src = &linked->functions[linked_local_idx];
+        ctx->function_table[i] = *src;  // shallow copy (pointers shared with linked module)
+        if (!src->is_host) {
+            ctx->function_table[i].fn_module = linked;
+            ctx->function_table[i].local_idx = linked_local_idx;
+        }
+    }
+
     ctx->is_instantiated = true;
-
-    // TODO: Resolve imports from linked modules
-    // For now, we just mark as instantiated and allow calls to proceed
-
     return WAH_OK;
+
+cleanup:
+    return err;
 }
 
 // --- Export API Implementation ---
@@ -5722,12 +5914,15 @@ wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_entry_
 
     const wah_export_t *export_entry = &module->exports[idx];
 
-    // For host function exports, handle directly via the unified functions[] table
+    // For host function exports, handle directly via the unified functions[] table.
+    // export_entry->index is a global function index; convert to functions[] local index.
+    uint32_t exp_local_idx = export_entry->index - module->import_function_count;
     if (export_entry->kind == 0 &&
         module->functions &&
-        export_entry->index < module->total_function_count &&
-        module->functions[export_entry->index].is_host) {
-        const wah_function_t *fn = &module->functions[export_entry->index];
+        export_entry->index >= module->import_function_count &&
+        exp_local_idx < module->total_function_count &&
+        module->functions[exp_local_idx].is_host) {
+        const wah_function_t *fn = &module->functions[exp_local_idx];
 
         out->id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_FUNCTION, export_entry->index);
         out->type = WAH_TYPE_HOST_FUNCTION;
@@ -5798,25 +5993,42 @@ wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id
     out->is_mutable = false; // Default to false
 
     switch (kind) {
-        case WAH_ENTRY_KIND_FUNCTION:
-            WAH_ENSURE(module->functions && index < module->total_function_count, WAH_ERROR_NOT_FOUND);
-            if (module->functions[index].is_host) {
-                const wah_function_t *fn = &module->functions[index];
-                out->type = WAH_TYPE_HOST_FUNCTION;
-                out->u.func.param_count = fn->nparams;
-                out->u.func.param_types = fn->param_types;
-                out->u.func.result_count = fn->nresults;
-                out->u.func.result_types = fn->result_types;
-            } else {
-                WAH_ENSURE(index < module->function_count, WAH_ERROR_NOT_FOUND);
+        case WAH_ENTRY_KIND_FUNCTION: {
+            uint32_t import_count = module->import_function_count;
+            if (index < import_count) {
+                // Import range: return type from func_imports
+                WAH_ENSURE(module->func_imports && index < import_count, WAH_ERROR_NOT_FOUND);
+                wah_func_import_t *fi = &module->func_imports[index];
+                WAH_ENSURE(fi->type_index < module->type_count, WAH_ERROR_NOT_FOUND);
+                const wah_func_type_t *ft = &module->types[fi->type_index];
                 out->type = WAH_TYPE_FUNCTION;
-                const wah_func_type_t *func_type = &module->types[module->function_type_indices[index]];
-                out->u.func.param_count = func_type->param_count;
-                out->u.func.param_types = func_type->param_types;
-                out->u.func.result_count = func_type->result_count;
-                out->u.func.result_types = func_type->result_types;
+                out->u.func.param_count = ft->param_count;
+                out->u.func.param_types = ft->param_types;
+                out->u.func.result_count = ft->result_count;
+                out->u.func.result_types = ft->result_types;
+            } else {
+                // Local/host range: index into functions[] is (index - import_count)
+                uint32_t local_fn_idx = index - import_count;
+                WAH_ENSURE(module->functions && local_fn_idx < module->total_function_count, WAH_ERROR_NOT_FOUND);
+                if (module->functions[local_fn_idx].is_host) {
+                    const wah_function_t *fn = &module->functions[local_fn_idx];
+                    out->type = WAH_TYPE_HOST_FUNCTION;
+                    out->u.func.param_count = fn->nparams;
+                    out->u.func.param_types = fn->param_types;
+                    out->u.func.result_count = fn->nresults;
+                    out->u.func.result_types = fn->result_types;
+                } else {
+                    WAH_ENSURE(local_fn_idx < module->function_count, WAH_ERROR_NOT_FOUND);
+                    out->type = WAH_TYPE_FUNCTION;
+                    const wah_func_type_t *func_type = &module->types[module->function_type_indices[local_fn_idx]];
+                    out->u.func.param_count = func_type->param_count;
+                    out->u.func.param_types = func_type->param_types;
+                    out->u.func.result_count = func_type->result_count;
+                    out->u.func.result_types = func_type->result_types;
+                }
             }
             break;
+        }
         case WAH_ENTRY_KIND_TABLE:
             WAH_ENSURE(index < module->table_count, WAH_ERROR_NOT_FOUND);
             out->type = WAH_TYPE_TABLE;
