@@ -685,6 +685,8 @@ typedef struct wah_call_frame_s {
     uint32_t locals_offset;      // Offset into the shared value_stack for this frame's locals
     uint32_t func_idx;           // Local index of the function being executed (debug)
     uint32_t result_count;       // Number of return values (used by RETURN/END)
+    const struct wah_module_s *module; // The module this function belongs to (for cross-module calls)
+    uint32_t globals_offset;     // Offset into ctx->globals for this module's globals (for cross-module calls)
 } wah_call_frame_t;
 
 // The main context for the entire WebAssembly interpretation.
@@ -3554,12 +3556,12 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
 }
 
 // Pushes a new call frame. This is an internal helper.
-// local_idx: index into ctx->module->code_bodies[] for the function body.
+// local_idx: index into fn_module->code_bodies[] for the function body.
 // result_count: number of return values (stored in frame for RETURN/END).
-static wah_error_t wah_push_frame(wah_exec_context_t *ctx, uint32_t local_idx, uint32_t locals_offset, uint32_t result_count) {
+static wah_error_t wah_push_frame(wah_exec_context_t *ctx, const wah_module_t *fn_module, uint32_t local_idx, uint32_t locals_offset, uint32_t result_count) {
     WAH_ENSURE(ctx->call_depth < ctx->max_call_depth, WAH_ERROR_CALL_STACK_OVERFLOW);
 
-    const wah_code_body_t *code_body = &ctx->module->code_bodies[local_idx];
+    const wah_code_body_t *code_body = &fn_module->code_bodies[local_idx];
     wah_call_frame_t *frame = &ctx->call_stack[ctx->call_depth++];
 
     frame->code = code_body;
@@ -3567,6 +3569,27 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, uint32_t local_idx, u
     frame->locals_offset = locals_offset;
     frame->func_idx = local_idx;
     frame->result_count = result_count;
+    frame->module = fn_module;
+
+    // Calculate globals_offset for cross-module calls
+    if (fn_module == ctx->module) {
+        frame->globals_offset = 0;  // Primary module
+    } else {
+        // Find the module in linked_modules and calculate offset
+        uint32_t offset = ctx->module->global_count;
+        bool found = false;
+        for (uint32_t i = 0; i < ctx->linked_module_count; i++) {
+            if (ctx->linked_modules[i].module == fn_module) {
+                frame->globals_offset = offset;
+                found = true;
+                break;
+            }
+            offset += ctx->linked_modules[i].module->global_count;
+        }
+        if (!found) {
+            frame->globals_offset = 0;  // Fallback (shouldn't happen)
+        }
+    }
 
     return WAH_OK;
 }
@@ -3811,14 +3834,16 @@ WAH_RUN(LOCAL_TEE) {
 WAH_RUN(GLOBAL_GET) {
     uint32_t global_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    ctx->value_stack[ctx->sp++] = ctx->globals[global_idx];
+    uint32_t effective_global_idx = frame->globals_offset + global_idx;
+    ctx->value_stack[ctx->sp++] = ctx->globals[effective_global_idx];
     WAH_NEXT();
 }
 
 WAH_RUN(GLOBAL_SET) {
     uint32_t global_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    ctx->globals[global_idx] = ctx->value_stack[--ctx->sp];
+    uint32_t effective_global_idx = frame->globals_offset + global_idx;
+    ctx->globals[effective_global_idx] = ctx->value_stack[--ctx->sp];
     WAH_NEXT();
 }
 
@@ -3853,8 +3878,6 @@ WAH_RUN(CALL) {
     } else {
         // WASM function call
         const wah_module_t *fn_module = called_fn->fn_module ? called_fn->fn_module : ctx->module;
-        // Cross-module WASM calls not yet supported (globals/memory would differ)
-        WAH_ENSURE_GOTO(fn_module == ctx->module, WAH_ERROR_UNKNOWN_SECTION, cleanup);
         uint32_t local_idx = called_fn->local_idx;
         const wah_func_type_t *called_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
         const wah_code_body_t *called_code = &fn_module->code_bodies[local_idx];
@@ -3863,7 +3886,7 @@ WAH_RUN(CALL) {
 
         frame->bytecode_ip = bytecode_ip;
 
-        WAH_CHECK_GOTO(wah_push_frame(ctx, local_idx, new_locals_offset, called_func_type->result_count), cleanup);
+        WAH_CHECK_GOTO(wah_push_frame(ctx, fn_module, local_idx, new_locals_offset, called_func_type->result_count), cleanup);
 
         uint32_t num_locals = called_code->local_count;
         if (num_locals > 0) {
@@ -3942,8 +3965,6 @@ WAH_RUN(CALL_INDIRECT) {
     } else {
         // WASM function call
         const wah_module_t *fn_module = actual_fn->fn_module ? actual_fn->fn_module : ctx->module;
-        // Cross-module WASM calls not yet supported
-        WAH_ENSURE_GOTO(fn_module == ctx->module, WAH_ERROR_UNKNOWN_SECTION, cleanup);
         uint32_t local_idx = actual_fn->local_idx;
 
         // Get expected function type (from instruction)
@@ -3969,7 +3990,7 @@ WAH_RUN(CALL_INDIRECT) {
 
         frame->bytecode_ip = bytecode_ip;
 
-        WAH_CHECK_GOTO(wah_push_frame(ctx, local_idx, new_locals_offset, actual_func_type->result_count), cleanup);
+        WAH_CHECK_GOTO(wah_push_frame(ctx, fn_module, local_idx, new_locals_offset, actual_func_type->result_count), cleanup);
 
         uint32_t num_locals = called_code->local_count;
         if (num_locals > 0) {
@@ -5372,7 +5393,7 @@ static wah_error_t wah_call_module_multi(wah_exec_context_t *exec_ctx, const wah
     }
 
     // Push the first frame. Locals offset is the current stack pointer before parameters.
-    WAH_CHECK(wah_push_frame(exec_ctx, local_idx, exec_ctx->sp - func_type->param_count, func_type->result_count));
+    WAH_CHECK(wah_push_frame(exec_ctx, module, local_idx, exec_ctx->sp - func_type->param_count, func_type->result_count));
 
     // Reserve space for the function's own locals and initialize them to zero
     uint32_t num_locals = exec_ctx->call_stack[0].code->local_count;
@@ -5850,6 +5871,35 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
 
     const wah_module_t *module = ctx->module;
     uint32_t import_count = module->import_function_count;
+
+    // Allocate and initialize globals for linked modules
+    // For simplicity, we allocate globals after the primary module's globals
+    uint32_t total_globals = module->global_count;
+    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+        total_globals += ctx->linked_modules[j].module->global_count;
+    }
+
+    if (total_globals > module->global_count) {
+        // Reallocate globals array to accommodate linked modules
+        wah_value_t *new_globals = NULL;
+        WAH_MALLOC_ARRAY_GOTO(new_globals, total_globals, cleanup);
+
+        // Copy primary module's globals
+        memcpy(new_globals, ctx->globals, module->global_count * sizeof(wah_value_t));
+
+        // Initialize globals for each linked module
+        uint32_t offset = module->global_count;
+        for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+            const wah_module_t *linked = ctx->linked_modules[j].module;
+            for (uint32_t k = 0; k < linked->global_count; k++) {
+                new_globals[offset + k] = linked->globals[k].initial_value;
+            }
+            offset += linked->global_count;
+        }
+
+        free(ctx->globals);
+        ctx->globals = new_globals;
+    }
 
     // Resolve each function import from linked modules
     for (uint32_t i = 0; i < import_count; i++) {

@@ -2,6 +2,7 @@
 
 #define WAH_IMPLEMENTATION
 #include "wah.h"
+#include "wah_testutils.c"
 #include <stdio.h>
 #include <string.h>
 
@@ -216,6 +217,85 @@ int main() {
         wah_exec_context_destroy(&ctx);
         wah_free_module(&mod);
         printf("PASS\n\n");
+    }
+
+    // Test 5: Wasm-to-wasm cross-module call
+    printf("Test 5: Wasm-to-wasm cross-module call\n");
+    {
+        wah_module_t module_b = {0};
+        wah_module_t module_a = {0};
+        wah_exec_context_t ctx = {0};
+        wah_error_t err;
+
+        // Module B: exports a simple add function
+        // func add(i32, i32) -> i32: returns a + b
+        err = wah_parse_module_from_spec(&module_b, "wasm \
+            types {[ fn [i32, i32] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'add'} fn# 0 ]} \
+            code {[ {[] local.get 0 local.get 1 i32.add end } ]}"
+        );
+        if (err != WAH_OK) {
+            printf("FAIL: Failed to create module_b: %s\n", wah_strerror(err));
+            goto cleanup;
+        }
+
+        // Module A: imports add from moduleB and exports callAdd
+        // func callAdd(i32, i32) -> i32: calls add(a, b) and returns result
+        err = wah_parse_module_from_spec(&module_a, "wasm \
+            types {[ fn [i32, i32] [i32] ]} \
+            imports {[ {'moduleB'} {'add'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'callAdd'} fn# 1 ]} \
+            code {[ {[] local.get 0 local.get 1 call 0 end } ]}"
+        );
+        if (err != WAH_OK) {
+            printf("FAIL: Failed to create module_a: %s\n", wah_strerror(err));
+            goto cleanup;
+        }
+
+        // Create execution context with module_a as primary
+        err = wah_exec_context_create(&ctx, &module_a);
+        if (err != WAH_OK) {
+            printf("FAIL: wah_exec_context_create returned %s\n", wah_strerror(err));
+            goto cleanup;
+        }
+
+        // Link module_b
+        err = wah_link_module(&ctx, "moduleB", &module_b);
+        if (err != WAH_OK) {
+            printf("FAIL: wah_link_module returned %s\n", wah_strerror(err));
+            goto cleanup;
+        }
+
+        // Instantiate
+        err = wah_instantiate(&ctx);
+        if (err != WAH_OK) {
+            printf("FAIL: wah_instantiate returned %s\n", wah_strerror(err));
+            goto cleanup;
+        }
+
+        // Call callAdd(10, 32) - should call add(10, 32) = 42
+        wah_value_t params[2] = {{.i32 = 10}, {.i32 = 32}};
+        wah_value_t result;
+        err = wah_call(&ctx, 0, params, 2, &result);
+        if (err != WAH_OK) {
+            printf("FAIL: wah_call returned %s\n", wah_strerror(err));
+            goto cleanup;
+        }
+
+        if (result.i32 != 42) {
+            printf("FAIL: Expected result 42, got %d\n", result.i32);
+            goto cleanup;
+        }
+
+        printf("PASS\n\n");
+
+cleanup:
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module_a);
+        wah_free_module(&module_b);
+        if (err != WAH_OK) return 1;
     }
 
     printf("All linkage tests passed!\n");
