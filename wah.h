@@ -5419,6 +5419,10 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(exec_ctx->module, WAH_ERROR_MISUSE);
 
+    if (!exec_ctx->is_instantiated) {
+        WAH_CHECK(wah_instantiate(exec_ctx));
+    }
+
     // func_idx is always uint32_t for functions (wah_entry_id_t values for functions always fit in uint32_t)
     return wah_call_module(exec_ctx, exec_ctx->module, (uint32_t)func_idx, params, param_count, result);
 }
@@ -5427,6 +5431,10 @@ wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, uint64_t func_idx, cons
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(exec_ctx->module, WAH_ERROR_MISUSE);
     WAH_ENSURE(actual_results, WAH_ERROR_MISUSE);
+
+    if (!exec_ctx->is_instantiated) {
+        WAH_CHECK(wah_instantiate(exec_ctx));
+    }
 
     // func_idx is always uint32_t for functions (wah_entry_id_t values for functions always fit in uint32_t)
     return wah_call_module_multi(exec_ctx, exec_ctx->module, (uint32_t)func_idx, params, param_count, results, max_results, actual_results);
