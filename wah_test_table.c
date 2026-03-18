@@ -34,21 +34,15 @@ void wah_test_table_indirect_call() {
     err = wah_exec_context_create(&exec_ctx, &module);
     assert(err == WAH_OK);
 
-    // Find the exported function indices
-    uint32_t add_one_func_idx = (uint32_t)-1;
-    uint32_t sub_one_func_idx = (uint32_t)-1;
-    uint32_t call_indirect_add_func_idx = (uint32_t)-1;
-    uint32_t call_indirect_sub_func_idx = (uint32_t)-1;
+    // Find the exported function indices by name
+    wah_entry_t entry;
+    err = wah_module_export_by_name(&module, "call_indirect_add", &entry);
+    assert(err == WAH_OK);
+    uint32_t call_indirect_add_func_idx = (uint32_t)entry.id;
 
-    // NOTE: Export section parsing is not implemented yet, so we'll hardcode for now
-    // Based on the WASM binary, func 0 is add_one, func 1 is sub_one, func 2 is call_indirect_add, func 3 is call_indirect_sub
-    add_one_func_idx = 0;
-    sub_one_func_idx = 1;
-    call_indirect_add_func_idx = 2;
-    call_indirect_sub_func_idx = 3;
-
-    (void)add_one_func_idx; // Suppress warning
-    (void)sub_one_func_idx; // Suppress warning
+    err = wah_module_export_by_name(&module, "call_indirect_sub", &entry);
+    assert(err == WAH_OK);
+    uint32_t call_indirect_sub_func_idx = (uint32_t)entry.id;
 
     // Test call_indirect_add (calls add_one indirectly)
     // The first wah_call call should automatically call wah_instantiate.
