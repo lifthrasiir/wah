@@ -50,6 +50,10 @@ void wah_test_table_indirect_call() {
     (void)add_one_func_idx; // Suppress warning
     (void)sub_one_func_idx; // Suppress warning
 
+    // Instantiate the module (resolves imports and initializes element segments)
+    err = wah_instantiate(&exec_ctx);
+    assert(err == WAH_OK);
+
     // Test call_indirect_add (calls add_one indirectly)
     wah_value_t params_add[1] = {{.i32 = 10}};
     wah_value_t result_add;

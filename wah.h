@@ -47,8 +47,7 @@ typedef union {
     float f32;
     double f64;
     wah_v128_t v128;
-    void* externref;
-    uint32_t funcref;
+    void* ref;  // Unified reference type (externref or funcref as wah_function_t*)
 } wah_value_t;
 
 typedef int32_t wah_type_t;
@@ -590,6 +589,9 @@ typedef struct wah_data_segment_s {
 // For host functions all fields are valid.
 typedef struct wah_function_s {
     bool is_host;
+
+    // Global function index (for reference types)
+    uint32_t global_idx;  // Index in the global function index space [imports, local, host]
 
     // Host function fields (only valid when is_host == true)
     char *name;           // owned
@@ -3440,6 +3442,8 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
         }
 
         // Initialize tables with element segments
+        // Note: This is done here for backwards compatibility, but ideally should be in wah_instantiate
+        // after global_idx is set on all functions
         for (uint32_t i = 0; i < module->element_segment_count; ++i) {
             const wah_element_segment_t *segment = &module->element_segments[i];
 
@@ -3448,7 +3452,12 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
             assert((uint64_t)segment->offset + segment->num_elems <= module->tables[segment->table_idx].min_elements);
 
             for (uint32_t j = 0; j < segment->num_elems; ++j) {
-                exec_ctx->tables[segment->table_idx][segment->offset + j].i32 = (int32_t)segment->func_indices[j];
+                // Store global function index for now, will be converted to pointer in instantiate
+                uint32_t global_idx = segment->func_indices[j];
+                WAH_ENSURE_GOTO(global_idx >= module->import_function_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                WAH_ENSURE_GOTO(global_idx < module->import_function_count + module->function_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                // Store as i32 for now, will be converted to wah_function_t* in instantiate
+                exec_ctx->tables[segment->table_idx][segment->offset + j].i32 = (int32_t)global_idx;
             }
         }
     }
@@ -3741,17 +3750,9 @@ WAH_RUN(REF_NULL) {
     uint32_t type = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
 
-    // Initialize null reference based on type
-    switch ((int32_t)type) {
-        case WAH_TYPE_FUNCREF:
-            ctx->value_stack[ctx->sp++].funcref = 0;
-            break;
-        case WAH_TYPE_EXTERNREF:
-            ctx->value_stack[ctx->sp++].externref = NULL;
-            break;
-        default:
-            return WAH_ERROR_VALIDATION_FAILED;
-    }
+    // All references are unified as void*, so null is always NULL
+    (void)type; // Type is validated during parsing, but we don't need it here
+    ctx->value_stack[ctx->sp++].ref = NULL;
     WAH_NEXT();
 }
 
@@ -3761,8 +3762,7 @@ WAH_RUN(REF_IS_NULL) {
     // Determine if reference is null based on type
     // For now, we'll check both funcref and externref
     // In a complete implementation, we'd need to track the actual type of each stack value
-    int32_t is_null = (ref_val.funcref == 0) && (ref_val.externref == NULL);
-
+    int32_t is_null = (ref_val.ref == NULL);
     ctx->value_stack[ctx->sp++].i32 = is_null;
     WAH_NEXT();
 }
@@ -3772,8 +3772,10 @@ WAH_RUN(REF_FUNC) {
     uint32_t func_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
 
-    // Push function reference (function index)
-    ctx->value_stack[ctx->sp++].funcref = func_idx;
+    // Push function reference as pointer to wah_function_t
+    // func_idx is the module-local function index (not including imports)
+    WAH_ENSURE(func_idx < ctx->module->function_count, WAH_ERROR_VALIDATION_FAILED);
+    ctx->value_stack[ctx->sp++].ref = &ctx->module->functions[func_idx];
     WAH_NEXT();
 }
 
@@ -3885,10 +3887,11 @@ WAH_RUN(CALL_INDIRECT) {
     // Validate func_table_idx against table size, Use min_elements as current size
     WAH_ENSURE_GOTO(func_table_idx < ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup); // Function index out of table bounds
 
-    // Get actual_func_idx from table
-    uint32_t actual_func_idx = (uint32_t)ctx->tables[table_idx][func_table_idx].i32;
+    // Get wah_function_t* from table, then use global_idx to dispatch via function_table
+    const wah_function_t *table_fn = (const wah_function_t *)ctx->tables[table_idx][func_table_idx].ref;
+    WAH_ENSURE_GOTO(table_fn != NULL, WAH_ERROR_TRAP, cleanup); // Null function reference
 
-    // Dispatch via the runtime function_table (global index space)
+    uint32_t actual_func_idx = table_fn->global_idx;
     WAH_ENSURE_GOTO(actual_func_idx < ctx->function_table_count, WAH_ERROR_TRAP, cleanup);
     const wah_function_t *actual_fn = &ctx->function_table[actual_func_idx];
 
@@ -5895,9 +5898,27 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
 
         const wah_function_t *src = &linked->functions[linked_local_idx];
         ctx->function_table[i] = *src;  // shallow copy (pointers shared with linked module)
+        ctx->function_table[i].global_idx = exp->index;  // Set global index from export
         if (!src->is_host) {
             ctx->function_table[i].fn_module = linked;
             ctx->function_table[i].local_idx = linked_local_idx;
+        }
+    }
+
+    // Set global_idx for all functions in module->functions array
+    // Local functions have global indices starting from import_count
+    // Host functions come after local functions
+    for (uint32_t i = 0; i < module->function_count; i++) {
+        module->functions[i].global_idx = import_count + i;
+    }
+
+    // Now convert element segments from global function indices to wah_function_t* pointers
+    for (uint32_t i = 0; i < module->element_segment_count; ++i) {
+        const wah_element_segment_t *segment = &module->element_segments[i];
+        for (uint32_t j = 0; j < segment->num_elems; ++j) {
+            uint32_t global_idx = (uint32_t)ctx->tables[segment->table_idx][segment->offset + j].i32;
+            uint32_t local_idx = global_idx - module->import_function_count;
+            ctx->tables[segment->table_idx][segment->offset + j].ref = &module->functions[local_idx];
         }
     }
 
