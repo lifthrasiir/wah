@@ -227,77 +227,34 @@ wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const ch
 
 // --- Call context for host functions ---
 
-static inline int32_t wah_param_i32(const wah_call_context_t *ctx, size_t index) {
 #ifdef WAH_DEBUG
-    assert(ctx && "Call context is NULL");
-    assert(index < ctx->nparams && "Parameter index out of bounds");
-    assert(ctx->param_types[index] == WAH_TYPE_I32 && "Parameter type mismatch: expected i32") ;
+#define WAH_PARAM(ty, field) \
+    assert(ctx && "Call context is NULL"); \
+    assert(index < ctx->nparams && "Parameter index out of bounds"); \
+    assert(ctx->param_types[index] == ty && "Parameter type mismatch"); \
+    return ctx->params[index].field
+#define WAH_RESULT(ty, field) \
+    assert(ctx && "Call context is NULL"); \
+    assert(index < ctx->nresults && "Result index out of bounds"); \
+    assert(ctx->result_types[index] == ty && "Result type mismatch"); \
+    ctx->results[index].field = value
+#else
+#define WAH_PARAM(ty, field) return ctx->params[index].field
+#define WAH_RESULT(ty, field) ctx->results[index].field = value
 #endif
-    return ctx->params[index].i32;
-}
 
-static inline int64_t wah_param_i64(const wah_call_context_t *ctx, size_t index) {
-#ifdef WAH_DEBUG
-    assert(ctx && "Call context is NULL");
-    assert(index < ctx->nparams && "Parameter index out of bounds");
-    assert(ctx->param_types[index] == WAH_TYPE_I64 && "Parameter type mismatch: expected i64") ;
-#endif
-    return ctx->params[index].i64;
-}
+static inline int32_t wah_param_i32(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(WAH_TYPE_I32, i32); }
+static inline int64_t wah_param_i64(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(WAH_TYPE_I64, i64); }
+static inline float wah_param_f32(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(WAH_TYPE_F32, f32); }
+static inline double wah_param_f64(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(WAH_TYPE_F64, f64); }
 
-static inline float wah_param_f32(const wah_call_context_t *ctx, size_t index) {
-#ifdef WAH_DEBUG
-    assert(ctx && "Call context is NULL");
-    assert(index < ctx->nparams && "Parameter index out of bounds");
-    assert(ctx->param_types[index] == WAH_TYPE_F32 && "Parameter type mismatch: expected f32") ;
-#endif
-    return ctx->params[index].f32;
-}
+static inline void wah_result_i32(wah_call_context_t *ctx, size_t index, int32_t value) { WAH_RESULT(WAH_TYPE_I32, i32); }
+static inline void wah_result_i64(wah_call_context_t *ctx, size_t index, int64_t value) { WAH_RESULT(WAH_TYPE_I64, i64); }
+static inline void wah_result_f32(wah_call_context_t *ctx, size_t index, float value) { WAH_RESULT(WAH_TYPE_F32, f32); }
+static inline void wah_result_f64(wah_call_context_t *ctx, size_t index, double value) { WAH_RESULT(WAH_TYPE_F64, f64); }
 
-static inline double wah_param_f64(const wah_call_context_t *ctx, size_t index) {
-#ifdef WAH_DEBUG
-    assert(ctx && "Call context is NULL");
-    assert(index < ctx->nparams && "Parameter index out of bounds");
-    assert(ctx->param_types[index] == WAH_TYPE_F64 && "Parameter type mismatch: expected f64") ;
-#endif
-    return ctx->params[index].f64;
-}
-
-static inline void wah_result_i32(wah_call_context_t *ctx, size_t index, int32_t value) {
-#ifdef WAH_DEBUG
-    assert(ctx && "Call context is NULL");
-    assert(index < ctx->nresults && "Result index out of bounds");
-    assert(ctx->result_types[index] == WAH_TYPE_I32 && "Result type mismatch: expected i32") ;
-#endif
-    ctx->results[index].i32 = value;
-}
-
-static inline void wah_result_i64(wah_call_context_t *ctx, size_t index, int64_t value) {
-#ifdef WAH_DEBUG
-    assert(ctx && "Call context is NULL");
-    assert(index < ctx->nresults && "Result index out of bounds");
-    assert(ctx->result_types[index] == WAH_TYPE_I64 && "Result type mismatch: expected i64") ;
-#endif
-    ctx->results[index].i64 = value;
-}
-
-static inline void wah_result_f32(wah_call_context_t *ctx, size_t index, float value) {
-#ifdef WAH_DEBUG
-    assert(ctx && "Call context is NULL");
-    assert(index < ctx->nresults && "Result index out of bounds");
-    assert(ctx->result_types[index] == WAH_TYPE_F32 && "Result type mismatch: expected f32") ;
-#endif
-    ctx->results[index].f32 = value;
-}
-
-static inline void wah_result_f64(wah_call_context_t *ctx, size_t index, double value) {
-#ifdef WAH_DEBUG
-    assert(ctx && "Call context is NULL");
-    assert(index < ctx->nresults && "Result index out of bounds");
-    assert(ctx->result_types[index] == WAH_TYPE_F64 && "Result type mismatch: expected f64") ;
-#endif
-    ctx->results[index].f64 = value;
-}
+#undef WAH_PARAM
+#undef WAH_RESULT
 
 // Convenience macros for single return values
 #define wah_return_i32(ctx, value) wah_result_i32(ctx, 0, value)
