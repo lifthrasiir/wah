@@ -624,7 +624,7 @@ typedef struct wah_element_segment_s {
     uint32_t table_idx;
     uint32_t offset; // Result of the offset_expr
     uint32_t num_elems;
-    uint32_t *func_indices; // Array of function indices
+    uint32_t *func_indices; // Array of function indices, or NULL if dropped
 } wah_element_segment_t;
 
 // --- Operand Stack ---
@@ -1492,13 +1492,14 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
     // A function type requires at least 3 bytes (form, param_count_uleb128, result_count_uleb128).
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 3));
 
-    module->type_count = count;
+    module->type_count = 0; // Doubles as how many entries have been initialized (for cleanup)
     WAH_MALLOC_ARRAY(module->types, count);
 
     for (uint32_t i = 0; i < count; ++i) {
         // Initialize pointer fields for safe cleanup on parsing failure
         module->types[i].param_types = NULL;
         module->types[i].result_types = NULL;
+        ++module->type_count;
 
         WAH_ENSURE(**ptr == 0x60, WAH_ERROR_VALIDATION_FAILED);
         (*ptr)++;
@@ -2383,13 +2384,14 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
     // A code body entry requires at least 3 bytes (body_size, num_locals, END opcode).
     WAH_CHECK_GOTO(wah_decode_and_validate_count(ptr, section_end, &count, 3), cleanup);
     WAH_ENSURE_GOTO(count == module->function_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-    module->code_count = count;
     WAH_MALLOC_ARRAY_GOTO(module->code_bodies, count, cleanup);
+    module->code_count = 0; // For a while, this doubles as how many entries have been initialized (for cleanup).
 
     for (uint32_t i = 0; i < count; ++i) {
         // Initialize pointer fields for safe cleanup on parsing failure
         module->code_bodies[i].local_types = NULL;
         module->code_bodies[i].parsed_code = (wah_parsed_code_t){0};
+        ++module->code_count;
 
         uint32_t body_size;
         WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &body_size), cleanup);
@@ -2703,12 +2705,14 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
     // An export entry requires at least 3 bytes (name_len, kind, index).
     WAH_CHECK_GOTO(wah_decode_and_validate_count(ptr, section_end, &count, 3), cleanup);
 
-    module->export_count = count;
+    module->export_count = 0; // Doubles as how many entries have been initialized (for cleanup)
     module->capacity_exports = count;  // For parsed modules, capacity equals count
     WAH_MALLOC_ARRAY_GOTO(module->exports, count, cleanup);
 
     for (uint32_t i = 0; i < count; ++i) {
         wah_export_t *export_entry = &module->exports[i];
+        *export_entry = (wah_export_t){0};
+        ++module->export_count;
 
         // Name length
         uint32_t name_len;
@@ -2767,7 +2771,7 @@ cleanup:
     if (err != WAH_OK) {
         if (module->exports) {
             // Free names that were already allocated
-            for (uint32_t k = 0; k < count; ++k) {
+            for (uint32_t k = 0; k < module->export_count; ++k) {
                 if (module->exports[k].name) {
                     free((void*)module->exports[k].name);
                 }
@@ -2792,13 +2796,14 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
     // An element segment requires at least 5 bytes (table_idx, offset_expr (min 3 bytes), num_elems).
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 5));
 
-    module->element_segment_count = count;
+    module->element_segment_count = 0; // Doubles as how many entries have been initialized (for cleanup)
     if (count > 0) {
         WAH_MALLOC_ARRAY(module->element_segments, count);
 
         for (uint32_t i = 0; i < count; ++i) {
             wah_element_segment_t *segment = &module->element_segments[i];
             segment->func_indices = NULL; // Initialize to NULL for safe cleanup
+            ++module->element_segment_count;
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->table_idx));
             // Note: Multiple tables are supported in WebAssembly 2.0
@@ -2840,19 +2845,18 @@ static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *se
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 2));
 
     // If a datacount section was present, validate that the data section count matches.
-    // Otherwise, set the data_segment_count from this section.
     if (module->has_data_count_section) {
         WAH_ENSURE(count == module->data_segment_count, WAH_ERROR_VALIDATION_FAILED);
-    } else {
-        module->data_segment_count = count;
     }
 
     if (count > 0) {
         WAH_MALLOC_ARRAY(module->data_segments, count);
 
+        module->data_segment_count = 0; // Doubles as how many entries have been initialized (for cleanup)
         for (uint32_t i = 0; i < count; ++i) {
             wah_data_segment_t *segment = &module->data_segments[i];
             segment->data = NULL; // Initialize to NULL for safe cleanup
+            ++module->data_segment_count;
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->flags));
 

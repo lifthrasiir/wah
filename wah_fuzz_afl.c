@@ -72,7 +72,7 @@ int main(void) {
     wah_error_t find_start_err = wah_module_export_by_name(&module, "_start", &start_func_entry);
 
     if (find_start_err == WAH_OK && start_func_entry.type == WAH_TYPE_FUNCTION) {
-        err = wah_call(&exec_ctx, &module, WAH_GET_ENTRY_INDEX(start_func_entry.id), NULL, 0, NULL);
+        err = wah_call(&exec_ctx, WAH_GET_ENTRY_INDEX(start_func_entry.id), NULL, 0, NULL);
         if (err != WAH_OK) {
             goto cleanup_exec_ctx;
         }
