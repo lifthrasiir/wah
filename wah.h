@@ -371,8 +371,8 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
 // Opcode-remapping constants for compact lookup table.
 #define WAH_FB 0xd7 // 0xFB 0x00..1E -> 0xD7..F5
 #define WAH_FC 0xf6 // 0xFC 0x00..11 -> 0xF6..107
-#define WAH_FD 0x107 // 0xFD 0x00..113 -> 0x107..21A
-#define WAH_FE 0x21b // (sentinel)
+#define WAH_FD 0x108 // 0xFD 0x00..113 -> 0x108..21B
+#define WAH_FE 0x21c // (sentinel)
 
 // --- WebAssembly Opcodes (subset) ---
 #define WAH_OPCODES(X) \
@@ -385,6 +385,12 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
     \
     /* Variable Access */ \
     X(LOCAL_GET, 0x20) X(LOCAL_SET, 0x21) X(LOCAL_TEE, 0x22) X(GLOBAL_GET, 0x23) X(GLOBAL_SET, 0x24) \
+    \
+    /* Table Operations */ \
+    X(TABLE_GET, 0x25) X(TABLE_SET, 0x26) \
+    X(TABLE_INIT, WAH_FC+0x0C) X(ELEM_DROP, WAH_FC+0x0D) \
+    X(TABLE_COPY, WAH_FC+0x0E) X(TABLE_GROW, WAH_FC+0x0F) \
+    X(TABLE_SIZE, WAH_FC+0x10) X(TABLE_FILL, WAH_FC+0x11) \
     \
     /* Memory Operators */ \
     X(I32_LOAD, 0x28) X(I64_LOAD, 0x29) X(F32_LOAD, 0x2A) X(F64_LOAD, 0x2B) \
@@ -1717,7 +1723,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             for (uint32_t j = 0; j < called_func_type->result_count; ++j) {
                 WAH_CHECK(wah_validation_push_type(vctx, called_func_type->result_types[j]));
             }
-            return WAH_OK;
+            break;
         }
         case WAH_OP_CALL_INDIRECT: {
             uint32_t type_idx, table_idx;
@@ -1746,7 +1752,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             for (uint32_t j = 0; j < expected_func_type->result_count; ++j) {
                 WAH_CHECK(wah_validation_push_type(vctx, expected_func_type->result_types[j]));
             }
-            return WAH_OK;
+            break;
         }
         case WAH_OP_LOCAL_GET:
         case WAH_OP_LOCAL_SET:
@@ -1764,13 +1770,12 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             }
 
             if (opcode_val == WAH_OP_LOCAL_GET) {
-                return wah_validation_push_type(vctx, expected_type);
+                WAH_CHECK(wah_validation_push_type(vctx, expected_type));
             } else if (opcode_val == WAH_OP_LOCAL_SET) {
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, expected_type));
-                return WAH_OK;
             } else { // WAH_OP_LOCAL_TEE
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, expected_type));
-                return wah_validation_push_type(vctx, expected_type);
+                WAH_CHECK(wah_validation_push_type(vctx, expected_type));
             }
             break;
         }
@@ -1780,7 +1785,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &global_idx));
             WAH_ENSURE(global_idx < vctx->module->global_count, WAH_ERROR_VALIDATION_FAILED);
             wah_type_t global_type = vctx->module->globals[global_idx].type;
-            return wah_validation_push_type(vctx, global_type);
+            WAH_CHECK(wah_validation_push_type(vctx, global_type));
+            break;
         }
         case WAH_OP_GLOBAL_SET: {
             uint32_t global_idx;
@@ -1788,7 +1794,72 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(global_idx < vctx->module->global_count, WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(vctx->module->globals[global_idx].is_mutable, WAH_ERROR_VALIDATION_FAILED); // Cannot set immutable global
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, vctx->module->globals[global_idx].type));
-            return WAH_OK;
+            break;
+        }
+        case WAH_OP_TABLE_GET: {
+            uint32_t table_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &table_idx));
+            WAH_ENSURE(table_idx < vctx->module->table_count, WAH_ERROR_VALIDATION_FAILED);
+            POP(I32); // index
+            WAH_CHECK(wah_validation_push_type(vctx, vctx->module->tables[table_idx].elem_type)); // push element type
+            break;
+        }
+        case WAH_OP_TABLE_SET: {
+            uint32_t table_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &table_idx));
+            WAH_ENSURE(table_idx < vctx->module->table_count, WAH_ERROR_VALIDATION_FAILED);
+            wah_type_t elem_type = vctx->module->tables[table_idx].elem_type;
+            POP(I32); // index
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, elem_type)); // value
+            break;
+        }
+        case WAH_OP_TABLE_SIZE: {
+            uint32_t table_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &table_idx));
+            WAH_ENSURE(table_idx < vctx->module->table_count, WAH_ERROR_VALIDATION_FAILED);
+            PUSH(I32); break;
+        }
+        case WAH_OP_TABLE_GROW: {
+            uint32_t table_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &table_idx));
+            WAH_ENSURE(table_idx < vctx->module->table_count, WAH_ERROR_VALIDATION_FAILED);
+            wah_type_t elem_type = vctx->module->tables[table_idx].elem_type;
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, elem_type)); // init value
+            POP(I32); PUSH(I32); break; // delta, old size or -1
+        }
+        case WAH_OP_TABLE_FILL: {
+            uint32_t table_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &table_idx));
+            WAH_ENSURE(table_idx < vctx->module->table_count, WAH_ERROR_VALIDATION_FAILED);
+            wah_type_t elem_type = vctx->module->tables[table_idx].elem_type;
+            POP(I32); // size
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, elem_type)); // value
+            POP(I32); break; // offset
+        }
+        case WAH_OP_TABLE_COPY: {
+            uint32_t dst_table_idx, src_table_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &dst_table_idx));
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &src_table_idx));
+            WAH_ENSURE(dst_table_idx < vctx->module->table_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(src_table_idx < vctx->module->table_count, WAH_ERROR_VALIDATION_FAILED);
+            wah_type_t dst_type = vctx->module->tables[dst_table_idx].elem_type;
+            wah_type_t src_type = vctx->module->tables[src_table_idx].elem_type;
+            WAH_ENSURE(dst_type == src_type, WAH_ERROR_VALIDATION_FAILED);
+            POP(I32); POP(I32); POP(I32); break; // size, src offset, dst offset
+        }
+        case WAH_OP_TABLE_INIT: {
+            uint32_t elem_idx, table_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &elem_idx));
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &table_idx));
+            WAH_ENSURE(elem_idx < vctx->module->element_segment_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(table_idx < vctx->module->table_count, WAH_ERROR_VALIDATION_FAILED);
+            POP(I32); POP(I32); POP(I32); break; // size, src offset, dst offset
+        }
+        case WAH_OP_ELEM_DROP: {
+            uint32_t elem_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &elem_idx));
+            WAH_ENSURE(elem_idx < vctx->module->element_segment_count, WAH_ERROR_VALIDATION_FAILED);
+            break;
         }
 
         case WAH_OP_I32_CONST: {
@@ -2730,7 +2801,8 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
             segment->func_indices = NULL; // Initialize to NULL for safe cleanup
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->table_idx));
-            WAH_ENSURE(segment->table_idx == 0, WAH_ERROR_VALIDATION_FAILED); // For now, only table 0 is supported
+            // Note: Multiple tables are supported in WebAssembly 2.0
+            // WAH_ENSURE(segment->table_idx == 0, WAH_ERROR_VALIDATION_FAILED); // For now, only table 0 is supported
 
             // Parse offset_expr (expected to be i32.const X end)
             WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
@@ -2912,7 +2984,9 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 break;
             }
             case WAH_OP_LOCAL_GET: case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE:
-            case WAH_OP_GLOBAL_GET: case WAH_OP_GLOBAL_SET: case WAH_OP_CALL: {
+            case WAH_OP_GLOBAL_GET: case WAH_OP_GLOBAL_SET: case WAH_OP_CALL:
+            case WAH_OP_TABLE_GET: case WAH_OP_TABLE_SET: case WAH_OP_TABLE_SIZE:
+            case WAH_OP_TABLE_GROW: case WAH_OP_TABLE_FILL: case WAH_OP_ELEM_DROP: {
                 uint32_t v;
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &v), cleanup);
                 preparsed_instr_size += sizeof(uint32_t);
@@ -2922,6 +2996,20 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 uint32_t t, i;
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &t), cleanup);
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &i), cleanup);
+                preparsed_instr_size += sizeof(uint32_t) * 2;
+                break;
+            }
+            case WAH_OP_TABLE_COPY: {
+                uint32_t t1, t2;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &t1), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &t2), cleanup);
+                preparsed_instr_size += sizeof(uint32_t) * 2;
+                break;
+            }
+            case WAH_OP_TABLE_INIT: {
+                uint32_t e, t;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &e), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &t), cleanup);
                 preparsed_instr_size += sizeof(uint32_t) * 2;
                 break;
             }
@@ -3093,7 +3181,9 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 break;
             }
             case WAH_OP_LOCAL_GET: case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE:
-            case WAH_OP_GLOBAL_GET: case WAH_OP_GLOBAL_SET: case WAH_OP_CALL: {
+            case WAH_OP_GLOBAL_GET: case WAH_OP_GLOBAL_SET: case WAH_OP_CALL:
+            case WAH_OP_TABLE_GET: case WAH_OP_TABLE_SET: case WAH_OP_TABLE_SIZE:
+            case WAH_OP_TABLE_GROW: case WAH_OP_TABLE_FILL: case WAH_OP_ELEM_DROP: {
                 uint32_t v;
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &v), cleanup);
                 wah_write_u32_le(write_ptr, v);
@@ -3107,6 +3197,26 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 wah_write_u32_le(write_ptr, t);
                 write_ptr += sizeof(uint32_t);
                 wah_write_u32_le(write_ptr, i);
+                write_ptr += sizeof(uint32_t);
+                break;
+            }
+            case WAH_OP_TABLE_COPY: {
+                uint32_t t1, t2;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &t1), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &t2), cleanup);
+                wah_write_u32_le(write_ptr, t1);
+                write_ptr += sizeof(uint32_t);
+                wah_write_u32_le(write_ptr, t2);
+                write_ptr += sizeof(uint32_t);
+                break;
+            }
+            case WAH_OP_TABLE_INIT: {
+                uint32_t e, t;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &e), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &t), cleanup);
+                wah_write_u32_le(write_ptr, e);
+                write_ptr += sizeof(uint32_t);
+                wah_write_u32_le(write_ptr, t);
                 write_ptr += sizeof(uint32_t);
                 break;
             }
@@ -3815,6 +3925,168 @@ WAH_RUN(GLOBAL_SET) {
     uint32_t effective_global_idx = frame->globals_offset + global_idx;
     ctx->globals[effective_global_idx] = ctx->value_stack[--ctx->sp];
     WAH_NEXT();
+}
+
+WAH_RUN(TABLE_GET) {
+    uint32_t table_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    uint32_t elem_idx = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    WAH_ENSURE_GOTO(table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(elem_idx < ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
+    ctx->value_stack[ctx->sp++] = ctx->tables[table_idx][elem_idx];
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(TABLE_SET) {
+    uint32_t table_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    wah_value_t val = ctx->value_stack[--ctx->sp];
+    uint32_t elem_idx = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    WAH_ENSURE_GOTO(table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(elem_idx < ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
+    ctx->tables[table_idx][elem_idx] = val;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(TABLE_SIZE) {
+    uint32_t table_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    WAH_ENSURE_GOTO(table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
+    ctx->value_stack[ctx->sp++].i32 = (int32_t)ctx->module->tables[table_idx].min_elements;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(TABLE_GROW) {
+    uint32_t table_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    int32_t delta = ctx->value_stack[--ctx->sp].i32;
+    wah_value_t init_val = ctx->value_stack[--ctx->sp];
+    WAH_ENSURE_GOTO(table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
+
+    if (delta < 0) {
+        ctx->value_stack[ctx->sp++].i32 = -1;
+        WAH_NEXT();
+    }
+
+    uint32_t old_size = ctx->module->tables[table_idx].min_elements;
+    uint64_t new_size = (uint64_t)old_size + delta;
+
+    // Check max_elements limit
+    if (ctx->module->tables[table_idx].max_elements > 0) {
+        WAH_ENSURE_GOTO(new_size <= ctx->module->tables[table_idx].max_elements, WAH_ERROR_TRAP, cleanup);
+    }
+
+    // Reallocate table
+    wah_value_t *new_table = NULL;
+    WAH_MALLOC_ARRAY_GOTO(new_table, new_size, cleanup);
+    memcpy(new_table, ctx->tables[table_idx], sizeof(wah_value_t) * old_size);
+    for (uint64_t i = old_size; i < new_size; ++i) {
+        new_table[i] = init_val;
+    }
+    free(ctx->tables[table_idx]);
+    ctx->tables[table_idx] = new_table;
+    ctx->module->tables[table_idx].min_elements = (uint32_t)new_size;
+
+    ctx->value_stack[ctx->sp++].i32 = (int32_t)old_size;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(TABLE_FILL) {
+    uint32_t table_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    // Stack: [offset, value, size] -> [] (per formal spec: i32.const i val i32.const n table.fill x)
+    uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    wah_value_t val = ctx->value_stack[--ctx->sp];
+    uint32_t offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    WAH_ENSURE_GOTO(table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)offset + size <= ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
+
+    for (uint32_t i = 0; i < size; ++i) {
+        ctx->tables[table_idx][offset + i] = val;
+    }
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(TABLE_COPY) {
+    uint32_t dst_table_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    uint32_t src_table_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    // Stack: [dst offset, src offset, size] -> [] (per formal spec: i32.const d i32.const s i32.const n table.copy x y)
+    uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    uint32_t src_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    uint32_t dst_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    WAH_ENSURE_GOTO(dst_table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(src_table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)src_offset + size <= ctx->module->tables[src_table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= ctx->module->tables[dst_table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
+
+    if (src_table_idx == dst_table_idx && src_offset == dst_offset) {
+        // Same table, same region - nothing to do
+        WAH_NEXT();
+    } else if (src_table_idx == dst_table_idx) {
+        // Same table, potentially overlapping - use directional copy per spec
+        if (dst_offset <= src_offset) {
+            // Copy forward to avoid overwriting source (d <= s)
+            for (uint32_t i = 0; i < size; ++i) {
+                ctx->tables[dst_table_idx][dst_offset + i] = ctx->tables[src_table_idx][src_offset + i];
+            }
+        } else {
+            // Copy backward to avoid overwriting source (d > s)
+            for (uint32_t i = size; i > 0; --i) {
+                ctx->tables[dst_table_idx][dst_offset + i - 1] = ctx->tables[src_table_idx][src_offset + i - 1];
+            }
+        }
+    } else {
+        // Different tables - simple memcpy
+        memcpy(&ctx->tables[dst_table_idx][dst_offset], &ctx->tables[src_table_idx][src_offset], sizeof(wah_value_t) * size);
+    }
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(TABLE_INIT) {
+    uint32_t elem_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    uint32_t table_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    // Stack: [dst offset, src offset, size] -> []
+    uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    uint32_t src_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    uint32_t dst_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    WAH_ENSURE_GOTO(elem_idx < ctx->module->element_segment_count, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
+    // CRITICAL: Check if element segment has been dropped (func_indices is NULL)
+    WAH_ENSURE_GOTO(ctx->module->element_segments[elem_idx].func_indices != NULL, WAH_ERROR_TRAP, cleanup);
+
+    const wah_element_segment_t *segment = &ctx->module->element_segments[elem_idx];
+    WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->num_elems, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
+
+    for (uint32_t i = 0; i < size; ++i) {
+        uint32_t func_idx = segment->func_indices[src_offset + i];
+        ctx->tables[table_idx][dst_offset + i].ref = &ctx->module->functions[func_idx];
+    }
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(ELEM_DROP) {
+    uint32_t elem_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    WAH_ENSURE_GOTO(elem_idx < ctx->module->element_segment_count, WAH_ERROR_TRAP, cleanup);
+    // Mark element segment as dropped by setting func_indices to NULL
+    // Subsequent table.init will trap because it checks for NULL
+    free(ctx->module->element_segments[elem_idx].func_indices);
+    ctx->module->element_segments[elem_idx].func_indices = NULL;
+    ctx->module->element_segments[elem_idx].num_elems = 0;
+    WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(CALL) {

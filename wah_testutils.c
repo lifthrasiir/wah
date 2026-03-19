@@ -116,6 +116,8 @@ static const token_entry_t token_table[] = {
     TOKEN("local.tee", 0x22),
     TOKEN("global.get", 0x23),
     TOKEN("global.set", 0x24),
+    TOKEN("table.get", 0x25),
+    TOKEN("table.set", 0x26),
     TOKEN("i32.load", 0x28),
     TOKEN("i64.load", 0x29),
     TOKEN("f32.load", 0x2a),
@@ -251,6 +253,12 @@ static const token_entry_t token_table[] = {
     TOKEN("memory.init", 0xfc, 0x08),
     TOKEN("memory.copy", 0xfc, 0x0a),
     TOKEN("memory.fill", 0xfc, 0x0b),
+    TOKEN("table.init", 0xfc, 0x0c),
+    TOKEN("elem.drop", 0xfc, 0x0d),
+    TOKEN("table.copy", 0xfc, 0x0e),
+    TOKEN("table.grow", 0xfc, 0x0f),
+    TOKEN("table.size", 0xfc, 0x10),
+    TOKEN("table.fill", 0xfc, 0x11),
 
     // Opcode parts
     TOKEN("offset=0", 0x00),
