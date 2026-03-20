@@ -383,56 +383,59 @@ typedef enum {
     WAH_OPCLASS__F_I, WAH_OPCLASS__F_L, WAH_OPCLASS__F_F, WAH_OPCLASS__F_V, WAH_OPCLASS__FF_I, WAH_OPCLASS__FF_F,
     WAH_OPCLASS__D_I, WAH_OPCLASS__D_L, WAH_OPCLASS__D_D, WAH_OPCLASS__D_V, WAH_OPCLASS__DD_I, WAH_OPCLASS__DD_L, WAH_OPCLASS__DD_D,
     WAH_OPCLASS__V_I, WAH_OPCLASS__V_V, WAH_OPCLASS__VI_V, WAH_OPCLASS__VV_V, WAH_OPCLASS__VVV_V,
+
+    // Opcodes with immediate arguments to be pasted into the preparsed code
+    WAH_OPCLASS_B, WAH_OPCLASS_I, WAH_OPCLASS_i, WAH_OPCLASS_II, WAH_OPCLASS_M, WAH_OPCLASS_MB,
 } wah_opclass_t;
 
 // --- WebAssembly Opcodes (subset) ---
 #define WAH_OPCODES(X) \
     /* Control Flow Operators */ \
     X(UNREACHABLE,, 0x00) X(NOP,, 0x01) X(BLOCK,, 0x02) X(LOOP,, 0x03) X(IF,, 0x04) X(ELSE,, 0x05) X(END,, 0x0B) \
-    X(BR,, 0x0C) X(BR_IF,, 0x0D) X(BR_TABLE,, 0x0E) X(RETURN,, 0x0F) X(CALL,, 0x10) X(CALL_INDIRECT,, 0x11) \
+    X(BR,, 0x0C) X(BR_IF,, 0x0D) X(BR_TABLE,, 0x0E) X(RETURN,, 0x0F) X(CALL,I, 0x10) X(CALL_INDIRECT,II, 0x11) \
     \
     /* Parametric Operators */ \
     X(DROP,, 0x1A) X(SELECT,, 0x1B) \
     \
     /* Variable Access */ \
-    X(LOCAL_GET,, 0x20) X(LOCAL_SET,, 0x21) X(LOCAL_TEE,, 0x22) X(GLOBAL_GET,, 0x23) X(GLOBAL_SET,, 0x24) \
+    X(LOCAL_GET,I, 0x20) X(LOCAL_SET,I, 0x21) X(LOCAL_TEE,I, 0x22) X(GLOBAL_GET,I, 0x23) X(GLOBAL_SET,I, 0x24) \
     \
     /* Table Operations */ \
-    X(TABLE_GET,, 0x25) X(TABLE_SET,, 0x26) \
-    X(TABLE_INIT,, WAH_FC+0x0C) X(ELEM_DROP,, WAH_FC+0x0D) \
-    X(TABLE_COPY,, WAH_FC+0x0E) X(TABLE_GROW,, WAH_FC+0x0F) \
-    X(TABLE_SIZE,, WAH_FC+0x10) X(TABLE_FILL,, WAH_FC+0x11) \
+    X(TABLE_GET,I, 0x25) X(TABLE_SET,I, 0x26) \
+    X(TABLE_INIT,II, WAH_FC+0x0C) X(ELEM_DROP,I, WAH_FC+0x0D) \
+    X(TABLE_COPY,II, WAH_FC+0x0E) X(TABLE_GROW,I, WAH_FC+0x0F) \
+    X(TABLE_SIZE,I, WAH_FC+0x10) X(TABLE_FILL,I, WAH_FC+0x11) \
     \
     /* Memory Operators */ \
-    X(I32_LOAD,, 0x28) X(I64_LOAD,, 0x29) X(F32_LOAD,, 0x2A) X(F64_LOAD,, 0x2B) \
-    X(I32_LOAD8_S,, 0x2C) X(I32_LOAD8_U,, 0x2D) X(I32_LOAD16_S,, 0x2E) X(I32_LOAD16_U,, 0x2F) \
-    X(I64_LOAD8_S,, 0x30) X(I64_LOAD8_U,, 0x31) X(I64_LOAD16_S,, 0x32) X(I64_LOAD16_U,, 0x33) \
-    X(I64_LOAD32_S,, 0x34) X(I64_LOAD32_U,, 0x35) \
-    X(I32_STORE,, 0x36) X(I64_STORE,, 0x37) X(F32_STORE,, 0x38) X(F64_STORE,, 0x39) \
-    X(I32_STORE8,, 0x3A) X(I32_STORE16,, 0x3B) X(I64_STORE8,, 0x3C) X(I64_STORE16,, 0x3D) X(I64_STORE32,, 0x3E) \
-    X(MEMORY_SIZE,, 0x3F) X(MEMORY_GROW,, 0x40) \
-    X(MEMORY_INIT,, WAH_FC+0x08) X(MEMORY_COPY,, WAH_FC+0x0A) X(MEMORY_FILL,, WAH_FC+0x0B) \
+    X(I32_LOAD,M, 0x28) X(I64_LOAD,M, 0x29) X(F32_LOAD,M, 0x2A) X(F64_LOAD,M, 0x2B) \
+    X(I32_LOAD8_S,M, 0x2C) X(I32_LOAD8_U,M, 0x2D) X(I32_LOAD16_S,M, 0x2E) X(I32_LOAD16_U,M, 0x2F) \
+    X(I64_LOAD8_S,M, 0x30) X(I64_LOAD8_U,M, 0x31) X(I64_LOAD16_S,M, 0x32) X(I64_LOAD16_U,M, 0x33) \
+    X(I64_LOAD32_S,M, 0x34) X(I64_LOAD32_U,M, 0x35) \
+    X(I32_STORE,M, 0x36) X(I64_STORE,M, 0x37) X(F32_STORE,M, 0x38) X(F64_STORE,M, 0x39) \
+    X(I32_STORE8,M, 0x3A) X(I32_STORE16,M, 0x3B) X(I64_STORE8,M, 0x3C) X(I64_STORE16,M, 0x3D) X(I64_STORE32,M, 0x3E) \
+    X(MEMORY_SIZE,i, 0x3F) X(MEMORY_GROW,i, 0x40) \
+    X(MEMORY_INIT,II, WAH_FC+0x08) X(MEMORY_COPY,II, WAH_FC+0x0A) X(MEMORY_FILL,i, WAH_FC+0x0B) \
     \
     /* Vector Memory Operators */ \
-    X(V128_LOAD,, WAH_FD+0x00) \
-    X(V128_LOAD8X8_S,, WAH_FD+0x01) X(V128_LOAD8X8_U,, WAH_FD+0x02) \
-    X(V128_LOAD16X4_S,, WAH_FD+0x03) X(V128_LOAD16X4_U,, WAH_FD+0x04) \
-    X(V128_LOAD32X2_S,, WAH_FD+0x05) X(V128_LOAD32X2_U,, WAH_FD+0x06) \
-    X(V128_LOAD8_SPLAT,, WAH_FD+0x07) X(V128_LOAD16_SPLAT,, WAH_FD+0x08) \
-    X(V128_LOAD32_SPLAT,, WAH_FD+0x09) X(V128_LOAD64_SPLAT,, WAH_FD+0x0A) \
-    X(V128_LOAD32_ZERO,, WAH_FD+0x5C) X(V128_LOAD64_ZERO,, WAH_FD+0x5D) \
-    X(V128_LOAD8_LANE,, WAH_FD+0x54) X(V128_LOAD16_LANE,, WAH_FD+0x55) \
-    X(V128_LOAD32_LANE,, WAH_FD+0x56) X(V128_LOAD64_LANE,, WAH_FD+0x57) \
+    X(V128_LOAD,M, WAH_FD+0x00) \
+    X(V128_LOAD8X8_S,M, WAH_FD+0x01) X(V128_LOAD8X8_U,M, WAH_FD+0x02) \
+    X(V128_LOAD16X4_S,M, WAH_FD+0x03) X(V128_LOAD16X4_U,M, WAH_FD+0x04) \
+    X(V128_LOAD32X2_S,M, WAH_FD+0x05) X(V128_LOAD32X2_U,M, WAH_FD+0x06) \
+    X(V128_LOAD8_SPLAT,M, WAH_FD+0x07) X(V128_LOAD16_SPLAT,M, WAH_FD+0x08) \
+    X(V128_LOAD32_SPLAT,M, WAH_FD+0x09) X(V128_LOAD64_SPLAT,M, WAH_FD+0x0A) \
+    X(V128_LOAD32_ZERO,M, WAH_FD+0x5C) X(V128_LOAD64_ZERO,M, WAH_FD+0x5D) \
+    X(V128_LOAD8_LANE,MB, WAH_FD+0x54) X(V128_LOAD16_LANE,MB, WAH_FD+0x55) \
+    X(V128_LOAD32_LANE,MB, WAH_FD+0x56) X(V128_LOAD64_LANE,MB, WAH_FD+0x57) \
     X(V128_STORE,, WAH_FD+0x0B) \
     \
     /* Vector Lane Operations */ \
     X(I8X16_SHUFFLE,, WAH_FD+0x0D) X(I8X16_SWIZZLE,_VV_V, WAH_FD+0x0E) \
-    X(I8X16_EXTRACT_LANE_S,, WAH_FD+0x15) X(I8X16_EXTRACT_LANE_U,, WAH_FD+0x16) X(I8X16_REPLACE_LANE,, WAH_FD+0x17) \
-    X(I16X8_EXTRACT_LANE_S,, WAH_FD+0x18) X(I16X8_EXTRACT_LANE_U,, WAH_FD+0x19) X(I16X8_REPLACE_LANE,, WAH_FD+0x1A) \
-    X(I32X4_EXTRACT_LANE,, WAH_FD+0x1B) X(I32X4_REPLACE_LANE,, WAH_FD+0x1C) \
-    X(I64X2_EXTRACT_LANE,, WAH_FD+0x1D) X(I64X2_REPLACE_LANE,, WAH_FD+0x1E) \
-    X(F32X4_EXTRACT_LANE,, WAH_FD+0x1F) X(F32X4_REPLACE_LANE,, WAH_FD+0x20) \
-    X(F64X2_EXTRACT_LANE,, WAH_FD+0x21) X(F64X2_REPLACE_LANE,, WAH_FD+0x22) \
+    X(I8X16_EXTRACT_LANE_S,B, WAH_FD+0x15) X(I8X16_EXTRACT_LANE_U,B, WAH_FD+0x16) X(I8X16_REPLACE_LANE,B, WAH_FD+0x17) \
+    X(I16X8_EXTRACT_LANE_S,B, WAH_FD+0x18) X(I16X8_EXTRACT_LANE_U,B, WAH_FD+0x19) X(I16X8_REPLACE_LANE,B, WAH_FD+0x1A) \
+    X(I32X4_EXTRACT_LANE,B, WAH_FD+0x1B) X(I32X4_REPLACE_LANE,B, WAH_FD+0x1C) \
+    X(I64X2_EXTRACT_LANE,B, WAH_FD+0x1D) X(I64X2_REPLACE_LANE,B, WAH_FD+0x1E) \
+    X(F32X4_EXTRACT_LANE,B, WAH_FD+0x1F) X(F32X4_REPLACE_LANE,B, WAH_FD+0x20) \
+    X(F64X2_EXTRACT_LANE,B, WAH_FD+0x21) X(F64X2_REPLACE_LANE,B, WAH_FD+0x22) \
     X(I8X16_SPLAT,_I_V, WAH_FD+0x0F) X(I16X8_SPLAT,_I_V, WAH_FD+0x10) X(I32X4_SPLAT,_I_V, WAH_FD+0x11) X(I64X2_SPLAT,_L_V, WAH_FD+0x12) \
     X(F32X4_SPLAT,_F_V, WAH_FD+0x13) X(F64X2_SPLAT,_D_V, WAH_FD+0x14) \
     \
@@ -2822,179 +2825,122 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 } \
             } while (0)
 
-        switch (opcode) {
-            case WAH_OP_BLOCK: case WAH_OP_LOOP: case WAH_OP_IF: {
-                int32_t block_type;
-                WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &block_type), cleanup);
-                GROW_BLOCK_TARGETS();
-                WAH_ENSURE_GOTO(control_sp < WAH_MAX_CONTROL_DEPTH, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                uint32_t target_idx = block_target_count++;
-                block_targets[target_idx] = preparsed_size; // To be overwritten for WAH_OP_IF
-                control_stack[control_sp++] = (wah_control_frame_t){.opcode=(wah_opcode_t)opcode, .target_idx=target_idx};
-                preparsed_instr_size = (opcode == WAH_OP_IF) ? sizeof(uint16_t) + sizeof(uint32_t) : 0;
-                break;
-            }
-            case WAH_OP_ELSE: {
-                WAH_ENSURE_GOTO(control_sp > 0 && control_stack[control_sp - 1].opcode == WAH_OP_IF, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                preparsed_instr_size = sizeof(uint16_t) + sizeof(uint32_t);
-                block_targets[control_stack[control_sp - 1].target_idx] = preparsed_size + preparsed_instr_size;
-                GROW_BLOCK_TARGETS();
-                uint32_t target_idx = block_target_count++;
-                control_stack[control_sp - 1] = (wah_control_frame_t){.opcode=(wah_opcode_t)opcode, .target_idx=target_idx};
-                break;
-            }
-            case WAH_OP_END: {
-                if (control_sp > 0) {
-                    wah_control_frame_t frame = control_stack[--control_sp];
-                    if (frame.opcode != WAH_OP_LOOP) { // BLOCK, IF, ELSE
-                        block_targets[frame.target_idx] = preparsed_size;
-                    }
-                    preparsed_instr_size = 0;
-                } else { // Final END
-                    preparsed_instr_size = sizeof(uint16_t);
-                }
-                break;
-            }
-            case WAH_OP_BR: case WAH_OP_BR_IF: {
-                 uint32_t d;
-                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &d), cleanup);
-                 preparsed_instr_size += sizeof(uint32_t);
-                 break;
-            }
-            case WAH_OP_BR_TABLE: {
-                uint32_t num_targets;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &num_targets), cleanup);
-                preparsed_instr_size += sizeof(uint32_t) * (num_targets + 2);
-                for (uint32_t i = 0; i < num_targets + 1; ++i) {
-                    uint32_t d;
-                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &d), cleanup);
-                }
-                break;
-            }
-            case WAH_OP_LOCAL_GET: case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE:
-            case WAH_OP_GLOBAL_GET: case WAH_OP_GLOBAL_SET: case WAH_OP_CALL:
-            case WAH_OP_TABLE_GET: case WAH_OP_TABLE_SET: case WAH_OP_TABLE_SIZE:
-            case WAH_OP_TABLE_GROW: case WAH_OP_TABLE_FILL: case WAH_OP_ELEM_DROP: {
-                uint32_t v;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &v), cleanup);
-                preparsed_instr_size += sizeof(uint32_t);
-                break;
-            }
-            case WAH_OP_CALL_INDIRECT: {
-                uint32_t t, i;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &t), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &i), cleanup);
-                preparsed_instr_size += sizeof(uint32_t) * 2;
-                break;
-            }
-            case WAH_OP_TABLE_COPY: {
-                uint32_t t1, t2;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &t1), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &t2), cleanup);
-                preparsed_instr_size += sizeof(uint32_t) * 2;
-                break;
-            }
-            case WAH_OP_TABLE_INIT: {
-                uint32_t e, t;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &e), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &t), cleanup);
-                preparsed_instr_size += sizeof(uint32_t) * 2;
-                break;
-            }
-            case WAH_OP_I32_CONST: {
-                int32_t v;
-                WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &v), cleanup);
-                preparsed_instr_size += sizeof(int32_t);
-                break;
-            }
-            case WAH_OP_I64_CONST: {
-                int64_t v;
-                WAH_CHECK_GOTO(wah_decode_sleb128_64(&ptr, end, &v), cleanup);
-                preparsed_instr_size += sizeof(int64_t);
-                break;
-            }
-            case WAH_OP_F32_CONST: ptr += 4; preparsed_instr_size += 4; break;
-            case WAH_OP_F64_CONST: ptr += 8; preparsed_instr_size += 8; break;
-            case WAH_OP_V128_CONST: ptr += 16; preparsed_instr_size += 16; break;
-
-            case WAH_OP_I32_LOAD: case WAH_OP_I64_LOAD: case WAH_OP_F32_LOAD: case WAH_OP_F64_LOAD:
-            case WAH_OP_I32_LOAD8_S: case WAH_OP_I32_LOAD8_U: case WAH_OP_I32_LOAD16_S: case WAH_OP_I32_LOAD16_U:
-            case WAH_OP_I64_LOAD8_S: case WAH_OP_I64_LOAD8_U: case WAH_OP_I64_LOAD16_S: case WAH_OP_I64_LOAD16_U:
-            case WAH_OP_I64_LOAD32_S: case WAH_OP_I64_LOAD32_U:
-            case WAH_OP_I32_STORE: case WAH_OP_I64_STORE: case WAH_OP_F32_STORE: case WAH_OP_F64_STORE:
-            case WAH_OP_I32_STORE8: case WAH_OP_I32_STORE16: case WAH_OP_I64_STORE8: case WAH_OP_I64_STORE16: case WAH_OP_I64_STORE32:
-            case WAH_OP_V128_LOAD: case WAH_OP_V128_STORE:
-            case WAH_OP_V128_LOAD8X8_S: case WAH_OP_V128_LOAD8X8_U:
-            case WAH_OP_V128_LOAD16X4_S: case WAH_OP_V128_LOAD16X4_U:
-            case WAH_OP_V128_LOAD32X2_S: case WAH_OP_V128_LOAD32X2_U:
-            case WAH_OP_V128_LOAD8_SPLAT: case WAH_OP_V128_LOAD16_SPLAT:
-            case WAH_OP_V128_LOAD32_SPLAT: case WAH_OP_V128_LOAD64_SPLAT:
-            case WAH_OP_V128_LOAD32_ZERO: case WAH_OP_V128_LOAD64_ZERO: {
-                uint32_t a, o;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &o), cleanup);
-                preparsed_instr_size += sizeof(uint32_t); // For offset (ignore align)
-                break;
-            }
-
-            case WAH_OP_V128_LOAD8_LANE: case WAH_OP_V128_LOAD16_LANE:
-            case WAH_OP_V128_LOAD32_LANE: case WAH_OP_V128_LOAD64_LANE: {
-                uint32_t a, o, l;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &o), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &l), cleanup);
-                preparsed_instr_size += sizeof(uint32_t) * 2; // For offset and lane_idx
-                break;
-            }
-            case WAH_OP_I8X16_SHUFFLE: ptr += 16; preparsed_instr_size += 16; break;
-            case WAH_OP_I8X16_EXTRACT_LANE_S: case WAH_OP_I8X16_EXTRACT_LANE_U: case WAH_OP_I8X16_REPLACE_LANE:
-            case WAH_OP_I16X8_EXTRACT_LANE_S: case WAH_OP_I16X8_EXTRACT_LANE_U: case WAH_OP_I16X8_REPLACE_LANE:
-            case WAH_OP_I32X4_EXTRACT_LANE: case WAH_OP_I32X4_REPLACE_LANE:
-            case WAH_OP_I64X2_EXTRACT_LANE: case WAH_OP_I64X2_REPLACE_LANE:
-            case WAH_OP_F32X4_EXTRACT_LANE: case WAH_OP_F32X4_REPLACE_LANE:
-            case WAH_OP_F64X2_EXTRACT_LANE: case WAH_OP_F64X2_REPLACE_LANE: {
+        switch (wah_opclasses[opcode]) {
+            case WAH_OPCLASS_B: {
                 ptr += 1;
                 preparsed_instr_size += 1;
                 break;
             }
-
-            case WAH_OP_MEMORY_SIZE: case WAH_OP_MEMORY_GROW: case WAH_OP_MEMORY_FILL: {
-                uint32_t m;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &m), cleanup);
+            case WAH_OPCLASS_I: {
+                uint32_t a;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
+                preparsed_instr_size += sizeof(uint32_t);
                 break;
             }
-            case WAH_OP_MEMORY_INIT: {
-                uint32_t data_idx, mem_idx;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &data_idx), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &mem_idx), cleanup);
-                preparsed_instr_size += sizeof(uint32_t) * 2; // For data_idx and mem_idx
+            case WAH_OPCLASS_i: {
+                uint32_t a;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
                 break;
             }
-            case WAH_OP_MEMORY_COPY: {
-                uint32_t dest_mem_idx, src_mem_idx;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &dest_mem_idx), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &src_mem_idx), cleanup);
-                preparsed_instr_size += sizeof(uint32_t) * 2; // For dest_mem_idx and src_mem_idx
+            case WAH_OPCLASS_II: {
+                uint32_t a, b;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &b), cleanup);
+                preparsed_instr_size += sizeof(uint32_t) * 2;
                 break;
             }
-
-            case WAH_OP_REF_NULL: {
-                wah_type_t ref_type;
-                WAH_CHECK_GOTO(wah_decode_ref_type(&ptr, end, &ref_type), cleanup);
-                preparsed_instr_size += sizeof(uint32_t); // For type (converted to uint32_t)
+            case WAH_OPCLASS_M: {
+                uint32_t align, offset;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &align), cleanup); // ignored
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &offset), cleanup);
+                preparsed_instr_size += sizeof(uint32_t);
                 break;
             }
-
-            case WAH_OP_REF_FUNC: {
-                uint32_t func_idx;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &func_idx), cleanup);
-                preparsed_instr_size += sizeof(uint32_t); // For function index
+            case WAH_OPCLASS_MB: {
+                uint32_t align, offset, x;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &align), cleanup); // ignored
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &offset), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &x), cleanup); // XXX should be a single byte
+                preparsed_instr_size += sizeof(uint32_t) * 2;
                 break;
             }
-
-            // REF_IS_NULL has no immediate operands
-            case WAH_OP_REF_IS_NULL:
-                break;
+            default: switch (opcode) {
+                case WAH_OP_BLOCK: case WAH_OP_LOOP: case WAH_OP_IF: {
+                    int32_t block_type;
+                    WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &block_type), cleanup);
+                    GROW_BLOCK_TARGETS();
+                    WAH_ENSURE_GOTO(control_sp < WAH_MAX_CONTROL_DEPTH, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    uint32_t target_idx = block_target_count++;
+                    block_targets[target_idx] = preparsed_size; // To be overwritten for WAH_OP_IF
+                    control_stack[control_sp++] = (wah_control_frame_t){.opcode=(wah_opcode_t)opcode, .target_idx=target_idx};
+                    preparsed_instr_size = (opcode == WAH_OP_IF) ? sizeof(uint16_t) + sizeof(uint32_t) : 0;
+                    break;
+                }
+                case WAH_OP_ELSE: {
+                    WAH_ENSURE_GOTO(control_sp > 0 && control_stack[control_sp - 1].opcode == WAH_OP_IF, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    preparsed_instr_size = sizeof(uint16_t) + sizeof(uint32_t);
+                    block_targets[control_stack[control_sp - 1].target_idx] = preparsed_size + preparsed_instr_size;
+                    GROW_BLOCK_TARGETS();
+                    uint32_t target_idx = block_target_count++;
+                    control_stack[control_sp - 1] = (wah_control_frame_t){.opcode=(wah_opcode_t)opcode, .target_idx=target_idx};
+                    break;
+                }
+                case WAH_OP_END: {
+                    if (control_sp > 0) {
+                        wah_control_frame_t frame = control_stack[--control_sp];
+                        if (frame.opcode != WAH_OP_LOOP) { // BLOCK, IF, ELSE
+                            block_targets[frame.target_idx] = preparsed_size;
+                        }
+                        preparsed_instr_size = 0;
+                    } else { // Final END
+                        preparsed_instr_size = sizeof(uint16_t);
+                    }
+                    break;
+                }
+                case WAH_OP_BR: case WAH_OP_BR_IF: {
+                    uint32_t d;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &d), cleanup);
+                    preparsed_instr_size += sizeof(uint32_t);
+                    break;
+                }
+                case WAH_OP_BR_TABLE: {
+                    uint32_t num_targets;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &num_targets), cleanup);
+                    preparsed_instr_size += sizeof(uint32_t) * (num_targets + 2);
+                    for (uint32_t i = 0; i < num_targets + 1; ++i) {
+                        uint32_t d;
+                        WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &d), cleanup);
+                    }
+                    break;
+                }
+                case WAH_OP_I32_CONST: {
+                    int32_t v;
+                    WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &v), cleanup);
+                    preparsed_instr_size += sizeof(int32_t);
+                    break;
+                }
+                case WAH_OP_I64_CONST: {
+                    int64_t v;
+                    WAH_CHECK_GOTO(wah_decode_sleb128_64(&ptr, end, &v), cleanup);
+                    preparsed_instr_size += sizeof(int64_t);
+                    break;
+                }
+                case WAH_OP_F32_CONST: ptr += 4; preparsed_instr_size += 4; break;
+                case WAH_OP_F64_CONST: ptr += 8; preparsed_instr_size += 8; break;
+                case WAH_OP_V128_CONST: case WAH_OP_I8X16_SHUFFLE: ptr += 16; preparsed_instr_size += 16; break;
+                case WAH_OP_REF_NULL: {
+                    wah_type_t ref_type;
+                    WAH_CHECK_GOTO(wah_decode_ref_type(&ptr, end, &ref_type), cleanup);
+                    preparsed_instr_size += sizeof(uint32_t); // For type (converted to uint32_t)
+                    break;
+                }
+                case WAH_OP_REF_FUNC: {
+                    uint32_t func_idx;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &func_idx), cleanup);
+                    preparsed_instr_size += sizeof(uint32_t); // For function index
+                    break;
+                }
+            }
         }
         preparsed_size += preparsed_instr_size;
         ptr = instr_ptr + (ptr - instr_ptr); // This is not a bug; it's to make it clear that ptr is advanced inside the switch
@@ -3027,200 +2973,126 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
         wah_write_u16_le(write_ptr, opcode);
         write_ptr += sizeof(uint16_t);
 
-        switch (opcode) {
-            case WAH_OP_IF: {
-                int32_t block_type;
-                WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &block_type), cleanup);
-                WAH_ENSURE_GOTO(control_sp < WAH_MAX_CONTROL_DEPTH, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                control_stack[control_sp++] = (wah_control_frame_t){.opcode=WAH_OP_IF, .target_idx=current_block_idx};
-                wah_write_u32_le(write_ptr, block_targets[current_block_idx++]);
+        switch (wah_opclasses[opcode]) {
+            case WAH_OPCLASS_B: {
+                *write_ptr++ = *ptr++;
+                break;
+            }
+            case WAH_OPCLASS_I: {
+                uint32_t a;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
+                wah_write_u32_le(write_ptr, a);
                 write_ptr += sizeof(uint32_t);
                 break;
             }
-            case WAH_OP_ELSE: {
-                WAH_ENSURE_GOTO(control_sp > 0 && control_stack[control_sp - 1].opcode == WAH_OP_IF, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                control_stack[control_sp - 1] = (wah_control_frame_t){.opcode=WAH_OP_ELSE, .target_idx=current_block_idx};
-                wah_write_u32_le(write_ptr, block_targets[current_block_idx++]);
+            case WAH_OPCLASS_i: {
+                uint32_t a;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
+                break;
+            }
+            case WAH_OPCLASS_II: {
+                uint32_t a, b;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &b), cleanup);
+                wah_write_u32_le(write_ptr, a);
+                write_ptr += sizeof(uint32_t);
+                wah_write_u32_le(write_ptr, b);
                 write_ptr += sizeof(uint32_t);
                 break;
             }
-            case WAH_OP_BR: case WAH_OP_BR_IF: {
-                uint32_t relative_depth;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &relative_depth), cleanup);
-                WAH_ENSURE_GOTO(relative_depth < control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                wah_control_frame_t* frame = &control_stack[control_sp - 1 - relative_depth];
-                wah_write_u32_le(write_ptr, block_targets[frame->target_idx]);
+            case WAH_OPCLASS_M: {
+                uint32_t align, offset;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &align), cleanup); // ignored
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &offset), cleanup);
+                wah_write_u32_le(write_ptr, offset);
                 write_ptr += sizeof(uint32_t);
                 break;
             }
-            case WAH_OP_BR_TABLE: {
-                uint32_t num_targets;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &num_targets), cleanup);
-                wah_write_u32_le(write_ptr, num_targets);
+            case WAH_OPCLASS_MB: {
+                uint32_t align, offset, x;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &align), cleanup); // ignored
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &offset), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &x), cleanup); // XXX should be a single byte
+                wah_write_u32_le(write_ptr, offset);
                 write_ptr += sizeof(uint32_t);
-                for (uint32_t i = 0; i < num_targets + 1; ++i) {
+                wah_write_u32_le(write_ptr, x);
+                write_ptr += sizeof(uint32_t);
+                break;
+            }
+            default: switch (opcode) {
+                case WAH_OP_IF: {
+                    int32_t block_type;
+                    WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &block_type), cleanup);
+                    WAH_ENSURE_GOTO(control_sp < WAH_MAX_CONTROL_DEPTH, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    control_stack[control_sp++] = (wah_control_frame_t){.opcode=WAH_OP_IF, .target_idx=current_block_idx};
+                    wah_write_u32_le(write_ptr, block_targets[current_block_idx++]);
+                    write_ptr += sizeof(uint32_t);
+                    break;
+                }
+                case WAH_OP_ELSE: {
+                    WAH_ENSURE_GOTO(control_sp > 0 && control_stack[control_sp - 1].opcode == WAH_OP_IF, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    control_stack[control_sp - 1] = (wah_control_frame_t){.opcode=WAH_OP_ELSE, .target_idx=current_block_idx};
+                    wah_write_u32_le(write_ptr, block_targets[current_block_idx++]);
+                    write_ptr += sizeof(uint32_t);
+                    break;
+                }
+                case WAH_OP_BR: case WAH_OP_BR_IF: {
                     uint32_t relative_depth;
                     WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &relative_depth), cleanup);
                     WAH_ENSURE_GOTO(relative_depth < control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup);
                     wah_control_frame_t* frame = &control_stack[control_sp - 1 - relative_depth];
                     wah_write_u32_le(write_ptr, block_targets[frame->target_idx]);
                     write_ptr += sizeof(uint32_t);
+                    break;
                 }
-                break;
+                case WAH_OP_BR_TABLE: {
+                    uint32_t num_targets;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &num_targets), cleanup);
+                    wah_write_u32_le(write_ptr, num_targets);
+                    write_ptr += sizeof(uint32_t);
+                    for (uint32_t i = 0; i < num_targets + 1; ++i) {
+                        uint32_t relative_depth;
+                        WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &relative_depth), cleanup);
+                        WAH_ENSURE_GOTO(relative_depth < control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                        wah_control_frame_t* frame = &control_stack[control_sp - 1 - relative_depth];
+                        wah_write_u32_le(write_ptr, block_targets[frame->target_idx]);
+                        write_ptr += sizeof(uint32_t);
+                    }
+                    break;
+                }
+                case WAH_OP_I32_CONST: {
+                    int32_t v;
+                    WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &v), cleanup);
+                    wah_write_u32_le(write_ptr, (uint32_t)v);
+                    write_ptr += sizeof(uint32_t);
+                    break;
+                }
+                case WAH_OP_I64_CONST: {
+                    int64_t v;
+                    WAH_CHECK_GOTO(wah_decode_sleb128_64(&ptr, end, &v), cleanup);
+                    wah_write_u64_le(write_ptr, (uint64_t)v);
+                    write_ptr += sizeof(uint64_t);
+                    break;
+                }
+                case WAH_OP_F32_CONST: memcpy(write_ptr, ptr, 4); ptr += 4; write_ptr += 4; break;
+                case WAH_OP_F64_CONST: memcpy(write_ptr, ptr, 8); ptr += 8; write_ptr += 8; break;
+                case WAH_OP_V128_CONST: case WAH_OP_I8X16_SHUFFLE: memcpy(write_ptr, ptr, 16); ptr += 16; write_ptr += 16; break;
+                case WAH_OP_REF_NULL: {
+                    wah_type_t ref_type;
+                    WAH_CHECK_GOTO(wah_decode_ref_type(&ptr, end, &ref_type), cleanup);
+                    // ref_type is already converted to WAH_TYPE_FUNCREF (-16) or WAH_TYPE_EXTERNREF (-17)
+                    wah_write_u32_le(write_ptr, (uint32_t)ref_type);
+                    write_ptr += sizeof(uint32_t);
+                    break;
+                }
+                case WAH_OP_REF_FUNC: {
+                    uint32_t func_idx;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &func_idx), cleanup);
+                    wah_write_u32_le(write_ptr, func_idx);
+                    write_ptr += sizeof(uint32_t);
+                    break;
+                }
             }
-            case WAH_OP_LOCAL_GET: case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE:
-            case WAH_OP_GLOBAL_GET: case WAH_OP_GLOBAL_SET: case WAH_OP_CALL:
-            case WAH_OP_TABLE_GET: case WAH_OP_TABLE_SET: case WAH_OP_TABLE_SIZE:
-            case WAH_OP_TABLE_GROW: case WAH_OP_TABLE_FILL: case WAH_OP_ELEM_DROP: {
-                uint32_t v;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &v), cleanup);
-                wah_write_u32_le(write_ptr, v);
-                write_ptr += sizeof(uint32_t);
-                break;
-            }
-            case WAH_OP_CALL_INDIRECT: {
-                uint32_t t, i;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &t), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &i), cleanup);
-                wah_write_u32_le(write_ptr, t);
-                write_ptr += sizeof(uint32_t);
-                wah_write_u32_le(write_ptr, i);
-                write_ptr += sizeof(uint32_t);
-                break;
-            }
-            case WAH_OP_TABLE_COPY: {
-                uint32_t t1, t2;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &t1), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &t2), cleanup);
-                wah_write_u32_le(write_ptr, t1);
-                write_ptr += sizeof(uint32_t);
-                wah_write_u32_le(write_ptr, t2);
-                write_ptr += sizeof(uint32_t);
-                break;
-            }
-            case WAH_OP_TABLE_INIT: {
-                uint32_t e, t;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &e), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &t), cleanup);
-                wah_write_u32_le(write_ptr, e);
-                write_ptr += sizeof(uint32_t);
-                wah_write_u32_le(write_ptr, t);
-                write_ptr += sizeof(uint32_t);
-                break;
-            }
-            case WAH_OP_I32_CONST: {
-                int32_t v;
-                WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &v), cleanup);
-                wah_write_u32_le(write_ptr, (uint32_t)v);
-                write_ptr += sizeof(uint32_t);
-                break;
-            }
-            case WAH_OP_I64_CONST: {
-                int64_t v;
-                WAH_CHECK_GOTO(wah_decode_sleb128_64(&ptr, end, &v), cleanup);
-                wah_write_u64_le(write_ptr, (uint64_t)v);
-                write_ptr += sizeof(uint64_t);
-                break;
-            }
-            case WAH_OP_F32_CONST: memcpy(write_ptr, ptr, 4); ptr += 4; write_ptr += 4; break;
-            case WAH_OP_F64_CONST: memcpy(write_ptr, ptr, 8); ptr += 8; write_ptr += 8; break;
-            case WAH_OP_V128_CONST: memcpy(write_ptr, ptr, 16); ptr += 16; write_ptr += 16; break;
-
-            case WAH_OP_I32_LOAD: case WAH_OP_I64_LOAD: case WAH_OP_F32_LOAD: case WAH_OP_F64_LOAD:
-            case WAH_OP_I32_LOAD8_S: case WAH_OP_I32_LOAD8_U: case WAH_OP_I32_LOAD16_S: case WAH_OP_I32_LOAD16_U:
-            case WAH_OP_I64_LOAD8_S: case WAH_OP_I64_LOAD8_U: case WAH_OP_I64_LOAD16_S: case WAH_OP_I64_LOAD16_U:
-            case WAH_OP_I64_LOAD32_S: case WAH_OP_I64_LOAD32_U:
-            case WAH_OP_I32_STORE: case WAH_OP_I64_STORE: case WAH_OP_F32_STORE: case WAH_OP_F64_STORE:
-            case WAH_OP_I32_STORE8: case WAH_OP_I32_STORE16: case WAH_OP_I64_STORE8: case WAH_OP_I64_STORE16: case WAH_OP_I64_STORE32:
-            case WAH_OP_V128_LOAD: case WAH_OP_V128_STORE:
-            case WAH_OP_V128_LOAD8X8_S: case WAH_OP_V128_LOAD8X8_U:
-            case WAH_OP_V128_LOAD16X4_S: case WAH_OP_V128_LOAD16X4_U:
-            case WAH_OP_V128_LOAD32X2_S: case WAH_OP_V128_LOAD32X2_U:
-            case WAH_OP_V128_LOAD8_SPLAT: case WAH_OP_V128_LOAD16_SPLAT:
-            case WAH_OP_V128_LOAD32_SPLAT: case WAH_OP_V128_LOAD64_SPLAT:
-            case WAH_OP_V128_LOAD32_ZERO: case WAH_OP_V128_LOAD64_ZERO: {
-                uint32_t a, o;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &o), cleanup);
-                wah_write_u32_le(write_ptr, o);
-                write_ptr += sizeof(uint32_t);
-                break;
-            }
-
-            case WAH_OP_V128_LOAD8_LANE: case WAH_OP_V128_LOAD16_LANE:
-            case WAH_OP_V128_LOAD32_LANE: case WAH_OP_V128_LOAD64_LANE: {
-                uint32_t a, o, l;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &a), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &o), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &l), cleanup);
-                wah_write_u32_le(write_ptr, o);
-                write_ptr += sizeof(uint32_t);
-                wah_write_u32_le(write_ptr, l);
-                write_ptr += sizeof(uint32_t);
-                break;
-            }
-            case WAH_OP_I8X16_SHUFFLE: {
-                memcpy(write_ptr, ptr, 16); 
-                ptr += 16; 
-                write_ptr += 16; 
-                break;
-            }
-            case WAH_OP_I8X16_EXTRACT_LANE_S: case WAH_OP_I8X16_EXTRACT_LANE_U: case WAH_OP_I8X16_REPLACE_LANE:
-            case WAH_OP_I16X8_EXTRACT_LANE_S: case WAH_OP_I16X8_EXTRACT_LANE_U: case WAH_OP_I16X8_REPLACE_LANE:
-            case WAH_OP_I32X4_EXTRACT_LANE: case WAH_OP_I32X4_REPLACE_LANE:
-            case WAH_OP_I64X2_EXTRACT_LANE: case WAH_OP_I64X2_REPLACE_LANE:
-            case WAH_OP_F32X4_EXTRACT_LANE: case WAH_OP_F32X4_REPLACE_LANE:
-            case WAH_OP_F64X2_EXTRACT_LANE: case WAH_OP_F64X2_REPLACE_LANE: {
-                *write_ptr++ = *ptr++;
-                break;
-            }
-
-            case WAH_OP_MEMORY_SIZE: case WAH_OP_MEMORY_GROW: case WAH_OP_MEMORY_FILL: {
-                uint32_t m;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &m), cleanup);
-                break;
-            }
-            case WAH_OP_MEMORY_INIT: {
-                uint32_t data_idx, mem_idx;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &data_idx), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &mem_idx), cleanup);
-                wah_write_u32_le(write_ptr, data_idx);
-                write_ptr += sizeof(uint32_t);
-                wah_write_u32_le(write_ptr, mem_idx);
-                write_ptr += sizeof(uint32_t);
-                break;
-            }
-            case WAH_OP_MEMORY_COPY: {
-                uint32_t dest_mem_idx, src_mem_idx;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &dest_mem_idx), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &src_mem_idx), cleanup);
-                wah_write_u32_le(write_ptr, dest_mem_idx);
-                write_ptr += sizeof(uint32_t);
-                wah_write_u32_le(write_ptr, src_mem_idx);
-                write_ptr += sizeof(uint32_t);
-                break;
-            }
-
-            case WAH_OP_REF_NULL: {
-                wah_type_t ref_type;
-                WAH_CHECK_GOTO(wah_decode_ref_type(&ptr, end, &ref_type), cleanup);
-                // ref_type is already converted to WAH_TYPE_FUNCREF (-16) or WAH_TYPE_EXTERNREF (-17)
-                wah_write_u32_le(write_ptr, (uint32_t)ref_type);
-                write_ptr += sizeof(uint32_t);
-                break;
-            }
-
-            case WAH_OP_REF_FUNC: {
-                uint32_t func_idx;
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &func_idx), cleanup);
-                wah_write_u32_le(write_ptr, func_idx);
-                write_ptr += sizeof(uint32_t);
-                break;
-            }
-
-            // REF_IS_NULL has no immediate operands
-            case WAH_OP_REF_IS_NULL:
-                break;
         }
         ptr = saved_ptr + (ptr - saved_ptr);
     }
