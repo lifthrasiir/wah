@@ -2857,11 +2857,11 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 break;
             }
             case WAH_OPCLASS_MB: {
-                uint32_t align, offset, x;
+                uint32_t align, offset;
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &align), cleanup); // ignored
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &offset), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &x), cleanup); // XXX should be a single byte
-                preparsed_instr_size += sizeof(uint32_t) * 2;
+                ptr += 1;
+                preparsed_instr_size += sizeof(uint32_t) + 1;
                 break;
             }
             default: switch (opcode) {
@@ -3009,14 +3009,12 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 break;
             }
             case WAH_OPCLASS_MB: {
-                uint32_t align, offset, x;
+                uint32_t align, offset;
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &align), cleanup); // ignored
                 WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &offset), cleanup);
-                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &x), cleanup); // XXX should be a single byte
                 wah_write_u32_le(write_ptr, offset);
                 write_ptr += sizeof(uint32_t);
-                wah_write_u32_le(write_ptr, x);
-                write_ptr += sizeof(uint32_t);
+                *write_ptr++ = *ptr++;
                 break;
             }
             default: switch (opcode) {
@@ -4415,8 +4413,7 @@ WAH_RUN(UNREACHABLE) {
 #define V128_LOAD_LANE_OP(N) { \
     uint32_t offset = wah_read_u32_le(bytecode_ip); \
     bytecode_ip += sizeof(uint32_t); \
-    uint32_t lane_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+    uint32_t lane_idx = *bytecode_ip++; \
     wah_v128_t val = ctx->value_stack[--ctx->sp].v128; /* Existing vector */ \
     uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32; \
     uint32_t effective_addr = addr + offset; \
