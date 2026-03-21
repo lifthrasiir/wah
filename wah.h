@@ -8,6 +8,15 @@
 #include <stdbool.h>
 #include <assert.h>
 
+// Assertions are only used for always-true conditions as a correctness check.
+// Any possible runtime error should be checked with WAH_ENSURE etc. instead.
+// Exception: Public interfaces without wah_error_t return type may use WAH_ASSERT as a last resort.
+#ifdef WAH_DEBUG
+#define WAH_ASSERT(cond) assert(cond)
+#else
+#define WAH_ASSERT(cond) ((void)0)
+#endif
+
 typedef enum {
     WAH_OK = 0,
     WAH_ERROR_INVALID_MAGIC_NUMBER = -1,
@@ -226,21 +235,16 @@ wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const ch
 
 // --- Call context for host functions ---
 
-#ifdef WAH_DEBUG
 #define WAH_PARAM(ty, field) \
-    assert(ctx && "Call context is NULL"); \
-    assert(index < ctx->nparams && "Parameter index out of bounds"); \
-    assert(ctx->param_types[index] == ty && "Parameter type mismatch"); \
+    WAH_ASSERT(ctx && "Call context is NULL"); \
+    WAH_ASSERT(index < ctx->nparams && "Parameter index out of bounds"); \
+    WAH_ASSERT(ctx->param_types[index] == ty && "Parameter type mismatch"); \
     return ctx->params[index].field
 #define WAH_RESULT(ty, field) \
-    assert(ctx && "Call context is NULL"); \
-    assert(index < ctx->nresults && "Result index out of bounds"); \
-    assert(ctx->result_types[index] == ty && "Result type mismatch"); \
+    WAH_ASSERT(ctx && "Call context is NULL"); \
+    WAH_ASSERT(index < ctx->nresults && "Result index out of bounds"); \
+    WAH_ASSERT(ctx->result_types[index] == ty && "Result type mismatch"); \
     ctx->results[index].field = value
-#else
-#define WAH_PARAM(ty, field) return ctx->params[index].field
-#define WAH_RESULT(ty, field) ctx->results[index].field = value
-#endif
 
 static inline int32_t wah_param_i32(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(WAH_TYPE_I32, i32); }
 static inline int64_t wah_param_i64(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(WAH_TYPE_I64, i64); }
@@ -275,22 +279,22 @@ wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id
 
 // Accessors for wah_entry_t
 static inline int32_t wah_entry_i32(const wah_entry_t *entry) {
-    assert(entry);
+    WAH_ASSERT(entry);
     return entry->type == WAH_TYPE_I32 ? entry->u.global_val.i32 : 0;
 }
 
 static inline int64_t wah_entry_i64(const wah_entry_t *entry) {
-    assert(entry);
+    WAH_ASSERT(entry);
     return entry->type == WAH_TYPE_I64 ? entry->u.global_val.i64 : 0;
 }
 
 static inline float wah_entry_f32(const wah_entry_t *entry) {
-    assert(entry);
+    WAH_ASSERT(entry);
     return entry->type == WAH_TYPE_F32 ? entry->u.global_val.f32 : 0.0f / 0.0f;
 }
 
 static inline double wah_entry_f64(const wah_entry_t *entry) {
-    assert(entry);
+    WAH_ASSERT(entry);
     return entry->type == WAH_TYPE_F64 ? entry->u.global_val.f64 : 0.0 / 0.0;
 }
 
@@ -3316,8 +3320,8 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
             const wah_element_segment_t *segment = &module->element_segments[i];
 
             // Validation should be done at parse time. Assert here as a safety net.
-            assert(segment->table_idx < exec_ctx->table_count);
-            assert((uint64_t)segment->offset + segment->num_elems <= module->tables[segment->table_idx].min_elements);
+            WAH_ASSERT(segment->table_idx < exec_ctx->table_count);
+            WAH_ASSERT((uint64_t)segment->offset + segment->num_elems <= module->tables[segment->table_idx].min_elements);
 
             for (uint32_t j = 0; j < segment->num_elems; ++j) {
                 // Store global function index for now, will be converted to pointer in instantiate
@@ -5794,11 +5798,9 @@ cleanup:
 // --- Call Context Implementation ---
 
 void wah_trap(wah_call_context_t *ctx, wah_error_t reason) {
-#ifdef WAH_DEBUG
-    assert(ctx && "Call context is NULL");
-    assert(reason != WAH_OK && "Cannot trap with WAH_OK");
-    assert(ctx->trap_reason == WAH_OK && "Call context already has a trap reason set");
-#endif
+    WAH_ASSERT(ctx && "Call context is NULL");
+    WAH_ASSERT(reason != WAH_OK && "Cannot trap with WAH_OK");
+    WAH_ASSERT(ctx->trap_reason == WAH_OK && "Call context already has a trap reason set");
     ctx->trap_reason = reason;
 }
 
