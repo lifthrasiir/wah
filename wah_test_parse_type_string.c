@@ -196,6 +196,134 @@ int main() {
         printf("PASS\n\n");
     }
 
+    // Test 8: v128 type parsing
+    printf("Test 8: v128 -> v128\n");
+    {
+        const char *types = "v128 -> v128";
+        size_t nparams, nresults;
+        wah_type_t *param_types, *result_types;
+        wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
+        if (err != WAH_OK) {
+            printf("FAIL: wah_parse_func_type returned %s\n", wah_strerror(err));
+            return 1;
+        }
+        if (nparams != 1 || nresults != 1) {
+            printf("FAIL: Expected 1 param and 1 result, got %zu params and %zu results\n", nparams, nresults);
+            return 1;
+        }
+        if (param_types[0] != WAH_TYPE_V128 || result_types[0] != WAH_TYPE_V128) {
+            printf("FAIL: Expected v128 -> v128\n");
+            return 1;
+        }
+        free(param_types);
+        free(result_types);
+        printf("PASS\n\n");
+    }
+
+    // Test 9: v128 mixed with other types
+    printf("Test 9: i32, v128, f64 -> v128, i32\n");
+    {
+        const char *types = "i32, v128, f64 -> v128, i32";
+        size_t nparams, nresults;
+        wah_type_t *param_types, *result_types;
+        wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
+        if (err != WAH_OK) {
+            printf("FAIL: wah_parse_func_type returned %s\n", wah_strerror(err));
+            return 1;
+        }
+        if (nparams != 3 || nresults != 2) {
+            printf("FAIL: Expected 3 params and 2 results, got %zu params and %zu results\n", nparams, nresults);
+            return 1;
+        }
+        if (param_types[0] != WAH_TYPE_I32 || param_types[1] != WAH_TYPE_V128 || param_types[2] != WAH_TYPE_F64) {
+            printf("FAIL: Expected i32, v128, f64 params\n");
+            return 1;
+        }
+        if (result_types[0] != WAH_TYPE_V128 || result_types[1] != WAH_TYPE_I32) {
+            printf("FAIL: Expected v128, i32 results\n");
+            return 1;
+        }
+        free(param_types);
+        free(result_types);
+        printf("PASS\n\n");
+    }
+
+    // Test 10: Multiple v128 types
+    printf("Test 10: v128, v128 -> v128\n");
+    {
+        const char *types = "v128, v128 -> v128";
+        size_t nparams, nresults;
+        wah_type_t *param_types, *result_types;
+        wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
+        if (err != WAH_OK) {
+            printf("FAIL: wah_parse_func_type returned %s\n", wah_strerror(err));
+            return 1;
+        }
+        if (nparams != 2 || nresults != 1) {
+            printf("FAIL: Expected 2 params and 1 result, got %zu params and %zu results\n", nparams, nresults);
+            return 1;
+        }
+        if (param_types[0] != WAH_TYPE_V128 || param_types[1] != WAH_TYPE_V128) {
+            printf("FAIL: Expected v128, v128 params\n");
+            return 1;
+        }
+        if (result_types[0] != WAH_TYPE_V128) {
+            printf("FAIL: Expected v128 result\n");
+            return 1;
+        }
+        free(param_types);
+        free(result_types);
+        printf("PASS\n\n");
+    }
+
+    // Test 11: v128 with no parameters
+    printf("Test 11: -> v128\n");
+    {
+        const char *types = "-> v128";
+        size_t nparams, nresults;
+        wah_type_t *param_types, *result_types;
+        wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
+        if (err != WAH_OK) {
+            printf("FAIL: wah_parse_func_type returned %s\n", wah_strerror(err));
+            return 1;
+        }
+        if (nparams != 0 || nresults != 1) {
+            printf("FAIL: Expected 0 params and 1 result, got %zu params and %zu results\n", nparams, nresults);
+            return 1;
+        }
+        if (result_types[0] != WAH_TYPE_V128) {
+            printf("FAIL: Expected v128 result\n");
+            return 1;
+        }
+        free(param_types);
+        free(result_types);
+        printf("PASS\n\n");
+    }
+
+    // Test 12: v128 with no results
+    printf("Test 12: v128 ->\n");
+    {
+        const char *types = "v128 ->";
+        size_t nparams, nresults;
+        wah_type_t *param_types, *result_types;
+        wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
+        if (err != WAH_OK) {
+            printf("FAIL: wah_parse_func_type returned %s\n", wah_strerror(err));
+            return 1;
+        }
+        if (nparams != 1 || nresults != 0) {
+            printf("FAIL: Expected 1 param and 0 results, got %zu params and %zu results\n", nparams, nresults);
+            return 1;
+        }
+        if (param_types[0] != WAH_TYPE_V128) {
+            printf("FAIL: Expected v128 param\n");
+            return 1;
+        }
+        free(param_types);
+        free(result_types);
+        printf("PASS\n\n");
+    }
+
     printf("All tests passed!\n");
     return 0;
 }

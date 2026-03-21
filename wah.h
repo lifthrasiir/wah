@@ -5682,7 +5682,7 @@ static wah_error_t wah_parse_type_seq(const char *types, const char *types_end, 
         while (p < types_end && wah_is_ignorable_in_types(*p)) ++p;
         if (p < types_end) {
             ntypes++;
-            // Validate and skip type identifier (must be exactly i32, i64, f32, or f64)
+            // Validate and skip type identifier (must be exactly i32, i64, f32, f64, or v128)
             if (p + 2 < types_end && (*p == 'i' || *p == 'f')) {
                 // Check for i32/f32 (3 characters: letter + '3' + '2')
                 if (p[1] == '3' && p[2] == '2') {
@@ -5697,6 +5697,15 @@ static wah_error_t wah_parse_type_seq(const char *types, const char *types_end, 
                     // Make sure the next character (if any) is a separator
                     if (p + 3 >= types_end || wah_is_ignorable_in_types(p[3])) {
                         p += 3;
+                        continue;
+                    }
+                }
+            } else if (p + 3 < types_end && *p == 'v') {
+                // Check for v128 (4 characters: 'v' + '1' + '2' + '8')
+                if (p[1] == '1' && p[2] == '2' && p[3] == '8') {
+                    // Make sure the next character (if any) is a separator
+                    if (p + 4 >= types_end || wah_is_ignorable_in_types(p[4])) {
+                        p += 4;
                         continue;
                     }
                 }
@@ -5730,6 +5739,13 @@ static wah_error_t wah_parse_type_seq(const char *types, const char *types_end, 
                     if (p[1] == '6' && p[2] == '4') {
                         p += 3;
                         type_array[idx++] = (type_char == 'i') ? WAH_TYPE_I64 : WAH_TYPE_F64;
+                        continue;
+                    }
+                } else if (p + 3 < types_end && *p == 'v') {
+                    // Check for v128
+                    if (p[1] == '1' && p[2] == '2' && p[3] == '8') {
+                        p += 4;
+                        type_array[idx++] = WAH_TYPE_V128;
                         continue;
                     }
                 }
