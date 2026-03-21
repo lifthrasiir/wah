@@ -349,9 +349,22 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
 #include <intrin.h> // For MSVC intrinsics
 #endif
 
+// Adopted from https://stackoverflow.com/a/48045656
+#if __cplusplus <= 201703 && defined(__GNUC__) && !defined(__clang__) && !defined(__EDG__)
+#define WAH_VA_OPT_SUPPORT(_) 0
+#else
+#define WAH_VA_ARG1(x,y,...) y
+#define WAH_VA_EMPTY(...) WAH_VA_ARG1(__VA_OPT__(,)0,1,)
+#define WAH_VA_OPT_SUPPORT WAH_VA_EMPTY
+#endif
+
 #ifdef WAH_DEBUG
 #include <stdio.h>
-#define WAH_LOG(fmt, ...) printf("(%d) " fmt "\n", __LINE__, ##__VA_ARGS__)
+#if WAH_VA_OPT_SUPPORT(?)
+#define WAH_LOG(fmt, ...) printf("(%d) " fmt "\n", __LINE__ __VA_OPT__(,) __VA_ARGS__)
+#else
+#define WAH_LOG(fmt, ...) printf("(%d) " fmt "\n", __LINE__, ##__VA_ARGS__) // common extension
+#endif
 #else
 #define WAH_LOG(fmt, ...) (void)(0)
 #endif
