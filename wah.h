@@ -232,6 +232,12 @@ void wah_free_module(wah_module_t *module);
 wah_error_t wah_new_module(wah_module_t *mod);
 wah_error_t wah_module_export_funcv(wah_module_t *mod, const char *name, size_t nparams, const wah_type_t *param_types, size_t nresults, const wah_type_t *result_types, wah_func_t func, void *userdata, wah_finalize_t finalize);
 wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const char *types, wah_func_t func, void *userdata, wah_finalize_t finalize);
+wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint32_t min_pages, uint32_t max_pages);
+wah_error_t wah_module_export_global_i32(wah_module_t *mod, const char *name, bool mutable, int32_t init_value);
+wah_error_t wah_module_export_global_i64(wah_module_t *mod, const char *name, bool mutable, int64_t init_value);
+wah_error_t wah_module_export_global_f32(wah_module_t *mod, const char *name, bool mutable, float init_value);
+wah_error_t wah_module_export_global_f64(wah_module_t *mod, const char *name, bool mutable, double init_value);
+wah_error_t wah_module_export_global_v128(wah_module_t *mod, const char *name, bool mutable, const wah_v128_t *init_value);
 
 // --- Call context for host functions ---
 
@@ -5540,6 +5546,9 @@ void wah_free_module(wah_module_t *module) {
                                    module->functions &&
                                    idx < module->total_function_count &&
                                    module->functions[idx].is_host);
+            // For memory (kind 2) and global (kind 3) exports from programmatically created modules,
+            // the name is owned by the export entry itself, not by another structure.
+            // For WASM function exports (kind 0, not host), the name is also owned by the export entry.
             if (!is_host_export) {
                 free((void*)module->exports[i].name);
             }
@@ -5819,6 +5828,137 @@ cleanup:
     free(result_types);
 
     return err;
+}
+
+// Internal helper for exporting globals
+static wah_error_t wah_module_export_global_internal(wah_module_t *mod, const char *name, wah_type_t type, bool is_mutable, const wah_value_t *init_value) {
+    wah_error_t err;
+    char *name_copy = NULL;
+    wah_global_t *new_globals = NULL;
+
+    WAH_ENSURE(mod, WAH_ERROR_MISUSE);
+    WAH_ENSURE(name, WAH_ERROR_MISUSE);
+
+    // Check for duplicate export name
+    for (uint32_t i = 0; i < mod->export_count; ++i) {
+        if (mod->exports[i].name && strcmp(mod->exports[i].name, name) == 0) {
+            return WAH_ERROR_VALIDATION_FAILED;  // Duplicate export name
+        }
+    }
+
+    // Grow export array if needed
+    if (mod->export_count >= mod->capacity_exports) {
+        uint32_t new_capacity = mod->capacity_exports * 2;
+        WAH_REALLOC_ARRAY_GOTO(mod->exports, new_capacity, cleanup);
+        mod->capacity_exports = new_capacity;
+    }
+
+    // Reallocate globals array
+    uint32_t new_global_count = mod->global_count + 1;
+    WAH_REALLOC_ARRAY_GOTO(mod->globals, new_global_count, cleanup);
+
+    // Duplicate name
+    WAH_ENSURE_GOTO(name_copy = wah_strdup(name), WAH_ERROR_OUT_OF_MEMORY, cleanup);
+
+    // Fill in the global entry
+    wah_global_t *global = &mod->globals[mod->global_count];
+    global->type = type;
+    global->is_mutable = is_mutable;
+    global->initial_value = *init_value;
+
+    // Fill in export entry
+    wah_export_t *export_entry = &mod->exports[mod->export_count];
+    export_entry->name = name_copy;
+    export_entry->name_len = strlen(name_copy);
+    export_entry->kind = 3;  // GLOBAL
+    export_entry->index = mod->global_count;
+
+    mod->global_count++;
+    mod->export_count++;
+    return WAH_OK;
+
+cleanup:
+    free(name_copy);
+    if (new_globals) free(new_globals);
+    return err;
+}
+
+wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint32_t min_pages, uint32_t max_pages) {
+    wah_error_t err;
+    char *name_copy = NULL;
+    wah_memory_type_t *new_memories = NULL;
+
+    WAH_ENSURE(mod, WAH_ERROR_MISUSE);
+    WAH_ENSURE(name, WAH_ERROR_MISUSE);
+    WAH_ENSURE(min_pages > 0, WAH_ERROR_MISUSE);
+    WAH_ENSURE(max_pages >= min_pages, WAH_ERROR_MISUSE);
+
+    // Check for duplicate export name
+    for (uint32_t i = 0; i < mod->export_count; ++i) {
+        if (mod->exports[i].name && strcmp(mod->exports[i].name, name) == 0) {
+            return WAH_ERROR_VALIDATION_FAILED;  // Duplicate export name
+        }
+    }
+
+    // Grow export array if needed
+    if (mod->export_count >= mod->capacity_exports) {
+        uint32_t new_capacity = mod->capacity_exports * 2;
+        WAH_REALLOC_ARRAY_GOTO(mod->exports, new_capacity, cleanup);
+        mod->capacity_exports = new_capacity;
+    }
+
+    // Reallocate memories array
+    uint32_t new_memory_count = mod->memory_count + 1;
+    WAH_REALLOC_ARRAY_GOTO(mod->memories, new_memory_count, cleanup);
+
+    // Duplicate name
+    WAH_ENSURE_GOTO(name_copy = wah_strdup(name), WAH_ERROR_OUT_OF_MEMORY, cleanup);
+
+    // Fill in the memory entry
+    wah_memory_type_t *mem = &mod->memories[mod->memory_count];
+    mem->min_pages = min_pages;
+    mem->max_pages = max_pages;
+
+    // Fill in export entry
+    wah_export_t *export_entry = &mod->exports[mod->export_count];
+    export_entry->name = name_copy;
+    export_entry->name_len = strlen(name_copy);
+    export_entry->kind = 2;  // MEMORY
+    export_entry->index = mod->memory_count;
+
+    mod->memory_count++;
+    mod->export_count++;
+    return WAH_OK;
+
+cleanup:
+    free(name_copy);
+    if (new_memories) free(new_memories);
+    return err;
+}
+
+wah_error_t wah_module_export_global_i32(wah_module_t *mod, const char *name, bool is_mutable, int32_t init_value) {
+    wah_value_t val = {.i32 = init_value};
+    return wah_module_export_global_internal(mod, name, WAH_TYPE_I32, is_mutable, &val);
+}
+
+wah_error_t wah_module_export_global_i64(wah_module_t *mod, const char *name, bool is_mutable, int64_t init_value) {
+    wah_value_t val = {.i64 = init_value};
+    return wah_module_export_global_internal(mod, name, WAH_TYPE_I64, is_mutable, &val);
+}
+
+wah_error_t wah_module_export_global_f32(wah_module_t *mod, const char *name, bool is_mutable, float init_value) {
+    wah_value_t val = {.f32 = init_value};
+    return wah_module_export_global_internal(mod, name, WAH_TYPE_F32, is_mutable, &val);
+}
+
+wah_error_t wah_module_export_global_f64(wah_module_t *mod, const char *name, bool is_mutable, double init_value) {
+    wah_value_t val = {.f64 = init_value};
+    return wah_module_export_global_internal(mod, name, WAH_TYPE_F64, is_mutable, &val);
+}
+
+wah_error_t wah_module_export_global_v128(wah_module_t *mod, const char *name, bool is_mutable, const wah_v128_t *init_value) {
+    wah_value_t val = {.v128 = *init_value};
+    return wah_module_export_global_internal(mod, name, WAH_TYPE_V128, is_mutable, &val);
 }
 
 // --- Call Context Implementation ---
