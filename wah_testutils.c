@@ -6,7 +6,7 @@
 // - Numbers: `42`, `-123`, `3.14f32`, `2.71828f64`
 // - Verbatims: `'foo'`, '%'414243'` etc.
 // - Bare words (anything else): `wasm`, `types`, `i32`, `local.get`, etc.
-// - Placeholders: `%d`, `%i32`, `%f64`
+// - Placeholders: `%d32`, `%vi32`, `%f64`, `%v128`, etc.
 //
 // Bare words must have been defined and are translated to specific byte sequences.
 // For example, `wasm` translates to the magic number and version bytes (`\0asm\1\0\0\0`).
@@ -22,9 +22,12 @@
 // `{ ... }` counts the total byte length of the content and put that count as a varint in front of it.
 //
 // Placeholders are used in the test cases to specify a value that will be filled in at runtime.
-// `%d` expects an int64_t value and emits a signed LEB128 varint.
+// `%d32` and `%d64` expect an int32_t or int64_t value and emits a signed LEB128 varint.
 // `%i32` and `%i64` expect int32_t and int64_t values respectively, and emits 4- and 8-byte little-endian integers.
 // `%f32` and `%f64` expect float and double values respectively, and emits 4- and 8-byte IEEE 754 encodings.
+// These placeholders can be prefixed with `v` (e.g. `%vi32`) to indicate that the value is passed as a pointer.
+// `%v128` expects a const uint8_t* value and emits 16 bytes.
+// `%t` expects a const char* value and recursively interprets it as a DSL specification string.
 
 #include "wah.h"
 #include <stdint.h>
@@ -70,6 +73,7 @@ static const token_entry_t token_table[] = {
     TOKEN("i64", 0x7e),       // i64 type
     TOKEN("f32", 0x7d),       // f32 type
     TOKEN("f64", 0x7c),       // f64 type
+    TOKEN("v128", 0x7b),      // v128 type
     TOKEN("void", 0x40),      // Void return
     TOKEN("funcref", 0x70),   // funcref type
     TOKEN("externref", 0x6f), // externref type
@@ -333,9 +337,10 @@ static void append_varint_signed(buffer_t *buf, int64_t value) {
 }
 
 // Look up a token in the keyword table
-static const token_entry_t *lookup_token(const char *token) {
+static const token_entry_t *lookup_token(const char *token, size_t token_len) {
     for (int i = 0; token_table[i].name != NULL; i++) {
-        if (strcmp(token, token_table[i].name) == 0) {
+        if (strncmp(token, token_table[i].name, token_len) == 0 &&
+            token_table[i].name[token_len] == '\0') {
             return &token_table[i];
         }
     }
@@ -344,17 +349,18 @@ static const token_entry_t *lookup_token(const char *token) {
 
 // Check if a string is a valid number
 // Returns: 0 = not a number, 1 = integer, 2 = float
-// If float, sets suffix_end to point to the suffix (e.g., "f32")
-static int classify_number(const char *token, const char **suffix_end) {
-    *suffix_end = NULL;
+// If float, sets suffix_offset to the offset of the suffix (e.g., "f32")
+static int classify_number(const char *token, size_t token_len, size_t *suffix_offset) {
+    *suffix_offset = 0;
 
     const char *p = token;
-    if (*p == '-' || *p == '+') p++;
+    const char *end = token + token_len;
+    if (p < end && (*p == '-' || *p == '+')) p++;
 
     int has_digits = 0;
     int has_dot = 0;
 
-    while (*p) {
+    while (p < end) {
         if (*p == '.') {
             if (has_dot) return 0;  // Multiple dots
             has_dot = 1;
@@ -371,8 +377,8 @@ static int classify_number(const char *token, const char **suffix_end) {
     }
 
     if (!has_digits) return 0;
-    if (*p != '\0') {
-        *suffix_end = p;
+    if (p < end) {
+        *suffix_offset = p - token;
     }
 
     return has_dot ? 2 : 1;
@@ -400,6 +406,11 @@ static void append_f64(buffer_t *buf, double value) {
     uint64_t bits;
     memcpy(&bits, &value, sizeof(bits));
     buffer_append(buf, (uint8_t *)&bits, sizeof(bits));
+}
+
+// Append v128 value (16 bytes)
+static void append_v128(buffer_t *buf, const uint8_t *value) {
+    buffer_append(buf, value, 16);
 }
 
 
@@ -566,10 +577,14 @@ static size_t parse_tokens(buffer_t *buf, const char *fmt, va_list *args, bool *
         if (*fmt == '%') {
             fmt++;  // Skip '%'
 
-            if (strncmp(fmt, "d", 1) == 0) {
+            if (strncmp(fmt, "d32", 3) == 0) {
+                int32_t val = va_arg(*args, int32_t);
+                append_varint_signed(buf, val);
+                fmt += 3;
+            } else if (strncmp(fmt, "d64", 3) == 0) {
                 int64_t val = va_arg(*args, int64_t);
                 append_varint_signed(buf, val);
-                fmt += 1;
+                fmt += 3;
             } else if (strncmp(fmt, "i32", 3) == 0) {
                 int32_t val = va_arg(*args, int32_t);
                 append_i32(buf, val);
@@ -582,10 +597,46 @@ static size_t parse_tokens(buffer_t *buf, const char *fmt, va_list *args, bool *
                 float val = (float)va_arg(*args, double);
                 append_f32(buf, val);
                 fmt += 3;
-            } else if (strncmp(fmt, "f64", 4) == 0) {
+            } else if (strncmp(fmt, "f64", 3) == 0) {
                 double val = va_arg(*args, double);
                 append_f64(buf, val);
+                fmt += 3;
+            } else if (strncmp(fmt, "vi32", 4) == 0) {
+                const int32_t *val = va_arg(*args, const int32_t*);
+                append_i32(buf, *val);
                 fmt += 4;
+            } else if (strncmp(fmt, "vi64", 4) == 0) {
+                const int64_t *val = va_arg(*args, const int64_t*);
+                append_i64(buf, *val);
+                fmt += 4;
+            } else if (strncmp(fmt, "vd32", 4) == 0) {
+                const int32_t *val = va_arg(*args, const int32_t*);
+                append_varint_signed(buf, *val);
+                fmt += 4;
+            } else if (strncmp(fmt, "vd64", 4) == 0) {
+                const int64_t *val = va_arg(*args, const int64_t*);
+                append_varint_signed(buf, *val);
+                fmt += 4;
+            } else if (strncmp(fmt, "vf32", 4) == 0) {
+                const float *val = va_arg(*args, const float*);
+                append_f32(buf, *val);
+                fmt += 4;
+            } else if (strncmp(fmt, "vf64", 4) == 0) {
+                const double *val = va_arg(*args, const double*);
+                append_f64(buf, *val);
+                fmt += 4;
+            } else if (strncmp(fmt, "v128", 4) == 0) {
+                const uint8_t *val = va_arg(*args, const uint8_t*);
+                append_v128(buf, val);
+                fmt += 4;
+            } else if (strncmp(fmt, "t", 1) == 0) {
+                const char *spec = va_arg(*args, const char*);
+                size_t consumed = parse_tokens(buf, spec, args, error);
+                if (*error) {
+                    return 0;
+                }
+                (void)consumed;  // Unused, parse_tokens processes the entire spec string
+                fmt += 1;
             } else if (*fmt == '\'') {
                 // Hex string in single quotes: %'414243' -> bytes 0x41 0x42 0x43
                 fmt++;  // Skip opening quote
@@ -604,8 +655,9 @@ static size_t parse_tokens(buffer_t *buf, const char *fmt, va_list *args, bool *
                 }
                 if (*fmt == '\'') fmt++;  // Skip closing quote
             } else {
-                // Unknown specifier, skip it
-                continue;
+                // Unknown specifier
+                *error = true;
+                return 0;
             }
             continue;
         }
@@ -619,47 +671,55 @@ static size_t parse_tokens(buffer_t *buf, const char *fmt, va_list *args, bool *
         size_t token_len = fmt - token_start;
 
         if (token_len > 0) {
-            // Copy token to null-terminated string
-            char *token = (char *)malloc(token_len + 1);
-            memcpy(token, token_start, token_len);
-            token[token_len] = '\0';
-
             // Check if it's a keyword
-            const token_entry_t *entry = lookup_token(token);
+            const token_entry_t *entry = lookup_token(token_start, token_len);
             if (entry != NULL) {
                 buffer_append(buf, entry->bytes, entry->len);
             } else {
                 // Check if it's a number
-                const char *suffix;
-                int num_type = classify_number(token, &suffix);
+                size_t suffix_offset;
+                int num_type = classify_number(token_start, token_len, &suffix_offset);
 
                 if (num_type == 1) {
                     // Integer: parse as varint
-                    int64_t val = strtoll(token, NULL, 0);
+                    // Need null-terminated string for strtoll, so use stack buffer
+                    char numbuf[32];
+                    size_t copy_len = token_len < sizeof(numbuf) - 1 ? token_len : sizeof(numbuf) - 1;
+                    memcpy(numbuf, token_start, copy_len);
+                    numbuf[copy_len] = '\0';
+                    int64_t val = strtoll(numbuf, NULL, 0);
                     append_varint_signed(buf, val);
                 } else if (num_type == 2) {
-                    // Float
-                    if (suffix && strcmp(suffix, "f32") == 0) {
-                        float val = strtof(token, NULL);
-                        append_f32(buf, val);
-                    } else if (suffix && strcmp(suffix, "f64") == 0) {
-                        double val = strtod(token, NULL);
-                        append_f64(buf, val);
+                    // Float - need null-terminated string
+                    // Use stack buffer to avoid allocation
+                    char numbuf[32];
+                    size_t copy_len = token_len < sizeof(numbuf) - 1 ? token_len : sizeof(numbuf) - 1;
+                    memcpy(numbuf, token_start, copy_len);
+                    numbuf[copy_len] = '\0';
+
+                    if (suffix_offset > 0) {
+                        const char *suffix = numbuf + suffix_offset;
+                        if (strcmp(suffix, "f32") == 0) {
+                            float val = strtof(numbuf, NULL);
+                            append_f32(buf, val);
+                        } else if (strcmp(suffix, "f64") == 0) {
+                            double val = strtod(numbuf, NULL);
+                            append_f64(buf, val);
+                        } else {
+                            // f32/f64 suffix is mandatory
+                            *error = true;
+                            return 0;
+                        }
                     } else {
-                        // f32/f64 suffix is mandatory
                         *error = true;
-                        free(token);
                         return 0;
                     }
                 } else {
                     // Unknown token - return error
                     *error = true;
-                    free(token);
                     return 0;
                 }
             }
-
-            free(token);
         }
     }
 
@@ -667,7 +727,7 @@ static size_t parse_tokens(buffer_t *buf, const char *fmt, va_list *args, bool *
 }
 
 // Main function
-wah_error_t wah_parse_module_from_spec(wah_module_t *module, const char *fmt, ...) {
+wah_error_t wah_parse_module_from_specv(wah_module_t *module, const char *fmt, va_list args) {
     if (!module || !fmt) {
         return WAH_ERROR_BAD_SPEC;
     }
@@ -675,13 +735,8 @@ wah_error_t wah_parse_module_from_spec(wah_module_t *module, const char *fmt, ..
     buffer_t buf;
     buffer_init(&buf);
 
-    va_list args;
-    va_start(args, fmt);
-
     bool error = false;
     parse_tokens(&buf, fmt, &args, &error);
-
-    va_end(args);
 
     if (error) {
         buffer_free(&buf);
@@ -701,5 +756,15 @@ wah_error_t wah_parse_module_from_spec(wah_module_t *module, const char *fmt, ..
     wah_error_t err = wah_parse_module(buf.data, buf.size, module);
 
     buffer_free(&buf);
+    return err;
+}
+
+wah_error_t wah_parse_module_from_spec(wah_module_t *module, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+
+    wah_error_t err = wah_parse_module_from_specv(module, fmt, args);
+
+    va_end(args);
     return err;
 }
