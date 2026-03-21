@@ -299,6 +299,533 @@ static int test_multiple_end_opcodes() {
     return 0;
 }
 
+// Test case for CALL opcode with out-of-bounds function index.
+// This should fail validation.
+static int test_call_out_of_bounds_func_idx() {
+    printf("Running test_call_out_of_bounds_func_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 1 function (index 0), but CALL tries to call index 1
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] call 1 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_call_out_of_bounds_func_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: CALL with out-of-bounds function index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for CALL_INDIRECT with out-of-bounds type index.
+// This should fail validation.
+static int test_call_indirect_out_of_bounds_type_idx() {
+    printf("Running test_call_indirect_out_of_bounds_type_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 1 type (index 0), but CALL_INDIRECT tries to use type index 1
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        code {[ {[] i32.const 0 call_indirect 1 0 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_call_indirect_out_of_bounds_type_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: CALL_INDIRECT with out-of-bounds type index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for CALL_INDIRECT with out-of-bounds table index.
+// This should fail validation.
+static int test_call_indirect_out_of_bounds_table_idx() {
+    printf("Running test_call_indirect_out_of_bounds_table_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 1 table (index 0), but CALL_INDIRECT tries to use table index 1
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        code {[ {[] i32.const 0 call_indirect 0 1 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_call_indirect_out_of_bounds_table_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: CALL_INDIRECT with out-of-bounds table index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for TABLE_GET with out-of-bounds table index.
+// This should fail validation.
+static int test_table_get_out_of_bounds_table_idx() {
+    printf("Running test_table_get_out_of_bounds_table_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 1 table (index 0), but TABLE_GET tries to use table index 1
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [funcref] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        code {[ {[] i32.const 0 table.get 1 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_table_get_out_of_bounds_table_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: TABLE_GET with out-of-bounds table index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for TABLE_SET with out-of-bounds table index.
+// This should fail validation.
+static int test_table_set_out_of_bounds_table_idx() {
+    printf("Running test_table_set_out_of_bounds_table_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 1 table (index 0), but TABLE_SET tries to use table index 1
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        code {[ {[] i32.const 0 ref.null funcref table.set 1 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_table_set_out_of_bounds_table_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: TABLE_SET with out-of-bounds table index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for TABLE_SIZE with out-of-bounds table index.
+// This should fail validation.
+static int test_table_size_out_of_bounds_table_idx() {
+    printf("Running test_table_size_out_of_bounds_table_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 1 table (index 0), but TABLE_SIZE tries to use table index 1
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        code {[ {[] table.size 1 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_table_size_out_of_bounds_table_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: TABLE_SIZE with out-of-bounds table index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for TABLE_GROW with out-of-bounds table index.
+// This should fail validation.
+static int test_table_grow_out_of_bounds_table_idx() {
+    printf("Running test_table_grow_out_of_bounds_table_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 1 table (index 0), but TABLE_GROW tries to use table index 1
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        code {[ {[] i32.const 1 ref.null funcref table.grow 1 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_table_grow_out_of_bounds_table_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: TABLE_GROW with out-of-bounds table index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for TABLE_FILL with out-of-bounds table index.
+// This should fail validation.
+static int test_table_fill_out_of_bounds_table_idx() {
+    printf("Running test_table_fill_out_of_bounds_table_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 1 table (index 0), but TABLE_FILL tries to use table index 1
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        code {[ {[] i32.const 0 ref.null funcref i32.const 0 table.fill 1 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_table_fill_out_of_bounds_table_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: TABLE_FILL with out-of-bounds table index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for TABLE_COPY with out-of-bounds dst table index.
+// This should fail validation.
+static int test_table_copy_out_of_bounds_dst_table_idx() {
+    printf("Running test_table_copy_out_of_bounds_dst_table_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 2 tables (indices 0, 1), but TABLE_COPY tries to use dst table index 2
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1, funcref limits.i32/1 1 ]} \
+        code {[ {[] i32.const 0 i32.const 0 i32.const 0 table.copy 2 0 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_table_copy_out_of_bounds_dst_table_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: TABLE_COPY with out-of-bounds dst table index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for TABLE_COPY with out-of-bounds src table index.
+// This should fail validation.
+static int test_table_copy_out_of_bounds_src_table_idx() {
+    printf("Running test_table_copy_out_of_bounds_src_table_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 2 tables (indices 0, 1), but TABLE_COPY tries to use src table index 2
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1, funcref limits.i32/1 1 ]} \
+        code {[ {[] i32.const 0 i32.const 0 i32.const 0 table.copy 0 2 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_table_copy_out_of_bounds_src_table_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: TABLE_COPY with out-of-bounds src table index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for TABLE_INIT with out-of-bounds element index.
+// This should fail validation.
+static int test_table_init_out_of_bounds_elem_idx() {
+    printf("Running test_table_init_out_of_bounds_elem_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 1 element segment (index 0), but TABLE_INIT tries to use element index 1
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 10 ]} \
+        elements {[ elem.passive i32.const 0 end [0] ]} \
+        code {[ {[] i32.const 0 i32.const 0 i32.const 0 table.init 1 0 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_table_init_out_of_bounds_elem_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: TABLE_INIT with out-of-bounds element index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for TABLE_INIT with out-of-bounds table index.
+// This should fail validation.
+static int test_table_init_out_of_bounds_table_idx() {
+    printf("Running test_table_init_out_of_bounds_table_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 1 table (index 0), but TABLE_INIT tries to use table index 1
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 10 ]} \
+        elements {[ elem.passive i32.const 0 end [0] ]} \
+        code {[ {[] i32.const 0 i32.const 0 i32.const 0 table.init 0 1 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_table_init_out_of_bounds_table_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: TABLE_INIT with out-of-bounds table index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for ELEM_DROP with out-of-bounds element index.
+// This should fail validation.
+static int test_elem_drop_out_of_bounds_elem_idx() {
+    printf("Running test_elem_drop_out_of_bounds_elem_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 1 element segment (index 0), but ELEM_DROP tries to use element index 1
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 10 ]} \
+        elements {[ elem.passive i32.const 0 end [0] ]} \
+        code {[ {[] elem.drop 1 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_elem_drop_out_of_bounds_elem_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: ELEM_DROP with out-of-bounds element index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for SIMD I8X16_EXTRACT_LANE_S with out-of-bounds lane index.
+// This should fail validation.
+static int test_i8x16_extract_lane_s_out_of_bounds_lane_idx() {
+    printf("Running test_i8x16_extract_lane_s_out_of_bounds_lane_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // i8x16 has 16 lanes (indices 0-15), but EXTRACT_LANE tries to use lane index 16 (hex 10)
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] v128.const %'00000000000000000000000000000000' i8x16.extract_lane_s %'10' end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_i8x16_extract_lane_s_out_of_bounds_lane_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: I8X16_EXTRACT_LANE_S with out-of-bounds lane index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for SIMD I32X4_EXTRACT_LANE with out-of-bounds lane index.
+// This should fail validation.
+static int test_i32x4_extract_lane_out_of_bounds_lane_idx() {
+    printf("Running test_i32x4_extract_lane_out_of_bounds_lane_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // i32x4 has 4 lanes (indices 0-3), but EXTRACT_LANE tries to use lane index 4
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] v128.const %'00000000000000000000000000000000' i32x4.extract_lane %'04' end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_i32x4_extract_lane_out_of_bounds_lane_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: I32X4_EXTRACT_LANE with out-of-bounds lane index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for SIMD V128_LOAD8_LANE with out-of-bounds lane index.
+// This should fail validation.
+static int test_v128_load8_lane_out_of_bounds_lane_idx() {
+    printf("Running test_v128_load8_lane_out_of_bounds_lane_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // v128.load8_lane has 16 lanes (indices 0-15), but tries to use lane index 16 (hex 10)
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        code {[ {[] i32.const 0 v128.const %'00000000000000000000000000000000' v128.load8_lane 0 0 %'10' end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_v128_load8_lane_out_of_bounds_lane_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: V128_LOAD8_LANE with out-of-bounds lane index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for SIMD V128_LOAD32_LANE with out-of-bounds lane index.
+// This should fail validation.
+static int test_v128_load32_lane_out_of_bounds_lane_idx() {
+    printf("Running test_v128_load32_lane_out_of_bounds_lane_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // v128.load32_lane has 4 lanes (indices 0-3), but tries to use lane index 4
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        code {[ {[] i32.const 0 v128.const %'00000000000000000000000000000000' v128.load32_lane 2 0 %'04' end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_v128_load32_lane_out_of_bounds_lane_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: V128_LOAD32_LANE with out-of-bounds lane index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for MEMORY_INIT with out-of-bounds memory index.
+// This should fail validation.
+static int test_memory_init_out_of_bounds_mem_idx() {
+    printf("Running test_memory_init_out_of_bounds_mem_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 1 memory (index 0), but MEMORY_INIT tries to use memory index 1
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        data {[ data.passive {'hello'} ]} \
+        code {[ {[] i32.const 0 i32.const 0 i32.const 5 memory.init 0 1 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_memory_init_out_of_bounds_mem_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: MEMORY_INIT with out-of-bounds memory index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for MEMORY_INIT with out-of-bounds data segment index.
+// This should fail validation (deferred validation).
+static int test_memory_init_out_of_bounds_data_idx() {
+    printf("Running test_memory_init_out_of_bounds_data_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 1 data segment (index 0), but MEMORY_INIT tries to use data index 1
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        data {[ data.passive {'hello'} ]} \
+        code {[ {[] i32.const 0 i32.const 0 i32.const 5 memory.init 1 0 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_memory_init_out_of_bounds_data_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: MEMORY_INIT with out-of-bounds data index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for MEMORY_COPY with out-of-bounds dest memory index.
+// This should fail validation.
+static int test_memory_copy_out_of_bounds_dest_mem_idx() {
+    printf("Running test_memory_copy_out_of_bounds_dest_mem_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 1 memory (index 0), but MEMORY_COPY tries to use dest memory index 1
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        code {[ {[] i32.const 0 i32.const 0 i32.const 0 memory.copy 1 0 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_memory_copy_out_of_bounds_dest_mem_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: MEMORY_COPY with out-of-bounds dest memory index correctly failed validation.\n");
+    return 0;
+}
+
+// Test case for MEMORY_COPY with out-of-bounds src memory index.
+// This should fail validation.
+static int test_memory_copy_out_of_bounds_src_mem_idx() {
+    printf("Running test_memory_copy_out_of_bounds_src_mem_idx...\n");
+
+    wah_module_t module;
+    memset(&module, 0, sizeof(wah_module_t));
+
+    // Only 1 memory (index 0), but MEMORY_COPY tries to use src memory index 1
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        code {[ {[] i32.const 0 i32.const 0 i32.const 0 memory.copy 0 1 end} ]}");
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        fprintf(stderr, "ERROR: test_memory_copy_out_of_bounds_src_mem_idx FAILED: Expected WAH_ERROR_VALIDATION_FAILED, got %s\n", wah_strerror(err));
+        wah_free_module(&module);
+        return 1;
+    }
+    wah_free_module(&module);
+    printf("  - PASSED: MEMORY_COPY with out-of-bounds src memory index correctly failed validation.\n");
+    return 0;
+}
+
 // Regression tests for soft "hang" test cases found by fuzzers.
 static int test_all_hang_wasm_parsing_errors() {
     printf("Running test_all_hang_wasm_parsing_errors...\n");
@@ -378,6 +905,29 @@ int main(void) {
     result |= test_end_opcode_not_at_end();
     result |= test_multiple_end_opcodes();
     result |= test_malformed_code_body_size_wasm();
+
+    result |= test_call_out_of_bounds_func_idx();
+    result |= test_call_indirect_out_of_bounds_type_idx();
+    result |= test_call_indirect_out_of_bounds_table_idx();
+    result |= test_table_get_out_of_bounds_table_idx();
+    result |= test_table_set_out_of_bounds_table_idx();
+    result |= test_table_size_out_of_bounds_table_idx();
+    result |= test_table_grow_out_of_bounds_table_idx();
+    result |= test_table_fill_out_of_bounds_table_idx();
+    result |= test_table_copy_out_of_bounds_dst_table_idx();
+    result |= test_table_copy_out_of_bounds_src_table_idx();
+    result |= test_table_init_out_of_bounds_elem_idx();
+    result |= test_table_init_out_of_bounds_table_idx();
+    result |= test_elem_drop_out_of_bounds_elem_idx();
+    result |= test_i8x16_extract_lane_s_out_of_bounds_lane_idx();
+    result |= test_i32x4_extract_lane_out_of_bounds_lane_idx();
+    result |= test_v128_load8_lane_out_of_bounds_lane_idx();
+    result |= test_v128_load32_lane_out_of_bounds_lane_idx();
+    result |= test_memory_init_out_of_bounds_mem_idx();
+    result |= test_memory_init_out_of_bounds_data_idx();
+    result |= test_memory_copy_out_of_bounds_dest_mem_idx();
+    result |= test_memory_copy_out_of_bounds_src_mem_idx();
+
     result |= test_all_hang_wasm_parsing_errors();
 
     if (result == 0) {

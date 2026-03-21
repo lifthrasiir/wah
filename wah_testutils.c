@@ -286,6 +286,7 @@ static const token_entry_t token_table[] = {
     TOKEN("f64x2.splat", 0xfd, 0x14),
     TOKEN("i8x16.extract_lane_s", 0xfd, 0x15),
     TOKEN("i8x16.replace_lane", 0xfd, 0x17),
+    TOKEN("i32x4.extract_lane", 0xfd, 0x1b),
     TOKEN("i8x16.eq", 0xfd, 0x23),
     TOKEN("i8x16.ne", 0xfd, 0x24),
     TOKEN("i8x16.lt_s", 0xfd, 0x25),

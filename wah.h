@@ -3706,7 +3706,7 @@ WAH_RUN(TABLE_GET) {
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     uint32_t elem_idx = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-    WAH_ENSURE_GOTO(table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
+    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
     WAH_ENSURE_GOTO(elem_idx < ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
     ctx->value_stack[ctx->sp++] = ctx->tables[table_idx][elem_idx];
     WAH_NEXT();
@@ -3718,7 +3718,7 @@ WAH_RUN(TABLE_SET) {
     bytecode_ip += sizeof(uint32_t);
     wah_value_t val = ctx->value_stack[--ctx->sp];
     uint32_t elem_idx = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-    WAH_ENSURE_GOTO(table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
+    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
     WAH_ENSURE_GOTO(elem_idx < ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
     ctx->tables[table_idx][elem_idx] = val;
     WAH_NEXT();
@@ -3728,10 +3728,9 @@ WAH_RUN(TABLE_SET) {
 WAH_RUN(TABLE_SIZE) {
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    WAH_ENSURE_GOTO(table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
+    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
     ctx->value_stack[ctx->sp++].i32 = (int32_t)ctx->module->tables[table_idx].min_elements;
     WAH_NEXT();
-    WAH_CLEANUP();
 }
 
 WAH_RUN(TABLE_GROW) {
@@ -3739,7 +3738,7 @@ WAH_RUN(TABLE_GROW) {
     bytecode_ip += sizeof(uint32_t);
     int32_t delta = ctx->value_stack[--ctx->sp].i32;
     wah_value_t init_val = ctx->value_stack[--ctx->sp];
-    WAH_ENSURE_GOTO(table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
+    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index");
 
     if (delta < 0) {
         ctx->value_stack[ctx->sp++].i32 = -1;
@@ -3777,7 +3776,7 @@ WAH_RUN(TABLE_FILL) {
     uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
     wah_value_t val = ctx->value_stack[--ctx->sp];
     uint32_t offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-    WAH_ENSURE_GOTO(table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
+    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
     WAH_ENSURE_GOTO((uint64_t)offset + size <= ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
 
     for (uint32_t i = 0; i < size; ++i) {
@@ -3796,8 +3795,8 @@ WAH_RUN(TABLE_COPY) {
     uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
     uint32_t src_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
     uint32_t dst_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-    WAH_ENSURE_GOTO(dst_table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
-    WAH_ENSURE_GOTO(src_table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
+    WAH_ASSERT(src_table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
+    WAH_ASSERT(dst_table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= ctx->module->tables[src_table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
     WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= ctx->module->tables[dst_table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
 
@@ -3834,8 +3833,8 @@ WAH_RUN(TABLE_INIT) {
     uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
     uint32_t src_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
     uint32_t dst_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-    WAH_ENSURE_GOTO(elem_idx < ctx->module->element_segment_count, WAH_ERROR_TRAP, cleanup);
-    WAH_ENSURE_GOTO(table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup);
+    WAH_ASSERT(elem_idx < ctx->module->element_segment_count && "validation didn't catch out-of-bound element segment index");
+    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
     // CRITICAL: Check if element segment has been dropped (func_indices is NULL)
     WAH_ENSURE_GOTO(ctx->module->element_segments[elem_idx].func_indices != NULL, WAH_ERROR_TRAP, cleanup);
 
@@ -3854,14 +3853,13 @@ WAH_RUN(TABLE_INIT) {
 WAH_RUN(ELEM_DROP) {
     uint32_t elem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    WAH_ENSURE_GOTO(elem_idx < ctx->module->element_segment_count, WAH_ERROR_TRAP, cleanup);
+    WAH_ASSERT(elem_idx < ctx->module->element_segment_count && "validation didn't catch out-of-bound element segment index");
     // Mark element segment as dropped by setting func_indices to NULL
     // Subsequent table.init will trap because it checks for NULL
     free(ctx->module->element_segments[elem_idx].func_indices);
     ctx->module->element_segments[elem_idx].func_indices = NULL;
     ctx->module->element_segments[elem_idx].num_elems = 0;
     WAH_NEXT();
-    WAH_CLEANUP();
 }
 
 WAH_RUN(CALL) {
@@ -3869,7 +3867,7 @@ WAH_RUN(CALL) {
     bytecode_ip += sizeof(uint32_t);
 
     // Dispatch via the runtime function_table (global index space)
-    WAH_ENSURE_GOTO(called_func_idx < ctx->function_table_count, WAH_ERROR_NOT_FOUND, cleanup);
+    WAH_ASSERT(called_func_idx < ctx->function_table_count && "validation didn't catch out-of-bound function index");
     const wah_function_t *called_fn = &ctx->function_table[called_func_idx];
 
     if (called_fn->is_host) {
@@ -3878,7 +3876,7 @@ WAH_RUN(CALL) {
         size_t nresults = called_fn->nresults;
 
         // Validate parameter count
-        WAH_ENSURE_GOTO((size_t)ctx->sp >= nparams, WAH_ERROR_TRAP, cleanup);
+        WAH_ASSERT((size_t)ctx->sp >= nparams && "validation bug; is this even possible?");
 
         // Pointers to params and result storage (reuse param space for results)
         wah_value_t *param_vals = &ctx->value_stack[ctx->sp - nparams];
@@ -3928,8 +3926,9 @@ WAH_RUN(CALL_INDIRECT) {
     // Pop function index from stack
     uint32_t func_table_idx = (uint32_t)ctx->value_stack[--ctx->sp].i32;
 
-    // Validate table_idx
-    WAH_ENSURE_GOTO(table_idx < ctx->table_count, WAH_ERROR_TRAP, cleanup); // Table index out of bounds
+    // Validate type_idx and table_idx
+    WAH_ASSERT(type_idx < ctx->module->type_count && "validation didn't catch out-of-bound type index");
+    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index");
 
     // Validate func_table_idx against table size, Use min_elements as current size
     WAH_ENSURE_GOTO(func_table_idx < ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup); // Function index out of table bounds
@@ -3939,7 +3938,7 @@ WAH_RUN(CALL_INDIRECT) {
     WAH_ENSURE_GOTO(table_fn != NULL, WAH_ERROR_TRAP, cleanup); // Null function reference
 
     uint32_t actual_func_idx = table_fn->global_idx;
-    WAH_ENSURE_GOTO(actual_func_idx < ctx->function_table_count, WAH_ERROR_TRAP, cleanup);
+    WAH_ASSERT(actual_func_idx < ctx->function_table_count && "function entry contains out-of-bound function index");
     const wah_function_t *actual_fn = &ctx->function_table[actual_func_idx];
 
     if (actual_fn->is_host) {
@@ -3951,22 +3950,18 @@ WAH_RUN(CALL_INDIRECT) {
         const wah_func_type_t *expected_func_type = &ctx->module->types[type_idx];
 
         // Type check: compare expected and host function types
-        WAH_ENSURE_GOTO(expected_func_type->param_count == nparams &&
-                        expected_func_type->result_count == nresults,
-                        WAH_ERROR_TRAP, cleanup); // Type mismatch (param/result count)
+        WAH_ASSERT(expected_func_type->param_count == nparams && expected_func_type->result_count == nresults && "type mismatch (param/result count)");
         for (uint32_t i = 0; i < expected_func_type->param_count; ++i) {
             // Type mismatch (param type)
-            WAH_ENSURE_GOTO(expected_func_type->param_types[i] == actual_fn->param_types[i],
-                           WAH_ERROR_TRAP, cleanup);
+            WAH_ASSERT(expected_func_type->param_types[i] == actual_fn->param_types[i] && "type mismatch (param type)");
         }
         for (uint32_t i = 0; i < expected_func_type->result_count; ++i) {
             // Type mismatch (result type)
-            WAH_ENSURE_GOTO(expected_func_type->result_types[i] == actual_fn->result_types[i],
-                           WAH_ERROR_TRAP, cleanup);
+            WAH_ASSERT(expected_func_type->result_types[i] == actual_fn->result_types[i] && "type mismatch (result type)");
         }
 
         // Validate parameter count
-        WAH_ENSURE_GOTO((size_t)ctx->sp >= nparams, WAH_ERROR_TRAP, cleanup);
+        WAH_ASSERT((size_t)ctx->sp >= nparams && "validation bug; is this even possible?");
 
         // Pointers to params and result storage (reuse param space for results)
         wah_value_t *param_vals = &ctx->value_stack[ctx->sp - nparams];
@@ -4345,8 +4340,9 @@ WAH_RUN(MEMORY_INIT) {
     uint32_t mem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
 
-    WAH_ENSURE_GOTO(mem_idx == 0, WAH_ERROR_TRAP, cleanup); // Only memory 0 supported
-    WAH_ENSURE_GOTO(data_idx < ctx->module->data_segment_count, WAH_ERROR_TRAP, cleanup);
+    (void)mem_idx; // TODO: multiple memories support
+    WAH_ASSERT(mem_idx < ctx->module->memory_count && "validation didn't catch out-of-bound memory index");
+    WAH_ASSERT(data_idx < ctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index");
 
     uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
     uint32_t src_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
@@ -4369,7 +4365,10 @@ WAH_RUN(MEMORY_COPY) {
     uint32_t src_mem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
 
-    WAH_ENSURE_GOTO(dest_mem_idx == 0 && src_mem_idx == 0, WAH_ERROR_TRAP, cleanup); // Only memory 0 supported
+    (void)dest_mem_idx; // TODO: multiple memories support
+    (void)src_mem_idx; // TODO: multiple memories support
+    WAH_ASSERT(dest_mem_idx < ctx->module->memory_count && "validation didn't catch out-of-bound source memory index");
+    WAH_ASSERT(src_mem_idx < ctx->module->memory_count && "validation didn't catch out-of-bound destination memory index");
 
     uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
     uint32_t src = (uint32_t)ctx->value_stack[--ctx->sp].i32;
@@ -4435,7 +4434,7 @@ WAH_RUN(UNREACHABLE) {
     uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32; \
     uint32_t effective_addr = addr + offset; \
     WAH_ENSURE_GOTO(effective_addr + N/8 <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup); \
-    WAH_ENSURE_GOTO(lane_idx < 128/N, WAH_ERROR_TRAP, cleanup); \
+    WAH_ASSERT(lane_idx < 128/N && "validation didn't catch out-of-bound lane index"); \
     val.u##N[lane_idx] = wah_read_u##N##_le(ctx->memory_base + effective_addr); \
     ctx->value_stack[ctx->sp++].v128 = val; \
     WAH_NEXT(); \
@@ -4499,23 +4498,21 @@ WAH_RUN(V128_STORE) {
 #define EXTRACT_LANE_OP(VEC_TYPE, SCALAR_TYPE, LANE_COUNT) { \
     wah_v128_t vec = ctx->value_stack[--ctx->sp].v128; \
     uint8_t laneidx = *bytecode_ip++; \
-    WAH_ENSURE_GOTO(laneidx < LANE_COUNT, WAH_ERROR_TRAP, cleanup); \
+    WAH_ASSERT(laneidx < LANE_COUNT && "validation didn't catch out-of-bound lane index"); \
     wah_value_t result; \
     result.SCALAR_TYPE = vec.VEC_TYPE[laneidx]; \
     ctx->value_stack[ctx->sp++] = result; \
     WAH_NEXT(); \
-    WAH_CLEANUP(); \
 }
 
 #define REPLACE_LANE_OP(VEC_TYPE, C_VEC_TYPE, SCALAR_TYPE, LANE_COUNT) { \
     wah_value_t scalar_val = ctx->value_stack[--ctx->sp]; \
     wah_v128_t vec = ctx->value_stack[--ctx->sp].v128; \
     uint8_t laneidx = *bytecode_ip++; \
-    WAH_ENSURE_GOTO(laneidx < LANE_COUNT, WAH_ERROR_TRAP, cleanup); \
+    WAH_ASSERT(laneidx < LANE_COUNT && "validation didn't catch out-of-bound lane index"); \
     vec.VEC_TYPE[laneidx] = (C_VEC_TYPE)scalar_val.SCALAR_TYPE; \
     ctx->value_stack[ctx->sp++].v128 = vec; \
     WAH_NEXT(); \
-    WAH_CLEANUP(); \
 }
 
 #define SPLAT_OP(VEC_TYPE, C_VEC_TYPE, SCALAR_TYPE) { \
