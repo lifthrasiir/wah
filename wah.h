@@ -729,7 +729,7 @@ typedef struct wah_code_body_s {
 typedef struct wah_global_s {
     wah_type_t type;
     bool is_mutable;
-    wah_value_t initial_value; // Stored after parsing the init_expr
+    wah_parsed_code_t init_expr; // Preparsed const expression (evaluated at instantiation)
 } wah_global_t;
 
 // --- Validation Context ---
@@ -2408,15 +2408,152 @@ cleanup:
     return err;
 }
 
+// --- Const Expression Validation ---
+// Validates a const expression for WebAssembly 3.0
+// max_global_idx: maximum global index that can be referenced (globals defined earlier only)
+static wah_error_t wah_validate_const_expr(
+    const uint8_t **ptr,
+    const uint8_t *section_end,
+    wah_type_t expected_type,
+    wah_module_t *module,
+    uint32_t max_global_idx
+) {
+    // Simple type stack for const expression validation
+    wah_type_t type_stack[16];
+    uint32_t stack_depth = 0;
+
+    // Push to type stack
+    #define CONST_PUSH(t) do { \
+        WAH_ENSURE(stack_depth < 16, WAH_ERROR_VALIDATION_FAILED); \
+        type_stack[stack_depth++] = (t); \
+    } while(0)
+
+    // Pop from type stack
+    #define CONST_POP(t) do { \
+        WAH_ENSURE(stack_depth > 0, WAH_ERROR_VALIDATION_FAILED); \
+        wah_type_t _actual = type_stack[--stack_depth]; \
+        WAH_ENSURE(_actual == (t) || _actual == WAH_TYPE_ANY, WAH_ERROR_VALIDATION_FAILED); \
+    } while(0)
+
+    while (1) {
+        WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
+        uint8_t raw_opcode = *(*ptr)++;
+
+        // Check for extended opcodes
+        uint16_t opcode_val;
+        if (raw_opcode == 0xFB || raw_opcode == 0xFC || raw_opcode == 0xFD) {
+            WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
+            uint8_t ext = *(*ptr)++;
+            opcode_val = (raw_opcode == 0xFD ? 0x108 : (raw_opcode == 0xFC ? 0xf6 : 0xd7)) + ext;
+        } else {
+            opcode_val = raw_opcode;
+        }
+
+        if (opcode_val == WAH_OP_END) {
+            // End of const expression - check type matches expected
+            WAH_ENSURE(stack_depth == 1, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(type_stack[0] == expected_type || type_stack[0] == WAH_TYPE_ANY, WAH_ERROR_VALIDATION_FAILED);
+            return WAH_OK;
+        }
+
+        // Validate based on opcode
+        switch (opcode_val) {
+            // Constants
+            case WAH_OP_I32_CONST: {
+                int32_t val;
+                WAH_CHECK(wah_decode_sleb128_32(ptr, section_end, &val));
+                CONST_PUSH(WAH_TYPE_I32);
+                break;
+            }
+            case WAH_OP_I64_CONST: {
+                int64_t val;
+                WAH_CHECK(wah_decode_sleb128_64(ptr, section_end, &val));
+                CONST_PUSH(WAH_TYPE_I64);
+                break;
+            }
+            case WAH_OP_F32_CONST: {
+                WAH_ENSURE(*ptr + 4 <= section_end, WAH_ERROR_UNEXPECTED_EOF);
+                *ptr += 4;
+                CONST_PUSH(WAH_TYPE_F32);
+                break;
+            }
+            case WAH_OP_F64_CONST: {
+                WAH_ENSURE(*ptr + 8 <= section_end, WAH_ERROR_UNEXPECTED_EOF);
+                *ptr += 8;
+                CONST_PUSH(WAH_TYPE_F64);
+                break;
+            }
+
+            // Integer binary operations
+            case WAH_OP_I32_ADD:
+            case WAH_OP_I32_SUB:
+            case WAH_OP_I32_MUL:
+                CONST_POP(WAH_TYPE_I32);
+                CONST_POP(WAH_TYPE_I32);
+                CONST_PUSH(WAH_TYPE_I32);
+                break;
+
+            case WAH_OP_I64_ADD:
+            case WAH_OP_I64_SUB:
+            case WAH_OP_I64_MUL:
+                CONST_POP(WAH_TYPE_I64);
+                CONST_POP(WAH_TYPE_I64);
+                CONST_PUSH(WAH_TYPE_I64);
+                break;
+
+            // Reference types
+            case WAH_OP_REF_NULL: {
+                wah_type_t ref_type;
+                WAH_CHECK(wah_decode_ref_type(ptr, section_end, &ref_type));
+                CONST_PUSH(ref_type);
+                break;
+            }
+            case WAH_OP_REF_FUNC: {
+                uint32_t func_idx;
+                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &func_idx));
+                // Validate function index exists
+                // Host functions are in functions[function_count..total_function_count)
+                uint32_t host_func_count = module->total_function_count - module->function_count;
+                WAH_ENSURE(func_idx < module->import_function_count + module->function_count + host_func_count,
+                          WAH_ERROR_VALIDATION_FAILED);
+                CONST_PUSH(WAH_TYPE_FUNCREF);
+                break;
+            }
+
+            // Global get (only for globals defined earlier)
+            case WAH_OP_GLOBAL_GET: {
+                uint32_t global_idx;
+                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &global_idx));
+                // Can only reference globals defined before the current one
+                WAH_ENSURE(global_idx < max_global_idx, WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(global_idx < module->global_count, WAH_ERROR_VALIDATION_FAILED);
+                CONST_PUSH(module->globals[global_idx].type);
+                break;
+            }
+
+            // Future extensions: REF_I31, STRUCT_NEW, ARRAY_NEW, etc.
+            // For now, reject all other opcodes
+            default:
+                return WAH_ERROR_VALIDATION_FAILED;
+        }
+    }
+
+#undef CONST_PUSH
+#undef CONST_POP
+}
+
 static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t count;
     // A global entry requires at least 5 bytes (type, is_mutable, init_expr (min 3 bytes)).
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 5));
 
-    module->global_count = count;
+    module->global_count = 0;
     WAH_MALLOC_ARRAY(module->globals, count);
 
     for (uint32_t i = 0; i < count; ++i) {
+        module->globals[i] = (wah_global_t){0};
+        ++module->global_count;
+
         wah_type_t global_declared_type;
         WAH_CHECK(wah_decode_val_type(ptr, section_end, &global_declared_type));
         module->globals[i].type = global_declared_type;
@@ -2425,45 +2562,16 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
         WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
         module->globals[i].is_mutable = (*(*ptr)++ == 1);
 
-        // Init Expr (only const expressions are supported for initial values)
-        WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
-        wah_opcode_t opcode = (wah_opcode_t)*(*ptr)++;
-        switch (opcode) {
-            case WAH_OP_I32_CONST: {
-                WAH_ENSURE(global_declared_type == WAH_TYPE_I32, WAH_ERROR_VALIDATION_FAILED);
-                int32_t val;
-                WAH_CHECK(wah_decode_sleb128_32(ptr, section_end, &val));
-                module->globals[i].initial_value.i32 = val;
-                break;
-            }
-            case WAH_OP_I64_CONST: {
-                WAH_ENSURE(global_declared_type == WAH_TYPE_I64, WAH_ERROR_VALIDATION_FAILED);
-                int64_t val;
-                WAH_CHECK(wah_decode_sleb128_64(ptr, section_end, &val));
-                module->globals[i].initial_value.i64 = val;
-                break;
-            }
-            case WAH_OP_F32_CONST: {
-                WAH_ENSURE(global_declared_type == WAH_TYPE_F32, WAH_ERROR_VALIDATION_FAILED);
-                WAH_ENSURE(*ptr + 4 <= section_end, WAH_ERROR_UNEXPECTED_EOF);
-                module->globals[i].initial_value.f32 = wah_read_f32_le(*ptr);
-                *ptr += 4;
-                break;
-            }
-            case WAH_OP_F64_CONST: {
-                WAH_ENSURE(global_declared_type == WAH_TYPE_F64, WAH_ERROR_VALIDATION_FAILED);
-                WAH_ENSURE(*ptr + 8 <= section_end, WAH_ERROR_UNEXPECTED_EOF);
-                module->globals[i].initial_value.f64 = wah_read_f64_le(*ptr);
-                *ptr += 8;
-                break;
-            }
-            default: {
-                // Only const expressions supported for global initializers for now
-                return WAH_ERROR_VALIDATION_FAILED;
-            }
-        }
-        WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
-        WAH_ENSURE(*(*ptr)++ == WAH_OP_END, WAH_ERROR_VALIDATION_FAILED); // Expect END opcode after init_expr
+        // Init Expr - store start position for validation and preparsing
+        const uint8_t *expr_start = *ptr;
+
+        // Step 1: Validate const expression
+        WAH_CHECK(wah_validate_const_expr(ptr, section_end, global_declared_type, module, i));
+
+        // Step 2: Preparse const expression using existing preparsing infrastructure
+        // Note: ptr was moved by validation, so we need to calculate the size
+        uint32_t expr_size = (uint32_t)(*ptr - expr_start);
+        WAH_CHECK(wah_preparse_code(module, 0, expr_start, expr_size, &module->globals[i].init_expr));
     }
     return WAH_OK;
 }
@@ -3301,10 +3409,9 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
 
     if (module->global_count > 0) {
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->globals, module->global_count, cleanup);
-        // Initialize globals from the module definition
-        for (uint32_t i = 0; i < module->global_count; ++i) {
-            exec_ctx->globals[i] = module->globals[i].initial_value;
-        }
+        // Note: Globals are initialized later in wah_instantiate() by evaluating const expressions
+        // Zero-initialize for now
+        memset(exec_ctx->globals, 0, sizeof(wah_value_t) * module->global_count);
     }
 
     exec_ctx->module = module;
@@ -5520,7 +5627,12 @@ void wah_free_module(wah_module_t *module) {
         free(module->code_bodies);
     }
 
-    free(module->globals);
+    if (module->globals) {
+        for (uint32_t i = 0; i < module->global_count; ++i) {
+            wah_free_parsed_code(&module->globals[i].init_expr);
+        }
+        free(module->globals);
+    }
     free(module->memories);
     free(module->tables);
 
@@ -5830,6 +5942,64 @@ cleanup:
     return err;
 }
 
+// Helper to create a preparsed const expression from a simple constant value
+static wah_error_t wah_create_const_expr(wah_type_t type, const wah_value_t *value, wah_parsed_code_t *parsed_code) {
+    uint32_t size = sizeof(uint16_t);  // opcode
+    uint16_t opcode;
+
+    switch (type) {
+        case WAH_TYPE_I32:
+            opcode = WAH_OP_I32_CONST;
+            size += sizeof(int32_t);
+            break;
+        case WAH_TYPE_I64:
+            opcode = WAH_OP_I64_CONST;
+            size += sizeof(int64_t);
+            break;
+        case WAH_TYPE_F32:
+            opcode = WAH_OP_F32_CONST;
+            size += sizeof(float);
+            break;
+        case WAH_TYPE_F64:
+            opcode = WAH_OP_F64_CONST;
+            size += sizeof(double);
+            break;
+        case WAH_TYPE_V128:
+            opcode = WAH_OP_V128_CONST;
+            size += sizeof(wah_v128_t);
+            break;
+        default:
+            return WAH_ERROR_VALIDATION_FAILED;
+    }
+
+    WAH_MALLOC_ARRAY(parsed_code->bytecode, size);
+    parsed_code->bytecode_size = size;
+
+    uint8_t *out = parsed_code->bytecode;
+    wah_write_u16_le(out, opcode);
+    out += sizeof(uint16_t);
+
+    switch (type) {
+        case WAH_TYPE_I32:
+            memcpy(out, &value->i32, sizeof(int32_t));
+            break;
+        case WAH_TYPE_I64:
+            memcpy(out, &value->i64, sizeof(int64_t));
+            break;
+        case WAH_TYPE_F32:
+            memcpy(out, &value->f32, sizeof(float));
+            break;
+        case WAH_TYPE_F64:
+            memcpy(out, &value->f64, sizeof(double));
+            break;
+        case WAH_TYPE_V128:
+            memcpy(out, &value->v128, sizeof(wah_v128_t));
+            break;
+    }
+
+    return WAH_OK;
+}
+
 // Internal helper for exporting globals
 static wah_error_t wah_module_export_global_internal(wah_module_t *mod, const char *name, wah_type_t type, bool is_mutable, const wah_value_t *init_value) {
     wah_error_t err;
@@ -5864,7 +6034,9 @@ static wah_error_t wah_module_export_global_internal(wah_module_t *mod, const ch
     wah_global_t *global = &mod->globals[mod->global_count];
     global->type = type;
     global->is_mutable = is_mutable;
-    global->initial_value = *init_value;
+    global->init_expr = (wah_parsed_code_t){0};  // Initialize to zero
+    // Create a const expression for the initial value
+    WAH_CHECK_GOTO(wah_create_const_expr(type, init_value, &global->init_expr), cleanup);
 
     // Fill in export entry
     wah_export_t *export_entry = &mod->exports[mod->export_count];
@@ -6029,6 +6201,128 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
     return WAH_OK;
 }
 
+// --- Const Expression Evaluator ---
+// Evaluates a preparsed const expression and returns the result
+// Used during instantiation to initialize globals
+static wah_error_t wah_eval_const_expr(
+    wah_exec_context_t *ctx,
+    const uint8_t *bytecode,
+    uint32_t bytecode_size,
+    wah_value_t *result
+) {
+    // Simple stack-based evaluator for const expressions
+    // Uses ctx->value_stack temporarily (saves/restores sp)
+    uint32_t saved_sp = ctx->sp;
+    uint32_t stack_start = ctx->sp;
+
+    const uint8_t *ip = bytecode;
+    const uint8_t *end = bytecode + bytecode_size;
+
+    while (ip < end) {
+        uint16_t opcode_val = wah_read_u16_le(ip);
+        ip += sizeof(uint16_t);
+
+#ifdef WAH_DEBUG
+        WAH_LOG("wah_eval_const_expr: opcode=%u (0x%x)", opcode_val, opcode_val);
+#endif
+
+        switch (opcode_val) {
+            case WAH_OP_END:
+                // End of const expression
+                goto eval_done;
+
+            // Constants
+            case WAH_OP_I32_CONST:
+                ctx->value_stack[ctx->sp++].i32 = wah_read_u32_le(ip);
+                ip += sizeof(int32_t);
+                break;
+            case WAH_OP_I64_CONST:
+                ctx->value_stack[ctx->sp++].i64 = wah_read_u64_le(ip);
+                ip += sizeof(int64_t);
+                break;
+            case WAH_OP_F32_CONST:
+                ctx->value_stack[ctx->sp++].f32 = wah_read_f32_le(ip);
+                ip += sizeof(float);
+                break;
+            case WAH_OP_F64_CONST:
+                ctx->value_stack[ctx->sp++].f64 = wah_read_f64_le(ip);
+                ip += sizeof(double);
+                break;
+
+            // Integer binary operations
+            case WAH_OP_I32_ADD: {
+                int32_t right = ctx->value_stack[--ctx->sp].i32;
+                int32_t left = ctx->value_stack[--ctx->sp].i32;
+                ctx->value_stack[ctx->sp++].i32 = left + right;
+                break;
+            }
+            case WAH_OP_I32_SUB: {
+                int32_t right = ctx->value_stack[--ctx->sp].i32;
+                int32_t left = ctx->value_stack[--ctx->sp].i32;
+                ctx->value_stack[ctx->sp++].i32 = left - right;
+                break;
+            }
+            case WAH_OP_I32_MUL: {
+                int32_t right = ctx->value_stack[--ctx->sp].i32;
+                int32_t left = ctx->value_stack[--ctx->sp].i32;
+                ctx->value_stack[ctx->sp++].i32 = left * right;
+                break;
+            }
+            case WAH_OP_I64_ADD: {
+                int64_t right = ctx->value_stack[--ctx->sp].i64;
+                int64_t left = ctx->value_stack[--ctx->sp].i64;
+                ctx->value_stack[ctx->sp++].i64 = left + right;
+                break;
+            }
+            case WAH_OP_I64_SUB: {
+                int64_t right = ctx->value_stack[--ctx->sp].i64;
+                int64_t left = ctx->value_stack[--ctx->sp].i64;
+                ctx->value_stack[ctx->sp++].i64 = left - right;
+                break;
+            }
+            case WAH_OP_I64_MUL: {
+                int64_t right = ctx->value_stack[--ctx->sp].i64;
+                int64_t left = ctx->value_stack[--ctx->sp].i64;
+                ctx->value_stack[ctx->sp++].i64 = left * right;
+                break;
+            }
+
+            // Reference types
+            case WAH_OP_REF_NULL:
+                ctx->value_stack[ctx->sp++].ref = NULL;
+                break;
+            case WAH_OP_REF_FUNC: {
+                uint32_t func_idx = wah_read_u32_le(ip);
+                ip += sizeof(uint32_t);
+                // For now, store function index as pointer (similar to element segments)
+                ctx->value_stack[ctx->sp++].ref = (void*)(uintptr_t)(func_idx + 1);
+                break;
+            }
+
+            // Global get
+            case WAH_OP_GLOBAL_GET: {
+                uint32_t global_idx = wah_read_u32_le(ip);
+                ip += sizeof(uint32_t);
+                WAH_ENSURE(global_idx < ctx->global_count, WAH_ERROR_VALIDATION_FAILED);
+                ctx->value_stack[ctx->sp++] = ctx->globals[global_idx];
+                break;
+            }
+
+            default:
+                return WAH_ERROR_VALIDATION_FAILED;
+        }
+    }
+
+eval_done:
+    // Result should be the only thing on the stack
+    WAH_ENSURE(ctx->sp == stack_start + 1, WAH_ERROR_VALIDATION_FAILED);
+    *result = ctx->value_stack[stack_start];
+
+    // Restore stack pointer
+    ctx->sp = saved_sp;
+    return WAH_OK;
+}
+
 wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     wah_error_t err = WAH_OK;
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
@@ -6036,6 +6330,15 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
 
     const wah_module_t *module = ctx->module;
     uint32_t import_count = module->import_function_count;
+
+    // Initialize globals by evaluating const expressions
+    // Must be done in order, as later globals can reference earlier ones
+    for (uint32_t i = 0; i < module->global_count; ++i) {
+        WAH_CHECK_GOTO(wah_eval_const_expr(ctx,
+                                           module->globals[i].init_expr.bytecode,
+                                           module->globals[i].init_expr.bytecode_size,
+                                           &ctx->globals[i]), cleanup);
+    }
 
     // Allocate and initialize globals for linked modules
     // For simplicity, we allocate globals after the primary module's globals
@@ -6052,12 +6355,15 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         // Copy primary module's globals
         memcpy(new_globals, ctx->globals, module->global_count * sizeof(wah_value_t));
 
-        // Initialize globals for each linked module
+        // Initialize globals for each linked module by evaluating const expressions
         uint32_t offset = module->global_count;
         for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
             const wah_module_t *linked = ctx->linked_modules[j].module;
             for (uint32_t k = 0; k < linked->global_count; k++) {
-                new_globals[offset + k] = linked->globals[k].initial_value;
+                WAH_CHECK_GOTO(wah_eval_const_expr(ctx,
+                                                   linked->globals[k].init_expr.bytecode,
+                                                   linked->globals[k].init_expr.bytecode_size,
+                                                   &new_globals[offset + k]), cleanup);
             }
             offset += linked->global_count;
         }
@@ -6279,7 +6585,10 @@ wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id
             WAH_ENSURE(index < module->global_count, WAH_ERROR_NOT_FOUND);
             out->type = module->globals[index].type;
             out->is_mutable = module->globals[index].is_mutable;
-            out->u.global_val = module->globals[index].initial_value;
+            // Note: Global initial values are now evaluated at instantiation time
+            // and stored in the execution context, not in the module.
+            // This API only provides type information, not current values.
+            memset(&out->u.global_val, 0, sizeof(wah_value_t));
             break;
         default:
             return WAH_ERROR_NOT_FOUND; // Unknown entry kind

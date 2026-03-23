@@ -88,11 +88,31 @@ int main(void) {
             return 1;
         }
 
-        if (mod.globals[0].initial_value.i32 != 42) {
-            printf("FAIL: Global initial value not set correctly\n");
+        // Verify initial value through execution context
+        wah_exec_context_t ctx;
+        wah_error_t ctx_err = wah_exec_context_create(&ctx, &mod);
+        if (ctx_err != WAH_OK) {
+            printf("FAIL: wah_exec_context_create returned %s\n", wah_strerror(ctx_err));
             wah_free_module(&mod);
             return 1;
         }
+
+        ctx_err = wah_instantiate(&ctx);
+        if (ctx_err != WAH_OK) {
+            printf("FAIL: wah_instantiate returned %s\n", wah_strerror(ctx_err));
+            wah_exec_context_destroy(&ctx);
+            wah_free_module(&mod);
+            return 1;
+        }
+
+        if (ctx.globals[0].i32 != 42) {
+            printf("FAIL: Global initial value not set correctly (got %d, expected 42)\n", ctx.globals[0].i32);
+            wah_exec_context_destroy(&ctx);
+            wah_free_module(&mod);
+            return 1;
+        }
+
+        wah_exec_context_destroy(&ctx);
 
         printf("PASS: wah_module_export_global_i32 (immutable)\n");
         wah_free_module(&mod);
@@ -121,11 +141,31 @@ int main(void) {
             return 1;
         }
 
-        if (mod.globals[0].initial_value.i32 != -100) {
-            printf("FAIL: Global initial value not set correctly\n");
+        // Verify initial value through execution context
+        wah_exec_context_t ctx;
+        wah_error_t ctx_err = wah_exec_context_create(&ctx, &mod);
+        if (ctx_err != WAH_OK) {
+            printf("FAIL: wah_exec_context_create returned %s\n", wah_strerror(ctx_err));
             wah_free_module(&mod);
             return 1;
         }
+
+        ctx_err = wah_instantiate(&ctx);
+        if (ctx_err != WAH_OK) {
+            printf("FAIL: wah_instantiate returned %s\n", wah_strerror(ctx_err));
+            wah_exec_context_destroy(&ctx);
+            wah_free_module(&mod);
+            return 1;
+        }
+
+        if (ctx.globals[0].i32 != -100) {
+            printf("FAIL: Global initial value not set correctly (got %d, expected -100)\n", ctx.globals[0].i32);
+            wah_exec_context_destroy(&ctx);
+            wah_free_module(&mod);
+            return 1;
+        }
+
+        wah_exec_context_destroy(&ctx);
 
         printf("PASS: wah_module_export_global_i32 (mutable)\n");
         wah_free_module(&mod);
@@ -155,11 +195,31 @@ int main(void) {
             return 1;
         }
 
-        if (mod.globals[0].initial_value.i64 != test_value) {
-            printf("FAIL: Global initial value not set correctly\n");
+        // Verify initial value through execution context
+        wah_exec_context_t ctx;
+        wah_error_t ctx_err = wah_exec_context_create(&ctx, &mod);
+        if (ctx_err != WAH_OK) {
+            printf("FAIL: wah_exec_context_create returned %s\n", wah_strerror(ctx_err));
             wah_free_module(&mod);
             return 1;
         }
+
+        ctx_err = wah_instantiate(&ctx);
+        if (ctx_err != WAH_OK) {
+            printf("FAIL: wah_instantiate returned %s\n", wah_strerror(ctx_err));
+            wah_exec_context_destroy(&ctx);
+            wah_free_module(&mod);
+            return 1;
+        }
+
+        if (ctx.globals[0].i64 != test_value) {
+            printf("FAIL: Global initial value not set correctly\n");
+            wah_exec_context_destroy(&ctx);
+            wah_free_module(&mod);
+            return 1;
+        }
+
+        wah_exec_context_destroy(&ctx);
 
         printf("PASS: wah_module_export_global_i64\n");
         wah_free_module(&mod);
@@ -259,7 +319,7 @@ int main(void) {
             return 1;
         }
 
-        err = wah_module_export_memory(&mod, "mem1", 1, 0);
+        err = wah_module_export_memory(&mod, "mem1", 1, 1);
         if (err != WAH_OK) {
             printf("FAIL: wah_module_export_memory returned %s\n", wah_strerror(err));
             wah_free_module(&mod);
