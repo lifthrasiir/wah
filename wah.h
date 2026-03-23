@@ -11,10 +11,12 @@
 // Assertions are only used for always-true conditions as a correctness check.
 // Any possible runtime error should be checked with WAH_ENSURE etc. instead.
 // Exception: Public interfaces without wah_error_t return type may use WAH_ASSERT as a last resort.
+#ifndef WAH_ASSERT
 #ifdef WAH_DEBUG
 #define WAH_ASSERT(cond) assert(cond)
 #else
 #define WAH_ASSERT(cond) ((void)0)
+#endif
 #endif
 
 typedef enum {

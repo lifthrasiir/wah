@@ -8,7 +8,7 @@ LDFLAGS ?= -lm # Link math library, potentially needed for wah.h
 ifdef DEBUG
     CFLAGS += -DWAH_DEBUG -g -O0
 else
-    CFLAGS += -O2
+    CFLAGS += -DWAH_ASSERT=assert -O2
 endif
 
 # List of test source files

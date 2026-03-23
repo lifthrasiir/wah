@@ -1,6 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
-set cflags=
+set cflags=-D WAH_ASSERT=assert
 if "%1" == "-g" (
     shift
     set cflags=-D WAH_DEBUG -g
