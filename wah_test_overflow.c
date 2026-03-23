@@ -90,6 +90,84 @@ int main(void) {
     }
     printf("  - PASSED\n");
 
+    #define REPEAT8(x) x x x x x x x x
+    #define REPEAT16(x) REPEAT8(x x)
+    #define REPEAT64(x) REPEAT8(REPEAT8(x))
+    #define REPEAT256(x) REPEAT64(x x x x)
+    #define REPEAT1024(x) REPEAT256(x x x x)
+
+    // This tests if the control stack depth exceeds WAH_MAX_CONTROL_DEPTH (256).
+    // We create a function with 257 nested blocks, which should trigger WAH_ERROR_TOO_LARGE.
+    printf("7. Testing control stack overflow (257 nested blocks)...\n");
+    {
+        err = wah_parse_module_from_spec(&module, "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ \
+                {[] \
+                    " REPEAT256("block void ") "\
+                        block void end \
+                    " REPEAT256("end ") "\
+                end} \
+            ]}");
+        if (err != WAH_ERROR_TOO_LARGE) {
+            printf("  - FAILED: Expected WAH_ERROR_TOO_LARGE, got: %s\n", wah_strerror(err));
+            if (err == WAH_OK) {
+                wah_free_module(&module);
+            }
+            return 1;
+        }
+        printf("  - PASSED\n");
+    }
+
+    // This tests if the type stack exceeds WAH_MAX_TYPE_STACK_SIZE (1024).
+    // We create a block that contains many i32.const instructions followed by i32.add,
+    // which pushes values to the type stack and should trigger WAH_ERROR_TOO_LARGE.
+    printf("8. Testing type stack overflow (>1024 types)...\n");
+    {
+        err = wah_parse_module_from_spec(&module, "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ \
+                {[] \
+                    " REPEAT1024("i32.const 0 ") "i32.const 0 \
+                    " REPEAT1024("i32.add ") "\
+                    drop \
+                end} \
+            ]}");
+        if (err != WAH_ERROR_TOO_LARGE) {
+            printf("  - FAILED: Expected WAH_ERROR_TOO_LARGE, got: %s\n", wah_strerror(err));
+            if (err == WAH_OK) {
+                wah_free_module(&module);
+            }
+            return 1;
+        }
+        printf("  - PASSED\n");
+    }
+
+    // This tests if the constant expression stack exceeds its limit (16).
+    // We create a global with a constant expression that tries to push more than 16 values.
+    printf("9. Testing constant expression stack overflow (>16 items)...\n");
+    {
+        err = wah_parse_module_from_spec(&module, "wasm \
+            types {[ fn [] [] ]} \
+            globals {[ i32 mut \
+                " REPEAT16("i32.const 0 ") "i32.const 0 \
+                " REPEAT16("i32.add ") "\
+            end ]}");
+        // This pushes 17 i32.const values before END.
+        // The 17th push should trigger WAH_ERROR_TOO_LARGE.
+        // The final stack size is still 1, so it should not trigger the END check.
+        if (err != WAH_ERROR_TOO_LARGE) {
+            printf("  - FAILED: Expected WAH_ERROR_TOO_LARGE, got: %s\n", wah_strerror(err));
+            if (err == WAH_OK) {
+                wah_free_module(&module);
+            }
+            return 1;
+        }
+        printf("  - PASSED\n");
+    }
+
     printf("--- All Overflow Tests Passed ---\n");
 
     return 0;

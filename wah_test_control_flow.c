@@ -576,6 +576,50 @@ void test_if_else_multi_result() {
     }
 }
 
+// This tests that an ELSE without a matching IF fails validation.
+// This ensures the assertion "validation should have verified ELSE is inside IF" holds.
+static void test_else_without_if() {
+    printf("Testing ELSE without matching IF (should fail validation)...\n");
+    wah_module_t module;
+    wah_error_t err;
+
+    // Case 1: ELSE at the start of a function (no IF)
+    err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] else end } ]}");
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        printf("  - FAILED: Expected WAH_ERROR_VALIDATION_FAILED for ELSE without IF, got: %s\n", wah_strerror(err));
+        if (err == WAH_OK) {
+            wah_free_module(&module);
+        }
+        assert(false);
+    }
+    printf("  - PASSED: ELSE without IF correctly rejected\n");
+}
+
+// This tests that BR with an invalid relative depth fails validation.
+// This ensures the assertion "validation should have verified relative depth" holds.
+static void test_br_invalid_relative_depth() {
+    printf("Testing BR with invalid relative depth (should fail validation)...\n");
+    wah_module_t module;
+    wah_error_t err;
+
+    // Case 1: br 1 when only one block is on the stack
+    err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] block void br 1 end end } ]}");
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        printf("  - FAILED: Expected WAH_ERROR_VALIDATION_FAILED for br 1 with only one block, got: %s\n", wah_strerror(err));
+        if (err == WAH_OK) {
+            wah_free_module(&module);
+        }
+        assert(false);
+    }
+    printf("  - PASSED: BR with invalid relative depth correctly rejected\n");
+}
+
 int main() {
     printf("=== Control Flow Tests ===\n");
     test_simple_block();
@@ -593,6 +637,10 @@ int main() {
     printf("\n=== Multi-Value Control Flow Tests ===\n");
     test_block_multi_result();
     test_if_else_multi_result();
+
+    printf("\n=== Validation Assertion Tests ===\n");
+    test_else_without_if();
+    test_br_invalid_relative_depth();
 
     printf("=== Control Flow Tests Complete ===\n");
     return 0;

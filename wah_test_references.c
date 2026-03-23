@@ -262,6 +262,30 @@ static int test_ref_is_null_externref_null() {
     return 0;
 }
 
+// This tests that ref.func with an invalid function index fails validation.
+// This ensures the assertion "validation should have verified function index" holds.
+static int test_ref_func_invalid_index() {
+    printf("Running test_ref_func_invalid_index...\n");
+
+    wah_module_t module;
+    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [funcref] ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'test_invalid'} fn# 0 ]} \
+        code {[ {[] ref.func 99 end } ]}");  // Function index 99 doesn't exist
+
+    if (err != WAH_ERROR_VALIDATION_FAILED) {
+        printf("  - FAILED: Expected WAH_ERROR_VALIDATION_FAILED for invalid function index, got: %s\n", wah_strerror(err));
+        if (err == WAH_OK) {
+            wah_free_module(&module);
+        }
+        return 1;
+    }
+
+    printf("  - PASSED: ref.func with invalid index correctly rejected\n");
+    return 0;
+}
+
 int main() {
     printf("Testing WebAssembly Reference Types...\n\n");
 
@@ -273,6 +297,7 @@ int main() {
     failed |= test_ref_is_null_funcref_null();
     failed |= test_ref_is_null_funcref_nonnull();
     failed |= test_ref_is_null_externref_null();
+    failed |= test_ref_func_invalid_index();
 
     if (failed) {
         printf("\nSome tests failed.\n");

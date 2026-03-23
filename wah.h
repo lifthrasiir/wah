@@ -865,7 +865,7 @@ const char *wah_strerror(wah_error_t err) {
         case WAH_ERROR_INVALID_VERSION: return "Invalid WASM version";
         case WAH_ERROR_UNEXPECTED_EOF: return "Unexpected end of file";
         case WAH_ERROR_UNKNOWN_SECTION: return "Unknown section or opcode";
-        case WAH_ERROR_TOO_LARGE: return "exceeding implementation limits (or value too large)";
+        case WAH_ERROR_TOO_LARGE: return "Exceeding implementation limits (or value too large)";
         case WAH_ERROR_OUT_OF_MEMORY: return "Out of memory";
         case WAH_ERROR_VALIDATION_FAILED: return "Validation failed";
         case WAH_ERROR_TRAP: return "Runtime trap";
@@ -1469,7 +1469,7 @@ static inline wah_v128_t wah_q15mulr_sat_s(wah_v128_t a, wah_v128_t b) {
 }
 
 static inline wah_error_t wah_type_stack_push(wah_type_stack_t *stack, wah_type_t type) {
-    WAH_ENSURE(stack->sp < WAH_MAX_TYPE_STACK_SIZE, WAH_ERROR_VALIDATION_FAILED);
+    WAH_ENSURE(stack->sp < WAH_MAX_TYPE_STACK_SIZE, WAH_ERROR_TOO_LARGE);
     stack->data[stack->sp++] = type;
     return WAH_OK;
 }
@@ -2003,7 +2003,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             int32_t block_type_val;
             WAH_CHECK(wah_decode_sleb128_32(code_ptr, code_end, &block_type_val));
 
-            WAH_ENSURE(vctx->control_sp < WAH_MAX_CONTROL_DEPTH, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(vctx->control_sp < WAH_MAX_CONTROL_DEPTH, WAH_ERROR_TOO_LARGE);
             wah_validation_control_frame_t* frame = &vctx->control_stack[vctx->control_sp++];
             frame->opcode = (wah_opcode_t)opcode_val;
             frame->else_found = false;
@@ -2424,7 +2424,7 @@ static wah_error_t wah_validate_const_expr(
 
     // Push to type stack
     #define CONST_PUSH(t) do { \
-        WAH_ENSURE(stack_depth < 16, WAH_ERROR_VALIDATION_FAILED); \
+        WAH_ENSURE(stack_depth < 16, WAH_ERROR_TOO_LARGE); \
         type_stack[stack_depth++] = (t); \
     } while(0)
 
@@ -2824,8 +2824,6 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
             ++module->element_segment_count;
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->table_idx));
-            // Note: Multiple tables are supported in WebAssembly 2.0
-            // WAH_ENSURE(segment->table_idx == 0, WAH_ERROR_VALIDATION_FAILED); // For now, only table 0 is supported
 
             // Parse offset_expr (expected to be i32.const X end)
             WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
@@ -3000,7 +2998,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     int32_t block_type;
                     WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &block_type), cleanup);
                     GROW_BLOCK_TARGETS();
-                    WAH_ENSURE_GOTO(control_sp < WAH_MAX_CONTROL_DEPTH, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
                     uint32_t target_idx = block_target_count++;
                     block_targets[target_idx] = preparsed_size; // To be overwritten for WAH_OP_IF
                     control_stack[control_sp++] = (wah_control_frame_t){.opcode=(wah_opcode_t)opcode, .target_idx=target_idx};
@@ -3008,7 +3006,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     break;
                 }
                 case WAH_OP_ELSE: {
-                    WAH_ENSURE_GOTO(control_sp > 0 && control_stack[control_sp - 1].opcode == WAH_OP_IF, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    WAH_ASSERT(control_sp > 0 && control_stack[control_sp - 1].opcode == WAH_OP_IF && "validation should have verified ELSE is inside IF");
                     preparsed_instr_size = sizeof(uint16_t) + sizeof(uint32_t);
                     block_targets[control_stack[control_sp - 1].target_idx] = preparsed_size + preparsed_instr_size;
                     GROW_BLOCK_TARGETS();
@@ -3093,7 +3091,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
 
         if (opcode == WAH_OP_BLOCK || opcode == WAH_OP_LOOP) {
             int32_t block_type; WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &block_type), cleanup);
-            WAH_ENSURE_GOTO(control_sp < WAH_MAX_CONTROL_DEPTH, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
             control_stack[control_sp++] = (wah_control_frame_t){.opcode=(wah_opcode_t)opcode, .target_idx=current_block_idx++};
             continue;
         }
@@ -3152,14 +3150,14 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 case WAH_OP_IF: {
                     int32_t block_type;
                     WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &block_type), cleanup);
-                    WAH_ENSURE_GOTO(control_sp < WAH_MAX_CONTROL_DEPTH, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
                     control_stack[control_sp++] = (wah_control_frame_t){.opcode=WAH_OP_IF, .target_idx=current_block_idx};
                     wah_write_u32_le(write_ptr, block_targets[current_block_idx++]);
                     write_ptr += sizeof(uint32_t);
                     break;
                 }
                 case WAH_OP_ELSE: {
-                    WAH_ENSURE_GOTO(control_sp > 0 && control_stack[control_sp - 1].opcode == WAH_OP_IF, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    WAH_ASSERT(control_sp > 0 && control_stack[control_sp - 1].opcode == WAH_OP_IF && "validation should have verified ELSE is inside IF");
                     control_stack[control_sp - 1] = (wah_control_frame_t){.opcode=WAH_OP_ELSE, .target_idx=current_block_idx};
                     wah_write_u32_le(write_ptr, block_targets[current_block_idx++]);
                     write_ptr += sizeof(uint32_t);
@@ -3168,7 +3166,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 case WAH_OP_BR: case WAH_OP_BR_IF: {
                     uint32_t relative_depth;
                     WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &relative_depth), cleanup);
-                    WAH_ENSURE_GOTO(relative_depth < control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    WAH_ASSERT(relative_depth < control_sp && "validation should have verified relative depth");
                     wah_control_frame_t* frame = &control_stack[control_sp - 1 - relative_depth];
                     wah_write_u32_le(write_ptr, block_targets[frame->target_idx]);
                     write_ptr += sizeof(uint32_t);
@@ -3182,7 +3180,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     for (uint32_t i = 0; i < num_targets + 1; ++i) {
                         uint32_t relative_depth;
                         WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &relative_depth), cleanup);
-                        WAH_ENSURE_GOTO(relative_depth < control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                        WAH_ASSERT(relative_depth < control_sp && "validation should have verified relative depth");
                         wah_control_frame_t* frame = &control_stack[control_sp - 1 - relative_depth];
                         wah_write_u32_le(write_ptr, block_targets[frame->target_idx]);
                         write_ptr += sizeof(uint32_t);
@@ -3674,12 +3672,14 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 //------------------------------------------------------------------------------
 WAH_RUN(BLOCK) { // Should not appear in preparsed code
     (void)bytecode_base;
+    WAH_ASSERT(false && "BLOCK opcode should have been preprocessed into a jump target");
     err = WAH_ERROR_VALIDATION_FAILED;
     WAH_CLEANUP();
 }
 
 WAH_RUN(LOOP) { // Should not appear in preparsed code
     (void)bytecode_base;
+    WAH_ASSERT(false && "LOOP opcode should have been preprocessed into a jump target");
     err = WAH_ERROR_VALIDATION_FAILED;
     WAH_CLEANUP();
 }
@@ -3772,7 +3772,7 @@ WAH_RUN(REF_FUNC) {
 
     // Push function reference as pointer to wah_function_t
     // func_idx is the module-local function index (not including imports)
-    WAH_ENSURE(func_idx < ctx->module->function_count, WAH_ERROR_VALIDATION_FAILED);
+    WAH_ASSERT(func_idx < ctx->module->function_count && "validation should have verified function index");
     ctx->value_stack[ctx->sp++].ref = &ctx->module->functions[func_idx];
     WAH_NEXT();
 }
@@ -5451,6 +5451,7 @@ static wah_error_t wah_run_single(wah_exec_context_t *ctx, wah_call_frame_t *fra
         WAH_OPCODES(WAH_OPCODE_CASES)
         #undef WAH_OPCODE_CASES
     default:
+        WAH_ASSERT(false && "verification should have rejected invalid opcode");
         return WAH_ERROR_VALIDATION_FAILED;
     }
 }
@@ -6492,7 +6493,8 @@ wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_entry_
             entry_id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_GLOBAL, export_entry->index);
             break;
         default:
-            return WAH_ERROR_VALIDATION_FAILED; // Should not happen if parsing is correct
+            WAH_ASSERT(false && "verification should have prevented invalid export kinds");
+            return WAH_ERROR_VALIDATION_FAILED;
     }
 
     WAH_CHECK(wah_module_entry(module, entry_id, out));
