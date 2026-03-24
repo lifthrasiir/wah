@@ -84,15 +84,18 @@ static const token_entry_t token_table[] = {
     TOKEN("mem#", 0x02),      // Memory index space
     TOKEN("global#", 0x03),   // Global index space
 
+    // Element kinds (for elemkind field)
+    TOKEN("elem.funcref", 0x00),  // funcref as element kind
+
     // Elements
-    TOKEN("elem.passive", 0x00),
-    TOKEN("elem.active.table#0", 0x01),
-    TOKEN("elem.declarative", 0x02),
-    TOKEN("elem.active.table#", 0x03),
-    TOKEN("elem.passive.expr", 0x04),
-    TOKEN("elem.active.expr.table#0", 0x05),
-    TOKEN("elem.declarative.expr", 0x06),
-    TOKEN("elem.active.expr.table#", 0x07),
+    TOKEN("elem.active.table#0", 0x00),      // elem.active.table#0 <offset_expr> [<funcidx>...]
+    TOKEN("elem.passive", 0x01),             // elem.passive <elemkind> [<funcidx>...]
+    TOKEN("elem.active.table#", 0x02),       // elem.active.table# <tableidx> <offset_expr> <elemkind> [<funcidx>...]
+    TOKEN("elem.declarative", 0x03),         // elem.declarative <elemkind> [<funcidx>...]
+    TOKEN("elem.active.expr.table#0", 0x04), // elem.active.expr.table#0 <offset_expr> [<expr>...]
+    TOKEN("elem.passive.expr", 0x05),        // elem.passive.expr <reftype> [<expr>...]
+    TOKEN("elem.active.expr.table#", 0x06),  // elem.active.expr.table# <tableidx> <offset_expr> <reftype> [<expr>...]
+    TOKEN("elem.declarative.expr", 0x07),    // elem.declarative.expr <reftype> [<expr>...]
 
     // Data
     TOKEN("data.active.table#0", 0x00),
@@ -402,9 +405,9 @@ static const token_entry_t token_table[] = {
     TOKEN("align=8", 0x03),
 
     // Miscellaneous
-    TOKEN("mut", 0x01),       // Mutable flag for globals
-    TOKEN("limits.i32/1", 0x00),
-    TOKEN("limits.i32/2", 0x01),
+    TOKEN("mut", 0x01),           // Mutable flag for globals
+    TOKEN("limits.i32/1", 0x00),  // limits.i32/1 <min> (max is infinite)
+    TOKEN("limits.i32/2", 0x01),  // limits.i32/2 <min> <max>
 
     {NULL, NULL, 0}  // Sentinel
 };

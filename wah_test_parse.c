@@ -561,7 +561,7 @@ static int test_table_init_out_of_bounds_elem_idx() {
         types {[ fn [] [] ]} \
         funcs {[ 0 ]} \
         tables {[ funcref limits.i32/1 10 ]} \
-        elements {[ elem.passive i32.const 0 end [0] ]} \
+        elements {[ elem.passive elem.funcref [0] ]} \
         code {[ {[] i32.const 0 i32.const 0 i32.const 0 table.init 1 0 end} ]}");
 
     if (err != WAH_ERROR_VALIDATION_FAILED) {
@@ -587,7 +587,7 @@ static int test_table_init_out_of_bounds_table_idx() {
         types {[ fn [] [] ]} \
         funcs {[ 0 ]} \
         tables {[ funcref limits.i32/1 10 ]} \
-        elements {[ elem.passive i32.const 0 end [0] ]} \
+        elements {[ elem.passive elem.funcref [0] ]} \
         code {[ {[] i32.const 0 i32.const 0 i32.const 0 table.init 0 1 end} ]}");
 
     if (err != WAH_ERROR_VALIDATION_FAILED) {
@@ -613,7 +613,7 @@ static int test_elem_drop_out_of_bounds_elem_idx() {
         types {[ fn [] [] ]} \
         funcs {[ 0 ]} \
         tables {[ funcref limits.i32/1 10 ]} \
-        elements {[ elem.passive i32.const 0 end [0] ]} \
+        elements {[ elem.passive elem.funcref [0] ]} \
         code {[ {[] elem.drop 1 end} ]}");
 
     if (err != WAH_ERROR_VALIDATION_FAILED) {

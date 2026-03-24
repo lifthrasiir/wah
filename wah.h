@@ -664,14 +664,6 @@ typedef struct wah_export_s {
     uint32_t index; // Index into the respective module array (functions, tables, etc.)
 } wah_export_t;
 
-// --- WebAssembly Element Segment Structure ---
-typedef struct wah_element_segment_s {
-    uint32_t table_idx;
-    uint32_t offset; // Result of the offset_expr
-    uint32_t num_elems;
-    uint32_t *func_indices; // Array of function indices, or NULL if dropped
-} wah_element_segment_t;
-
 // --- Operand Stack ---
 typedef struct {
     wah_value_t *data; // Dynamically allocated based on function requirements
@@ -726,6 +718,27 @@ typedef struct wah_code_body_s {
     uint32_t max_stack_depth; // Maximum operand stack depth required
     wah_parsed_code_t parsed_code; // Pre-parsed opcodes and arguments for optimized execution
 } wah_code_body_t;
+
+// --- WebAssembly Element Segment Structure ---
+typedef struct wah_element_segment_s {
+    bool is_active;           // true for active (flags&3 == 0 or 2), false for passive
+    bool is_dropped;          // true if declarative (dropped after validation) or dropped via elem.drop
+    uint32_t table_idx;       // For active modes
+    uint32_t num_elems;
+    bool is_expr_elem;        // true if elem* are expressions, false if func indices
+
+    // offset expression (for active modes) - preparsed for evaluation
+    wah_parsed_code_t offset_expr;
+
+    // elem* data
+    union {
+        uint32_t *func_indices;              // For is_expr_elem == false
+        struct {
+            const uint8_t **bytecodes;      // Array of pointers to each expression
+            uint32_t *bytecode_sizes;           // Array of sizes for each expression
+        } expr;
+    } u;
+} wah_element_segment_t;
 
 // --- Global Variable Structure ---
 typedef struct wah_global_s {
@@ -1144,6 +1157,10 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 // Pre-parsing functions
 static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_idx, const uint8_t *code, uint32_t code_size, wah_parsed_code_t *parsed_code);
 static void wah_free_parsed_code(wah_parsed_code_t *parsed_code);
+
+// Const expression functions
+static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, const uint8_t *bytecode, uint32_t bytecode_size, wah_value_t *result);
+static void wah_free_element_segment_data(wah_element_segment_t *segment);
 
 // WebAssembly canonical NaN bit patterns
 //
@@ -2514,9 +2531,9 @@ static wah_error_t wah_validate_const_expr(
                 uint32_t func_idx;
                 WAH_CHECK(wah_decode_uleb128(ptr, section_end, &func_idx));
                 // Validate function index exists
-                // Host functions are in functions[function_count..total_function_count)
-                uint32_t host_func_count = module->total_function_count - module->function_count;
-                WAH_ENSURE(func_idx < module->import_function_count + module->function_count + host_func_count,
+                // During const expr validation (element section parsing), host functions
+                // haven't been added yet, so only validate against local + imported functions
+                WAH_ENSURE(func_idx < module->import_function_count + module->function_count,
                           WAH_ERROR_VALIDATION_FAILED);
                 CONST_PUSH(WAH_TYPE_FUNCREF);
                 break;
@@ -2813,43 +2830,125 @@ static wah_error_t wah_parse_start_section(const uint8_t **ptr, const uint8_t *s
 
 static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t count;
-    // An element segment requires at least 5 bytes (table_idx, offset_expr (min 3 bytes), num_elems).
-    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 5));
+    // An element segment requires at least 1 byte (flags)
+    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 1));
 
-    module->element_segment_count = 0; // Doubles as how many entries have been initialized (for cleanup)
+    module->element_segment_count = 0;
     if (count > 0) {
         WAH_MALLOC_ARRAY(module->element_segments, count);
 
         for (uint32_t i = 0; i < count; ++i) {
             wah_element_segment_t *segment = &module->element_segments[i];
-            segment->func_indices = NULL; // Initialize to NULL for safe cleanup
+            memset(segment, 0, sizeof(wah_element_segment_t));
             ++module->element_segment_count;
 
-            WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->table_idx));
+            uint32_t flags;
+            WAH_CHECK(wah_decode_uleb128(ptr, section_end, &flags));
 
-            // Parse offset_expr (expected to be i32.const X end)
-            WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
-            wah_opcode_t opcode = (wah_opcode_t)*(*ptr)++;
-            WAH_ENSURE(opcode == WAH_OP_I32_CONST, WAH_ERROR_VALIDATION_FAILED);
+            uint32_t mode = flags & 3;
+            bool is_expr_elem = (flags & 4) != 0;
 
-            int32_t offset_val;
-            WAH_CHECK(wah_decode_sleb128_32(ptr, section_end, &offset_val));
-            segment->offset = (uint32_t)offset_val;
+            segment->is_active = (mode == 0 || mode == 2);
+            segment->is_expr_elem = is_expr_elem;
 
-            WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
-            WAH_ENSURE(*(*ptr)++ == WAH_OP_END, WAH_ERROR_VALIDATION_FAILED);
+            // Parse based on mode
+            if (mode == 0) {
+                // Active: table 0, offset_expr, elem* (funcref type implied)
+                segment->table_idx = 0;
+            } else if (mode == 1) {
+                // Passive: elemkind/reftype, elem*
+                segment->is_active = false;
+            } else if (mode == 2) {
+                // Active: tableidx, offset_expr, elemkind/reftype, elem*
+                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->table_idx));
+            } else { // mode == 3
+                // Declarative: elemkind/reftype, elem* (dropped after validation)
+                segment->is_dropped = true;
+            }
 
-            WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->num_elems));
+            // For active modes, parse offset_expr
+            if (segment->is_active) {
+                const uint8_t *offset_start = *ptr;
+                // Validate offset expression (must return i32)
+                // TODO: When imported globals are supported, use module->global_count + module->import_global_count
+                WAH_CHECK(wah_validate_const_expr(ptr, section_end, WAH_TYPE_I32, module, module->global_count));
 
-            // Validate that the segment fits within the table's limits
-            WAH_ENSURE(segment->table_idx < module->table_count, WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE((uint64_t)segment->offset + segment->num_elems <= module->tables[segment->table_idx].min_elements, WAH_ERROR_VALIDATION_FAILED);
+                // Preparse offset expression for later evaluation
+                uint32_t offset_expr_size = (uint32_t)(*ptr - offset_start);
+                WAH_CHECK(wah_preparse_code(module, 0, offset_start, offset_expr_size, &segment->offset_expr));
+            }
 
-            if (segment->num_elems > 0) {
-                WAH_MALLOC_ARRAY(segment->func_indices, segment->num_elems);
-                for (uint32_t j = 0; j < segment->num_elems; ++j) {
-                    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->func_indices[j]));
-                    WAH_ENSURE(segment->func_indices[j] < module->function_count + module->import_function_count, WAH_ERROR_VALIDATION_FAILED);
+            // Parse elemkind/reftype
+            // In mode 0, elemkind/reftype is implicitly funcref (not present in binary)
+            // In modes 1,2,3, we need to read the elemkind/reftype byte
+            if (mode > 0) {
+                if (is_expr_elem) {
+                    wah_type_t ref_type;
+                    WAH_CHECK(wah_decode_ref_type(ptr, section_end, &ref_type));
+                    WAH_ENSURE(ref_type == WAH_TYPE_FUNCREF, WAH_ERROR_VALIDATION_FAILED); // TODO: externref should be possible
+                } else {
+                    WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
+                    uint8_t elemkind = *(*ptr)++;
+                    WAH_ENSURE(elemkind == 0x00, WAH_ERROR_VALIDATION_FAILED); // Only funcref supported
+                }
+            }
+
+            // Parse num_elems
+            uint32_t num_elems;
+            WAH_CHECK(wah_decode_uleb128(ptr, section_end, &num_elems));
+
+            // If declarative, validate and skip elem* and mark as dropped
+            if (segment->is_dropped) {
+                for (uint32_t j = 0; j < num_elems; ++j) {
+                    if (is_expr_elem) {
+                        // Validate expression (must return funcref)
+                        // TODO: When imported globals are supported, use module->global_count + module->import_global_count
+                        WAH_CHECK(wah_validate_const_expr(ptr, section_end, WAH_TYPE_FUNCREF, module, module->global_count));
+                    } else {
+                        // Skip funcidx
+                        uint32_t funcidx;
+                        WAH_CHECK(wah_decode_uleb128(ptr, section_end, &funcidx));
+                        WAH_ENSURE(funcidx < module->function_count + module->import_function_count, WAH_ERROR_VALIDATION_FAILED);
+                    }
+                }
+                continue; // Don't store elem data for declarative segments
+            }
+
+            // Parse elem* based on is_expr_elem
+            segment->num_elems = 0;
+            if (num_elems > 0) {
+                if (!is_expr_elem) {
+                    // elem* are function indices
+                    WAH_MALLOC_ARRAY(segment->u.func_indices, num_elems);
+                    for (uint32_t j = 0; j < num_elems; ++j) {
+                        ++segment->num_elems;
+                        WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->u.func_indices[j]));
+                        WAH_ENSURE(segment->u.func_indices[j] < module->function_count + module->import_function_count, WAH_ERROR_VALIDATION_FAILED);
+                    }
+                } else {
+                    // elem* are constant expressions (must return funcref)
+                    // Allocate arrays for each expression
+                    WAH_MALLOC_ARRAY(segment->u.expr.bytecodes, num_elems);
+                    WAH_MALLOC_ARRAY(segment->u.expr.bytecode_sizes, num_elems);
+
+                    for (uint32_t j = 0; j < num_elems; ++j) {
+                        segment->u.expr.bytecodes[j] = NULL; // Initialize to NULL for safe cleanup
+                        ++segment->num_elems;
+
+                        const uint8_t *expr_start = *ptr;
+                        // Validate expression (must return funcref)
+                        // TODO: When imported globals are supported, use module->global_count + module->import_global_count
+                        WAH_CHECK(wah_validate_const_expr(ptr, section_end, WAH_TYPE_FUNCREF, module, module->global_count));
+
+                        uint32_t raw_expr_size = (uint32_t)(*ptr - expr_start);
+
+                        // Preparse the expression for efficient evaluation
+                        wah_parsed_code_t parsed_expr;
+                        WAH_CHECK(wah_preparse_code(module, 0, expr_start, raw_expr_size, &parsed_expr));
+
+                        segment->u.expr.bytecode_sizes[j] = parsed_expr.bytecode_size;
+                        segment->u.expr.bytecodes[j] = parsed_expr.bytecode; // Transfer ownership
+                    }
                 }
             }
         }
@@ -3439,25 +3538,6 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
             memset(exec_ctx->tables[i], 0, sizeof(wah_value_t) * min_elements); // Initialize to null (0)
         }
 
-        // Initialize tables with element segments
-        // Note: This is done here for backwards compatibility, but ideally should be in wah_instantiate
-        // after global_idx is set on all functions
-        for (uint32_t i = 0; i < module->element_segment_count; ++i) {
-            const wah_element_segment_t *segment = &module->element_segments[i];
-
-            // Validation should be done at parse time. Assert here as a safety net.
-            WAH_ASSERT(segment->table_idx < exec_ctx->table_count);
-            WAH_ASSERT((uint64_t)segment->offset + segment->num_elems <= module->tables[segment->table_idx].min_elements);
-
-            for (uint32_t j = 0; j < segment->num_elems; ++j) {
-                // Store global function index for now, will be converted to pointer in instantiate
-                uint32_t global_idx = segment->func_indices[j];
-                WAH_ENSURE_GOTO(global_idx >= module->import_function_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                WAH_ENSURE_GOTO(global_idx < module->import_function_count + module->function_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                // Store as i32 for now, will be converted to wah_function_t* in instantiate
-                exec_ctx->tables[segment->table_idx][segment->offset + j].i32 = (int32_t)global_idx;
-            }
-        }
     }
 
     // Initialize active data segments
@@ -3949,17 +4029,35 @@ WAH_RUN(TABLE_INIT) {
     uint32_t src_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
     uint32_t dst_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
     WAH_ASSERT(elem_idx < ctx->module->element_segment_count && "validation didn't catch out-of-bound element segment index");
-    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    // CRITICAL: Check if element segment has been dropped (func_indices is NULL)
-    WAH_ENSURE_GOTO(ctx->module->element_segments[elem_idx].func_indices != NULL, WAH_ERROR_TRAP, cleanup);
+    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index");
 
     const wah_element_segment_t *segment = &ctx->module->element_segments[elem_idx];
+
+    // Check if element segment has been dropped
+    WAH_ENSURE_GOTO(!segment->is_dropped, WAH_ERROR_TRAP, cleanup);
+
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->num_elems, WAH_ERROR_TRAP, cleanup);
     WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
 
     for (uint32_t i = 0; i < size; ++i) {
-        uint32_t func_idx = segment->func_indices[src_offset + i];
-        ctx->tables[table_idx][dst_offset + i].ref = &ctx->module->functions[func_idx];
+        uint32_t global_func_idx;
+        if (!segment->is_expr_elem) {
+            global_func_idx = segment->u.func_indices[src_offset + i];
+        } else {
+            // Evaluate expression element
+            wah_value_t elem_val;
+            WAH_ENSURE_GOTO(src_offset + i < segment->num_elems, WAH_ERROR_TRAP, cleanup);
+            WAH_CHECK_GOTO(wah_eval_const_expr(ctx,
+                                               segment->u.expr.bytecodes[src_offset + i],
+                                               segment->u.expr.bytecode_sizes[src_offset + i],
+                                               &elem_val), cleanup);
+            // ref.func stores function index as (pointer_value - 1)
+            global_func_idx = (uint32_t)(uintptr_t)elem_val.ref;
+        }
+
+        // Use function_table to get the actual function pointer
+        WAH_ASSERT(global_func_idx < ctx->function_table_count && "validation didn't catch out-of-bound function index");
+        ctx->tables[table_idx][dst_offset + i].ref = &ctx->function_table[global_func_idx];
     }
     WAH_NEXT();
     WAH_CLEANUP();
@@ -3969,11 +4067,15 @@ WAH_RUN(ELEM_DROP) {
     uint32_t elem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     WAH_ASSERT(elem_idx < ctx->module->element_segment_count && "validation didn't catch out-of-bound element segment index");
-    // Mark element segment as dropped by setting func_indices to NULL
-    // Subsequent table.init will trap because it checks for NULL
-    free(ctx->module->element_segments[elem_idx].func_indices);
-    ctx->module->element_segments[elem_idx].func_indices = NULL;
-    ctx->module->element_segments[elem_idx].num_elems = 0;
+
+    wah_element_segment_t *segment = &ctx->module->element_segments[elem_idx];
+
+    // Free element data
+    wah_free_element_segment_data(segment);
+
+    // Mark as dropped
+    segment->is_dropped = true;
+    segment->num_elems = 0;
     WAH_NEXT();
 }
 
@@ -5641,7 +5743,7 @@ void wah_free_module(wah_module_t *module) {
 
     if (module->element_segments) {
         for (uint32_t i = 0; i < module->element_segment_count; ++i) {
-            free(module->element_segments[i].func_indices);
+            wah_free_element_segment_data(&module->element_segments[i]);
         }
         free(module->element_segments);
     }
@@ -5945,6 +6047,27 @@ cleanup:
     return err;
 }
 
+// Helper to free element segment data
+static void wah_free_element_segment_data(wah_element_segment_t *segment) {
+    if (!segment->is_expr_elem) {
+        free(segment->u.func_indices);
+        segment->u.func_indices = NULL;
+    } else {
+        if (segment->u.expr.bytecodes) {
+            for (uint32_t i = 0; i < segment->num_elems; ++i) {
+                free((void*)segment->u.expr.bytecodes[i]);
+            }
+            free(segment->u.expr.bytecodes);
+            segment->u.expr.bytecodes = NULL;
+        }
+        if (segment->u.expr.bytecode_sizes) {
+            free(segment->u.expr.bytecode_sizes);
+            segment->u.expr.bytecode_sizes = NULL;
+        }
+    }
+    wah_free_parsed_code(&segment->offset_expr);
+}
+
 // Helper to create a preparsed const expression from a simple constant value
 static wah_error_t wah_create_const_expr(wah_type_t type, const wah_value_t *value, wah_parsed_code_t *parsed_code) {
     uint32_t size = sizeof(uint16_t);  // opcode
@@ -6225,10 +6348,6 @@ static wah_error_t wah_eval_const_expr(
         uint16_t opcode_val = wah_read_u16_le(ip);
         ip += sizeof(uint16_t);
 
-#ifdef WAH_DEBUG
-        WAH_LOG("wah_eval_const_expr: opcode=%u (0x%x)", opcode_val, opcode_val);
-#endif
-
         switch (opcode_val) {
             case WAH_OP_END:
                 // End of const expression
@@ -6297,8 +6416,10 @@ static wah_error_t wah_eval_const_expr(
             case WAH_OP_REF_FUNC: {
                 uint32_t func_idx = wah_read_u32_le(ip);
                 ip += sizeof(uint32_t);
-                // For now, store function index as pointer (similar to element segments)
-                ctx->value_stack[ctx->sp++].ref = (void*)(uintptr_t)(func_idx + 1);
+                // func_idx is the module-local function index (ref.func uses module-local index)
+                // Convert to global function index by adding import_function_count
+                uint32_t global_func_idx = ctx->module->import_function_count + func_idx;
+                ctx->value_stack[ctx->sp++].ref = (void*)(uintptr_t)global_func_idx;
                 break;
             }
 
@@ -6424,15 +6545,49 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     // Host functions come after local functions
     for (uint32_t i = 0; i < module->function_count; i++) {
         module->functions[i].global_idx = import_count + i;
+        // Also update function_table since it's a shallow copy
+        ctx->function_table[import_count + i].global_idx = import_count + i;
     }
 
-    // Now convert element segments from global function indices to wah_function_t* pointers
+    // Initialize active element segments
     for (uint32_t i = 0; i < module->element_segment_count; ++i) {
         const wah_element_segment_t *segment = &module->element_segments[i];
+
+        // Skip passive and dropped segments
+        if (!segment->is_active || segment->is_dropped) {
+            continue;
+        }
+
+        WAH_ASSERT(segment->table_idx < ctx->table_count);
+
+        // Evaluate offset expression to get the table offset
+        wah_value_t offset_val;
+        WAH_CHECK_GOTO(wah_eval_const_expr(ctx, segment->offset_expr.bytecode, segment->offset_expr.bytecode_size, &offset_val), cleanup);
+        uint32_t offset = (uint32_t)offset_val.i32;
+
+        WAH_ASSERT((uint64_t)offset + segment->num_elems <= module->tables[segment->table_idx].min_elements);
+
         for (uint32_t j = 0; j < segment->num_elems; ++j) {
-            uint32_t global_idx = (uint32_t)ctx->tables[segment->table_idx][segment->offset + j].i32;
-            uint32_t local_idx = global_idx - module->import_function_count;
-            ctx->tables[segment->table_idx][segment->offset + j].ref = &module->functions[local_idx];
+            uint32_t global_func_idx;
+
+            if (!segment->is_expr_elem) {
+                // elem* are function indices
+                global_func_idx = segment->u.func_indices[j];
+            } else {
+                // elem* are constant expressions - evaluate this one
+                wah_value_t elem_val;
+                WAH_CHECK_GOTO(wah_eval_const_expr(ctx,
+                                                   segment->u.expr.bytecodes[j],
+                                                   segment->u.expr.bytecode_sizes[j],
+                                                   &elem_val), cleanup);
+                // ref.func stores function index as (pointer_value - 1)
+                global_func_idx = (uint32_t)(uintptr_t)elem_val.ref;
+            }
+
+            WAH_ENSURE_GOTO(global_func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+
+            // Use function_table to get the actual function pointer
+            ctx->tables[segment->table_idx][offset + j].ref = &ctx->function_table[global_func_idx];
         }
     }
 
