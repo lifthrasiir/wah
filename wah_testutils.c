@@ -901,3 +901,138 @@ wah_error_t wah_parse_module_from_spec(wah_module_t *module, const char *fmt, ..
     va_end(args);
     return err;
 }
+
+// ---------------------------------------------------------------------------
+// Assertion Utilities for Tests
+// ---------------------------------------------------------------------------
+
+#include <inttypes.h>
+
+// Internal implementation functions (with file/line context)
+void assert_eq_i32(const char *file, int line, int32_t actual, int32_t expected, const char *expr) {
+    if (actual != expected) {
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected %" PRId32 ", got %" PRId32 ")\n",
+                file, line, expr, expected, actual);
+        exit(1);
+    }
+}
+
+void assert_eq_u32(const char *file, int line, uint32_t actual, uint32_t expected, const char *expr) {
+    if (actual != expected) {
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected %" PRIu32 ", got %" PRIu32 ")\n",
+                file, line, expr, expected, actual);
+        exit(1);
+    }
+}
+
+void assert_eq_i64(const char *file, int line, int64_t actual, int64_t expected, const char *expr) {
+    if (actual != expected) {
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected %" PRId64 ", got %" PRId64 ")\n",
+                file, line, expr, expected, actual);
+        exit(1);
+    }
+}
+
+void assert_eq_u64(const char *file, int line, uint64_t actual, uint64_t expected, const char *expr) {
+    if (actual != expected) {
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected %" PRIu64 ", got %" PRIu64 ")\n",
+                file, line, expr, expected, actual);
+        exit(1);
+    }
+}
+
+void assert_eq_f32(const char *file, int line, float actual, float expected, float epsilon, const char *expr) {
+    if (fabsf(actual - expected) > epsilon) {
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected %f ± %f, got %f)\n",
+                file, line, expr, expected, epsilon, actual);
+        exit(1);
+    }
+}
+
+void assert_eq_f64(const char *file, int line, double actual, double expected, double epsilon, const char *expr) {
+    if (fabs(actual - expected) > epsilon) {
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected %f ± %f, got %f)\n",
+                file, line, expr, expected, epsilon, actual);
+        exit(1);
+    }
+}
+
+void assert_eq_str(const char *file, int line, const char *actual, const char *expected, const char *expr) {
+    if (strcmp(actual, expected) != 0) {
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected \"%s\", got \"%s\")\n",
+                file, line, expr, expected, actual);
+        exit(1);
+    }
+}
+
+void assert_err(const char *file, int line, wah_error_t actual, wah_error_t expected, const char *expr) {
+    if (actual != expected) {
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected %s, got %s)\n",
+                file, line, expr, wah_strerror(expected), wah_strerror(actual));
+        exit(1);
+    }
+}
+
+void assert_ok(const char *file, int line, wah_error_t err, const char *expr) {
+    if (err != WAH_OK) {
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected WAH_OK, got %s)\n",
+                file, line, expr, wah_strerror(err));
+        exit(1);
+    }
+}
+
+void assert_true(const char *file, int line, bool condition, const char *expr) {
+    if (!condition) {
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected true)\n",
+                file, line, expr);
+        exit(1);
+    }
+}
+
+void assert_false(const char *file, int line, bool condition, const char *expr) {
+    if (condition) {
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected false)\n",
+                file, line, expr);
+        exit(1);
+    }
+}
+
+void assert_null(const char *file, int line, const void *ptr, const char *expr) {
+    if (ptr != NULL) {
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected NULL)\n",
+                file, line, expr);
+        exit(1);
+    }
+}
+
+void assert_not_null(const char *file, int line, const void *ptr, const char *expr) {
+    if (ptr == NULL) {
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected non-NULL)\n",
+                file, line, expr);
+        exit(1);
+    }
+}
+
+void assert_eq_ptr(const char *file, int line, const void *actual, const void *expected, const char *expr) {
+    if (actual != expected) {
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected %p, got %p)\n",
+                file, line, expr, expected, actual);
+        exit(1);
+    }
+}
+
+// Public macros that inject __FILE__ and __LINE__
+#define assert_eq_i32(actual, expected) assert_eq_i32(__FILE__, __LINE__, (actual), (expected), #actual " == " #expected)
+#define assert_eq_u32(actual, expected) assert_eq_u32(__FILE__, __LINE__, (actual), (expected), #actual " == " #expected)
+#define assert_eq_i64(actual, expected) assert_eq_i64(__FILE__, __LINE__, (actual), (expected), #actual " == " #expected)
+#define assert_eq_u64(actual, expected) assert_eq_u64(__FILE__, __LINE__, (actual), (expected), #actual " == " #expected)
+#define assert_eq_f32(actual, expected, epsilon) assert_eq_f32(__FILE__, __LINE__, (actual), (expected), (epsilon), #actual " == " #expected " within " #epsilon)
+#define assert_eq_f64(actual, expected, epsilon) assert_eq_f64(__FILE__, __LINE__, (actual), (expected), (epsilon), #actual " == " #expected " within " #epsilon)
+#define assert_eq_str(actual, expected) assert_eq_str(__FILE__, __LINE__, (actual), (expected), #actual " == " #expected)
+#define assert_err(actual, expected) assert_err(__FILE__, __LINE__, (actual), (expected), #actual " == " #expected)
+#define assert_ok(err) assert_ok(__FILE__, __LINE__, (err), #err " == WAH_OK")
+#define assert_true(condition) assert_true(__FILE__, __LINE__, (condition), #condition)
+#define assert_false(condition) assert_false(__FILE__, __LINE__, (condition), #condition)
+#define assert_null(ptr) assert_null(__FILE__, __LINE__, (ptr), #ptr " == NULL")
+#define assert_not_null(ptr) assert_not_null(__FILE__, __LINE__, (ptr), #ptr " != NULL")
+#define assert_eq_ptr(actual, expected) assert_eq_ptr(__FILE__, __LINE__, (actual), (expected), #actual " == " #expected)

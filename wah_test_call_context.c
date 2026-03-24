@@ -2,6 +2,7 @@
 
 #define WAH_IMPLEMENTATION
 #include "wah.h"
+#include "wah_testutils.c"
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
@@ -10,7 +11,7 @@
 void test_params(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
 
-    printf("  Testing param accessors...\n");
+    printf("  Testing param accessors...");
 
     // Test all param types
     int32_t i32_val = wah_param_i32(ctx, 0);
@@ -18,41 +19,20 @@ void test_params(wah_call_context_t *ctx, void *userdata) {
     float f32_val = wah_param_f32(ctx, 2);
     double f64_val = wah_param_f64(ctx, 3);
 
-    printf("    i32: %d\n", i32_val);
-    printf("    i64: %lld\n", (long long)i64_val);
-    printf("    f32: %f\n", f32_val);
-    printf("    f64: %lf\n", f64_val);
-
     // Verify values
-    if (i32_val != 42) {
-        printf("    FAIL: expected i32=42, got %d\n", i32_val);
-        wah_trap(ctx, WAH_ERROR_TRAP);
-        return;
-    }
-    if (i64_val != 1234567890123LL) {
-        printf("    FAIL: expected i64=1234567890123, got %lld\n", (long long)i64_val);
-        wah_trap(ctx, WAH_ERROR_TRAP);
-        return;
-    }
-    if (f32_val != 3.14f) {
-        printf("    FAIL: expected f32=3.14, got %f\n", f32_val);
-        wah_trap(ctx, WAH_ERROR_TRAP);
-        return;
-    }
-    if (f64_val != 2.71828) {
-        printf("    FAIL: expected f64=2.71828, got %lf\n", f64_val);
-        wah_trap(ctx, WAH_ERROR_TRAP);
-        return;
-    }
+    assert_eq_i32(i32_val, 42);
+    assert_eq_i64(i64_val, 1234567890123LL);
+    assert_eq_f32(f32_val, 3.14f, 1e-5);
+    assert_eq_f64(f64_val, 2.71828, 1e-5);
 
-    printf("    PASS\n");
+    printf(" PASS\n");
 }
 
 // Test host function that uses result accessors
 void test_results(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
 
-    printf("  Testing result accessors...\n");
+    printf("  Testing result accessors...");
 
     // Set all result types
     wah_result_i32(ctx, 0, 100);
@@ -60,29 +40,27 @@ void test_results(wah_call_context_t *ctx, void *userdata) {
     wah_result_f32(ctx, 2, 1.5f);
     wah_result_f64(ctx, 3, 2.5);
 
-    printf("    Results set\n");
-    printf("    PASS\n");
+    printf(" PASS\n");
 }
 
 // Test host function that uses return macros
 void test_returns(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
 
-    printf("  Testing return macros...\n");
+    printf("  Testing return macros...");
 
     // Test single return macros - each call uses index 0, so they overwrite
     // We'll just test the last one (f64)
     wah_return_f64(ctx, 3.14);
 
-    printf("    Returns set\n");
-    printf("    PASS\n");
+    printf(" PASS\n");
 }
 
 // Test host function that traps
 void test_trap_func(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
 
-    printf("  Testing trap...\n");
+    printf("  Testing trap...");
 
     // Set some values first
     wah_result_i32(ctx, 0, 999);
@@ -90,12 +68,10 @@ void test_trap_func(wah_call_context_t *ctx, void *userdata) {
     // Then trap
     wah_trap(ctx, WAH_ERROR_TRAP);
 
-    printf("    PASS\n");
+    printf(" PASS\n");
 }
 
 int main() {
-    printf("Testing call context...\n\n");
-
     // Test 1: Param accessors
     printf("Test 1: Param accessors\n");
     {
@@ -127,12 +103,8 @@ int main() {
 
         test_params(&ctx, NULL);
 
-        if (ctx.trap_reason != WAH_OK) {
-            printf("FAIL: Test 1 trapped with %s\n", wah_strerror(ctx.trap_reason));
-            return 1;
-        }
+        assert_err(ctx.trap_reason, WAH_OK);
     }
-    printf("\n");
 
     // Test 2: Result accessors
     printf("Test 2: Result accessors\n");
@@ -154,25 +126,11 @@ int main() {
 
         test_results(&ctx, NULL);
 
-        // Verify results
-        if (results[0].i32 != 100) {
-            printf("FAIL: expected result[0].i32=100, got %d\n", results[0].i32);
-            return 1;
-        }
-        if (results[1].i64 != 2000000000000LL) {
-            printf("FAIL: expected result[1].i64=2000000000000, got %lld\n", (long long)results[1].i64);
-            return 1;
-        }
-        if (results[2].f32 != 1.5f) {
-            printf("FAIL: expected result[2].f32=1.5, got %f\n", results[2].f32);
-            return 1;
-        }
-        if (results[3].f64 != 2.5) {
-            printf("FAIL: expected result[3].f64=2.5, got %lf\n", results[3].f64);
-            return 1;
-        }
+        assert_eq_i32(results[0].i32, 100);
+        assert_eq_i64(results[1].i64, 2000000000000LL);
+        assert_eq_f32(results[2].f32, 1.5f, 1e-5);
+        assert_eq_f64(results[3].f64, 2.5, 1e-5);
     }
-    printf("\n");
 
     // Test 3: Return macros
     printf("Test 3: Return macros\n");
@@ -190,12 +148,8 @@ int main() {
         test_returns(&ctx, NULL);
 
         // Verify results
-        if (results[0].f64 != 3.14) {
-            printf("FAIL: expected result[0].f64=3.14, got %lf\n", results[0].f64);
-            return 1;
-        }
+        assert_eq_f64(results[0].f64, 3.14, 1e-5);
     }
-    printf("\n");
 
     // Test 4: Trap
     printf("Test 4: Trap\n");
@@ -212,14 +166,10 @@ int main() {
 
         test_trap_func(&ctx, NULL);
 
-        if (ctx.trap_reason != WAH_ERROR_TRAP) {
-            printf("FAIL: expected trap, got %s\n", wah_strerror(ctx.trap_reason));
-            return 1;
-        }
+        assert_err(ctx.trap_reason, WAH_ERROR_TRAP);
 
         // results[0] is not guaranteed to be preserved after a trap, but in our implementation it is
     }
-    printf("\n");
 
     printf("All tests passed!\n");
     return 0;

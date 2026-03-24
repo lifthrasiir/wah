@@ -2,6 +2,7 @@
 
 #define WAH_IMPLEMENTATION
 #include "wah.h"
+#include "wah_testutils.c"
 #include <stdio.h>
 #include <string.h>
 #include <assert.h>
@@ -13,30 +14,19 @@ void test_host_func(wah_call_context_t *ctx, void *userdata) {
 }
 
 int main() {
-    printf("Testing wah_parse_func_type...\n\n");
-
     // Test 1: Simple i32 -> i32
     printf("Test 1: i32 -> i32\n");
     {
         const char *types = "i32 -> i32";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
-        if (err != WAH_OK) {
-            printf("FAIL: wah_parse_func_type returned %s\n", wah_strerror(err));
-            return 1;
-        }
-        if (nparams != 1 || nresults != 1) {
-            printf("FAIL: Expected 1 param and 1 result, got %zu params and %zu results\n", nparams, nresults);
-            return 1;
-        }
-        if (param_types[0] != WAH_TYPE_I32 || result_types[0] != WAH_TYPE_I32) {
-            printf("FAIL: Expected i32 -> i32\n");
-            return 1;
-        }
+        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_eq_u64(nparams, 1);
+        assert_eq_u64(nresults, 1);
+        assert_eq_i32(param_types[0], WAH_TYPE_I32);
+        assert_eq_i32(result_types[0], WAH_TYPE_I32);
         free(param_types);
         free(result_types);
-        printf("PASS\n\n");
     }
 
     // Test 2: Multiple types with commas
@@ -45,26 +35,15 @@ int main() {
         const char *types = "i32, i64 -> f32, f64";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
-        if (err != WAH_OK) {
-            printf("FAIL: wah_parse_func_type returned %s\n", wah_strerror(err));
-            return 1;
-        }
-        if (nparams != 2 || nresults != 2) {
-            printf("FAIL: Expected 2 params and 2 results, got %zu params and %zu results\n", nparams, nresults);
-            return 1;
-        }
-        if (param_types[0] != WAH_TYPE_I32 || param_types[1] != WAH_TYPE_I64) {
-            printf("FAIL: Expected i32, i64 params\n");
-            return 1;
-        }
-        if (result_types[0] != WAH_TYPE_F32 || result_types[1] != WAH_TYPE_F64) {
-            printf("FAIL: Expected f32, f64 results\n");
-            return 1;
-        }
+        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_eq_u64(nparams, 2);
+        assert_eq_u64(nresults, 2);
+        assert_eq_i32(param_types[0], WAH_TYPE_I32);
+        assert_eq_i32(param_types[1], WAH_TYPE_I64);
+        assert_eq_i32(result_types[0], WAH_TYPE_F32);
+        assert_eq_i32(result_types[1], WAH_TYPE_F64);
         free(param_types);
         free(result_types);
-        printf("PASS\n\n");
     }
 
     // Test 3: No parameters
@@ -73,22 +52,12 @@ int main() {
         const char *types = "-> i32";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
-        if (err != WAH_OK) {
-            printf("FAIL: wah_parse_func_type returned %s\n", wah_strerror(err));
-            return 1;
-        }
-        if (nparams != 0 || nresults != 1) {
-            printf("FAIL: Expected 0 params and 1 result, got %zu params and %zu results\n", nparams, nresults);
-            return 1;
-        }
-        if (result_types[0] != WAH_TYPE_I32) {
-            printf("FAIL: Expected i32 result\n");
-            return 1;
-        }
+        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_eq_u64(nparams, 0);
+        assert_eq_u64(nresults, 1);
+        assert_eq_i32(result_types[0], WAH_TYPE_I32);
         free(param_types);
         free(result_types);
-        printf("PASS\n\n");
     }
 
     // Test 4: No results
@@ -97,22 +66,12 @@ int main() {
         const char *types = "i32 ->";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
-        if (err != WAH_OK) {
-            printf("FAIL: wah_parse_func_type returned %s\n", wah_strerror(err));
-            return 1;
-        }
-        if (nparams != 1 || nresults != 0) {
-            printf("FAIL: Expected 1 param and 0 results, got %zu params and %zu results\n", nparams, nresults);
-            return 1;
-        }
-        if (param_types[0] != WAH_TYPE_I32) {
-            printf("FAIL: Expected i32 param\n");
-            return 1;
-        }
+        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_eq_u64(nparams, 1);
+        assert_eq_u64(nresults, 0);
+        assert_eq_i32(param_types[0], WAH_TYPE_I32);
         free(param_types);
         free(result_types);
-        printf("PASS\n\n");
     }
 
     // Test 5: No parameters and no results
@@ -121,48 +80,26 @@ int main() {
         const char *types = "->";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
-        if (err != WAH_OK) {
-            printf("FAIL: wah_parse_func_type returned %s\n", wah_strerror(err));
-            return 1;
-        }
-        if (nparams != 0 || nresults != 0) {
-            printf("FAIL: Expected 0 params and 0 results, got %zu params and %zu results\n", nparams, nresults);
-            return 1;
-        }
+        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_eq_u64(nparams, 0);
+        assert_eq_u64(nresults, 0);
         free(param_types);
         free(result_types);
-        printf("PASS\n\n");
     }
 
     // Test 6: Use with wah_module_export_func
     printf("Test 6: Use with wah_module_export_func\n");
     {
         wah_module_t mod = {0};
-        wah_error_t err = wah_new_module(&mod);
-        if (err != WAH_OK) {
-            printf("FAIL: wah_new_module returned %s\n", wah_strerror(err));
-            return 1;
-        }
+        assert_ok(wah_new_module(&mod));
 
-        err = wah_module_export_func(&mod, "add", "i32, i32 -> i32", test_host_func, NULL, NULL);
-        if (err != WAH_OK) {
-            printf("FAIL: wah_module_export_func returned %s\n", wah_strerror(err));
-            wah_free_module(&mod);
-            return 1;
-        }
+        assert_ok(wah_module_export_func(&mod, "add", "i32, i32 -> i32", test_host_func, NULL, NULL));
 
         // Verify the export
         wah_entry_t entry;
-        err = wah_module_export_by_name(&mod, "add", &entry);
-        if (err != WAH_OK) {
-            printf("FAIL: wah_module_export_by_name returned %s\n", wah_strerror(err));
-            wah_free_module(&mod);
-            return 1;
-        }
+        assert_ok(wah_module_export_by_name(&mod, "add", &entry));
 
         wah_free_module(&mod);
-        printf("PASS\n\n");
     }
 
     // Test 7: Invalid types should fail
@@ -183,17 +120,11 @@ int main() {
             const char *types = invalid_types[i];
             size_t nparams, nresults;
             wah_type_t *param_types = NULL, *result_types = NULL;
-            wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
-            if (err == WAH_OK) {
-                printf("FAIL: Expected error for '%s', but got success\n", types);
-                free(param_types);
-                free(result_types);
-                return 1;
-            }
+            printf("  %s\n", types);
+            assert_err(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types), WAH_ERROR_BAD_SPEC);
             free(param_types);
             free(result_types);
         }
-        printf("PASS\n\n");
     }
 
     // Test 8: v128 type parsing
@@ -202,22 +133,13 @@ int main() {
         const char *types = "v128 -> v128";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
-        if (err != WAH_OK) {
-            printf("FAIL: wah_parse_func_type returned %s\n", wah_strerror(err));
-            return 1;
-        }
-        if (nparams != 1 || nresults != 1) {
-            printf("FAIL: Expected 1 param and 1 result, got %zu params and %zu results\n", nparams, nresults);
-            return 1;
-        }
-        if (param_types[0] != WAH_TYPE_V128 || result_types[0] != WAH_TYPE_V128) {
-            printf("FAIL: Expected v128 -> v128\n");
-            return 1;
-        }
+        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_eq_u64(nparams, 1);
+        assert_eq_u64(nresults, 1);
+        assert_eq_i32(param_types[0], WAH_TYPE_V128);
+        assert_eq_i32(result_types[0], WAH_TYPE_V128);
         free(param_types);
         free(result_types);
-        printf("PASS\n\n");
     }
 
     // Test 9: v128 mixed with other types
@@ -226,26 +148,16 @@ int main() {
         const char *types = "i32, v128, f64 -> v128, i32";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
-        if (err != WAH_OK) {
-            printf("FAIL: wah_parse_func_type returned %s\n", wah_strerror(err));
-            return 1;
-        }
-        if (nparams != 3 || nresults != 2) {
-            printf("FAIL: Expected 3 params and 2 results, got %zu params and %zu results\n", nparams, nresults);
-            return 1;
-        }
-        if (param_types[0] != WAH_TYPE_I32 || param_types[1] != WAH_TYPE_V128 || param_types[2] != WAH_TYPE_F64) {
-            printf("FAIL: Expected i32, v128, f64 params\n");
-            return 1;
-        }
-        if (result_types[0] != WAH_TYPE_V128 || result_types[1] != WAH_TYPE_I32) {
-            printf("FAIL: Expected v128, i32 results\n");
-            return 1;
-        }
+        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_eq_u64(nparams, 3);
+        assert_eq_u64(nresults, 2);
+        assert_eq_i32(param_types[0], WAH_TYPE_I32);
+        assert_eq_i32(param_types[1], WAH_TYPE_V128);
+        assert_eq_i32(param_types[2], WAH_TYPE_F64);
+        assert_eq_i32(result_types[0], WAH_TYPE_V128);
+        assert_eq_i32(result_types[1], WAH_TYPE_I32);
         free(param_types);
         free(result_types);
-        printf("PASS\n\n");
     }
 
     // Test 10: Multiple v128 types
@@ -254,26 +166,14 @@ int main() {
         const char *types = "v128, v128 -> v128";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
-        if (err != WAH_OK) {
-            printf("FAIL: wah_parse_func_type returned %s\n", wah_strerror(err));
-            return 1;
-        }
-        if (nparams != 2 || nresults != 1) {
-            printf("FAIL: Expected 2 params and 1 result, got %zu params and %zu results\n", nparams, nresults);
-            return 1;
-        }
-        if (param_types[0] != WAH_TYPE_V128 || param_types[1] != WAH_TYPE_V128) {
-            printf("FAIL: Expected v128, v128 params\n");
-            return 1;
-        }
-        if (result_types[0] != WAH_TYPE_V128) {
-            printf("FAIL: Expected v128 result\n");
-            return 1;
-        }
+        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_eq_u64(nparams, 2);
+        assert_eq_u64(nresults, 1);
+        assert_eq_i32(param_types[0], WAH_TYPE_V128);
+        assert_eq_i32(param_types[1], WAH_TYPE_V128);
+        assert_eq_i32(result_types[0], WAH_TYPE_V128);
         free(param_types);
         free(result_types);
-        printf("PASS\n\n");
     }
 
     // Test 11: v128 with no parameters
@@ -282,22 +182,12 @@ int main() {
         const char *types = "-> v128";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
-        if (err != WAH_OK) {
-            printf("FAIL: wah_parse_func_type returned %s\n", wah_strerror(err));
-            return 1;
-        }
-        if (nparams != 0 || nresults != 1) {
-            printf("FAIL: Expected 0 params and 1 result, got %zu params and %zu results\n", nparams, nresults);
-            return 1;
-        }
-        if (result_types[0] != WAH_TYPE_V128) {
-            printf("FAIL: Expected v128 result\n");
-            return 1;
-        }
+        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_eq_u64(nparams, 0);
+        assert_eq_u64(nresults, 1);
+        assert_eq_i32(result_types[0], WAH_TYPE_V128);
         free(param_types);
         free(result_types);
-        printf("PASS\n\n");
     }
 
     // Test 12: v128 with no results
@@ -306,24 +196,14 @@ int main() {
         const char *types = "v128 ->";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        wah_error_t err = wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types);
-        if (err != WAH_OK) {
-            printf("FAIL: wah_parse_func_type returned %s\n", wah_strerror(err));
-            return 1;
-        }
-        if (nparams != 1 || nresults != 0) {
-            printf("FAIL: Expected 1 param and 0 results, got %zu params and %zu results\n", nparams, nresults);
-            return 1;
-        }
-        if (param_types[0] != WAH_TYPE_V128) {
-            printf("FAIL: Expected v128 param\n");
-            return 1;
-        }
+        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_eq_u64(nparams, 1);
+        assert_eq_u64(nresults, 0);
+        assert_eq_i32(param_types[0], WAH_TYPE_V128);
         free(param_types);
         free(result_types);
-        printf("PASS\n\n");
     }
 
-    printf("All tests passed!\n");
+    printf("\nAll tests passed!\n");
     return 0;
 }
