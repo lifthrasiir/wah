@@ -3688,23 +3688,26 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, const wah_module_t *f
 
 #define WAH_RUN(opcode) \
     static wah_error_t wah_run_##opcode(wah_exec_context_t *ctx, wah_call_frame_t *frame, \
-                                        const uint8_t *bytecode_ip, const uint8_t *bytecode_base, wah_error_t err)
+                                        const uint8_t *bytecode_ip, const uint8_t *bytecode_base, \
+                                        wah_value_t *sp, wah_error_t err)
 
 #define WAH_NEXT() do { \
         (void)bytecode_base; (void)err; \
-        __attribute__((musttail)) return wah_run_single(ctx, frame, bytecode_ip, bytecode_base, err); \
+        __attribute__((musttail)) return wah_run_single(ctx, frame, bytecode_ip, bytecode_base, sp, err); \
     } while (0)
 
 #define WAH_CLEANUP() goto cleanup; cleanup: do { \
-        /* Before returning, store the final IP back into the (potentially last) frame */ \
+        /* Before returning, store the final IP and SP back into the (potentially last) frame */ \
         if (ctx->call_depth > 0) { \
             frame->bytecode_ip = bytecode_ip; \
         } \
+        ctx->sp = (uint32_t)(sp - ctx->value_stack); \
         return (err); \
     } while (0)
 
 static wah_error_t wah_run_single(wah_exec_context_t *ctx, wah_call_frame_t *frame,
-                                  const uint8_t *bytecode_ip, const uint8_t *bytecode_base, wah_error_t err);
+                                  const uint8_t *bytecode_ip, const uint8_t *bytecode_base,
+                                  wah_value_t *sp, wah_error_t err);
 
 #elif defined(WAH_USE_COMPUTED_GOTO) // --- Computed GOTO dispatch ---
 
@@ -3715,6 +3718,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
     wah_call_frame_t *frame = &ctx->call_stack[ctx->call_depth - 1];
     const uint8_t *bytecode_ip = frame->bytecode_ip;
     const uint8_t *bytecode_base = frame->code->parsed_code.bytecode;
+    wah_value_t *sp = ctx->value_stack + ctx->sp;  // Stack pointer for faster access
 
     // Computed goto jump table
     static const void* wah_opcode_labels[] = {
@@ -3738,6 +3742,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
     wah_call_frame_t *frame = &ctx->call_stack[ctx->call_depth - 1];
     const uint8_t *bytecode_ip = frame->bytecode_ip;
     const uint8_t *bytecode_base = frame->code->parsed_code.bytecode;
+    wah_value_t *sp = ctx->value_stack + ctx->sp;  // Stack pointer for faster access
 
     while (1) {
         uint16_t opcode = wah_read_u16_le(bytecode_ip);
@@ -3769,7 +3774,7 @@ WAH_RUN(LOOP) { // Should not appear in preparsed code
 WAH_RUN(IF) {
     uint32_t offset = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    if (ctx->value_stack[--ctx->sp].i32 == 0) {
+    if ((*--sp).i32 == 0) {
         bytecode_ip = bytecode_base + offset;
     }
     WAH_NEXT();
@@ -3792,14 +3797,14 @@ WAH_RUN(BR) {
 WAH_RUN(BR_IF) {
     uint32_t offset = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    if (ctx->value_stack[--ctx->sp].i32 != 0) {
+    if ((*--sp).i32 != 0) {
         bytecode_ip = bytecode_base + offset;
     }
     WAH_NEXT();
 }
 
 WAH_RUN(BR_TABLE) {
-    uint32_t index = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    uint32_t index = (uint32_t)(*--sp).i32;
     uint32_t num_targets = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
 
@@ -3815,12 +3820,12 @@ WAH_RUN(BR_TABLE) {
     WAH_NEXT();
 }
 
-WAH_RUN(I32_CONST) { ctx->value_stack[ctx->sp++].i32 = (int32_t)wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); WAH_NEXT(); }
-WAH_RUN(I64_CONST) { ctx->value_stack[ctx->sp++].i64 = (int64_t)wah_read_u64_le(bytecode_ip); bytecode_ip += sizeof(uint64_t); WAH_NEXT(); }
-WAH_RUN(F32_CONST) { ctx->value_stack[ctx->sp++].f32 = wah_read_f32_le(bytecode_ip); bytecode_ip += sizeof(float); WAH_NEXT(); }
-WAH_RUN(F64_CONST) { ctx->value_stack[ctx->sp++].f64 = wah_read_f64_le(bytecode_ip); bytecode_ip += sizeof(double); WAH_NEXT(); }
+WAH_RUN(I32_CONST) { (*sp++).i32 = (int32_t)wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); WAH_NEXT(); }
+WAH_RUN(I64_CONST) { (*sp++).i64 = (int64_t)wah_read_u64_le(bytecode_ip); bytecode_ip += sizeof(uint64_t); WAH_NEXT(); }
+WAH_RUN(F32_CONST) { (*sp++).f32 = wah_read_f32_le(bytecode_ip); bytecode_ip += sizeof(float); WAH_NEXT(); }
+WAH_RUN(F64_CONST) { (*sp++).f64 = wah_read_f64_le(bytecode_ip); bytecode_ip += sizeof(double); WAH_NEXT(); }
 WAH_RUN(V128_CONST) {
-    memcpy(&ctx->value_stack[ctx->sp++].v128, bytecode_ip, sizeof(wah_v128_t));
+    memcpy(&(*sp++).v128, bytecode_ip, sizeof(wah_v128_t));
     bytecode_ip += sizeof(wah_v128_t);
     WAH_NEXT();
 }
@@ -3832,18 +3837,18 @@ WAH_RUN(REF_NULL) {
 
     // All references are unified as void*, so null is always NULL
     (void)type; // Type is validated during parsing, but we don't need it here
-    ctx->value_stack[ctx->sp++].ref = NULL;
+    (*sp++).ref = NULL;
     WAH_NEXT();
 }
 
 WAH_RUN(REF_IS_NULL) {
-    wah_value_t ref_val = ctx->value_stack[--ctx->sp];
+    wah_value_t ref_val = *--sp;
 
     // Determine if reference is null based on type
     // For now, we'll check both funcref and externref
     // In a complete implementation, we'd need to track the actual type of each stack value
     int32_t is_null = (ref_val.ref == NULL);
-    ctx->value_stack[ctx->sp++].i32 = is_null;
+    (*sp++).i32 = is_null;
     WAH_NEXT();
 }
 
@@ -3855,28 +3860,28 @@ WAH_RUN(REF_FUNC) {
     // Push function reference as pointer to wah_function_t
     // func_idx is the module-local function index (not including imports)
     WAH_ASSERT(func_idx < ctx->module->function_count && "validation should have verified function index");
-    ctx->value_stack[ctx->sp++].ref = &ctx->module->functions[func_idx];
+    (*sp++).ref = &ctx->module->functions[func_idx];
     WAH_NEXT();
 }
 
 WAH_RUN(LOCAL_GET) {
     uint32_t local_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    ctx->value_stack[ctx->sp++] = ctx->value_stack[frame->locals_offset + local_idx];
+    *sp++ = ctx->value_stack[frame->locals_offset + local_idx];
     WAH_NEXT();
 }
 
 WAH_RUN(LOCAL_SET) {
     uint32_t local_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    ctx->value_stack[frame->locals_offset + local_idx] = ctx->value_stack[--ctx->sp];
+    ctx->value_stack[frame->locals_offset + local_idx] = *--sp;
     WAH_NEXT();
 }
 
 WAH_RUN(LOCAL_TEE) {
     uint32_t local_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    wah_value_t val = ctx->value_stack[ctx->sp - 1];
+    wah_value_t val = sp[-1];
     ctx->value_stack[frame->locals_offset + local_idx] = val;
     WAH_NEXT();
 }
@@ -3885,7 +3890,7 @@ WAH_RUN(GLOBAL_GET) {
     uint32_t global_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     uint32_t effective_global_idx = frame->globals_offset + global_idx;
-    ctx->value_stack[ctx->sp++] = ctx->globals[effective_global_idx];
+    *sp++ = ctx->globals[effective_global_idx];
     WAH_NEXT();
 }
 
@@ -3893,17 +3898,17 @@ WAH_RUN(GLOBAL_SET) {
     uint32_t global_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     uint32_t effective_global_idx = frame->globals_offset + global_idx;
-    ctx->globals[effective_global_idx] = ctx->value_stack[--ctx->sp];
+    ctx->globals[effective_global_idx] = *--sp;
     WAH_NEXT();
 }
 
 WAH_RUN(TABLE_GET) {
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    uint32_t elem_idx = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    uint32_t elem_idx = (uint32_t)(*--sp).i32;
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
     WAH_ENSURE_GOTO(elem_idx < ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
-    ctx->value_stack[ctx->sp++] = ctx->tables[table_idx][elem_idx];
+    *sp++ = ctx->tables[table_idx][elem_idx];
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -3911,8 +3916,8 @@ WAH_RUN(TABLE_GET) {
 WAH_RUN(TABLE_SET) {
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    wah_value_t val = ctx->value_stack[--ctx->sp];
-    uint32_t elem_idx = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    wah_value_t val = *--sp;
+    uint32_t elem_idx = (uint32_t)(*--sp).i32;
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
     WAH_ENSURE_GOTO(elem_idx < ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
     ctx->tables[table_idx][elem_idx] = val;
@@ -3924,19 +3929,19 @@ WAH_RUN(TABLE_SIZE) {
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    ctx->value_stack[ctx->sp++].i32 = (int32_t)ctx->module->tables[table_idx].min_elements;
+    (*sp++).i32 = (int32_t)ctx->module->tables[table_idx].min_elements;
     WAH_NEXT();
 }
 
 WAH_RUN(TABLE_GROW) {
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    int32_t delta = ctx->value_stack[--ctx->sp].i32;
-    wah_value_t init_val = ctx->value_stack[--ctx->sp];
+    int32_t delta = (*--sp).i32;
+    wah_value_t init_val = *--sp;
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index");
 
     if (delta < 0) {
-        ctx->value_stack[ctx->sp++].i32 = -1;
+        (*sp++).i32 = -1;
         WAH_NEXT();
     }
 
@@ -3959,7 +3964,7 @@ WAH_RUN(TABLE_GROW) {
     ctx->tables[table_idx] = new_table;
     ctx->module->tables[table_idx].min_elements = (uint32_t)new_size;
 
-    ctx->value_stack[ctx->sp++].i32 = (int32_t)old_size;
+    (*sp++).i32 = (int32_t)old_size;
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -3968,9 +3973,9 @@ WAH_RUN(TABLE_FILL) {
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     // Stack: [offset, value, size] -> [] (per formal spec: i32.const i val i32.const n table.fill x)
-    uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-    wah_value_t val = ctx->value_stack[--ctx->sp];
-    uint32_t offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    uint32_t size = (uint32_t)(*--sp).i32;
+    wah_value_t val = *--sp;
+    uint32_t offset = (uint32_t)(*--sp).i32;
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
     WAH_ENSURE_GOTO((uint64_t)offset + size <= ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
 
@@ -3987,9 +3992,9 @@ WAH_RUN(TABLE_COPY) {
     uint32_t src_table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     // Stack: [dst offset, src offset, size] -> [] (per formal spec: i32.const d i32.const s i32.const n table.copy x y)
-    uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-    uint32_t src_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-    uint32_t dst_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    uint32_t size = (uint32_t)(*--sp).i32;
+    uint32_t src_offset = (uint32_t)(*--sp).i32;
+    uint32_t dst_offset = (uint32_t)(*--sp).i32;
     WAH_ASSERT(src_table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
     WAH_ASSERT(dst_table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= ctx->module->tables[src_table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
@@ -4025,9 +4030,9 @@ WAH_RUN(TABLE_INIT) {
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     // Stack: [dst offset, src offset, size] -> []
-    uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-    uint32_t src_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-    uint32_t dst_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    uint32_t size = (uint32_t)(*--sp).i32;
+    uint32_t src_offset = (uint32_t)(*--sp).i32;
+    uint32_t dst_offset = (uint32_t)(*--sp).i32;
     WAH_ASSERT(elem_idx < ctx->module->element_segment_count && "validation didn't catch out-of-bound element segment index");
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index");
 
@@ -4093,15 +4098,15 @@ WAH_RUN(CALL) {
         size_t nresults = called_fn->nresults;
 
         // Validate parameter count
-        WAH_ASSERT((size_t)ctx->sp >= nparams && "validation bug; is this even possible?");
+        WAH_ASSERT((size_t)(sp - ctx->value_stack) >= nparams && "validation bug; is this even possible?");
 
         // Pointers to params and result storage (reuse param space for results)
-        wah_value_t *param_vals = &ctx->value_stack[ctx->sp - nparams];
+        wah_value_t *param_vals = sp - nparams;
         wah_value_t *result_vals = param_vals;  // Reuse param space for results
 
         // Adjust stack pointer (pop params, push results)
-        ctx->sp -= nparams;  // Pop params
-        ctx->sp += nresults;  // Push results
+        sp -= nparams;  // Pop params
+        sp += nresults;  // Push results
 
         // Call host function using helper
         WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, called_fn, param_vals, (uint32_t)nparams, result_vals), cleanup);
@@ -4114,7 +4119,7 @@ WAH_RUN(CALL) {
         const wah_func_type_t *called_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
         const wah_code_body_t *called_code = &fn_module->code_bodies[local_idx];
 
-        uint32_t new_locals_offset = ctx->sp - called_func_type->param_count;
+        uint32_t new_locals_offset = (uint32_t)(sp - ctx->value_stack) - called_func_type->param_count;
 
         frame->bytecode_ip = bytecode_ip;
 
@@ -4122,9 +4127,9 @@ WAH_RUN(CALL) {
 
         uint32_t num_locals = called_code->local_count;
         if (num_locals > 0) {
-            WAH_ENSURE_GOTO(ctx->sp + num_locals <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup);
-            memset(&ctx->value_stack[ctx->sp], 0, sizeof(wah_value_t) * num_locals);
-            ctx->sp += num_locals;
+            WAH_ENSURE_GOTO(sp + num_locals - ctx->value_stack <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup);
+            memset(sp, 0, sizeof(wah_value_t) * num_locals);
+            sp += num_locals;
         }
 
         RELOAD_FRAME();
@@ -4141,7 +4146,7 @@ WAH_RUN(CALL_INDIRECT) {
     bytecode_ip += sizeof(uint32_t);
 
     // Pop function index from stack
-    uint32_t func_table_idx = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    uint32_t func_table_idx = (uint32_t)(*--sp).i32;
 
     // Validate type_idx and table_idx
     WAH_ASSERT(type_idx < ctx->module->type_count && "validation didn't catch out-of-bound type index");
@@ -4178,15 +4183,15 @@ WAH_RUN(CALL_INDIRECT) {
         }
 
         // Validate parameter count
-        WAH_ASSERT((size_t)ctx->sp >= nparams && "validation bug; is this even possible?");
+        WAH_ASSERT((size_t)(sp - ctx->value_stack) >= nparams && "validation bug; is this even possible?");
 
         // Pointers to params and result storage (reuse param space for results)
-        wah_value_t *param_vals = &ctx->value_stack[ctx->sp - nparams];
+        wah_value_t *param_vals = sp - nparams;
         wah_value_t *result_vals = param_vals;  // Reuse param space for results
 
         // Adjust stack pointer (pop params, push results)
-        ctx->sp -= nparams;  // Pop params
-        ctx->sp += nresults;  // Push results
+        sp -= nparams;  // Pop params
+        sp += nresults;  // Push results
 
         // Call host function using helper
         WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, actual_fn, param_vals, (uint32_t)nparams, result_vals), cleanup);
@@ -4216,7 +4221,7 @@ WAH_RUN(CALL_INDIRECT) {
         }
         // Perform the call using local_idx
         const wah_code_body_t *called_code = &fn_module->code_bodies[local_idx];
-        uint32_t new_locals_offset = ctx->sp - expected_func_type->param_count;
+        uint32_t new_locals_offset = (uint32_t)(sp - ctx->value_stack) - expected_func_type->param_count;
 
         frame->bytecode_ip = bytecode_ip;
 
@@ -4224,9 +4229,9 @@ WAH_RUN(CALL_INDIRECT) {
 
         uint32_t num_locals = called_code->local_count;
         if (num_locals > 0) {
-            WAH_ENSURE_GOTO(ctx->sp + num_locals <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup);
-            memset(&ctx->value_stack[ctx->sp], 0, sizeof(wah_value_t) * num_locals);
-            ctx->sp += num_locals;
+            WAH_ENSURE_GOTO(sp + num_locals - ctx->value_stack <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup);
+            memset(sp, 0, sizeof(wah_value_t) * num_locals);
+            sp += num_locals;
         }
 
         RELOAD_FRAME();
@@ -4240,14 +4245,14 @@ WAH_RUN(RETURN) {
     uint32_t results_to_keep = frame->result_count;
     wah_value_t result_val;
     if (results_to_keep == 1) {
-        result_val = ctx->value_stack[ctx->sp - 1];
+        result_val = sp[-1];
     }
 
-    ctx->sp = frame->locals_offset;
+    sp = ctx->value_stack + frame->locals_offset;
     ctx->call_depth--;
 
     if (results_to_keep == 1) {
-        ctx->value_stack[ctx->sp++] = result_val;
+        *sp++ = result_val;
     }
 
     RELOAD_FRAME();
@@ -4259,18 +4264,18 @@ WAH_RUN(END) { // End of function
     uint32_t results_to_keep = frame->result_count;
     wah_value_t result_val;
     if (results_to_keep == 1) {
-        if (ctx->sp > frame->locals_offset) {
-             result_val = ctx->value_stack[ctx->sp - 1];
+        if (sp - ctx->value_stack > frame->locals_offset) {
+             result_val = sp[-1];
         } else {
             results_to_keep = 0;
         }
     }
 
-    ctx->sp = frame->locals_offset;
+    sp = ctx->value_stack + frame->locals_offset;
     ctx->call_depth--;
 
     if (results_to_keep == 1) {
-        ctx->value_stack[ctx->sp++] = result_val;
+        *sp++ = result_val;
     }
 
     RELOAD_FRAME();
@@ -4278,18 +4283,15 @@ WAH_RUN(END) { // End of function
     WAH_CLEANUP();
 }
 
-#define VSTACK_TOP (ctx->value_stack[ctx->sp - 1])
-#define VSTACK_B (ctx->value_stack[ctx->sp - 1])
-#define VSTACK_A (ctx->value_stack[ctx->sp - 2])
-#define BINOP_I(N,op) { VSTACK_A.i##N = (int##N##_t)((uint##N##_t)VSTACK_A.i##N op (uint##N##_t)VSTACK_B.i##N); ctx->sp--; WAH_NEXT(); }
-#define CMP_I_S(N,op) { VSTACK_A.i32 = VSTACK_A.i##N op VSTACK_B.i##N ? 1 : 0; ctx->sp--; WAH_NEXT(); }
-#define CMP_I_U(N,op) { VSTACK_A.i32 = (uint##N##_t)VSTACK_A.i##N op (uint##N##_t)VSTACK_B.i##N ? 1 : 0; ctx->sp--; WAH_NEXT(); }
-#define BINOP_F(N,op) { VSTACK_A.f##N = wah_canonicalize_f##N(VSTACK_A.f##N op VSTACK_B.f##N); ctx->sp--; WAH_NEXT(); }
-#define CMP_F(N,op)   { VSTACK_A.i32 = VSTACK_A.f##N op VSTACK_B.f##N ? 1 : 0; ctx->sp--; WAH_NEXT(); }
-#define UNOP_I_FN(N,fn)  { VSTACK_TOP.i##N = (int##N##_t)fn((uint##N##_t)VSTACK_TOP.i##N); WAH_NEXT(); }
-#define BINOP_I_FN(N,fn) { VSTACK_A.i##N = (int##N##_t)fn((uint##N##_t)VSTACK_A.i##N, (uint##N##_t)VSTACK_B.i##N); ctx->sp--; WAH_NEXT(); }
-#define UNOP_F_FN(N,fn)  { VSTACK_TOP.f##N = wah_canonicalize_f##N(fn(VSTACK_TOP.f##N)); WAH_NEXT(); }
-#define BINOP_F_FN(N,fn) { VSTACK_A.f##N = wah_canonicalize_f##N(fn(VSTACK_A.f##N, VSTACK_B.f##N)); ctx->sp--; WAH_NEXT(); }
+#define BINOP_I(N,op) { sp[-2].i##N = (int##N##_t)((uint##N##_t)sp[-2].i##N op (uint##N##_t)sp[-1].i##N); sp--; WAH_NEXT(); }
+#define CMP_I_S(N,op) { sp[-2].i32 = sp[-2].i##N op sp[-1].i##N ? 1 : 0; sp--; WAH_NEXT(); }
+#define CMP_I_U(N,op) { sp[-2].i32 = (uint##N##_t)sp[-2].i##N op (uint##N##_t)sp[-1].i##N ? 1 : 0; sp--; WAH_NEXT(); }
+#define BINOP_F(N,op) { sp[-2].f##N = wah_canonicalize_f##N(sp[-2].f##N op sp[-1].f##N); sp--; WAH_NEXT(); }
+#define CMP_F(N,op)   { sp[-2].i32 = sp[-2].f##N op sp[-1].f##N ? 1 : 0; sp--; WAH_NEXT(); }
+#define UNOP_I_FN(N,fn)  { sp[-1].i##N = (int##N##_t)fn((uint##N##_t)sp[-1].i##N); WAH_NEXT(); }
+#define BINOP_I_FN(N,fn) { sp[-2].i##N = (int##N##_t)fn((uint##N##_t)sp[-2].i##N, (uint##N##_t)sp[-1].i##N); sp--; WAH_NEXT(); }
+#define UNOP_F_FN(N,fn)  { sp[-1].f##N = wah_canonicalize_f##N(fn(sp[-1].f##N)); WAH_NEXT(); }
+#define BINOP_F_FN(N,fn) { sp[-2].f##N = wah_canonicalize_f##N(fn(sp[-2].f##N, sp[-1].f##N)); sp--; WAH_NEXT(); }
 
 #define NUM_OPS(N,_F) \
     WAH_RUN(I##N##_CLZ) UNOP_I_FN(N, wah_clz_u##N) \
@@ -4299,38 +4301,38 @@ WAH_RUN(END) { // End of function
     WAH_RUN(I##N##_SUB) BINOP_I(N,-) \
     WAH_RUN(I##N##_MUL) BINOP_I(N,*) \
     WAH_RUN(I##N##_DIV_S) {  \
-        WAH_ENSURE_GOTO(VSTACK_B.i##N != 0, WAH_ERROR_TRAP, cleanup); \
-        WAH_ENSURE_GOTO(VSTACK_A.i##N != INT##N##_MIN || VSTACK_B.i##N != -1, WAH_ERROR_TRAP, cleanup); \
-        VSTACK_A.i##N /= VSTACK_B.i##N; ctx->sp--; WAH_NEXT(); \
+        WAH_ENSURE_GOTO(sp[-1].i##N != 0, WAH_ERROR_TRAP, cleanup); \
+        WAH_ENSURE_GOTO(sp[-2].i##N != INT##N##_MIN || sp[-1].i##N != -1, WAH_ERROR_TRAP, cleanup); \
+        sp[-2].i##N /= sp[-1].i##N; sp--; WAH_NEXT(); \
         WAH_CLEANUP(); \
     } \
     WAH_RUN(I##N##_DIV_U) {  \
-        WAH_ENSURE_GOTO(VSTACK_B.i##N != 0, WAH_ERROR_TRAP, cleanup); \
-        VSTACK_A.i##N = (int##N##_t)((uint##N##_t)VSTACK_A.i##N / (uint##N##_t)VSTACK_B.i##N); \
-        ctx->sp--; \
+        WAH_ENSURE_GOTO(sp[-1].i##N != 0, WAH_ERROR_TRAP, cleanup); \
+        sp[-2].i##N = (int##N##_t)((uint##N##_t)sp[-2].i##N / (uint##N##_t)sp[-1].i##N); \
+        sp--; \
         WAH_NEXT(); \
         WAH_CLEANUP(); \
     } \
     WAH_RUN(I##N##_REM_S) {  \
-        WAH_ENSURE_GOTO(VSTACK_B.i##N != 0, WAH_ERROR_TRAP, cleanup); \
-        if (VSTACK_A.i##N == INT##N##_MIN && VSTACK_B.i##N == -1) VSTACK_A.i##N = 0; else VSTACK_A.i##N %= VSTACK_B.i##N; \
-        ctx->sp--; \
+        WAH_ENSURE_GOTO(sp[-1].i##N != 0, WAH_ERROR_TRAP, cleanup); \
+        if (sp[-2].i##N == INT##N##_MIN && sp[-1].i##N == -1) sp[-2].i##N = 0; else sp[-2].i##N %= sp[-1].i##N; \
+        sp--; \
         WAH_NEXT(); \
         WAH_CLEANUP(); \
     } \
     WAH_RUN(I##N##_REM_U) {  \
-        WAH_ENSURE_GOTO(VSTACK_B.i##N != 0, WAH_ERROR_TRAP, cleanup); \
-        VSTACK_A.i##N = (int##N##_t)((uint##N##_t)VSTACK_A.i##N % (uint##N##_t)VSTACK_B.i##N); \
-        ctx->sp--; \
+        WAH_ENSURE_GOTO(sp[-1].i##N != 0, WAH_ERROR_TRAP, cleanup); \
+        sp[-2].i##N = (int##N##_t)((uint##N##_t)sp[-2].i##N % (uint##N##_t)sp[-1].i##N); \
+        sp--; \
         WAH_NEXT(); \
         WAH_CLEANUP(); \
     } \
     WAH_RUN(I##N##_AND) BINOP_I(N,&) \
     WAH_RUN(I##N##_OR)  BINOP_I(N,|) \
     WAH_RUN(I##N##_XOR) BINOP_I(N,^) \
-    WAH_RUN(I##N##_SHL) { VSTACK_A.i##N = (int##N##_t)((uint##N##_t)VSTACK_A.i##N << (VSTACK_B.i##N & (N-1))); ctx->sp--; WAH_NEXT(); } \
-    WAH_RUN(I##N##_SHR_S) { VSTACK_A.i##N >>= (VSTACK_B.i##N & (N-1)); ctx->sp--; WAH_NEXT(); } \
-    WAH_RUN(I##N##_SHR_U) { VSTACK_A.i##N = (int##N##_t)((uint##N##_t)VSTACK_A.i##N >> (VSTACK_B.i##N & (N-1))); ctx->sp--; WAH_NEXT(); } \
+    WAH_RUN(I##N##_SHL) { sp[-2].i##N = (int##N##_t)((uint##N##_t)sp[-2].i##N << (sp[-1].i##N & (N-1))); sp--; WAH_NEXT(); } \
+    WAH_RUN(I##N##_SHR_S) { sp[-2].i##N >>= (sp[-1].i##N & (N-1)); sp--; WAH_NEXT(); } \
+    WAH_RUN(I##N##_SHR_U) { sp[-2].i##N = (int##N##_t)((uint##N##_t)sp[-2].i##N >> (sp[-1].i##N & (N-1))); sp--; WAH_NEXT(); } \
     WAH_RUN(I##N##_ROTL) BINOP_I_FN(N, wah_rotl_u##N) \
     WAH_RUN(I##N##_ROTR) BINOP_I_FN(N, wah_rotr_u##N) \
     \
@@ -4344,7 +4346,7 @@ WAH_RUN(END) { // End of function
     WAH_RUN(I##N##_LE_U) CMP_I_U(N,<=) \
     WAH_RUN(I##N##_GE_S) CMP_I_S(N,>=) \
     WAH_RUN(I##N##_GE_U) CMP_I_U(N,>=) \
-    WAH_RUN(I##N##_EQZ) { VSTACK_A.i32 = (VSTACK_A.i##N == 0) ? 1 : 0; WAH_NEXT(); } \
+    WAH_RUN(I##N##_EQZ) { sp[-2].i32 = (sp[-2].i##N == 0) ? 1 : 0; WAH_NEXT(); } \
     \
     WAH_RUN(F##N##_ABS) UNOP_F_FN(N, fabs##_F) \
     WAH_RUN(F##N##_NEG) UNOP_F_FN(N, -) \
@@ -4370,11 +4372,11 @@ WAH_RUN(END) { // End of function
 #define LOAD_OP(N, T, value_field, cast) { \
     uint32_t offset = wah_read_u32_le(bytecode_ip); \
     bytecode_ip += sizeof(uint32_t); \
-    uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32; \
+    uint32_t addr = (uint32_t)(*--sp).i32; \
     uint64_t effective_addr = (uint64_t)addr + offset; \
     \
     WAH_ENSURE_GOTO(effective_addr < ctx->memory_size && ctx->memory_size - effective_addr >= N/8, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup); \
-    ctx->value_stack[ctx->sp++].value_field = cast wah_read_##T##_le(ctx->memory_base + effective_addr); \
+    (*sp++).value_field = cast wah_read_##T##_le(ctx->memory_base + effective_addr); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -4382,8 +4384,8 @@ WAH_RUN(END) { // End of function
 #define STORE_OP(N, T, value_field, value_type, cast) { \
     uint32_t offset = wah_read_u32_le(bytecode_ip); \
     bytecode_ip += sizeof(uint32_t); \
-    value_type val = ctx->value_stack[--ctx->sp].value_field; \
-    uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32; \
+    value_type val = (*--sp).value_field; \
+    uint32_t addr = (uint32_t)(*--sp).i32; \
     uint64_t effective_addr = (uint64_t)addr + offset; \
     \
     WAH_ENSURE_GOTO(effective_addr < ctx->memory_size && ctx->memory_size - effective_addr >= N/8, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup); \
@@ -4393,18 +4395,18 @@ WAH_RUN(END) { // End of function
 }
 
 #define CONVERT(from_field, cast, to_field) { \
-    VSTACK_TOP.to_field = cast (VSTACK_TOP.from_field); \
+    sp[-1].to_field = cast (sp[-1].from_field); \
     WAH_NEXT(); \
 }
 #define CONVERT_CHECK(from_field, call, ty, cast, to_field) { \
     ty res; \
-    WAH_CHECK(call(VSTACK_TOP.from_field, &res)); \
-    VSTACK_TOP.to_field = cast (res); \
+    WAH_CHECK(call(sp[-1].from_field, &res)); \
+    sp[-1].to_field = cast (res); \
     WAH_NEXT(); \
 }
 #define REINTERPRET(from_field, from_ty, to_field, to_ty) { \
-    union { from_ty from; to_ty to; } u = { .from = VSTACK_TOP.from_field }; \
-    VSTACK_TOP.to_field = u.to; \
+    union { from_ty from; to_ty to; } u = { .from = sp[-1].from_field }; \
+    sp[-1].to_field = u.to; \
     WAH_NEXT(); \
 }
 
@@ -4453,37 +4455,34 @@ WAH_RUN(F32_CONVERT_I32_S) CONVERT(i32, (float), f32)
 WAH_RUN(F32_CONVERT_I32_U) CONVERT(i32, (float)(uint32_t), f32)
 WAH_RUN(F32_CONVERT_I64_S) CONVERT(i64, (float), f32)
 WAH_RUN(F32_CONVERT_I64_U) CONVERT(i64, (float)(uint64_t), f32)
-WAH_RUN(F32_DEMOTE_F64) { VSTACK_TOP.f32 = wah_canonicalize_f32((float)VSTACK_TOP.f64); WAH_NEXT(); }
+WAH_RUN(F32_DEMOTE_F64) { sp[-1].f32 = wah_canonicalize_f32((float)sp[-1].f64); WAH_NEXT(); }
 
 WAH_RUN(F64_CONVERT_I32_S) CONVERT(i32, (double), f64)
 WAH_RUN(F64_CONVERT_I32_U) CONVERT(i32, (double)(uint32_t), f64)
 WAH_RUN(F64_CONVERT_I64_S) CONVERT(i64, (double), f64)
 WAH_RUN(F64_CONVERT_I64_U) CONVERT(i64, (double)(uint64_t), f64)
-WAH_RUN(F64_PROMOTE_F32) { VSTACK_TOP.f64 = wah_canonicalize_f64((double)VSTACK_TOP.f32); WAH_NEXT(); }
+WAH_RUN(F64_PROMOTE_F32) { sp[-1].f64 = wah_canonicalize_f64((double)sp[-1].f32); WAH_NEXT(); }
 
 WAH_RUN(I32_REINTERPRET_F32) REINTERPRET(f32, float, i32, int32_t)
 WAH_RUN(I64_REINTERPRET_F64) REINTERPRET(f64, double, i64, int64_t)
 WAH_RUN(F32_REINTERPRET_I32) REINTERPRET(i32, int32_t, f32, float)
 WAH_RUN(F64_REINTERPRET_I64) REINTERPRET(i64, int64_t, f64, double)
 
-WAH_RUN(I32_EXTEND8_S)  { VSTACK_TOP.i32 = (int32_t) (int8_t)VSTACK_TOP.i32; WAH_NEXT(); }
-WAH_RUN(I32_EXTEND16_S) { VSTACK_TOP.i32 = (int32_t)(int16_t)VSTACK_TOP.i32; WAH_NEXT(); }
-WAH_RUN(I64_EXTEND8_S)  { VSTACK_TOP.i64 = (int64_t) (int8_t)VSTACK_TOP.i64; WAH_NEXT(); }
-WAH_RUN(I64_EXTEND16_S) { VSTACK_TOP.i64 = (int64_t)(int16_t)VSTACK_TOP.i64; WAH_NEXT(); }
-WAH_RUN(I64_EXTEND32_S) { VSTACK_TOP.i64 = (int64_t)(int32_t)VSTACK_TOP.i64; WAH_NEXT(); }
+WAH_RUN(I32_EXTEND8_S)  { sp[-1].i32 = (int32_t) (int8_t)sp[-1].i32; WAH_NEXT(); }
+WAH_RUN(I32_EXTEND16_S) { sp[-1].i32 = (int32_t)(int16_t)sp[-1].i32; WAH_NEXT(); }
+WAH_RUN(I64_EXTEND8_S)  { sp[-1].i64 = (int64_t) (int8_t)sp[-1].i64; WAH_NEXT(); }
+WAH_RUN(I64_EXTEND16_S) { sp[-1].i64 = (int64_t)(int16_t)sp[-1].i64; WAH_NEXT(); }
+WAH_RUN(I64_EXTEND32_S) { sp[-1].i64 = (int64_t)(int32_t)sp[-1].i64; WAH_NEXT(); }
 
-WAH_RUN(I32_TRUNC_SAT_F32_S) { VSTACK_TOP.i32 =          wah_trunc_sat_f32_to_i32(VSTACK_TOP.f32); WAH_NEXT(); }
-WAH_RUN(I32_TRUNC_SAT_F32_U) { VSTACK_TOP.i32 = (int32_t)wah_trunc_sat_f32_to_u32(VSTACK_TOP.f32); WAH_NEXT(); }
-WAH_RUN(I32_TRUNC_SAT_F64_S) { VSTACK_TOP.i32 =          wah_trunc_sat_f64_to_i32(VSTACK_TOP.f64); WAH_NEXT(); }
-WAH_RUN(I32_TRUNC_SAT_F64_U) { VSTACK_TOP.i32 = (int32_t)wah_trunc_sat_f64_to_u32(VSTACK_TOP.f64); WAH_NEXT(); }
-WAH_RUN(I64_TRUNC_SAT_F32_S) { VSTACK_TOP.i64 =          wah_trunc_sat_f32_to_i64(VSTACK_TOP.f32); WAH_NEXT(); }
-WAH_RUN(I64_TRUNC_SAT_F32_U) { VSTACK_TOP.i64 = (int64_t)wah_trunc_sat_f32_to_u64(VSTACK_TOP.f32); WAH_NEXT(); }
-WAH_RUN(I64_TRUNC_SAT_F64_S) { VSTACK_TOP.i64 =          wah_trunc_sat_f64_to_i64(VSTACK_TOP.f64); WAH_NEXT(); }
-WAH_RUN(I64_TRUNC_SAT_F64_U) { VSTACK_TOP.i64 = (int64_t)wah_trunc_sat_f64_to_u64(VSTACK_TOP.f64); WAH_NEXT(); }
+WAH_RUN(I32_TRUNC_SAT_F32_S) { sp[-1].i32 =          wah_trunc_sat_f32_to_i32(sp[-1].f32); WAH_NEXT(); }
+WAH_RUN(I32_TRUNC_SAT_F32_U) { sp[-1].i32 = (int32_t)wah_trunc_sat_f32_to_u32(sp[-1].f32); WAH_NEXT(); }
+WAH_RUN(I32_TRUNC_SAT_F64_S) { sp[-1].i32 =          wah_trunc_sat_f64_to_i32(sp[-1].f64); WAH_NEXT(); }
+WAH_RUN(I32_TRUNC_SAT_F64_U) { sp[-1].i32 = (int32_t)wah_trunc_sat_f64_to_u32(sp[-1].f64); WAH_NEXT(); }
+WAH_RUN(I64_TRUNC_SAT_F32_S) { sp[-1].i64 =          wah_trunc_sat_f32_to_i64(sp[-1].f32); WAH_NEXT(); }
+WAH_RUN(I64_TRUNC_SAT_F32_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f32_to_u64(sp[-1].f32); WAH_NEXT(); }
+WAH_RUN(I64_TRUNC_SAT_F64_S) { sp[-1].i64 =          wah_trunc_sat_f64_to_i64(sp[-1].f64); WAH_NEXT(); }
+WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp[-1].f64); WAH_NEXT(); }
 
-#undef VSTACK_TOP
-#undef VSTACK_B
-#undef VSTACK_A
 #undef BINOP_I
 #undef CMP_I_S
 #undef CMP_I_U
@@ -4502,15 +4501,15 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { VSTACK_TOP.i64 = (int64_t)wah_trunc_sat_f64_to_u6
 
 WAH_RUN(MEMORY_SIZE) {
     // memory index (always 0x00) is consumed by preparse, no need to read here
-    ctx->value_stack[ctx->sp++].i32 = (int32_t)(ctx->memory_size / WAH_WASM_PAGE_SIZE);
+    (*sp++).i32 = (int32_t)(ctx->memory_size / WAH_WASM_PAGE_SIZE);
     WAH_NEXT();
 }
 
 WAH_RUN(MEMORY_GROW) {
     // memory index (always 0x00) is consumed by preparse, no need to read here
-    int32_t pages_to_grow = ctx->value_stack[--ctx->sp].i32;
+    int32_t pages_to_grow = (*--sp).i32;
     if (pages_to_grow < 0) {
-        ctx->value_stack[ctx->sp++].i32 = -1; // Cannot grow by negative pages
+        (*sp++).i32 = -1; // Cannot grow by negative pages
         WAH_NEXT();
     }
 
@@ -4520,7 +4519,7 @@ WAH_RUN(MEMORY_GROW) {
     // Check against max_pages if defined (module->memories[0].max_pages)
     // For now, we assume no max_pages or effectively unlimited if not set
     if (ctx->module->memory_count > 0 && ctx->module->memories[0].max_pages > 0 && new_pages > ctx->module->memories[0].max_pages) {
-        ctx->value_stack[ctx->sp++].i32 = -1; // Exceeds max memory
+        (*sp++).i32 = -1; // Exceeds max memory
         WAH_NEXT();
     }
 
@@ -4534,16 +4533,16 @@ WAH_RUN(MEMORY_GROW) {
 
     WAH_ENSURE_GOTO(new_memory_size <= UINT32_MAX, WAH_ERROR_TOO_LARGE, cleanup);
     ctx->memory_size = (uint32_t)new_memory_size;
-    ctx->value_stack[ctx->sp++].i32 = (int32_t)old_pages;
+    (*sp++).i32 = (int32_t)old_pages;
     WAH_NEXT();
     WAH_CLEANUP();
 }
 
 WAH_RUN(MEMORY_FILL) {
     // memory index (always 0x00) is consumed by preparse, no need to read here
-    uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-    uint8_t val = (uint8_t)ctx->value_stack[--ctx->sp].i32;
-    uint32_t dst = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    uint32_t size = (uint32_t)(*--sp).i32;
+    uint8_t val = (uint8_t)(*--sp).i32;
+    uint32_t dst = (uint32_t)(*--sp).i32;
 
     WAH_ENSURE_GOTO((uint64_t)dst + size <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
     memset(ctx->memory_base + dst, val, size);
@@ -4561,9 +4560,9 @@ WAH_RUN(MEMORY_INIT) {
     WAH_ASSERT(mem_idx < ctx->module->memory_count && "validation didn't catch out-of-bound memory index");
     WAH_ASSERT(data_idx < ctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index");
 
-    uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-    uint32_t src_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-    uint32_t dest_offset = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    uint32_t size = (uint32_t)(*--sp).i32;
+    uint32_t src_offset = (uint32_t)(*--sp).i32;
+    uint32_t dest_offset = (uint32_t)(*--sp).i32;
 
     const wah_data_segment_t *segment = &ctx->module->data_segments[data_idx];
 
@@ -4587,9 +4586,9 @@ WAH_RUN(MEMORY_COPY) {
     WAH_ASSERT(dest_mem_idx < ctx->module->memory_count && "validation didn't catch out-of-bound source memory index");
     WAH_ASSERT(src_mem_idx < ctx->module->memory_count && "validation didn't catch out-of-bound destination memory index");
 
-    uint32_t size = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-    uint32_t src = (uint32_t)ctx->value_stack[--ctx->sp].i32;
-    uint32_t dest = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    uint32_t size = (uint32_t)(*--sp).i32;
+    uint32_t src = (uint32_t)(*--sp).i32;
+    uint32_t dest = (uint32_t)(*--sp).i32;
 
     WAH_ENSURE_GOTO((uint64_t)dest + size <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
     WAH_ENSURE_GOTO((uint64_t)src + size <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
@@ -4599,13 +4598,13 @@ WAH_RUN(MEMORY_COPY) {
     WAH_CLEANUP();
 }
 
-WAH_RUN(DROP) { ctx->sp--; WAH_NEXT(); }
+WAH_RUN(DROP) { sp--; WAH_NEXT(); }
 
 WAH_RUN(SELECT) {
-    wah_value_t c = ctx->value_stack[--ctx->sp];
-    wah_value_t b = ctx->value_stack[--ctx->sp];
-    wah_value_t a = ctx->value_stack[--ctx->sp];
-    ctx->value_stack[ctx->sp++] = c.i32 ? a : b;
+    wah_value_t c = *--sp;
+    wah_value_t b = *--sp;
+    wah_value_t a = *--sp;
+    *sp++ = c.i32 ? a : b;
     WAH_NEXT();
 }
 
@@ -4622,13 +4621,13 @@ WAH_RUN(UNREACHABLE) {
 #define V128_LOAD_COMMON(read_size) \
     uint32_t offset = wah_read_u32_le(bytecode_ip); \
     bytecode_ip += sizeof(uint32_t); \
-    uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32; \
+    uint32_t addr = (uint32_t)(*--sp).i32; \
     uint32_t effective_addr = addr + offset; \
     WAH_ENSURE(effective_addr + (read_size) <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS)
 
 #define V128_LOAD_HALF_OP(N, elem_ty, cast) { \
     V128_LOAD_COMMON(8); \
-    wah_v128_t *v = &ctx->value_stack[ctx->sp++].v128; \
+    wah_v128_t *v = &(*sp++).v128; \
     for (int i = 0; i < 64/N; ++i) { \
         v->elem_ty[i] = cast(wah_read_u##N##_le(ctx->memory_base + effective_addr + i * (N/8))); \
     } \
@@ -4637,7 +4636,7 @@ WAH_RUN(UNREACHABLE) {
 
 #define V128_LOAD_SPLAT_OP(N) { \
     V128_LOAD_COMMON(N/8); \
-    wah_v128_t *v = &ctx->value_stack[ctx->sp++].v128; \
+    wah_v128_t *v = &(*sp++).v128; \
     uint##N##_t val = wah_read_u##N##_le(ctx->memory_base + effective_addr); \
     for (int i = 0; i < 128/N; ++i) v->u##N[i] = val; \
     WAH_NEXT(); \
@@ -4647,20 +4646,20 @@ WAH_RUN(UNREACHABLE) {
     uint32_t offset = wah_read_u32_le(bytecode_ip); \
     bytecode_ip += sizeof(uint32_t); \
     uint32_t lane_idx = *bytecode_ip++; \
-    wah_v128_t val = ctx->value_stack[--ctx->sp].v128; /* Existing vector */ \
-    uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32; \
+    wah_v128_t val = (*--sp).v128; /* Existing vector */ \
+    uint32_t addr = (uint32_t)(*--sp).i32; \
     uint32_t effective_addr = addr + offset; \
     WAH_ENSURE_GOTO(effective_addr + N/8 <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup); \
     WAH_ASSERT(lane_idx < 128/N && "validation didn't catch out-of-bound lane index"); \
     val.u##N[lane_idx] = wah_read_u##N##_le(ctx->memory_base + effective_addr); \
-    ctx->value_stack[ctx->sp++].v128 = val; \
+    (*sp++).v128 = val; \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
 
 WAH_RUN(V128_LOAD) {
     V128_LOAD_COMMON(sizeof(wah_v128_t));
-    memcpy(&ctx->value_stack[ctx->sp++].v128, ctx->memory_base + effective_addr, sizeof(wah_v128_t));
+    memcpy(&(*sp++).v128, ctx->memory_base + effective_addr, sizeof(wah_v128_t));
     WAH_NEXT();
 }
 
@@ -4678,14 +4677,14 @@ WAH_RUN(V128_LOAD64_SPLAT) V128_LOAD_SPLAT_OP(64)
 
 WAH_RUN(V128_LOAD32_ZERO) {
     V128_LOAD_COMMON(4);
-    wah_v128_t *v = &ctx->value_stack[ctx->sp++].v128;
+    wah_v128_t *v = &(*sp++).v128;
     *v = (wah_v128_t){.u64 = {wah_read_u32_le(ctx->memory_base + effective_addr), 0}};
     WAH_NEXT();
 }
 
 WAH_RUN(V128_LOAD64_ZERO) {
     V128_LOAD_COMMON(8);
-    wah_v128_t *v = &ctx->value_stack[ctx->sp++].v128;
+    wah_v128_t *v = &(*sp++).v128;
     *v = (wah_v128_t){.u64 = {wah_read_u64_le(ctx->memory_base + effective_addr), 0}};
     WAH_NEXT();
 }
@@ -4703,8 +4702,8 @@ WAH_RUN(V128_LOAD64_LANE) V128_LOAD_LANE_OP(64)
 WAH_RUN(V128_STORE) {
     uint32_t offset = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    wah_v128_t val = ctx->value_stack[--ctx->sp].v128;
-    uint32_t addr = (uint32_t)ctx->value_stack[--ctx->sp].i32;
+    wah_v128_t val = (*--sp).v128;
+    uint32_t addr = (uint32_t)(*--sp).i32;
     uint32_t effective_addr = addr + offset;
     WAH_ENSURE_GOTO(effective_addr + sizeof(wah_v128_t) <= ctx->memory_size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
     memcpy(ctx->memory_base + effective_addr, &val, sizeof(wah_v128_t));
@@ -4713,57 +4712,57 @@ WAH_RUN(V128_STORE) {
 }
 
 #define EXTRACT_LANE_OP(VEC_TYPE, SCALAR_TYPE, LANE_COUNT) { \
-    wah_v128_t vec = ctx->value_stack[--ctx->sp].v128; \
+    wah_v128_t vec = (*--sp).v128; \
     uint8_t laneidx = *bytecode_ip++; \
     WAH_ASSERT(laneidx < LANE_COUNT && "validation didn't catch out-of-bound lane index"); \
     wah_value_t result; \
     result.SCALAR_TYPE = vec.VEC_TYPE[laneidx]; \
-    ctx->value_stack[ctx->sp++] = result; \
+    *sp++ = result; \
     WAH_NEXT(); \
 }
 
 #define REPLACE_LANE_OP(VEC_TYPE, C_VEC_TYPE, SCALAR_TYPE, LANE_COUNT) { \
-    wah_value_t scalar_val = ctx->value_stack[--ctx->sp]; \
-    wah_v128_t vec = ctx->value_stack[--ctx->sp].v128; \
+    wah_value_t scalar_val = *--sp; \
+    wah_v128_t vec = (*--sp).v128; \
     uint8_t laneidx = *bytecode_ip++; \
     WAH_ASSERT(laneidx < LANE_COUNT && "validation didn't catch out-of-bound lane index"); \
     vec.VEC_TYPE[laneidx] = (C_VEC_TYPE)scalar_val.SCALAR_TYPE; \
-    ctx->value_stack[ctx->sp++].v128 = vec; \
+    (*sp++).v128 = vec; \
     WAH_NEXT(); \
 }
 
 #define SPLAT_OP(VEC_TYPE, C_VEC_TYPE, SCALAR_TYPE) { \
-    wah_value_t scalar_val = ctx->value_stack[--ctx->sp]; \
+    wah_value_t scalar_val = *--sp; \
     wah_v128_t result; \
     for (uint32_t i = 0; i < sizeof(wah_v128_t) / sizeof(result.VEC_TYPE[0]); ++i) { \
         result.VEC_TYPE[i] = (C_VEC_TYPE)scalar_val.SCALAR_TYPE; \
     } \
-    ctx->value_stack[ctx->sp++].v128 = result; \
+    (*sp++).v128 = result; \
     WAH_NEXT(); \
 }
 
 WAH_RUN(I8X16_SHUFFLE) {
-    wah_v128_t vec2 = ctx->value_stack[--ctx->sp].v128;
-    wah_v128_t vec1 = ctx->value_stack[--ctx->sp].v128;
+    wah_v128_t vec2 = (*--sp).v128;
+    wah_v128_t vec1 = (*--sp).v128;
     wah_v128_t result;
     for (uint32_t i = 0; i < 16; ++i) {
         uint8_t lane_idx = bytecode_ip[i];
         result.u8[i] = lane_idx < 16 ? vec1.u8[lane_idx] : vec2.u8[lane_idx - 16];
     }
     bytecode_ip += 16; // Advance past the shuffle mask
-    ctx->value_stack[ctx->sp++].v128 = result;
+    (*sp++).v128 = result;
     WAH_NEXT();
 }
 
 WAH_RUN(I8X16_SWIZZLE) {
-    wah_v128_t mask = ctx->value_stack[--ctx->sp].v128;
-    wah_v128_t data = ctx->value_stack[--ctx->sp].v128;
+    wah_v128_t mask = (*--sp).v128;
+    wah_v128_t data = (*--sp).v128;
     wah_v128_t result;
     for (uint32_t i = 0; i < 16; ++i) {
         uint8_t lane_idx = mask.u8[i];
         result.u8[i] = lane_idx < 16 ? data.u8[lane_idx] : 0;
     }
-    ctx->value_stack[ctx->sp++].v128 = result;
+    (*sp++).v128 = result;
     WAH_NEXT();
 }
 
@@ -4793,146 +4792,142 @@ WAH_RUN(F64X2_SPLAT) SPLAT_OP(f64, double, f64)
 #undef REPLACE_LANE_OP
 #undef SPLAT_OP
 
-#define VSTACK_V128_TOP (ctx->value_stack[ctx->sp - 1].v128)
-#define VSTACK_V128_B (ctx->value_stack[ctx->sp - 1].v128)
-#define VSTACK_V128_A (ctx->value_stack[ctx->sp - 2].v128)
-
-#define V128_UNARY_OP(op) { VSTACK_V128_TOP = op(VSTACK_V128_TOP); WAH_NEXT(); }
-#define V128_BINARY_OP(op) { VSTACK_V128_A = op(VSTACK_V128_A, VSTACK_V128_B); ctx->sp--; WAH_NEXT(); }
+#define V128_UNARY_OP(op) { sp[-1].v128 = op(sp[-1].v128); WAH_NEXT(); }
+#define V128_BINARY_OP(op) { sp[-2].v128 = op(sp[-2].v128, sp[-1].v128); sp--; WAH_NEXT(); }
 #define V128_BINARY_OP_LANE(N, op, field) { \
     for (int i = 0; i < 128/N; ++i) { \
-        VSTACK_V128_A.field[i] = VSTACK_V128_A.field[i] op VSTACK_V128_B.field[i]; \
+        sp[-2].v128.field[i] = sp[-2].v128.field[i] op sp[-1].v128.field[i]; \
     } \
-    ctx->sp--; \
+    sp--; \
     WAH_NEXT(); \
 }
 #define V128_BINARY_OP_LANE_SAT_S(N, op, field, min_val, max_val) { \
     for (int i = 0; i < 128/N; ++i) { \
-        int64_t res = (int64_t)VSTACK_V128_A.field[i] op (int64_t)VSTACK_V128_B.field[i]; \
+        int64_t res = (int64_t)sp[-2].v128.field[i] op (int64_t)sp[-1].v128.field[i]; \
         if (res < min_val) res = min_val; \
         if (res > max_val) res = max_val; \
-        VSTACK_V128_A.field[i] = (int##N##_t)res; \
+        sp[-2].v128.field[i] = (int##N##_t)res; \
     } \
-    ctx->sp--; \
+    sp--; \
     WAH_NEXT(); \
 }
 #define V128_BINARY_OP_LANE_SAT_U(N, op, field, max_val) { \
     for (int i = 0; i < 128/N; ++i) { \
-        int64_t res = (uint64_t)VSTACK_V128_A.field[i] op (uint64_t)VSTACK_V128_B.field[i]; \
+        int64_t res = (uint64_t)sp[-2].v128.field[i] op (uint64_t)sp[-1].v128.field[i]; \
         if (res < 0) res = 0; \
         if (res > max_val) res = max_val; \
-        VSTACK_V128_A.field[i] = (uint##N##_t)res; \
+        sp[-2].v128.field[i] = (uint##N##_t)res; \
     } \
-    ctx->sp--; \
+    sp--; \
     WAH_NEXT(); \
 }
 #define V128_BINARY_OP_LANE_F(N, op, field) { \
     for (int i = 0; i < 128/N; ++i) { \
-        VSTACK_V128_A.field[i] = wah_canonicalize_##field(VSTACK_V128_A.field[i] op VSTACK_V128_B.field[i]); \
+        sp[-2].v128.field[i] = wah_canonicalize_##field(sp[-2].v128.field[i] op sp[-1].v128.field[i]); \
     } \
-    ctx->sp--; \
+    sp--; \
     WAH_NEXT(); \
 }
 
 #define V128_CMP_I_LANE(N, op, field) { \
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A; \
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128; \
     for (int i = 0; i < 128/N; ++i) { \
         a.field[i] = (a.field[i] op b.field[i]) ? (~0ULL >> (64 - N)) : 0; \
     } \
-    VSTACK_V128_A = a; ctx->sp--; WAH_NEXT(); \
+    sp[-2].v128 = a; sp--; WAH_NEXT(); \
 }
 #define V128_CMP_I_LANE_S(N, op, field) { \
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A; \
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128; \
     for (int i = 0; i < 128/N; ++i) { \
         a.field[i] = (((int##N##_t)a.field[i]) op ((int##N##_t)b.field[i])) ? (~0ULL >> (64 - N)) : 0; \
     } \
-    VSTACK_V128_A = a; ctx->sp--; WAH_NEXT(); \
+    sp[-2].v128 = a; sp--; WAH_NEXT(); \
 }
 #define V128_CMP_I_LANE_U(N, op, field) { \
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A; \
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128; \
     for (int i = 0; i < 128/N; ++i) { \
         a.field[i] = (((uint##N##_t)a.field[i]) op ((uint##N##_t)b.field[i])) ? (~0ULL >> (64 - N)) : 0; \
     } \
-    VSTACK_V128_A = a; ctx->sp--; WAH_NEXT(); \
+    sp[-2].v128 = a; sp--; WAH_NEXT(); \
 }
 #define V128_CMP_F_LANE(N, op, field) { \
-    wah_v128_t *a_ptr = &VSTACK_V128_A; \
-    wah_v128_t b = VSTACK_V128_B; \
+    wah_v128_t *a_ptr = &sp[-2].v128; \
+    wah_v128_t b = sp[-1].v128; \
     for (int i = 0; i < 128/N; ++i) a_ptr->i##N[i] = (a_ptr->field[i] op b.field[i]) ? -1 : 0; \
-    ctx->sp--; WAH_NEXT(); \
+    sp--; WAH_NEXT(); \
 }
 
 #define V128_TRUNC_SAT_F2I_OP(N, F_FIELD, I_FIELD, TRUNC_FUNC) { \
-    wah_v128_t val = VSTACK_V128_TOP; \
+    wah_v128_t val = sp[-1].v128; \
     for (int i = 0; i < 128/N; ++i) val.I_FIELD[i] = TRUNC_FUNC(val.F_FIELD[i]); \
-    VSTACK_V128_TOP = val; \
+    sp[-1].v128 = val; \
     WAH_NEXT(); \
 }
 
 #define V128_TRUNC_SAT_F2I_ZERO_OP(N, F_FIELD, I_FIELD, TRUNC_FUNC) { \
-    wah_v128_t val = VSTACK_V128_TOP; \
+    wah_v128_t val = sp[-1].v128; \
     wah_v128_t result = { .I_FIELD = {TRUNC_FUNC(val.F_FIELD[0]), TRUNC_FUNC(val.F_FIELD[1])} }; \
-    VSTACK_V128_TOP = result; \
+    sp[-1].v128 = result; \
     WAH_NEXT(); \
 }
 
 #define V128_TERNARY_OP_F(N, op1, op2, field) { \
     WAH_PRAGMA_FP_CONTRACT_OFF() /* No FMA allowed here */ \
-    wah_v128_t c = ctx->value_stack[--ctx->sp].v128; \
-    wah_v128_t b = ctx->value_stack[--ctx->sp].v128; \
-    wah_v128_t a = ctx->value_stack[--ctx->sp].v128; \
+    wah_v128_t c = (*--sp).v128; \
+    wah_v128_t b = (*--sp).v128; \
+    wah_v128_t a = (*--sp).v128; \
     wah_v128_t result; \
     for (int i = 0; i < 128/N; ++i) { \
         result.field[i] = wah_canonicalize_##field(a.field[i] op1 b.field[i] op2 c.field[i]); \
     } \
-    ctx->value_stack[ctx->sp++].v128 = result; \
+    (*sp++).v128 = result; \
     WAH_NEXT(); \
 }
 
 #define V128_LANESELECT_OP(N, U_FIELD) { \
-    wah_v128_t v3 = ctx->value_stack[--ctx->sp].v128; \
-    wah_v128_t v2 = ctx->value_stack[--ctx->sp].v128; \
-    wah_v128_t v1 = ctx->value_stack[--ctx->sp].v128; \
+    wah_v128_t v3 = (*--sp).v128; \
+    wah_v128_t v2 = (*--sp).v128; \
+    wah_v128_t v1 = (*--sp).v128; \
     wah_v128_t result; \
     for (int i = 0; i < 128/N; ++i) { \
         result.U_FIELD[i] = (v1.U_FIELD[i] & v2.U_FIELD[i]) | (~v1.U_FIELD[i] & v3.U_FIELD[i]); \
     } \
-    ctx->value_stack[ctx->sp++].v128 = result; \
+    (*sp++).v128 = result; \
     WAH_NEXT(); \
 }
 
 WAH_RUN(V128_NOT) {
-    wah_v128_t val = VSTACK_V128_TOP;
+    wah_v128_t val = sp[-1].v128;
     for (int i = 0; i < 16; ++i) val.u8[i] = ~val.u8[i];
-    VSTACK_V128_TOP = val;
+    sp[-1].v128 = val;
     WAH_NEXT();
 }
 WAH_RUN(V128_AND) {
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128;
     for (int i = 0; i < 16; ++i) a.u8[i] &= b.u8[i];
-    VSTACK_V128_A = a;
-    ctx->sp--;
+    sp[-2].v128 = a;
+    sp--;
     WAH_NEXT();
 }
 WAH_RUN(V128_ANDNOT) {
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128;
     for (int i = 0; i < 16; ++i) a.u8[i] &= ~b.u8[i];
-    VSTACK_V128_A = a;
-    ctx->sp--;
+    sp[-2].v128 = a;
+    sp--;
     WAH_NEXT();
 }
 WAH_RUN(V128_OR) {
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128;
     for (int i = 0; i < 16; ++i) a.u8[i] |= b.u8[i];
-    VSTACK_V128_A = a;
-    ctx->sp--;
+    sp[-2].v128 = a;
+    sp--;
     WAH_NEXT();
 }
 WAH_RUN(V128_XOR) {
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128;
     for (int i = 0; i < 16; ++i) a.u8[i] ^= b.u8[i];
-    VSTACK_V128_A = a;
-    ctx->sp--;
+    sp[-2].v128 = a;
+    sp--;
     WAH_NEXT();
 }
 
@@ -4970,61 +4965,61 @@ WAH_RUN(F64X2_MUL) V128_BINARY_OP_LANE_F(64, *, f64)
 WAH_RUN(F64X2_DIV) V128_BINARY_OP_LANE_F(64, /, f64)
 
 #define V128_UNARY_OP_LANE(N, op, field) { \
-    wah_v128_t val = VSTACK_V128_TOP; \
+    wah_v128_t val = sp[-1].v128; \
     for (int i = 0; i < 128/N; ++i) val.field[i] = op(val.field[i]); \
-    VSTACK_V128_TOP = val; \
+    sp[-1].v128 = val; \
     WAH_NEXT(); \
 }
 
 #define V128_UNARY_OP_LANE_FN(N, fn, field) { \
-    wah_v128_t val = VSTACK_V128_TOP; \
+    wah_v128_t val = sp[-1].v128; \
     for (int i = 0; i < 128/N; ++i) val.field[i] = fn(val.field[i]); \
-    VSTACK_V128_TOP = val; \
+    sp[-1].v128 = val; \
     WAH_NEXT(); \
 }
 
 #define V128_UNARY_OP_LANE_CAST_FN(N, fn, field, cast_type) { \
-    wah_v128_t val = VSTACK_V128_TOP; \
+    wah_v128_t val = sp[-1].v128; \
     for (int i = 0; i < 128/N; ++i) val.field[i] = (field)fn((cast_type)val.field[i]); \
-    VSTACK_V128_TOP = val; \
+    sp[-1].v128 = val; \
     WAH_NEXT(); \
 }
 
 #define V128_BINARY_OP_LANE_FN(N, fn, field) { \
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A; \
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128; \
     for (int i = 0; i < 128/N; ++i) a.field[i] = fn(a.field[i], b.field[i]); \
-    VSTACK_V128_A = a; \
-    ctx->sp--; \
+    sp[-2].v128 = a; \
+    sp--; \
     WAH_NEXT(); \
 }
 
 #define V128_SHIFT_OP_LANE(N, op, field) { \
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A; \
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128; \
     for (int i = 0; i < 128/N; ++i) a.field[i] = a.field[i] op (b.field[0] & (N - 1)); \
-    VSTACK_V128_A = a; \
-    ctx->sp--; \
+    sp[-2].v128 = a; \
+    sp--; \
     WAH_NEXT(); \
 }
 
 #define V128_SHIFT_OP_LANE_U(N, op, field) { \
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A; \
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128; \
     for (int i = 0; i < 128/N; ++i) { \
         a.field[i] = (uint##N##_t)((uint##N##_t)a.field[i] op (b.field[0] & (N - 1))); \
     } \
-    VSTACK_V128_A = a; \
-    ctx->sp--; \
+    sp[-2].v128 = a; \
+    sp--; \
     WAH_NEXT(); \
 }
 
 #define V128_ABS_OP(N, field, abs_func) { \
-    wah_v128_t val = VSTACK_V128_TOP; \
+    wah_v128_t val = sp[-1].v128; \
     for (int i = 0; i < 128/N; ++i) val.field[i] = (int##N##_t)abs_func(val.field[i]); \
-    VSTACK_V128_TOP = val; \
+    sp[-1].v128 = val; \
     WAH_NEXT(); \
 }
 
 #define V128_ALL_TRUE_OP(N, field) { \
-    wah_v128_t val = VSTACK_V128_TOP; \
+    wah_v128_t val = sp[-1].v128; \
     int32_t result = 1; \
     for (int i = 0; i < 128/N; ++i) { \
         if (val.field[i] == 0) { \
@@ -5032,58 +5027,58 @@ WAH_RUN(F64X2_DIV) V128_BINARY_OP_LANE_F(64, /, f64)
             break; \
         } \
     } \
-    ctx->value_stack[ctx->sp++].i32 = result; \
+    (*sp++).i32 = result; \
     WAH_NEXT(); \
 }
 
 #define V128_BITMASK_OP(N, field) { \
-    wah_v128_t val = VSTACK_V128_TOP; \
+    wah_v128_t val = sp[-1].v128; \
     int32_t result = 0; \
     for (int i = 0; i < 128/N; ++i) { \
         if (val.field[i] < 0) { \
             result |= (1 << i); \
         } \
     } \
-    ctx->value_stack[ctx->sp++].i32 = result; \
+    (*sp++).i32 = result; \
     WAH_NEXT(); \
 }
 
 #define V128_EXTEND_LOW_OP(DST_N, DST_FIELD, SRC_N, SRC_FIELD, SIGN_TYPE) { \
-    wah_v128_t val = VSTACK_V128_TOP; \
+    wah_v128_t val = sp[-1].v128; \
     wah_v128_t result; \
     for (int i = 0; i < 128/DST_N; ++i) result.DST_FIELD[i] = (SIGN_TYPE##DST_N##_t)val.SRC_FIELD[i]; \
-    VSTACK_V128_TOP = result; \
+    sp[-1].v128 = result; \
     WAH_NEXT(); \
 }
 
 #define V128_EXTEND_HIGH_OP(DST_N, DST_FIELD, SRC_N, SRC_FIELD, SIGN_TYPE) { \
-    wah_v128_t val = VSTACK_V128_TOP; \
+    wah_v128_t val = sp[-1].v128; \
     wah_v128_t result; \
     for (int i = 0; i < 128/DST_N; ++i) result.DST_FIELD[i] = (SIGN_TYPE##DST_N##_t)val.SRC_FIELD[i + (128/SRC_N)/2]; \
-    VSTACK_V128_TOP = result; \
+    sp[-1].v128 = result; \
     WAH_NEXT(); \
 }
 
 #define V128_EXTMUL_LOW_OP(DST_N, DST_FIELD, INTERM_T, SRC_N, SRC_FIELD, SIGN_TYPE) { \
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A; \
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128; \
     wah_v128_t result; \
     for (int i = 0; i < 128/DST_N; ++i) { \
         result.DST_FIELD[i] = (SIGN_TYPE##DST_N##_t)((INTERM_T)a.SRC_FIELD[i] * (INTERM_T)b.SRC_FIELD[i]); \
     } \
-    VSTACK_V128_A = result; \
-    ctx->sp--; \
+    sp[-2].v128 = result; \
+    sp--; \
     WAH_NEXT(); \
 }
 
 #define V128_EXTMUL_HIGH_OP(DST_N, DST_FIELD, INTERM_T, SRC_N, SRC_FIELD, SIGN_TYPE) { \
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A; \
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128; \
     wah_v128_t result; \
     int offset = (128/SRC_N)/2; \
     for (int i = 0; i < 128/DST_N; ++i) { \
         result.DST_FIELD[i] = (SIGN_TYPE##DST_N##_t)((INTERM_T)a.SRC_FIELD[i + offset] * (INTERM_T)b.SRC_FIELD[i + offset]); \
     } \
-    VSTACK_V128_A = result; \
-    ctx->sp--; \
+    sp[-2].v128 = result; \
+    sp--; \
     WAH_NEXT(); \
 }
 
@@ -5093,25 +5088,25 @@ WAH_RUN(I8X16_POPCNT) V128_UNARY_OP_LANE_FN(8, wah_popcount_u8, u8)
 WAH_RUN(I8X16_ALL_TRUE) V128_ALL_TRUE_OP(8, u8)
 WAH_RUN(I8X16_BITMASK) V128_BITMASK_OP(8, i8)
 WAH_RUN(I8X16_NARROW_I16X8_S) {
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128;
     wah_v128_t result;
     for (int i = 0; i < 8; ++i) {
         result.i8[i] = (int8_t)wah_trunc_sat_i16_to_i8(a.i16[i]);
         result.i8[i+8] = (int8_t)wah_trunc_sat_i16_to_i8(b.i16[i]);
     }
-    VSTACK_V128_A = result;
-    ctx->sp--;
+    sp[-2].v128 = result;
+    sp--;
     WAH_NEXT();
 }
 WAH_RUN(I8X16_NARROW_I16X8_U) {
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128;
     wah_v128_t result;
     for (int i = 0; i < 8; ++i) {
         result.u8[i] = (uint8_t)wah_trunc_sat_i16_to_u8(a.i16[i]);
         result.u8[i+8] = (uint8_t)wah_trunc_sat_i16_to_u8(b.i16[i]);
     }
-    VSTACK_V128_A = result;
-    ctx->sp--;
+    sp[-2].v128 = result;
+    sp--;
     WAH_NEXT();
 }
 WAH_RUN(I8X16_SHL) V128_SHIFT_OP_LANE(8, <<, i8)
@@ -5122,64 +5117,64 @@ WAH_RUN(I8X16_MIN_U) V128_BINARY_OP_LANE_FN(8, WAH_MIN_U_8, u8)
 WAH_RUN(I8X16_MAX_S) V128_BINARY_OP_LANE_FN(8, WAH_MAX_S_8, i8)
 WAH_RUN(I8X16_MAX_U) V128_BINARY_OP_LANE_FN(8, WAH_MAX_U_8, u8)
 WAH_RUN(I8X16_AVGR_U) {
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128;
     for (int i = 0; i < 16; ++i) {
         a.u8[i] = (uint8_t)(((uint16_t)a.u8[i] + (uint16_t)b.u8[i] + 1) >> 1);
     }
-    VSTACK_V128_A = a;
-    ctx->sp--;
+    sp[-2].v128 = a;
+    sp--;
     WAH_NEXT();
 }
 
 WAH_RUN(I16X8_EXTADD_PAIRWISE_I8X16_S) {
-    wah_v128_t val = VSTACK_V128_TOP;
+    wah_v128_t val = sp[-1].v128;
     wah_v128_t result;
     for (int i = 0; i < 8; ++i) {
         result.i16[i] = (int16_t)val.i8[i*2] + (int16_t)val.i8[i*2+1];
     }
-    VSTACK_V128_TOP = result;
+    sp[-1].v128 = result;
     WAH_NEXT();
 }
 WAH_RUN(I16X8_EXTADD_PAIRWISE_I8X16_U) {
-    wah_v128_t val = VSTACK_V128_TOP;
+    wah_v128_t val = sp[-1].v128;
     wah_v128_t result;
     for (int i = 0; i < 8; ++i) {
         result.u16[i] = (uint16_t)val.u8[i*2] + (uint16_t)val.u8[i*2+1];
     }
-    VSTACK_V128_TOP = result;
+    sp[-1].v128 = result;
     WAH_NEXT();
 }
 WAH_RUN(I16X8_ABS) V128_ABS_OP(16, i16, abs)
 WAH_RUN(I16X8_NEG) V128_UNARY_OP_LANE(16, -, i16)
 
 WAH_RUN(I16X8_Q15MULR_SAT_S) {
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
-    VSTACK_V128_A = wah_q15mulr_sat_s(a, b);
-    ctx->sp--;
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128;
+    sp[-2].v128 = wah_q15mulr_sat_s(a, b);
+    sp--;
     WAH_NEXT();
 }
 WAH_RUN(I16X8_ALL_TRUE) V128_ALL_TRUE_OP(16, u16)
 WAH_RUN(I16X8_BITMASK) V128_BITMASK_OP(16, i16)
 WAH_RUN(I16X8_NARROW_I32X4_S) {
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128;
     wah_v128_t result;
     for (int i = 0; i < 4; ++i) {
         result.i16[i] = (int16_t)wah_trunc_sat_i32_to_i16(a.i32[i]);
         result.i16[i+4] = (int16_t)wah_trunc_sat_i32_to_i16(b.i32[i]);
     }
-    VSTACK_V128_A = result;
-    ctx->sp--;
+    sp[-2].v128 = result;
+    sp--;
     WAH_NEXT();
 }
 WAH_RUN(I16X8_NARROW_I32X4_U) {
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128;
     wah_v128_t result;
     for (int i = 0; i < 4; ++i) {
         result.u16[i] = (uint16_t)wah_trunc_sat_i32_to_u16(a.i32[i]);
         result.u16[i+4] = (uint16_t)wah_trunc_sat_i32_to_u16(b.i32[i]);
     }
-    VSTACK_V128_A = result;
-    ctx->sp--;
+    sp[-2].v128 = result;
+    sp--;
     WAH_NEXT();
 }
 WAH_RUN(I16X8_EXTEND_LOW_I8X16_S) V128_EXTEND_LOW_OP(16, i16, 8, i8, int)
@@ -5194,12 +5189,12 @@ WAH_RUN(I16X8_MIN_U) V128_BINARY_OP_LANE_FN(16, WAH_MIN_U_16, u16)
 WAH_RUN(I16X8_MAX_S) V128_BINARY_OP_LANE_FN(16, WAH_MAX_S_16, i16)
 WAH_RUN(I16X8_MAX_U) V128_BINARY_OP_LANE_FN(16, WAH_MAX_U_16, u16)
 WAH_RUN(I16X8_AVGR_U) {
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128;
     for (int i = 0; i < 8; ++i) {
         a.u16[i] = (uint16_t)(((uint32_t)a.u16[i] + (uint32_t)b.u16[i] + 1) >> 1);
     }
-    VSTACK_V128_A = a;
-    ctx->sp--;
+    sp[-2].v128 = a;
+    sp--;
     WAH_NEXT();
 }
 WAH_RUN(I16X8_EXTMUL_LOW_I8X16_S) V128_EXTMUL_LOW_OP(16, i16, int32_t, 8, i8, int)
@@ -5208,21 +5203,21 @@ WAH_RUN(I16X8_EXTMUL_LOW_I8X16_U) V128_EXTMUL_LOW_OP(16, u16, uint32_t, 8, u8, u
 WAH_RUN(I16X8_EXTMUL_HIGH_I8X16_U) V128_EXTMUL_HIGH_OP(16, u16, uint32_t, 8, u8, uint)
 
 WAH_RUN(I32X4_EXTADD_PAIRWISE_I16X8_S) {
-    wah_v128_t val = VSTACK_V128_TOP;
+    wah_v128_t val = sp[-1].v128;
     wah_v128_t result;
     for (int i = 0; i < 4; ++i) {
         result.i32[i] = (int32_t)val.i16[i*2] + (int32_t)val.i16[i*2+1];
     }
-    VSTACK_V128_TOP = result;
+    sp[-1].v128 = result;
     WAH_NEXT();
 }
 WAH_RUN(I32X4_EXTADD_PAIRWISE_I16X8_U) {
-    wah_v128_t val = VSTACK_V128_TOP;
+    wah_v128_t val = sp[-1].v128;
     wah_v128_t result;
     for (int i = 0; i < 4; ++i) {
         result.u32[i] = (uint32_t)val.u16[i*2] + (uint32_t)val.u16[i*2+1];
     }
-    VSTACK_V128_TOP = result;
+    sp[-1].v128 = result;
     WAH_NEXT();
 }
 WAH_RUN(I32X4_ABS) V128_ABS_OP(32, i32, abs)
@@ -5241,13 +5236,13 @@ WAH_RUN(I32X4_MIN_U) V128_BINARY_OP_LANE_FN(32, WAH_MIN_U_32, u32)
 WAH_RUN(I32X4_MAX_S) V128_BINARY_OP_LANE_FN(32, WAH_MAX_S_32, i32)
 WAH_RUN(I32X4_MAX_U) V128_BINARY_OP_LANE_FN(32, WAH_MAX_U_32, u32)
 WAH_RUN(I32X4_DOT_I16X8_S) {
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128;
     wah_v128_t result;
     for (int i = 0; i < 4; ++i) {
         result.i32[i] = (int32_t)a.i16[i*2] * b.i16[i*2] + (int32_t)a.i16[i*2+1] * b.i16[i*2+1];
     }
-    VSTACK_V128_A = result;
-    ctx->sp--;
+    sp[-2].v128 = result;
+    sp--;
     WAH_NEXT();
 }
 WAH_RUN(I32X4_EXTMUL_LOW_I16X8_S) V128_EXTMUL_LOW_OP(32, i32, int64_t, 16, i16, int)
@@ -5296,19 +5291,19 @@ WAH_RUN(F64X2_PMIN) V128_BINARY_OP_LANE_FN(64, wah_pmin, f64)
 WAH_RUN(F64X2_PMAX) V128_BINARY_OP_LANE_FN(64, wah_pmax, f64)
 
 WAH_RUN(V128_BITSELECT) {
-    wah_v128_t v3 = ctx->value_stack[--ctx->sp].v128;
-    wah_v128_t v2 = ctx->value_stack[--ctx->sp].v128;
-    wah_v128_t v1 = ctx->value_stack[--ctx->sp].v128;
+    wah_v128_t v3 = (*--sp).v128;
+    wah_v128_t v2 = (*--sp).v128;
+    wah_v128_t v1 = (*--sp).v128;
     wah_v128_t result;
     for (int i = 0; i < 16; ++i) {
         result.u8[i] = (v1.u8[i] & v2.u8[i]) | (~v1.u8[i] & v3.u8[i]);
     }
-    ctx->value_stack[ctx->sp++].v128 = result;
+    (*sp++).v128 = result;
     WAH_NEXT();
 }
 
 WAH_RUN(V128_ANY_TRUE) {
-    wah_v128_t val = ctx->value_stack[--ctx->sp].v128;
+    wah_v128_t val = (*--sp).v128;
     int32_t result = 0;
     for (int i = 0; i < 16; ++i) {
         if (val.u8[i] != 0) {
@@ -5316,7 +5311,7 @@ WAH_RUN(V128_ANY_TRUE) {
             break;
         }
     }
-    ctx->value_stack[ctx->sp++].i32 = result;
+    (*sp++).i32 = result;
     WAH_NEXT();
 }
 
@@ -5375,75 +5370,75 @@ WAH_RUN(F64X2_LE) V128_CMP_F_LANE(64, <=, f64)
 WAH_RUN(F64X2_GE) V128_CMP_F_LANE(64, >=, f64)
 
 WAH_RUN(I32X4_TRUNC_SAT_F32X4_S) {
-    wah_v128_t val = VSTACK_V128_TOP;
+    wah_v128_t val = sp[-1].v128;
     for (int i = 0; i < 4; ++i) val.i32[i] = wah_trunc_sat_f32_to_i32(val.f32[i]);
-    VSTACK_V128_TOP = val;
+    sp[-1].v128 = val;
     WAH_NEXT();
 }
 WAH_RUN(I32X4_TRUNC_SAT_F32X4_U) {
-    wah_v128_t val = VSTACK_V128_TOP;
+    wah_v128_t val = sp[-1].v128;
     for (int i = 0; i < 4; ++i) val.u32[i] = wah_trunc_sat_f32_to_u32(val.f32[i]);
-    VSTACK_V128_TOP = val;
+    sp[-1].v128 = val;
     WAH_NEXT();
 }
 WAH_RUN(F32X4_CONVERT_I32X4_S) {
-    wah_v128_t val = VSTACK_V128_TOP;
+    wah_v128_t val = sp[-1].v128;
     for (int i = 0; i < 4; ++i) val.f32[i] = (float)val.i32[i];
-    VSTACK_V128_TOP = val;
+    sp[-1].v128 = val;
     WAH_NEXT();
 }
 WAH_RUN(F32X4_CONVERT_I32X4_U) {
-    wah_v128_t val = VSTACK_V128_TOP;
+    wah_v128_t val = sp[-1].v128;
     for (int i = 0; i < 4; ++i) val.f32[i] = (float)val.u32[i];
-    VSTACK_V128_TOP = val;
+    sp[-1].v128 = val;
     WAH_NEXT();
 }
 WAH_RUN(I32X4_TRUNC_SAT_F64X2_S_ZERO) {
-    wah_v128_t val = VSTACK_V128_TOP;
+    wah_v128_t val = sp[-1].v128;
     wah_v128_t result = { .i32 = {wah_trunc_sat_f64_to_i32(val.f64[0]), wah_trunc_sat_f64_to_i32(val.f64[1])} };
-    VSTACK_V128_TOP = result;
+    sp[-1].v128 = result;
     WAH_NEXT();
 }
 WAH_RUN(I32X4_TRUNC_SAT_F64X2_U_ZERO) {
-    wah_v128_t val = VSTACK_V128_TOP;
+    wah_v128_t val = sp[-1].v128;
     wah_v128_t result = { .u32 = {wah_trunc_sat_f64_to_u32(val.f64[0]), wah_trunc_sat_f64_to_u32(val.f64[1])} };
-    VSTACK_V128_TOP = result;
+    sp[-1].v128 = result;
     WAH_NEXT();
 }
 WAH_RUN(F64X2_CONVERT_LOW_I32X4_S) {
-    wah_v128_t val = VSTACK_V128_TOP;
+    wah_v128_t val = sp[-1].v128;
     wah_v128_t result = { .f64 = {(double)val.i32[0], (double)val.i32[1]} };
-    VSTACK_V128_TOP = result;
+    sp[-1].v128 = result;
     WAH_NEXT();
 }
 WAH_RUN(F64X2_CONVERT_LOW_I32X4_U) {
-    wah_v128_t val = VSTACK_V128_TOP;
+    wah_v128_t val = sp[-1].v128;
     wah_v128_t result = { .f64 = {(double)val.u32[0], (double)val.u32[1]} };
-    VSTACK_V128_TOP = result;
+    sp[-1].v128 = result;
     WAH_NEXT();
 }
 WAH_RUN(F32X4_DEMOTE_F64X2_ZERO) {
-    wah_v128_t val = VSTACK_V128_TOP;
+    wah_v128_t val = sp[-1].v128;
     wah_v128_t result = { .f32 = {wah_canonicalize_f32((float)val.f64[0]), wah_canonicalize_f32((float)val.f64[1])} };
-    VSTACK_V128_TOP = result;
+    sp[-1].v128 = result;
     WAH_NEXT();
 }
 WAH_RUN(F64X2_PROMOTE_LOW_F32X4) {
-    wah_v128_t val = VSTACK_V128_TOP;
+    wah_v128_t val = sp[-1].v128;
     wah_v128_t result = { .f64 = {wah_canonicalize_f64((double)val.f32[0]), wah_canonicalize_f64((double)val.f32[1])} };
-    VSTACK_V128_TOP = result;
+    sp[-1].v128 = result;
     WAH_NEXT();
 }
 
 WAH_RUN(I8X16_RELAXED_SWIZZLE) {
-    wah_v128_t mask = ctx->value_stack[--ctx->sp].v128;
-    wah_v128_t data = ctx->value_stack[--ctx->sp].v128;
+    wah_v128_t mask = (*--sp).v128;
+    wah_v128_t data = (*--sp).v128;
     wah_v128_t result;
     for (uint32_t i = 0; i < 16; ++i) {
         uint8_t lane_idx = mask.u8[i];
         result.u8[i] = lane_idx < 16 ? data.u8[lane_idx] : 0;
     }
-    ctx->value_stack[ctx->sp++].v128 = result;
+    (*sp++).v128 = result;
     WAH_NEXT();
 }
 
@@ -5468,14 +5463,14 @@ WAH_RUN(F64X2_RELAXED_MIN) V128_BINARY_OP_LANE_FN(64, fmin, f64)
 WAH_RUN(F64X2_RELAXED_MAX) V128_BINARY_OP_LANE_FN(64, fmax, f64)
 
 WAH_RUN(I16X8_RELAXED_Q15MULR_S) {
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
-    VSTACK_V128_A = wah_q15mulr_sat_s(a, b);
-    ctx->sp--;
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128;
+    sp[-2].v128 = wah_q15mulr_sat_s(a, b);
+    sp--;
     WAH_NEXT();
 }
 
 WAH_RUN(I16X8_RELAXED_DOT_I8X16_I7X16_S) {
-    wah_v128_t b = VSTACK_V128_B, a = VSTACK_V128_A;
+    wah_v128_t b = sp[-1].v128, a = sp[-2].v128;
     wah_v128_t result;
     for (int i = 0; i < 8; ++i) {
         // Extract two i8 lanes from 'a'
@@ -5491,16 +5486,16 @@ WAH_RUN(I16X8_RELAXED_DOT_I8X16_I7X16_S) {
 
         result.i16[i] = (int16_t)a_lane0 * b_lane0 + (int16_t)a_lane1 * b_lane1;
     }
-    VSTACK_V128_A = result;
-    ctx->sp--;
+    sp[-2].v128 = result;
+    sp--;
     WAH_NEXT();
 }
 WAH_RUN(I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S) {
-    wah_v128_t c = VSTACK_V128_TOP; // Accumulator
-    ctx->sp--;
-    wah_v128_t b = VSTACK_V128_TOP; // i7x16
-    ctx->sp--;
-    wah_v128_t a = VSTACK_V128_TOP; // i8x16
+    wah_v128_t c = sp[-1].v128; // Accumulator
+    sp--;
+    wah_v128_t b = sp[-1].v128; // i7x16
+    sp--;
+    wah_v128_t a = sp[-1].v128; // i8x16
 
     wah_v128_t result;
     for (int i = 0; i < 4; ++i) {
@@ -5523,13 +5518,10 @@ WAH_RUN(I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S) {
                         (int32_t)a_lane2 * b_lane2 +
                         (int32_t)a_lane3 * b_lane3;
     }
-    VSTACK_V128_TOP = result;
+    sp[-1].v128 = result;
     WAH_NEXT();
 }
 
-#undef VSTACK_V128_TOP
-#undef VSTACK_V128_B
-#undef VSTACK_V128_A
 #undef V128_UNARY_OP
 #undef V128_BINARY_OP
 #undef V128_BINARY_OP_LANE
@@ -5545,13 +5537,14 @@ WAH_RUN(I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S) {
 #ifdef WAH_USE_MUSTTAIL
 
 static wah_error_t wah_run_single(wah_exec_context_t *ctx, wah_call_frame_t *frame,
-                                  const uint8_t *bytecode_ip, const uint8_t *bytecode_base, wah_error_t err) {
+                                  const uint8_t *bytecode_ip, const uint8_t *bytecode_base,
+                                  wah_value_t *sp, wah_error_t err) {
     uint16_t opcode = wah_read_u16_le(bytecode_ip);
     bytecode_ip += sizeof(uint16_t);
 
     switch (opcode) {
         #define WAH_OPCODE_CASES(opcode, cls, val) \
-            case WAH_OP_##opcode: __attribute__((musttail)) return wah_run_##opcode(ctx, frame, bytecode_ip, bytecode_base, err);
+            case WAH_OP_##opcode: __attribute__((musttail)) return wah_run_##opcode(ctx, frame, bytecode_ip, bytecode_base, sp, err);
         WAH_OPCODES(WAH_OPCODE_CASES)
         #undef WAH_OPCODE_CASES
     default:
@@ -5565,8 +5558,9 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
     wah_call_frame_t *frame = &ctx->call_stack[ctx->call_depth - 1];
     const uint8_t *bytecode_ip = frame->bytecode_ip;
     const uint8_t *bytecode_base = frame->code->parsed_code.bytecode;
+    wah_value_t *sp = ctx->value_stack + ctx->sp;  // Stack pointer for faster access
 
-    return wah_run_single(ctx, frame, bytecode_ip, bytecode_base, WAH_OK);
+    return wah_run_single(ctx, frame, bytecode_ip, bytecode_base, sp, WAH_OK);
 }
 
 #else
@@ -5577,6 +5571,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 #endif
 
 cleanup:
+    ctx->sp = (uint32_t)(sp - ctx->value_stack);
     if (ctx->call_depth > 0) {
         frame->bytecode_ip = bytecode_ip;
     }
