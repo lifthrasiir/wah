@@ -130,7 +130,7 @@ void run_simd_splat_test(const char* test_name, const char* spec, const wah_valu
 }
 
 void test_v128_load_store() {
-    wah_v128_t expected_v128_val = {{0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x00}};
+    wah_v128_t expected_v128_val = {{0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF}};
     run_simd_v128_op_test("v128.load and v128.store", &expected_v128_val, "wasm \
         types {[ fn [] [v128] ]} \
         funcs {[ 0 ]} \
@@ -139,9 +139,9 @@ void test_v128_load_store() {
             {[] \
                 i32.const 0 \
                 v128.const %'112233445566778899aabbccddeeff00' \
-                v128.store align=1 offset=0 \
+                v128.store align=1 offset=0x1234 \
                 i32.const 0 \
-                v128.load align=1 offset=0 \
+                v128.load align=1 offset=0x1233 \
             end} \
         ]}");
 }

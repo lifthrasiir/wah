@@ -410,6 +410,8 @@ static const token_entry_t token_table[] = {
 
     // Opcode parts
     TOKEN("offset=0", 0x00),
+    TOKEN("offset=0x1233", 0xb3, 0x24),
+    TOKEN("offset=0x1234", 0xb4, 0x24),
     TOKEN("align=1", 0x00),
     TOKEN("align=2", 0x01),
     TOKEN("align=4", 0x02),
