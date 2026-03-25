@@ -1751,6 +1751,64 @@ static inline __m128i wah_i8x16_popcnt_sse2(__m128i v) {
     return byte_count;
 }
 
+// abs(x) = (x ^ mask) - mask where mask = (x < 0) ? 0xFF : 0x00
+static inline __m128i wah_i8x16_abs_sse2(__m128i x) {
+    __m128i mask = _mm_cmplt_epi8(x, _mm_setzero_si128());
+    return _mm_sub_epi8(_mm_xor_si128(x, mask), mask);
+}
+static inline __m128i wah_i16x8_abs_sse2(__m128i x) {
+    __m128i mask = _mm_cmplt_epi16(x, _mm_setzero_si128());
+    return _mm_sub_epi16(_mm_xor_si128(x, mask), mask);
+}
+static inline __m128i wah_i32x4_abs_sse2(__m128i x) {
+    __m128i mask = _mm_cmplt_epi32(x, _mm_setzero_si128());
+    return _mm_sub_epi32(_mm_xor_si128(x, mask), mask);
+}
+static inline __m128i wah_i64x2_abs_sse2(__m128i x) { // For 64-bit: if MSB is set, negate: (~x + 1)
+    __m128i mask = _mm_srai_epi32(x, 31);  // Get sign bit of each 64-bit element (as 32-bit pairs)
+    __m128i mask64 = _mm_shuffle_epi32(mask, _MM_SHUFFLE(3, 3, 1, 1));  // Spread sign to both 32-bit parts
+    __m128i neg = _mm_sub_epi64(_mm_xor_si128(x, mask64), mask64);
+    __m128i is_neg = _mm_cmpeq_epi32(mask, _mm_set1_epi32(0xFFFFFFFF));
+    __m128i is_neg64 = _mm_shuffle_epi32(is_neg, _MM_SHUFFLE(3, 3, 1, 1));
+    return _mm_or_si128(_mm_and_si128(neg, is_neg64), _mm_andnot_si128(is_neg64, x));
+}
+
+// Since SSE2 has no byte shift, we unpack to 16-bit, shift, and repack
+static inline __m128i wah_i8x16_shl_sse2(__m128i a, int32_t count) {
+    count &= 7;  // Mask to 0-7
+    if (count == 0) return a;
+    __m128i zero = _mm_setzero_si128();
+    __m128i a_lo = _mm_unpacklo_epi8(a, zero);   // [a0, a1, ..., a7] as 16-bit
+    __m128i a_hi = _mm_unpackhi_epi8(a, zero);   // [a8, a9, ..., a15] as 16-bit
+    __m128i lo = _mm_slli_epi16(a_lo, count);
+    __m128i hi = _mm_slli_epi16(a_hi, count);
+    // Mask to get only low 8 bits of each 16-bit element
+    __m128i mask = _mm_set1_epi16(0xFF);
+    lo = _mm_and_si128(lo, mask);
+    hi = _mm_and_si128(hi, mask);
+    return _mm_packus_epi16(lo, hi);
+}
+static inline __m128i wah_i8x16_shr_s_sse2(__m128i a, int32_t count) {
+    count &= 7;  // Mask to 0-7
+    if (count == 0) return a;
+    __m128i zero = _mm_setzero_si128();
+    __m128i a_lo = _mm_unpacklo_epi8(a, zero);
+    __m128i a_hi = _mm_unpackhi_epi8(a, zero);
+    __m128i lo = _mm_srai_epi16(a_lo, count);
+    __m128i hi = _mm_srai_epi16(a_hi, count);
+    return _mm_packs_epi16(lo, hi);
+}
+static inline __m128i wah_i8x16_shr_u_sse2(__m128i a, int32_t count) {
+    count &= 7;  // Mask to 0-7
+    if (count == 0) return a;
+    __m128i zero = _mm_setzero_si128();
+    __m128i a_lo = _mm_unpacklo_epi8(a, zero);
+    __m128i a_hi = _mm_unpackhi_epi8(a, zero);
+    __m128i lo = _mm_srli_epi16(a_lo, count);
+    __m128i hi = _mm_srli_epi16(a_hi, count);
+    return _mm_packus_epi16(lo, hi);
+}
+
 #endif
 
 // Helper function for Q15 multiplication with rounding and saturation
@@ -4982,6 +5040,7 @@ WAH_RUN(UNREACHABLE) {
 #define M128I_UNARY_I32_OP(fn) { sp[-1].i32 = fn(sp[-1]._m128i); WAH_NEXT(); }
 #define M128I_BINARY_OP(fn) { sp[-2]._m128i = fn(sp[-2]._m128i, sp[-1]._m128i); sp--; WAH_NEXT(); }
 #define M128I_NOT_BINARY_OP(fn) { sp[-2]._m128i = _mm_xor_si128(fn(sp[-2]._m128i, sp[-1]._m128i), _mm_set1_epi8(-1)); sp--; WAH_NEXT(); }
+#define M128I_SHIFT_OP(fn, mask) { int32_t count = sp[-1].i32; sp[-2]._m128i = fn(sp[-2]._m128i, count & mask); sp--; WAH_NEXT(); }
 #define M128I_TERNARY_OP(expr) \
     { __m128i c = (*--sp)._m128i; __m128i b = (*--sp)._m128i; __m128i a = (*--sp)._m128i; (*sp++)._m128i = (expr); WAH_NEXT(); }
 
@@ -5484,17 +5543,19 @@ WAH_RUN(F64X2_DIV) WAH_IF_X86_64(M128D_BINARY_OP(_mm_div_pd), V128_BINARY_OP_LAN
 }
 
 #define V128_SHIFT_OP_LANE(N, op, field) { \
-    wah_v128_t b = sp[-1].v128, a = sp[-2].v128; \
-    for (int i = 0; i < 128/N; ++i) a.field[i] = a.field[i] op (b.field[0] & (N - 1)); \
+    int32_t b = sp[-1].i32; \
+    wah_v128_t a = sp[-2].v128; \
+    for (int i = 0; i < 128/N; ++i) a.field[i] = a.field[i] op (b & (N - 1)); \
     sp[-2].v128 = a; \
     sp--; \
     WAH_NEXT(); \
 }
 
 #define V128_SHIFT_OP_LANE_U(N, op, field) { \
-    wah_v128_t b = sp[-1].v128, a = sp[-2].v128; \
+    int32_t b = sp[-1].i32; \
+    wah_v128_t a = sp[-2].v128; \
     for (int i = 0; i < 128/N; ++i) { \
-        a.field[i] = (uint##N##_t)((uint##N##_t)a.field[i] op (b.field[0] & (N - 1))); \
+        a.field[i] = (uint##N##_t)((uint##N##_t)a.field[i] op (b & (N - 1))); \
     } \
     sp[-2].v128 = a; \
     sp--; \
@@ -5572,7 +5633,7 @@ WAH_RUN(F64X2_DIV) WAH_IF_X86_64(M128D_BINARY_OP(_mm_div_pd), V128_BINARY_OP_LAN
     WAH_NEXT(); \
 }
 
-WAH_RUN(I8X16_ABS) V128_ABS_OP(8, i8, abs)
+WAH_RUN(I8X16_ABS) WAH_IF_X86_64(M128I_UNARY_OP(wah_i8x16_abs_sse2), V128_ABS_OP(8, i8, abs))
 WAH_RUN(I8X16_NEG)
     WAH_IF_X86_64({ sp[-1]._m128i = _mm_sub_epi8(_mm_setzero_si128(), sp[-1]._m128i); WAH_NEXT(); },
         V128_UNARY_OP_LANE(8, -, i8))
@@ -5583,9 +5644,9 @@ WAH_RUN(I8X16_ALL_TRUE)
 WAH_RUN(I8X16_BITMASK) WAH_IF_X86_64(M128I_UNARY_I32_OP(_mm_movemask_epi8), V128_BITMASK_OP(8, i8))
 WAH_RUN(I8X16_NARROW_I16X8_S) WAH_IF_X86_64(M128I_BINARY_OP(_mm_packs_epi16), V128_TRUNC_SAT_PAIR_OP(wah_trunc_sat_i16_to_i8, i8, 8))
 WAH_RUN(I8X16_NARROW_I16X8_U) WAH_IF_X86_64(M128I_BINARY_OP(_mm_packus_epi16), V128_TRUNC_SAT_PAIR_OP(wah_trunc_sat_i16_to_u8, u8, 8))
-WAH_RUN(I8X16_SHL) V128_SHIFT_OP_LANE(8, <<, i8)
-WAH_RUN(I8X16_SHR_S) V128_SHIFT_OP_LANE(8, >>, i8)
-WAH_RUN(I8X16_SHR_U) V128_SHIFT_OP_LANE_U(8, >>, u8)
+WAH_RUN(I8X16_SHL) WAH_IF_X86_64(M128I_SHIFT_OP(wah_i8x16_shl_sse2, -1), V128_SHIFT_OP_LANE(8, <<, i8))
+WAH_RUN(I8X16_SHR_S) WAH_IF_X86_64(M128I_SHIFT_OP(wah_i8x16_shr_s_sse2, -1), V128_SHIFT_OP_LANE(8, >>, i8))
+WAH_RUN(I8X16_SHR_U) WAH_IF_X86_64(M128I_SHIFT_OP(wah_i8x16_shr_u_sse2, -1), V128_SHIFT_OP_LANE_U(8, >>, u8))
 WAH_RUN(I8X16_MIN_S) WAH_IF_X86_64(M128I_BINARY_OP(_mm_min_epi8), V128_BINARY_OP_LANE_FN(8, WAH_MIN_S_8, i8))
 WAH_RUN(I8X16_MIN_U) WAH_IF_X86_64(M128I_BINARY_OP(_mm_min_epu8), V128_BINARY_OP_LANE_FN(8, WAH_MIN_U_8, u8))
 WAH_RUN(I8X16_MAX_S) WAH_IF_X86_64(M128I_BINARY_OP(_mm_max_epi8), V128_BINARY_OP_LANE_FN(8, WAH_MAX_S_8, i8))
@@ -5619,7 +5680,7 @@ WAH_RUN(I16X8_EXTADD_PAIRWISE_I8X16_U) {
     sp[-1].v128 = result;
     WAH_NEXT();
 }
-WAH_RUN(I16X8_ABS) V128_ABS_OP(16, i16, abs)
+WAH_RUN(I16X8_ABS) WAH_IF_X86_64(M128I_UNARY_OP(wah_i16x8_abs_sse2), V128_ABS_OP(16, i16, abs))
 WAH_RUN(I16X8_NEG)
     WAH_IF_X86_64({ sp[-1]._m128i = _mm_sub_epi16(_mm_setzero_si128(), sp[-1]._m128i); WAH_NEXT(); },
         V128_UNARY_OP_LANE(16, -, i16))
@@ -5640,9 +5701,9 @@ WAH_RUN(I16X8_EXTEND_LOW_I8X16_S) V128_EXTEND_LOW_OP(16, i16, 8, i8, int)
 WAH_RUN(I16X8_EXTEND_HIGH_I8X16_S) V128_EXTEND_HIGH_OP(16, i16, 8, i8, int)
 WAH_RUN(I16X8_EXTEND_LOW_I8X16_U) V128_EXTEND_LOW_OP(16, u16, 8, u8, uint)
 WAH_RUN(I16X8_EXTEND_HIGH_I8X16_U) V128_EXTEND_HIGH_OP(16, u16, 8, u8, uint)
-WAH_RUN(I16X8_SHL) V128_SHIFT_OP_LANE(16, <<, i16)
-WAH_RUN(I16X8_SHR_S) V128_SHIFT_OP_LANE(16, >>, i16)
-WAH_RUN(I16X8_SHR_U) V128_SHIFT_OP_LANE_U(16, >>, u16)
+WAH_RUN(I16X8_SHL) WAH_IF_X86_64(M128I_SHIFT_OP(_mm_slli_epi16, 15), V128_SHIFT_OP_LANE(16, <<, i16))
+WAH_RUN(I16X8_SHR_S) WAH_IF_X86_64(M128I_SHIFT_OP(_mm_srai_epi16, 15), V128_SHIFT_OP_LANE(16, >>, i16))
+WAH_RUN(I16X8_SHR_U) WAH_IF_X86_64(M128I_SHIFT_OP(_mm_srli_epi16, 15), V128_SHIFT_OP_LANE_U(16, >>, u16))
 WAH_RUN(I16X8_MIN_S) WAH_IF_X86_64(M128I_BINARY_OP(_mm_min_epi16), V128_BINARY_OP_LANE_FN(16, WAH_MIN_S_16, i16))
 WAH_RUN(I16X8_MIN_U) WAH_IF_X86_64(M128I_BINARY_OP(_mm_min_epu16), V128_BINARY_OP_LANE_FN(16, WAH_MIN_U_16, u16))
 WAH_RUN(I16X8_MAX_S) WAH_IF_X86_64(M128I_BINARY_OP(_mm_max_epi16), V128_BINARY_OP_LANE_FN(16, WAH_MAX_S_16, i16))
@@ -5682,7 +5743,7 @@ WAH_RUN(I32X4_EXTADD_PAIRWISE_I16X8_U) {
     WAH_NEXT();
 }
 
-WAH_RUN(I32X4_ABS) V128_ABS_OP(32, i32, abs)
+WAH_RUN(I32X4_ABS) WAH_IF_X86_64(M128I_UNARY_OP(wah_i32x4_abs_sse2), V128_ABS_OP(32, i32, abs))
 WAH_RUN(I32X4_NEG)
     WAH_IF_X86_64({ sp[-1]._m128i = _mm_sub_epi32(_mm_setzero_si128(), sp[-1]._m128i); WAH_NEXT(); }, V128_UNARY_OP_LANE(32, -, i32))
 WAH_RUN(I32X4_ALL_TRUE)
@@ -5693,9 +5754,9 @@ WAH_RUN(I32X4_EXTEND_LOW_I16X8_S) V128_EXTEND_LOW_OP(32, i32, 16, i16, int)
 WAH_RUN(I32X4_EXTEND_HIGH_I16X8_S) V128_EXTEND_HIGH_OP(32, i32, 16, i16, int)
 WAH_RUN(I32X4_EXTEND_LOW_I16X8_U) V128_EXTEND_LOW_OP(32, u32, 16, u16, uint)
 WAH_RUN(I32X4_EXTEND_HIGH_I16X8_U) V128_EXTEND_HIGH_OP(32, u32, 16, u16, uint)
-WAH_RUN(I32X4_SHL) V128_SHIFT_OP_LANE(32, <<, i32)
-WAH_RUN(I32X4_SHR_S) V128_SHIFT_OP_LANE(32, >>, i32)
-WAH_RUN(I32X4_SHR_U) V128_SHIFT_OP_LANE_U(32, >>, u32)
+WAH_RUN(I32X4_SHL) WAH_IF_X86_64(M128I_SHIFT_OP(_mm_slli_epi32, 31), V128_SHIFT_OP_LANE(32, <<, i32))
+WAH_RUN(I32X4_SHR_S) WAH_IF_X86_64(M128I_SHIFT_OP(_mm_srai_epi32, 31), V128_SHIFT_OP_LANE(32, >>, i32))
+WAH_RUN(I32X4_SHR_U) WAH_IF_X86_64(M128I_SHIFT_OP(_mm_srli_epi32, 31), V128_SHIFT_OP_LANE_U(32, >>, u32))
 WAH_RUN(I32X4_MIN_S) WAH_IF_X86_64(M128I_BINARY_OP(_mm_min_epi32), V128_BINARY_OP_LANE_FN(32, WAH_MIN_S_32, i32))
 WAH_RUN(I32X4_MIN_U) WAH_IF_X86_64(M128I_BINARY_OP(_mm_min_epu32), V128_BINARY_OP_LANE_FN(32, WAH_MIN_U_32, u32))
 WAH_RUN(I32X4_MAX_S) WAH_IF_X86_64(M128I_BINARY_OP(_mm_max_epi32), V128_BINARY_OP_LANE_FN(32, WAH_MAX_S_32, i32))
@@ -5717,7 +5778,7 @@ WAH_RUN(I32X4_EXTMUL_HIGH_I16X8_S) V128_EXTMUL_HIGH_OP(32, i32, int64_t, 16, i16
 WAH_RUN(I32X4_EXTMUL_LOW_I16X8_U) V128_EXTMUL_LOW_OP(32, u32, uint64_t, 16, u16, uint)
 WAH_RUN(I32X4_EXTMUL_HIGH_I16X8_U) V128_EXTMUL_HIGH_OP(32, u32, uint64_t, 16, u16, uint)
 
-WAH_RUN(I64X2_ABS) V128_ABS_OP(64, i64, llabs)
+WAH_RUN(I64X2_ABS) WAH_IF_X86_64(M128I_UNARY_OP(wah_i64x2_abs_sse2), V128_ABS_OP(64, i64, llabs))
 WAH_RUN(I64X2_NEG)
     WAH_IF_X86_64({ sp[-1]._m128i = _mm_sub_epi64(_mm_setzero_si128(), sp[-1]._m128i); WAH_NEXT(); }, V128_UNARY_OP_LANE(64, -, i64))
 WAH_RUN(I64X2_ALL_TRUE)
@@ -5728,9 +5789,9 @@ WAH_RUN(I64X2_EXTEND_LOW_I32X4_S) V128_EXTEND_LOW_OP(64, i64, 32, i32, int)
 WAH_RUN(I64X2_EXTEND_HIGH_I32X4_S) V128_EXTEND_HIGH_OP(64, i64, 32, i32, int)
 WAH_RUN(I64X2_EXTEND_LOW_I32X4_U) V128_EXTEND_LOW_OP(64, u64, 32, u32, uint)
 WAH_RUN(I64X2_EXTEND_HIGH_I32X4_U) V128_EXTEND_HIGH_OP(64, u64, 32, u32, uint)
-WAH_RUN(I64X2_SHL) V128_SHIFT_OP_LANE(64, <<, i64)
+WAH_RUN(I64X2_SHL) WAH_IF_X86_64(M128I_SHIFT_OP(_mm_slli_epi64, 63), V128_SHIFT_OP_LANE(64, <<, i64))
 WAH_RUN(I64X2_SHR_S) V128_SHIFT_OP_LANE(64, >>, i64)
-WAH_RUN(I64X2_SHR_U) V128_SHIFT_OP_LANE_U(64, >>, u64)
+WAH_RUN(I64X2_SHR_U) WAH_IF_X86_64(M128I_SHIFT_OP(_mm_srli_epi64, 63), V128_SHIFT_OP_LANE_U(64, >>, u64))
 WAH_RUN(I64X2_EXTMUL_LOW_I32X4_S) V128_EXTMUL_LOW_OP(64, i64, int64_t, 32, i32, int)
 WAH_RUN(I64X2_EXTMUL_HIGH_I32X4_S) V128_EXTMUL_HIGH_OP(64, i64, int64_t, 32, i32, int)
 WAH_RUN(I64X2_EXTMUL_LOW_I32X4_U) V128_EXTMUL_LOW_OP(64, u64, uint64_t, 32, u32, uint)
@@ -5740,7 +5801,6 @@ WAH_RUN(F32X4_CEIL) V128_UNARY_OP_LANE_FN(32, ceilf, f32)
 WAH_RUN(F32X4_FLOOR) V128_UNARY_OP_LANE_FN(32, floorf, f32)
 WAH_RUN(F32X4_TRUNC) V128_UNARY_OP_LANE_FN(32, truncf, f32)
 WAH_RUN(F32X4_NEAREST) V128_UNARY_OP_LANE_FN(32, wah_nearest_f32, f32)
-
 WAH_RUN(F32X4_ABS)
     WAH_IF_X86_64({ sp[-1]._m128 = _mm_andnot_ps(_mm_set1_ps(-0.0f), sp[-1]._m128); WAH_NEXT(); }, V128_UNARY_OP_LANE_FN(32, fabsf, f32))
 WAH_RUN(F32X4_NEG)
@@ -5755,7 +5815,6 @@ WAH_RUN(F64X2_CEIL) V128_UNARY_OP_LANE_FN(64, ceil, f64)
 WAH_RUN(F64X2_FLOOR) V128_UNARY_OP_LANE_FN(64, floor, f64)
 WAH_RUN(F64X2_TRUNC) V128_UNARY_OP_LANE_FN(64, trunc, f64)
 WAH_RUN(F64X2_NEAREST) V128_UNARY_OP_LANE_FN(64, wah_nearest_f64, f64)
-
 WAH_RUN(F64X2_ABS)
     WAH_IF_X86_64({ sp[-1]._m128d = _mm_andnot_pd(_mm_set1_pd(-0.0), sp[-1]._m128d); WAH_NEXT(); }, V128_UNARY_OP_LANE_FN(64, fabs, f64))
 WAH_RUN(F64X2_NEG)
