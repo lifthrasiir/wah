@@ -377,6 +377,17 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
 #define WAH_LOG(fmt, ...) (void)(0)
 #endif
 
+#ifdef __has_builtin
+#if __has_builtin(__builtin_unreachable)
+#define WAH_UNREACHABLE() __builtin_unreachable()
+#endif
+#elif defined(__GNUC__) && (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 5))
+#define WAH_UNREACHABLE() __builtin_unreachable()
+#endif
+#ifndef WAH_UNREACHABLE
+#define WAH_UNREACHABLE() abort()
+#endif
+
 #define WAH_TYPE_FUNCTION -100
 #define WAH_TYPE_HOST_FUNCTION -101
 #define WAH_TYPE_MEMORY   -200
@@ -3759,16 +3770,14 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 //------------------------------------------------------------------------------
 WAH_RUN(BLOCK) { // Should not appear in preparsed code
     (void)bytecode_base;
-    WAH_ASSERT(false && "BLOCK opcode should have been preprocessed into a jump target");
-    err = WAH_ERROR_VALIDATION_FAILED;
-    WAH_CLEANUP();
+    WAH_UNREACHABLE();
+    WAH_NEXT();
 }
 
 WAH_RUN(LOOP) { // Should not appear in preparsed code
     (void)bytecode_base;
-    WAH_ASSERT(false && "LOOP opcode should have been preprocessed into a jump target");
-    err = WAH_ERROR_VALIDATION_FAILED;
-    WAH_CLEANUP();
+    WAH_UNREACHABLE();
+    WAH_NEXT();
 }
 
 WAH_RUN(IF) {
@@ -5548,8 +5557,7 @@ static wah_error_t wah_run_single(wah_exec_context_t *ctx, wah_call_frame_t *fra
         WAH_OPCODES(WAH_OPCODE_CASES)
         #undef WAH_OPCODE_CASES
     default:
-        WAH_ASSERT(false && "verification should have rejected invalid opcode");
-        return WAH_ERROR_VALIDATION_FAILED;
+        WAH_UNREACHABLE();
     }
 }
 
