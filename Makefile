@@ -1,6 +1,6 @@
 # Compiler and flags
 CC ?= gcc
-CFLAGS ?= -W -Wall -Wextra -march=native
+CFLAGS ?= -W -Wall -Wextra
 LDFLAGS ?= -lm # Link math library, potentially needed for wah.h
 
 # Debugging options
