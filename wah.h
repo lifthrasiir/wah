@@ -4706,7 +4706,7 @@ WAH_RUN(END) { // End of function
     WAH_RUN(I##N##_LE_U) CMP_I_U(N,<=) \
     WAH_RUN(I##N##_GE_S) CMP_I_S(N,>=) \
     WAH_RUN(I##N##_GE_U) CMP_I_U(N,>=) \
-    WAH_RUN(I##N##_EQZ) { sp[-2].i32 = (sp[-2].i##N == 0) ? 1 : 0; WAH_NEXT(); } \
+    WAH_RUN(I##N##_EQZ) { sp[-1].i32 = (sp[-1].i##N == 0) ? 1 : 0; WAH_NEXT(); } \
     \
     WAH_RUN(F##N##_ABS) UNOP_F_FN(N, fabs##_F) \
     WAH_RUN(F##N##_NEG) UNOP_F_FN(N, -) \

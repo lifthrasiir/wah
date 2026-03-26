@@ -98,6 +98,26 @@ void test_i32_eq() {
     CHECK_BINARY("I32.EQ (42 == 24)", i32, 42, i32, 24, i32, 0);
 }
 
+void test_i32_eqz() {
+    static const char *wasm_spec = UNARY_WASM_SPEC(i32, i32, "i32.eqz");
+
+    printf("Testing I32.EQZ...\n");
+    CHECK_UNARY("I32.EQZ (0)", i32, 0, i32, 1);
+    CHECK_UNARY("I32.EQZ (1)", i32, 1, i32, 0);
+    CHECK_UNARY("I32.EQZ (42)", i32, 42, i32, 0);
+    CHECK_UNARY("I32.EQZ (-1)", i32, -1, i32, 0);
+}
+
+void test_i64_eqz() {
+    static const char *wasm_spec = UNARY_WASM_SPEC(i64, i32, "i64.eqz");
+
+    printf("Testing I64.EQZ...\n");
+    CHECK_UNARY("I64.EQZ (0)", i64, 0ULL, i32, 1);
+    CHECK_UNARY("I64.EQZ (1)", i64, 1ULL, i32, 0);
+    CHECK_UNARY("I64.EQZ (42)", i64, 42ULL, i32, 0);
+    CHECK_UNARY("I64.EQZ (-1)", i64, -1LL, i32, 0);
+}
+
 void test_i32_popcnt() {
     static const char *wasm_spec = UNARY_WASM_SPEC(i32, i32, "i32.popcnt");
 
@@ -517,6 +537,8 @@ void test_i64_trunc_sat_f64_u() {
 int main() {
     test_i32_and();
     test_i32_eq();
+    test_i32_eqz();
+    test_i64_eqz();
     test_i32_popcnt();
     test_i64_clz();
     test_i32_rotl();
