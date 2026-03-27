@@ -395,10 +395,22 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
 #define WAH_HAS_BUILTIN(x) 0
 #endif
 
+#ifdef __has_attribute
+#define WAH_HAS_ATTRIBUTE(x) __has_attribute(x)
+#else
+#define WAH_HAS_ATTRIBUTE(x) 0
+#endif
+
 #if WAH_HAS_BUILTIN(__builtin_unreachable) || __GNUC__ * 100 + __GNUC_MINOR__ >= 405
 #define WAH_UNREACHABLE() __builtin_unreachable()
 #else
 #define WAH_UNREACHABLE() abort()
+#endif
+
+#if WAH_HAS_ATTRIBUTE(always_inline)
+#define WAH_ALWAYS_INLINE __attribute__((always_inline)) inline
+#else
+#define WAH_ALWAYS_INLINE inline
 #endif
 
 #ifdef WAH_X86_64
@@ -1334,7 +1346,7 @@ static inline __m128d wah_canonicalize_f64x2_sse2(__m128d v) {
 // --- Integer Utility Functions ---
 
 // popcnt
-static inline uint32_t wah_popcount_u32(uint32_t n) {
+static WAH_ALWAYS_INLINE uint32_t wah_popcount_u32(uint32_t n) {
 #if WAH_HAS_BUILTIN(__builtin_popcount) || defined(__GNUC__)
     return __builtin_popcount(n);
 #elif defined(_MSC_VER)
@@ -1350,7 +1362,7 @@ static inline uint32_t wah_popcount_u32(uint32_t n) {
 #endif
 }
 
-static inline uint64_t wah_popcount_u64(uint64_t n) {
+static WAH_ALWAYS_INLINE uint64_t wah_popcount_u64(uint64_t n) {
 #if WAH_HAS_BUILTIN(__builtin_popcountll) || defined(__GNUC__)
     return __builtin_popcountll(n);
 #elif defined(_MSC_VER)
@@ -1366,7 +1378,7 @@ static inline uint64_t wah_popcount_u64(uint64_t n) {
 #endif
 }
 
-static inline uint8_t wah_popcount_u8(uint8_t n) {
+static WAH_ALWAYS_INLINE uint8_t wah_popcount_u8(uint8_t n) {
     uint8_t count = 0;
     while (n > 0) {
         n &= (n - 1);
@@ -1376,7 +1388,7 @@ static inline uint8_t wah_popcount_u8(uint8_t n) {
 }
 
 // clz (count leading zeros)
-static inline uint32_t wah_clz_u32(uint32_t n) {
+static WAH_ALWAYS_INLINE uint32_t wah_clz_u32(uint32_t n) {
 #if WAH_HAS_BUILTIN(__builtin_clz) || defined(__GNUC__)
     return n == 0 ? 32 : __builtin_clz(n);
 #elif defined(_MSC_VER)
@@ -1399,7 +1411,7 @@ static inline uint32_t wah_clz_u32(uint32_t n) {
 #endif
 }
 
-static inline uint64_t wah_clz_u64(uint64_t n) {
+static WAH_ALWAYS_INLINE uint64_t wah_clz_u64(uint64_t n) {
 #if WAH_HAS_BUILTIN(__builtin_clzll) || defined(__GNUC__)
     return n == 0 ? 64 : __builtin_clzll(n);
 #elif defined(_MSC_VER)
@@ -1424,7 +1436,7 @@ static inline uint64_t wah_clz_u64(uint64_t n) {
 }
 
 // ctz (count trailing zeros)
-static inline uint32_t wah_ctz_u32(uint32_t n) {
+static WAH_ALWAYS_INLINE uint32_t wah_ctz_u32(uint32_t n) {
 #if WAH_HAS_BUILTIN(__builtin_ctz) || defined(__GNUC__)
     return n == 0 ? 32 : __builtin_ctz(n);
 #elif defined(_MSC_VER)
@@ -1446,7 +1458,7 @@ static inline uint32_t wah_ctz_u32(uint32_t n) {
 #endif
 }
 
-static inline uint64_t wah_ctz_u64(uint64_t n) {
+static WAH_ALWAYS_INLINE uint64_t wah_ctz_u64(uint64_t n) {
 #if WAH_HAS_BUILTIN(__builtin_ctzll) || defined(__GNUC__)
     return n == 0 ? 64 : __builtin_ctzll(n);
 #elif defined(_MSC_VER)
@@ -1469,7 +1481,7 @@ static inline uint64_t wah_ctz_u64(uint64_t n) {
 }
 
 // rotl (rotate left)
-static inline uint32_t wah_rotl_u32(uint32_t n, uint32_t shift) {
+static WAH_ALWAYS_INLINE uint32_t wah_rotl_u32(uint32_t n, uint32_t shift) {
 #if WAH_HAS_BUILTIN(__builtin_rotateleft32)
     return __builtin_rotateleft32(n, shift);
 #elif defined(_MSC_VER)
@@ -1480,11 +1492,11 @@ static inline uint32_t wah_rotl_u32(uint32_t n, uint32_t shift) {
 #endif
 }
 
-static inline uint64_t wah_rotl_u64(uint64_t n, uint64_t shift) {
+static WAH_ALWAYS_INLINE uint64_t wah_rotl_u64(uint64_t n, uint64_t shift) {
 #if WAH_HAS_BUILTIN(__builtin_rotateleft64)
     return __builtin_rotateleft64(n, shift);
 #elif defined(_MSC_VER)
-    return _rotl64(n, shift);
+    return _rotl64(n, (int)shift);
 #else
     shift &= 63; // Ensure shift is within 0-63
     return (n << shift) | (n >> (64 - shift));
@@ -1492,7 +1504,7 @@ static inline uint64_t wah_rotl_u64(uint64_t n, uint64_t shift) {
 }
 
 // rotr (rotate right)
-static inline uint32_t wah_rotr_u32(uint32_t n, uint32_t shift) {
+static WAH_ALWAYS_INLINE uint32_t wah_rotr_u32(uint32_t n, uint32_t shift) {
 #if WAH_HAS_BUILTIN(__builtin_rotateright32)
     return __builtin_rotateright32(n, shift);
 #elif defined(_MSC_VER)
@@ -1503,11 +1515,11 @@ static inline uint32_t wah_rotr_u32(uint32_t n, uint32_t shift) {
 #endif
 }
 
-static inline uint64_t wah_rotr_u64(uint64_t n, uint64_t shift) {
+static WAH_ALWAYS_INLINE uint64_t wah_rotr_u64(uint64_t n, uint64_t shift) {
 #if WAH_HAS_BUILTIN(__builtin_rotateright64)
     return __builtin_rotateright64(n, shift);
 #elif defined(_MSC_VER)
-    return _rotr64(n, shift);
+    return _rotr64(n, (int)shift);
 #else
     shift &= 63; // Ensure shift is within 0-63
     return (n >> shift) | (n << (64 - shift));
@@ -1516,20 +1528,20 @@ static inline uint64_t wah_rotr_u64(uint64_t n, uint64_t shift) {
 
 #ifdef WAH_X86_64
 
-static inline int32_t wah_i16x8_bitmask_sse2(__m128i v) {
+static WAH_ALWAYS_INLINE int32_t wah_i16x8_bitmask_sse2(__m128i v) {
     int32_t mask = _mm_movemask_epi8(_mm_cmpeq_epi16(v, _mm_setzero_si128())) & 0x5555; // 0a0b 0c0d 0e0f 0g0h
     mask = (mask | (mask >> 1)) & 0x3333; // 00ab 00cd 00ef 00gh
     mask = (mask | (mask >> 2)) & 0x0f0f; // 0000 abcd 0000 efgh
     return (mask | (mask >> 4)) & 0x00ff; // 0000 0000 abcd efgh
 }
 
-static inline int32_t wah_i32x4_bitmask_sse2(__m128i v) {
+static WAH_ALWAYS_INLINE int32_t wah_i32x4_bitmask_sse2(__m128i v) {
     int32_t mask = _mm_movemask_epi8(_mm_cmpeq_epi32(v, _mm_setzero_si128())) & 0x1111; // 000a 000b 000c 000d
     mask = (mask | (mask >> 3)) & 0x0202; // 0000 00ab 0000 00cd
     return (mask | (mask >> 6)) & 0x000f; // 0000 0000 0000 abcd
 }
 
-static inline int32_t wah_i64x2_bitmask_sse2(__m128i v) {
+static WAH_ALWAYS_INLINE int32_t wah_i64x2_bitmask_sse2(__m128i v) {
     // Compare each 64-bit element with zero
     // Since we're comparing with zero, we can check if both 32-bit halves are zero
     __m128i v_hi = _mm_shuffle_epi32(v, _MM_SHUFFLE(3, 3, 1, 1));  // [v1_hi, v1_hi, v0_hi, v0_hi]
@@ -1545,7 +1557,7 @@ static inline int32_t wah_i64x2_bitmask_sse2(__m128i v) {
 
 // nearest (round to nearest, ties to even)
 // XXX: Clang doesn't support __builtin_roundeven(f) without recent enough -march, so we opt in for known archs
-static inline float wah_nearest_f32(float f) {
+static WAH_ALWAYS_INLINE float wah_nearest_f32(float f) {
 #if WAH_HAS_BUILTIN(__builtin_roundevenf) && defined(__clang__) && defined(__SSE4_1__)
     return __builtin_roundevenf(f);
 #else
@@ -1556,7 +1568,7 @@ static inline float wah_nearest_f32(float f) {
 #endif
 }
 
-static inline double wah_nearest_f64(double d) {
+static WAH_ALWAYS_INLINE double wah_nearest_f64(double d) {
 #if WAH_HAS_BUILTIN(__builtin_roundeven) && defined(__clang__) && defined(__SSE4_1__)
     return __builtin_roundeven(d);
 #else
@@ -1569,7 +1581,7 @@ static inline double wah_nearest_f64(double d) {
 
 // Helper functions for floating-point to integer truncations with trap handling
 #define DEFINE_TRUNC_F2I(N, fty, T, ity, lo, hi, call) \
-static inline wah_error_t wah_trunc_f##N##_to_##T(fty val, ity *result) { \
+static WAH_ALWAYS_INLINE wah_error_t wah_trunc_f##N##_to_##T(fty val, ity *result) { \
     if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP; \
     if (val < (lo) || val >= (hi)) return WAH_ERROR_TRAP; \
     *result = (ity)call(val); \
@@ -1587,7 +1599,7 @@ DEFINE_TRUNC_F2I(64, double, u64, uint64_t,                 0, (double)UINT64_MA
 
 // Helper functions for floating-point to integer truncations with saturation
 #define DEFINE_TRUNC_SAT_F2I(N, fty, T, ity, min_val, max_val, call) \
-static inline ity wah_trunc_sat_f##N##_to_##T(fty val) { \
+static WAH_ALWAYS_INLINE ity wah_trunc_sat_f##N##_to_##T(fty val) { \
     if (isnan(val)) return 0; \
     if (val <= (fty)min_val) return min_val; \
     if (val >= (fty)max_val) return max_val; \
@@ -1603,61 +1615,61 @@ DEFINE_TRUNC_SAT_F2I(32, float,  u64, uint64_t,          0, UINT64_MAX, truncf)
 DEFINE_TRUNC_SAT_F2I(64, double, i64,  int64_t,  INT64_MIN,  INT64_MAX, trunc)
 DEFINE_TRUNC_SAT_F2I(64, double, u64, uint64_t,          0, UINT64_MAX, trunc)
 
-static inline int8_t wah_trunc_sat_i16_to_i8(int16_t val) {
+static WAH_ALWAYS_INLINE int8_t wah_trunc_sat_i16_to_i8(int16_t val) {
     if (val < -128) return -128;
     if (val > 127) return 127;
     return (int8_t)val;
 }
 
-static inline uint8_t wah_trunc_sat_i16_to_u8(int16_t val) {
+static WAH_ALWAYS_INLINE uint8_t wah_trunc_sat_i16_to_u8(int16_t val) {
     if (val < 0) return 0;
     if (val > 255) return 255;
     return (uint8_t)val;
 }
 
-static inline int16_t wah_trunc_sat_i32_to_i16(int32_t val) {
+static WAH_ALWAYS_INLINE int16_t wah_trunc_sat_i32_to_i16(int32_t val) {
     if (val < -32768) return -32768;
     if (val > 32767) return 32767;
     return (int16_t)val;
 }
 
-static inline uint16_t wah_trunc_sat_i32_to_u16(int32_t val) {
+static WAH_ALWAYS_INLINE uint16_t wah_trunc_sat_i32_to_u16(int32_t val) {
     if (val < 0) return 0;
     if (val > 65535) return 65535;
     return (uint16_t)val;
 }
 
-static inline int16_t WAH_MIN_S_16(int16_t a, int16_t b) { return a < b ? a : b; }
-static inline uint16_t WAH_MIN_U_16(uint16_t a, uint16_t b) { return a < b ? a : b; }
-static inline int16_t WAH_MAX_S_16(int16_t a, int16_t b) { return a > b ? a : b; }
-static inline uint16_t WAH_MAX_U_16(uint16_t a, uint16_t b) { return a > b ? a : b; }
+static WAH_ALWAYS_INLINE int16_t WAH_MIN_S_16(int16_t a, int16_t b) { return a < b ? a : b; }
+static WAH_ALWAYS_INLINE uint16_t WAH_MIN_U_16(uint16_t a, uint16_t b) { return a < b ? a : b; }
+static WAH_ALWAYS_INLINE int16_t WAH_MAX_S_16(int16_t a, int16_t b) { return a > b ? a : b; }
+static WAH_ALWAYS_INLINE uint16_t WAH_MAX_U_16(uint16_t a, uint16_t b) { return a > b ? a : b; }
 
-static inline int32_t WAH_MIN_S_32(int32_t a, int32_t b) { return a < b ? a : b; }
-static inline uint32_t WAH_MIN_U_32(uint32_t a, uint32_t b) { return a < b ? a : b; }
-static inline int32_t WAH_MAX_S_32(int32_t a, int32_t b) { return a > b ? a : b; }
-static inline uint32_t WAH_MAX_U_32(uint32_t a, uint32_t b) { return a > b ? a : b; }
+static WAH_ALWAYS_INLINE int32_t WAH_MIN_S_32(int32_t a, int32_t b) { return a < b ? a : b; }
+static WAH_ALWAYS_INLINE uint32_t WAH_MIN_U_32(uint32_t a, uint32_t b) { return a < b ? a : b; }
+static WAH_ALWAYS_INLINE int32_t WAH_MAX_S_32(int32_t a, int32_t b) { return a > b ? a : b; }
+static WAH_ALWAYS_INLINE uint32_t WAH_MAX_U_32(uint32_t a, uint32_t b) { return a > b ? a : b; }
 
-static inline int8_t WAH_MIN_S_8(int8_t a, int8_t b) { return a < b ? a : b; }
-static inline uint8_t WAH_MIN_U_8(uint8_t a, uint8_t b) { return a < b ? a : b; }
-static inline int8_t WAH_MAX_S_8(int8_t a, int8_t b) { return a > b ? a : b; }
-static inline uint8_t WAH_MAX_U_8(uint8_t a, uint8_t b) { return a > b ? a : b; }
+static WAH_ALWAYS_INLINE int8_t WAH_MIN_S_8(int8_t a, int8_t b) { return a < b ? a : b; }
+static WAH_ALWAYS_INLINE uint8_t WAH_MIN_U_8(uint8_t a, uint8_t b) { return a < b ? a : b; }
+static WAH_ALWAYS_INLINE int8_t WAH_MAX_S_8(int8_t a, int8_t b) { return a > b ? a : b; }
+static WAH_ALWAYS_INLINE uint8_t WAH_MAX_U_8(uint8_t a, uint8_t b) { return a > b ? a : b; }
 
-static inline float wah_pminf(float a, float b) {
+static WAH_ALWAYS_INLINE float wah_pminf(float a, float b) {
     if (isnan(a) || isnan(b)) return WAH_CANONICAL_NAN32.f;
     return fminf(a, b);
 }
 
-static inline float wah_pmaxf(float a, float b) {
+static WAH_ALWAYS_INLINE float wah_pmaxf(float a, float b) {
     if (isnan(a) || isnan(b)) return WAH_CANONICAL_NAN32.f;
     return fmaxf(a, b);
 }
 
-static inline double wah_pmin(double a, double b) {
+static WAH_ALWAYS_INLINE double wah_pmin(double a, double b) {
     if (isnan(a) || isnan(b)) return WAH_CANONICAL_NAN64.f;
     return fmin(a, b);
 }
 
-static inline double wah_pmax(double a, double b) {
+static WAH_ALWAYS_INLINE double wah_pmax(double a, double b) {
     if (isnan(a) || isnan(b)) return WAH_CANONICAL_NAN64.f;
     return fmax(a, b);
 }
@@ -1665,7 +1677,7 @@ static inline double wah_pmax(double a, double b) {
 #ifdef WAH_X86_64 // SSE2
 
 #define DEFINE_PMINMAX(wasm_type, minmax, __m128x, suffix) \
-static inline __m128x wah_##wasm_type##_p##minmax##_sse2(__m128x a, __m128x b) { \
+static WAH_ALWAYS_INLINE __m128x wah_##wasm_type##_p##minmax##_sse2(__m128x a, __m128x b) { \
     /* Check for NaN */ \
     __m128x a_is_nan = _mm_cmpunord_##suffix(a, a); \
     __m128x b_is_nan = _mm_cmpunord_##suffix(b, b); \
@@ -1682,7 +1694,7 @@ DEFINE_PMINMAX(f64x2, min, __m128d, pd)
 DEFINE_PMINMAX(f64x2, max, __m128d, pd)
 
 #define DEFINE_CMP_U(wasm_type, cmp, const, N) \
-static inline __m128i wah_##wasm_type##_##cmp##_u_sse2(__m128i a, __m128i b) { \
+static WAH_ALWAYS_INLINE __m128i wah_##wasm_type##_##cmp##_u_sse2(__m128i a, __m128i b) { \
     __m128i sign_bit = _mm_set1_epi##N(const); \
     __m128i a_flipped = _mm_xor_si128(a, sign_bit); \
     __m128i b_flipped = _mm_xor_si128(b, sign_bit); \
@@ -1696,12 +1708,12 @@ DEFINE_CMP_U(i16x8, gt, 0x8000, 16)
 DEFINE_CMP_U(i32x4, lt, 0x80000000, 32)
 DEFINE_CMP_U(i32x4, gt, 0x80000000, 32)
 
-static inline __m128i wah_v128_not_sse2(__m128i x) { return _mm_xor_si128(x, _mm_set1_epi8(0xff)); }
-static inline __m128i wah_v128_andnot_rev_sse2(__m128i a, __m128i b) { return _mm_andnot_si128(b, a); }
+static WAH_ALWAYS_INLINE __m128i wah_v128_not_sse2(__m128i x) { return _mm_xor_si128(x, _mm_set1_epi8(0xff)); }
+static WAH_ALWAYS_INLINE __m128i wah_v128_andnot_rev_sse2(__m128i a, __m128i b) { return _mm_andnot_si128(b, a); }
 
 // I64X2 multiply using SSE2
 // Computes low 64 bits of 64x64 multiplication (what WebAssembly requires)
-static inline __m128i wah_i64x2_mul_sse2(__m128i a, __m128i b) {
+static WAH_ALWAYS_INLINE __m128i wah_i64x2_mul_sse2(__m128i a, __m128i b) {
     // For each 64-bit element: result = (a * b) & 0xffffffffffffffff
     // Split each 64-bit value into high and low 32-bit parts
     // a = a_hi * 2^32 + a_lo, b = b_hi * 2^32 + b_lo
@@ -1732,7 +1744,7 @@ static inline __m128i wah_i64x2_mul_sse2(__m128i a, __m128i b) {
 
 // I8X16 popcount using SSE2
 // Counts set bits in each of 16 bytes
-static inline __m128i wah_i8x16_popcnt_sse2(__m128i v) {
+static WAH_ALWAYS_INLINE __m128i wah_i8x16_popcnt_sse2(__m128i v) {
     // Parallel popcount: count bits in pairs, then nibbles, then bytes
 
     // Step 1: Count bits in pairs (2 bits)
@@ -1759,19 +1771,19 @@ static inline __m128i wah_i8x16_popcnt_sse2(__m128i v) {
 }
 
 // abs(x) = (x ^ mask) - mask where mask = (x < 0) ? 0xFF : 0x00
-static inline __m128i wah_i8x16_abs_sse2(__m128i x) {
+static WAH_ALWAYS_INLINE __m128i wah_i8x16_abs_sse2(__m128i x) {
     __m128i mask = _mm_cmplt_epi8(x, _mm_setzero_si128());
     return _mm_sub_epi8(_mm_xor_si128(x, mask), mask);
 }
-static inline __m128i wah_i16x8_abs_sse2(__m128i x) {
+static WAH_ALWAYS_INLINE __m128i wah_i16x8_abs_sse2(__m128i x) {
     __m128i mask = _mm_cmplt_epi16(x, _mm_setzero_si128());
     return _mm_sub_epi16(_mm_xor_si128(x, mask), mask);
 }
-static inline __m128i wah_i32x4_abs_sse2(__m128i x) {
+static WAH_ALWAYS_INLINE __m128i wah_i32x4_abs_sse2(__m128i x) {
     __m128i mask = _mm_cmplt_epi32(x, _mm_setzero_si128());
     return _mm_sub_epi32(_mm_xor_si128(x, mask), mask);
 }
-static inline __m128i wah_i64x2_abs_sse2(__m128i x) { // For 64-bit: if MSB is set, negate: (~x + 1)
+static WAH_ALWAYS_INLINE __m128i wah_i64x2_abs_sse2(__m128i x) { // For 64-bit: if MSB is set, negate: (~x + 1)
     __m128i mask = _mm_srai_epi32(x, 31);  // Get sign bit of each 64-bit element (as 32-bit pairs)
     __m128i mask64 = _mm_shuffle_epi32(mask, _MM_SHUFFLE(3, 3, 1, 1));  // Spread sign to both 32-bit parts
     __m128i neg = _mm_sub_epi64(_mm_xor_si128(x, mask64), mask64);
@@ -1782,29 +1794,29 @@ static inline __m128i wah_i64x2_abs_sse2(__m128i x) { // For 64-bit: if MSB is s
 
 // SSE2 implementations for SSE4.1 SIMD instructions
 
-static inline __m128i wah_i8x16_min_s_sse2(__m128i a, __m128i b) {
+static WAH_ALWAYS_INLINE __m128i wah_i8x16_min_s_sse2(__m128i a, __m128i b) {
     __m128i mask = _mm_cmplt_epi8(a, b);
     return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b));
 }
-static inline __m128i wah_i8x16_max_s_sse2(__m128i a, __m128i b) {
+static WAH_ALWAYS_INLINE __m128i wah_i8x16_max_s_sse2(__m128i a, __m128i b) {
     __m128i mask = _mm_cmpgt_epi8(a, b);
     return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b));
 }
 
-static inline __m128i wah_i16x8_min_u_sse2(__m128i a, __m128i b) {
+static WAH_ALWAYS_INLINE __m128i wah_i16x8_min_u_sse2(__m128i a, __m128i b) {
     __m128i a_xor = _mm_xor_si128(a, _mm_set1_epi16(0x8000));
     __m128i b_xor = _mm_xor_si128(b, _mm_set1_epi16(0x8000));
     __m128i mask = _mm_cmplt_epi16(a_xor, b_xor);
     return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b));
 }
-static inline __m128i wah_i16x8_max_u_sse2(__m128i a, __m128i b) {
+static WAH_ALWAYS_INLINE __m128i wah_i16x8_max_u_sse2(__m128i a, __m128i b) {
     __m128i a_xor = _mm_xor_si128(a, _mm_set1_epi16(0x8000));
     __m128i b_xor = _mm_xor_si128(b, _mm_set1_epi16(0x8000));
     __m128i mask = _mm_cmpgt_epi16(a_xor, b_xor);
     return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b));
 }
 
-static inline __m128i wah_i32x4_mul_sse2(__m128i a, __m128i b) {
+static WAH_ALWAYS_INLINE __m128i wah_i32x4_mul_sse2(__m128i a, __m128i b) {
     __m128i a_lo = _mm_shuffle_epi32(a, _MM_SHUFFLE(2, 0, 2, 0));
     __m128i b_lo = _mm_shuffle_epi32(b, _MM_SHUFFLE(2, 0, 2, 0));
     __m128i prod0 = _mm_mul_epu32(a_lo, b_lo);
@@ -1814,29 +1826,29 @@ static inline __m128i wah_i32x4_mul_sse2(__m128i a, __m128i b) {
     return _mm_unpacklo_epi32(prod0, prod1);
 }
 
-static inline __m128i wah_i32x4_min_s_sse2(__m128i a, __m128i b) {
+static WAH_ALWAYS_INLINE __m128i wah_i32x4_min_s_sse2(__m128i a, __m128i b) {
     __m128i mask = _mm_cmplt_epi32(a, b);
     return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b));
 }
-static inline __m128i wah_i32x4_max_s_sse2(__m128i a, __m128i b) {
+static WAH_ALWAYS_INLINE __m128i wah_i32x4_max_s_sse2(__m128i a, __m128i b) {
     __m128i mask = _mm_cmpgt_epi32(a, b);
     return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b));
 }
 
-static inline __m128i wah_i32x4_min_u_sse2(__m128i a, __m128i b) {
+static WAH_ALWAYS_INLINE __m128i wah_i32x4_min_u_sse2(__m128i a, __m128i b) {
     __m128i a_xor = _mm_xor_si128(a, _mm_set1_epi32(0x80000000));
     __m128i b_xor = _mm_xor_si128(b, _mm_set1_epi32(0x80000000));
     __m128i mask = _mm_cmplt_epi32(a_xor, b_xor);
     return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b));
 }
-static inline __m128i wah_i32x4_max_u_sse2(__m128i a, __m128i b) {
+static WAH_ALWAYS_INLINE __m128i wah_i32x4_max_u_sse2(__m128i a, __m128i b) {
     __m128i a_xor = _mm_xor_si128(a, _mm_set1_epi32(0x80000000));
     __m128i b_xor = _mm_xor_si128(b, _mm_set1_epi32(0x80000000));
     __m128i mask = _mm_cmpgt_epi32(a_xor, b_xor);
     return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b));
 }
 
-static inline __m128i wah_i16x8_narrow_i32x4_u_sse2(__m128i a, __m128i b) {
+static WAH_ALWAYS_INLINE __m128i wah_i16x8_narrow_i32x4_u_sse2(__m128i a, __m128i b) {
     __m128i max_val = _mm_set1_epi32(65535);
     __m128i a_gt_max = _mm_cmpgt_epi32(a, max_val);
     __m128i b_gt_max = _mm_cmpgt_epi32(b, max_val);
@@ -1857,7 +1869,7 @@ static inline __m128i wah_i16x8_narrow_i32x4_u_sse2(__m128i a, __m128i b) {
     return _mm_unpacklo_epi64(low, high);
 }
 
-static inline int32_t wah_i64x2_all_true_sse2(__m128i v) {
+static WAH_ALWAYS_INLINE int32_t wah_i64x2_all_true_sse2(__m128i v) {
     __m128i v_hi = _mm_shuffle_epi32(v, _MM_SHUFFLE(3, 3, 1, 1));
     __m128i eq_lo = _mm_cmpeq_epi32(v, _mm_setzero_si128());
     __m128i eq_hi = _mm_cmpeq_epi32(v_hi, _mm_setzero_si128());
@@ -1866,7 +1878,7 @@ static inline int32_t wah_i64x2_all_true_sse2(__m128i v) {
 }
 
 // Since SSE2 has no byte shift, we unpack to 16-bit, shift, and repack
-static inline __m128i wah_i8x16_shl_sse2(__m128i a, int32_t count) {
+static WAH_ALWAYS_INLINE __m128i wah_i8x16_shl_sse2(__m128i a, int32_t count) {
     count &= 7;  // Mask to 0-7
     if (count == 0) return a;
     __m128i zero = _mm_setzero_si128();
@@ -1880,7 +1892,7 @@ static inline __m128i wah_i8x16_shl_sse2(__m128i a, int32_t count) {
     hi = _mm_and_si128(hi, mask);
     return _mm_packus_epi16(lo, hi);
 }
-static inline __m128i wah_i8x16_shr_s_sse2(__m128i a, int32_t count) {
+static WAH_ALWAYS_INLINE __m128i wah_i8x16_shr_s_sse2(__m128i a, int32_t count) {
     count &= 7;  // Mask to 0-7
     if (count == 0) return a;
     __m128i zero = _mm_setzero_si128();
@@ -1890,7 +1902,7 @@ static inline __m128i wah_i8x16_shr_s_sse2(__m128i a, int32_t count) {
     __m128i hi = _mm_srai_epi16(a_hi, count);
     return _mm_packs_epi16(lo, hi);
 }
-static inline __m128i wah_i8x16_shr_u_sse2(__m128i a, int32_t count) {
+static WAH_ALWAYS_INLINE __m128i wah_i8x16_shr_u_sse2(__m128i a, int32_t count) {
     count &= 7;  // Mask to 0-7
     if (count == 0) return a;
     __m128i zero = _mm_setzero_si128();
@@ -1904,7 +1916,7 @@ static inline __m128i wah_i8x16_shr_u_sse2(__m128i a, int32_t count) {
 #endif
 
 // Helper function for Q15 multiplication with rounding and saturation
-static inline wah_v128_t wah_q15mulr_sat_s(wah_v128_t a, wah_v128_t b) {
+static WAH_ALWAYS_INLINE wah_v128_t wah_q15mulr_sat_s(wah_v128_t a, wah_v128_t b) {
     wah_v128_t result;
     for (int i = 0; i < 8; ++i) {
         int32_t prod = (int32_t)a.i16[i] * b.i16[i];
@@ -4110,10 +4122,8 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, const wah_module_t *f
 
 #ifdef WAH_FORCE_MUSTTAIL
     #define WAH_USE_MUSTTAIL
-#elif defined(__has_attribute)
-    #if __has_attribute(musttail)
-        #define WAH_USE_MUSTTAIL // clang 13+, GCC 15+
-    #endif
+#elif WAH_HAS_ATTRIBUTE(musttail)
+    #define WAH_USE_MUSTTAIL // clang 13+, GCC 15+
 #endif
 
 #ifdef WAH_FORCE_COMPUTED_GOTO
