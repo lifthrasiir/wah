@@ -9,9 +9,11 @@
 #include <assert.h>
 #include <math.h>
 
+#ifndef WAH_FORCE_PORTABLE
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #define WAH_X86_64
 #include <immintrin.h>
+#endif
 #endif
 
 // Assertions are only used for always-true conditions as a correctness check.
@@ -415,9 +417,63 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
 #endif
 
 #ifdef WAH_X86_64
-#define WAH_IF_X86_64(then, else) then
+#define WAH_IF_X86_64(then, ...) then
+
+// Feature detection by compiler version
+// Note: These indicate whether the compiler has the intrinsic/inline asm capability,
+// not whether the target CPU supports it (that's checked at runtime).
+#ifdef __GNUC__
+#define WAH_GCC_VER (__GNUC__ * 100 + __GNUC_MINOR__)
 #else
-#define WAH_IF_X86_64(then, else) else
+#define WAH_GCC_VER 0
+#endif
+#ifdef __clang__
+#define WAH_CLANG_VER (__clang_major__ * 100 + __clang_minor__)
+#else
+#define WAH_CLANG_VER 0
+#endif
+#ifdef _MSC_VER
+#define WAH_MSVC_VER _MSC_VER
+#else
+#define WAH_MSVC_VER 0
+#endif
+#define WAH_CHECK_COMPILER(gcc, clang, msvc) (WAH_GCC_VER >= gcc || WAH_CLANG_VER >= clang || WAH_MSVC_VER >= msvc)
+#if WAH_CHECK_COMPILER(403, 206, 1500)
+#define WAH_IF_SSSE3(...) __VA_ARGS__
+#define WAH_IF_SSE41(...) __VA_ARGS__
+#define WAH_IF_SSE42(...) __VA_ARGS__
+#else
+#define WAH_IF_SSSE3(...)
+#define WAH_IF_SSE41(...)
+#define WAH_IF_SSE42(...)
+#endif
+#if WAH_CHECK_COMPILER(404, 209, 1600)
+#define WAH_IF_AVX(...) __VA_ARGS__
+#else
+#define WAH_IF_AVX(...)
+#endif
+#if WAH_CHECK_COMPILER(409, 303, 1800)
+#define WAH_IF_AVX2(...) __VA_ARGS__
+#else
+#define WAH_IF_AVX2(...)
+#endif
+#if WAH_CHECK_COMPILER(700, 407, 1932)
+#define WAH_IF_AVX512F(...) __VA_ARGS__
+#define WAH_IF_AVX512VL(...) __VA_ARGS__
+#define WAH_IF_AVX512BW(...) __VA_ARGS__
+#else
+#define WAH_IF_AVX512F(...)
+#define WAH_IF_AVX512VL(...)
+#define WAH_IF_AVX512BW(...)
+#endif
+#if WAH_CHECK_COMPILER(700, 600, 1932)
+#define WAH_IF_AVX512IFMA(...) __VA_ARGS__
+#else
+#define WAH_IF_AVX512IFMA(...)
+#endif
+
+#else
+#define WAH_IF_X86_64(then, ...) __VA_ARGS__
 #endif
 
 #define WAH_TYPE_FUNCTION -100
@@ -644,26 +700,71 @@ typedef enum {
     /* Reference Types */ \
     X(REF_NULL,, 0xD0) X(REF_IS_NULL,, 0xD1) X(REF_FUNC,, 0xD2)
 
+#define WAH_MEM0_OPCODES_M(X) \
+    X(I32_LOAD,mem0) X(I64_LOAD,mem0) X(F32_LOAD,mem0) X(F64_LOAD,mem0) \
+    X(I32_LOAD8_S,mem0) X(I32_LOAD8_U,mem0) X(I32_LOAD16_S,mem0) X(I32_LOAD16_U,mem0) \
+    X(I64_LOAD8_S,mem0) X(I64_LOAD8_U,mem0) X(I64_LOAD16_S,mem0) X(I64_LOAD16_U,mem0) \
+    X(I64_LOAD32_S,mem0) X(I64_LOAD32_U,mem0) \
+    X(I32_STORE,mem0) X(I64_STORE,mem0) X(F32_STORE,mem0) X(F64_STORE,mem0) \
+    X(I32_STORE8,mem0) X(I32_STORE16,mem0) X(I64_STORE8,mem0) X(I64_STORE16,mem0) X(I64_STORE32,mem0) \
+    X(V128_LOAD,mem0) \
+    X(V128_LOAD8X8_S,mem0) X(V128_LOAD8X8_U,mem0) \
+    X(V128_LOAD16X4_S,mem0) X(V128_LOAD16X4_U,mem0) \
+    X(V128_LOAD32X2_S,mem0) X(V128_LOAD32X2_U,mem0) \
+    X(V128_LOAD8_SPLAT,mem0) X(V128_LOAD16_SPLAT,mem0) X(V128_LOAD32_SPLAT,mem0) X(V128_LOAD64_SPLAT,mem0) \
+    X(V128_LOAD32_ZERO,mem0) X(V128_LOAD64_ZERO,mem0) \
+    X(V128_STORE,mem0)
+#define WAH_MEM0_OPCODES_MB(X) \
+    X(V128_LOAD8_LANE,mem0) X(V128_LOAD16_LANE,mem0) X(V128_LOAD32_LANE,mem0) X(V128_LOAD64_LANE,mem0)
+
+#ifdef WAH_X86_64
+
+// Single-version opcodes (only one optimized implementation)
+#define WAH_X86_64_EXTRA_OPCODES_SINGLE(X) \
+    X(I8X16_ABS,ssse3) X(I16X8_ABS,ssse3) X(I32X4_ABS,ssse3) \
+    X(I16X8_Q15MULR_SAT_S,ssse3) X(I16X8_RELAXED_Q15MULR_S,ssse3) X(I8X16_RELAXED_SWIZZLE,ssse3) \
+    X(I8X16_MIN_S,sse41) X(I8X16_MAX_S,sse41) X(I16X8_MIN_U,sse41) X(I16X8_MAX_U,sse41) \
+    X(I32X4_MIN_S,sse41) X(I32X4_MIN_U,sse41) X(I32X4_MAX_S,sse41) X(I32X4_MAX_U,sse41) \
+    X(I32X4_MUL,sse41) \
+    X(I16X8_EXTEND_LOW_I8X16_S,sse41) X(I16X8_EXTEND_HIGH_I8X16_S,sse41) \
+    X(I16X8_EXTEND_LOW_I8X16_U,sse41) X(I16X8_EXTEND_HIGH_I8X16_U,sse41) \
+    X(I32X4_EXTEND_LOW_I16X8_S,sse41) X(I32X4_EXTEND_HIGH_I16X8_S,sse41) \
+    X(I32X4_EXTEND_LOW_I16X8_U,sse41) X(I32X4_EXTEND_HIGH_I16X8_U,sse41) \
+    X(I64X2_EXTEND_LOW_I32X4_S,sse41) X(I64X2_EXTEND_HIGH_I32X4_S,sse41) \
+    X(I64X2_EXTEND_LOW_I32X4_U,sse41) X(I64X2_EXTEND_HIGH_I32X4_U,sse41) \
+    X(I16X8_EXTMUL_LOW_I8X16_S,sse41) X(I16X8_EXTMUL_HIGH_I8X16_S,sse41) \
+    X(I16X8_EXTMUL_LOW_I8X16_U,sse41) X(I16X8_EXTMUL_HIGH_I8X16_U,sse41) \
+    X(I32X4_EXTMUL_LOW_I16X8_S,sse41) X(I32X4_EXTMUL_HIGH_I16X8_S,sse41) \
+    X(I32X4_EXTMUL_LOW_I16X8_U,sse41) X(I32X4_EXTMUL_HIGH_I16X8_U,sse41) \
+    X(I64X2_EXTMUL_LOW_I32X4_S,sse41) X(I64X2_EXTMUL_HIGH_I32X4_S,sse41) \
+    X(I64X2_EXTMUL_LOW_I32X4_U,sse41) X(I64X2_EXTMUL_HIGH_I32X4_U,sse41) \
+    X(I64X2_EQ,sse41) X(I64X2_NE,sse41) \
+    X(I32X4_TRUNC_SAT_F32X4_S,sse41) \
+    X(F32X4_CEIL,sse41) X(F32X4_FLOOR,sse41) X(F32X4_TRUNC,sse41) X(F32X4_NEAREST,sse41) \
+    X(F64X2_CEIL,sse41) X(F64X2_FLOOR,sse41) X(F64X2_TRUNC,sse41) X(F64X2_NEAREST,sse41) \
+    X(I64X2_GT_S,sse42) X(I64X2_LT_S,sse42) \
+    X(I64X2_LE_S,sse42) X(I64X2_GE_S,sse42) \
+    X(I8X16_EQ,avx512f) X(I8X16_GT_S,avx512f) X(I8X16_LT_U,avx512f) \
+    X(F32X4_PMIN,avx512f) X(F32X4_PMAX,avx512f) X(F64X2_PMIN,avx512f) X(F64X2_PMAX,avx512f) \
+    X(V128_BITSELECT,avx512f) \
+    X(F32X4_CONVERT_I32X4_U,avx512vl) X(F64X2_CONVERT_LOW_I32X4_U,avx512vl)
+
+// Multi-version opcodes (multiple implementations with priority ordering)
+// These are handled manually in wah_x86_64_opcode function
+#define WAH_X86_64_EXTRA_OPCODES_MULTI(X) \
+    X(I8X16_POPCNT,avx2) X(I8X16_POPCNT,avx512f) \
+    X(I32X4_TRUNC_SAT_F32X4_U,sse41) X(I32X4_TRUNC_SAT_F32X4_U,avx512vl) \
+    X(I64X2_MUL,avx512f) X(I64X2_MUL,avx512ifma)
+
+#endif
+
 #define WAH_EXTRA_OPCODES(X) \
-    /* Load/store in the memory 0 */ \
-    X(I32_LOAD_mem0) X(I64_LOAD_mem0) X(F32_LOAD_mem0) X(F64_LOAD_mem0) \
-    X(I32_LOAD8_S_mem0) X(I32_LOAD8_U_mem0) X(I32_LOAD16_S_mem0) X(I32_LOAD16_U_mem0) \
-    X(I64_LOAD8_S_mem0) X(I64_LOAD8_U_mem0) X(I64_LOAD16_S_mem0) X(I64_LOAD16_U_mem0) \
-    X(I64_LOAD32_S_mem0) X(I64_LOAD32_U_mem0) \
-    X(I32_STORE_mem0) X(I64_STORE_mem0) X(F32_STORE_mem0) X(F64_STORE_mem0) \
-    X(I32_STORE8_mem0) X(I32_STORE16_mem0) X(I64_STORE8_mem0) X(I64_STORE16_mem0) X(I64_STORE32_mem0) \
-    X(V128_LOAD_mem0) \
-    X(V128_LOAD8X8_S_mem0) X(V128_LOAD8X8_U_mem0) \
-    X(V128_LOAD16X4_S_mem0) X(V128_LOAD16X4_U_mem0) \
-    X(V128_LOAD32X2_S_mem0) X(V128_LOAD32X2_U_mem0) \
-    X(V128_LOAD8_SPLAT_mem0) X(V128_LOAD16_SPLAT_mem0) X(V128_LOAD32_SPLAT_mem0) X(V128_LOAD64_SPLAT_mem0) \
-    X(V128_LOAD32_ZERO_mem0) X(V128_LOAD64_ZERO_mem0) \
-    X(V128_LOAD8_LANE_mem0) X(V128_LOAD16_LANE_mem0) X(V128_LOAD32_LANE_mem0) X(V128_LOAD64_LANE_mem0) \
-    X(V128_STORE_mem0)
+    WAH_MEM0_OPCODES_M(X) WAH_MEM0_OPCODES_MB(X) \
+    WAH_IF_X86_64(WAH_X86_64_EXTRA_OPCODES_SINGLE(X) WAH_X86_64_EXTRA_OPCODES_MULTI(X))
 
 typedef enum {
 #define WAH_OPCODE_INIT(name, cls, val) WAH_OP_##name = val,
-#define WAH_EXTRA_OPCODE_INIT(name) WAH_OP_##name,
+#define WAH_EXTRA_OPCODE_INIT(name, suffix) WAH_OP_##name##_##suffix,
     WAH_OPCODES(WAH_OPCODE_INIT)
     WAH_LAST_OPCODE = WAH_FE - 1, // To make the first extra opcode have value WAH_FE
     WAH_EXTRA_OPCODES(WAH_EXTRA_OPCODE_INIT)
@@ -678,58 +779,255 @@ static const uint8_t wah_opclasses[WAH_FE] = {
 #undef WAH_OPCLASS_INIT
 };
 
-static wah_opcode_t wah_mem0_from_opclass_M(wah_opcode_t opcode) {
-    switch (opcode) {
-        case WAH_OP_I32_LOAD: return WAH_OP_I32_LOAD_mem0;
-        case WAH_OP_I64_LOAD: return WAH_OP_I64_LOAD_mem0;
-        case WAH_OP_F32_LOAD: return WAH_OP_F32_LOAD_mem0;
-        case WAH_OP_F64_LOAD: return WAH_OP_F64_LOAD_mem0;
-        case WAH_OP_I32_LOAD8_S: return WAH_OP_I32_LOAD8_S_mem0;
-        case WAH_OP_I32_LOAD8_U: return WAH_OP_I32_LOAD8_U_mem0;
-        case WAH_OP_I32_LOAD16_S: return WAH_OP_I32_LOAD16_S_mem0;
-        case WAH_OP_I32_LOAD16_U: return WAH_OP_I32_LOAD16_U_mem0;
-        case WAH_OP_I64_LOAD8_S: return WAH_OP_I64_LOAD8_S_mem0;
-        case WAH_OP_I64_LOAD8_U: return WAH_OP_I64_LOAD8_U_mem0;
-        case WAH_OP_I64_LOAD16_S: return WAH_OP_I64_LOAD16_S_mem0;
-        case WAH_OP_I64_LOAD16_U: return WAH_OP_I64_LOAD16_U_mem0;
-        case WAH_OP_I64_LOAD32_S: return WAH_OP_I64_LOAD32_S_mem0;
-        case WAH_OP_I64_LOAD32_U: return WAH_OP_I64_LOAD32_U_mem0;
-        case WAH_OP_I32_STORE: return WAH_OP_I32_STORE_mem0;
-        case WAH_OP_I64_STORE: return WAH_OP_I64_STORE_mem0;
-        case WAH_OP_F32_STORE: return WAH_OP_F32_STORE_mem0;
-        case WAH_OP_F64_STORE: return WAH_OP_F64_STORE_mem0;
-        case WAH_OP_I32_STORE8: return WAH_OP_I32_STORE8_mem0;
-        case WAH_OP_I32_STORE16: return WAH_OP_I32_STORE16_mem0;
-        case WAH_OP_I64_STORE8: return WAH_OP_I64_STORE8_mem0;
-        case WAH_OP_I64_STORE16: return WAH_OP_I64_STORE16_mem0;
-        case WAH_OP_I64_STORE32: return WAH_OP_I64_STORE32_mem0;
-        case WAH_OP_V128_LOAD: return WAH_OP_V128_LOAD_mem0;
-        case WAH_OP_V128_LOAD8X8_S: return WAH_OP_V128_LOAD8X8_S_mem0;
-        case WAH_OP_V128_LOAD8X8_U: return WAH_OP_V128_LOAD8X8_U_mem0;
-        case WAH_OP_V128_LOAD16X4_S: return WAH_OP_V128_LOAD16X4_S_mem0;
-        case WAH_OP_V128_LOAD16X4_U: return WAH_OP_V128_LOAD16X4_U_mem0;
-        case WAH_OP_V128_LOAD32X2_S: return WAH_OP_V128_LOAD32X2_S_mem0;
-        case WAH_OP_V128_LOAD32X2_U: return WAH_OP_V128_LOAD32X2_U_mem0;
-        case WAH_OP_V128_LOAD8_SPLAT: return WAH_OP_V128_LOAD8_SPLAT_mem0;
-        case WAH_OP_V128_LOAD16_SPLAT: return WAH_OP_V128_LOAD16_SPLAT_mem0;
-        case WAH_OP_V128_LOAD32_SPLAT: return WAH_OP_V128_LOAD32_SPLAT_mem0;
-        case WAH_OP_V128_LOAD64_SPLAT: return WAH_OP_V128_LOAD64_SPLAT_mem0;
-        case WAH_OP_V128_LOAD32_ZERO: return WAH_OP_V128_LOAD32_ZERO_mem0;
-        case WAH_OP_V128_LOAD64_ZERO: return WAH_OP_V128_LOAD64_ZERO_mem0;
-        case WAH_OP_V128_STORE: return WAH_OP_V128_STORE_mem0;
-        default: return opcode;
+#ifdef WAH_X86_64
+
+#ifdef __GNUC__
+#include <cpuid.h>
+#else
+#include <intrin.h>
+#endif
+
+// SSE2/SSSE3/SSE4.1 inline assembly wrappers for GCC/Clang (must be declared before use)
+#ifdef __GNUC__
+#define WAH_ASM_UNARY_M128I(intrin, insn) \
+    static WAH_ALWAYS_INLINE __m128i wah##intrin(__m128i a) { __m128i res; __asm__(insn " %1, %0" : "=x"(res) : "x"(a)); return res; }
+#define WAH_ASM_UNARY_M128(intrin, insn) \
+    static WAH_ALWAYS_INLINE __m128 wah##intrin(__m128 a) { __m128 res; __asm__(insn " %1, %0" : "=x"(res) : "x"(a)); return res; }
+#define WAH_ASM_UNARY_M128D(intrin, insn) \
+    static WAH_ALWAYS_INLINE __m128d wah##intrin(__m128d a) { __m128d res; __asm__(insn " %1, %0" : "=x"(res) : "x"(a)); return res; }
+#define WAH_ASM_BINARY_M128I(intrin, insn) \
+    static WAH_ALWAYS_INLINE __m128i wah##intrin(__m128i a, __m128i b) \
+        { __m128i res; __asm__(insn " %2, %0" : "=x"(res) : "0"(a), "x"(b)); return res; }
+#define WAH_ASM_BINARY_M128I_3OP(intrin, insn) \
+    static WAH_ALWAYS_INLINE __m128i wah##intrin(__m128i a, __m128i b) \
+        { __m128i res; __asm__(insn " %2, %1, %0" : "=x"(res) : "x"(a), "x"(b)); return res; }
+#define WAH_ASM_BINARY_M128(intrin, insn) \
+    static WAH_ALWAYS_INLINE __m128 wah##intrin(__m128 a, __m128 b) \
+        { __m128 res; __asm__(insn " %2, %0" : "=x"(res) : "0"(a), "x"(b)); return res; }
+#define WAH_ASM_BINARY_M128_IMM(intrin, insn, imm) \
+    static WAH_ALWAYS_INLINE __m128 wah##intrin(__m128 a, __m128 b) \
+        { __m128 res; __asm__(insn " $"#imm ", %2, %1, %0" : "=x"(res) : "x"(a), "x"(b)); return res; }
+#define WAH_ASM_BINARY_M128D(intrin, insn) \
+    static WAH_ALWAYS_INLINE __m128d wah##intrin(__m128d a, __m128d b) \
+        { __m128d res; __asm__(insn " %2, %0" : "=x"(res) : "0"(a), "x"(b)); return res; }
+#define WAH_ASM_BINARY_M128D_IMM(intrin, insn, imm) \
+    static WAH_ALWAYS_INLINE __m128d wah##intrin(__m128d a, __m128d b) \
+        { __m128d res; __asm__(insn " $"#imm ", %2, %1, %0" : "=x"(res) : "x"(a), "x"(b)); return res; }
+#define WAH_ASM_TERNARY_M128I(intrin, insn) \
+    static WAH_ALWAYS_INLINE __m128i wah##intrin(__m128i a, __m128i b, __m128i c, int imm) \
+        { __m128i res; __asm__(insn " %4, %3, %2, %0" : "=x"(res) : "0"(a), "x"(b), "x"(c), "i"(imm)); return res; }
+#define WAH_ASM_CONV_M128I_TO_M128(intrin, insn) \
+    static WAH_ALWAYS_INLINE __m128 wah##intrin(__m128i a) { __m128 res; __asm__(insn " %1, %0" : "=x"(res) : "x"(a)); return res; }
+#define WAH_ASM_CONV_M128I_TO_M128D(intrin, insn) \
+    static WAH_ALWAYS_INLINE __m128d wah##intrin(__m128i a) { __m128d res; __asm__(insn " %1, %0" : "=x"(res) : "x"(a)); return res; }
+#define WAH_ASM_CONV_M128_TO_M128I(intrin, insn) \
+    static WAH_ALWAYS_INLINE __m128i wah##intrin(__m128 a) { __m128i res; __asm__(insn " %1, %0" : "=x"(res) : "x"(a)); return res; }
+#else
+#define WAH_ASM_UNARY_M128I(intrin, insn) static WAH_ALWAYS_INLINE __m128i wah##intrin(__m128i a) { return intrin(a); }
+#define WAH_ASM_UNARY_M128(intrin, insn) static WAH_ALWAYS_INLINE __m128 wah##intrin(__m128 a) { return intrin(a); }
+#define WAH_ASM_UNARY_M128D(intrin, insn) static WAH_ALWAYS_INLINE __m128d wah##intrin(__m128d a) { return intrin(a); }
+#define WAH_ASM_BINARY_M128I(intrin, insn) static WAH_ALWAYS_INLINE __m128i wah##intrin(__m128i a, __m128i b) { return intrin(a, b); }
+#define WAH_ASM_BINARY_M128I_3OP(intrin, insn) static WAH_ALWAYS_INLINE __m128i wah##intrin(__m128i a, __m128i b) { return intrin(a, b); }
+#define WAH_ASM_BINARY_M128(intrin, insn) static WAH_ALWAYS_INLINE __m128 wah##intrin(__m128 a, __m128 b) { return intrin(a, b); }
+#define WAH_ASM_BINARY_M128_IMM(intrin, insn, imm) static WAH_ALWAYS_INLINE __m128 wah##intrin(__m128 a, __m128 b) { return intrin(a, b, imm); }
+#define WAH_ASM_BINARY_M128D(intrin, insn) static WAH_ALWAYS_INLINE __m128d wah##intrin(__m128d a, __m128d b) { return intrin(a, b); }
+#define WAH_ASM_BINARY_M128D_IMM(intrin, insn, imm) static WAH_ALWAYS_INLINE __m128d wah##intrin(__m128d a, __m128d b) { return intrin(a, b, imm); }
+#define WAH_ASM_TERNARY_M128I(intrin, insn) static WAH_ALWAYS_INLINE __m128i wah##intrin(__m128i a, __m128i b, __m128i c, int imm) { return intrin(a, b, c, imm); }
+#define WAH_ASM_CONV_M128I_TO_M128(intrin, insn) static WAH_ALWAYS_INLINE __m128 wah##intrin(__m128i a) { return intrin(a); }
+#define WAH_ASM_CONV_M128I_TO_M128D(intrin, insn) static WAH_ALWAYS_INLINE __m128d wah##intrin(__m128i a) { return intrin(a); }
+#define WAH_ASM_CONV_M128_TO_M128I(intrin, insn) static WAH_ALWAYS_INLINE __m128i wah##intrin(__m128 a) { return intrin(a); }
+#endif
+
+// SSSE3 wrappers
+WAH_IF_SSSE3(
+    WAH_ASM_UNARY_M128I(_mm_abs_epi8, "pabsb")
+    WAH_ASM_UNARY_M128I(_mm_abs_epi16, "pabsw")
+    WAH_ASM_UNARY_M128I(_mm_abs_epi32, "pabsd")
+    WAH_ASM_BINARY_M128I(_mm_mulhrs_epi16, "pmulhrsw")
+    WAH_ASM_BINARY_M128I(_mm_shuffle_epi8, "pshufb")
+    WAH_ASM_BINARY_M128I(_mm_maddubs_epi16, "pmaddubsw")
+)
+
+#define _mm_round_ps_trunc(a) _mm_round_ps((a), _MM_FROUND_TO_ZERO)
+#define _mm_round_ps_nearest(a) _mm_round_ps((a), _MM_FROUND_TO_NEAREST_INT)
+#define _mm_round_pd_trunc(a) _mm_round_pd((a), _MM_FROUND_TO_ZERO)
+#define _mm_round_pd_nearest(a) _mm_round_pd((a), _MM_FROUND_TO_NEAREST_INT)
+
+WAH_IF_SSE41(
+    // SSE4.1 wrappers - min/max
+    WAH_ASM_BINARY_M128I(_mm_min_epi8, "pminsb")
+    WAH_ASM_BINARY_M128I(_mm_max_epi8, "pmaxsb")
+    WAH_ASM_BINARY_M128I(_mm_min_epu16, "pminuw")
+    WAH_ASM_BINARY_M128I(_mm_max_epu16, "pmaxuw")
+    WAH_ASM_BINARY_M128I(_mm_min_epi32, "pminsd")
+    WAH_ASM_BINARY_M128I(_mm_max_epi32, "pmaxsd")
+    WAH_ASM_BINARY_M128I(_mm_min_epu32, "pminud")
+    WAH_ASM_BINARY_M128I(_mm_max_epu32, "pmaxud")
+
+    // SSE4.1 wrappers - extend
+    WAH_ASM_UNARY_M128I(_mm_cvtepi8_epi16, "pmovsxbw")
+    WAH_ASM_UNARY_M128I(_mm_cvtepu8_epi16, "pmovzxbw")
+    WAH_ASM_UNARY_M128I(_mm_cvtepi16_epi32, "pmovsxwd")
+    WAH_ASM_UNARY_M128I(_mm_cvtepu16_epi32, "pmovzxwd")
+    WAH_ASM_UNARY_M128I(_mm_cvtepi32_epi64, "pmovsxdq")
+    WAH_ASM_UNARY_M128I(_mm_cvtepu32_epi64, "pmovzxdq")
+
+    // SSE4.1 wrappers - compare/pack/mul
+    WAH_ASM_BINARY_M128I(_mm_cmpeq_epi64, "pcmpeqq")
+    WAH_ASM_BINARY_M128I(_mm_cmpgt_epi64, "pcmpgtq")
+    WAH_ASM_BINARY_M128I(_mm_packus_epi32, "packusdw")
+    WAH_ASM_BINARY_M128I(_mm_mullo_epi32, "pmulld")
+    WAH_ASM_BINARY_M128I(_mm_mul_epi32, "pmuldq")
+
+    // SSE4.1 wrappers - float round with immediate operand
+    WAH_ASM_UNARY_M128(_mm_ceil_ps, "roundps $0x2,")
+    WAH_ASM_UNARY_M128(_mm_floor_ps, "roundps $0x1,")
+    WAH_ASM_UNARY_M128(_mm_round_ps_trunc, "roundps $0x3,")
+    WAH_ASM_UNARY_M128(_mm_round_ps_nearest, "roundps $0x0,")
+
+    WAH_ASM_UNARY_M128D(_mm_ceil_pd, "roundpd $0x2,")
+    WAH_ASM_UNARY_M128D(_mm_floor_pd, "roundpd $0x1,")
+    WAH_ASM_UNARY_M128D(_mm_round_pd_trunc, "roundpd $0x3,")
+    WAH_ASM_UNARY_M128D(_mm_round_pd_nearest, "roundpd $0x0,")
+)
+
+WAH_IF_AVX512F(
+    // AVX-512 popcount wrappers
+    WAH_ASM_UNARY_M128I(_mm_popcnt_epi8, "vpopcntb")
+    WAH_ASM_UNARY_M128I(_mm_popcnt_epi32, "vpopcntd")
+)
+
+// AVX-512 ternary logic wrapper (vpternlogd)
+// Specialized for V128_BITSELECT which uses imm8 = 0xD8
+#ifdef __GNUC__
+WAH_IF_AVX512F(
+    static WAH_ALWAYS_INLINE __m128i wah_mm_ternarylogic_epi32_bitselect(__m128i a, __m128i b, __m128i c) {
+        __m128i res = a;
+        __asm__("vpternlogd $0xD8, %2, %1, %0" : "+x"(res) : "x"(b), "x"(c));
+        return res;
     }
+)
+#else
+WAH_IF_AVX512F(
+    static WAH_ALWAYS_INLINE __m128i wah_mm_ternarylogic_epi32_bitselect(__m128i a, __m128i b, __m128i c) {
+        return _mm_ternarylogic_epi32(a, b, c, 0xD8);
+    }
+)
+#endif
+
+// AVX-512 FP min/max wrappers (vrange)
+// Using SAE=1 with mode 3 (<= min) and mode 7 (>= max)
+WAH_IF_AVX512F(
+    WAH_ASM_BINARY_M128_IMM(_mm_range_ps_min, "vrangeps", 0x83)
+    WAH_ASM_BINARY_M128_IMM(_mm_range_ps_max, "vrangeps", 0x87)
+    WAH_ASM_BINARY_M128D_IMM(_mm_range_pd_min, "vrangepd", 0x83)
+    WAH_ASM_BINARY_M128D_IMM(_mm_range_pd_max, "vrangepd", 0x87)
+)
+
+WAH_IF_AVX512VL(
+    // AVX-512 unsigned conversion wrappers (i32x4 -> f32x4/f64x2)
+    WAH_ASM_CONV_M128I_TO_M128(_mm_cvtepu32_ps, "vcvtudq2ps")
+    WAH_ASM_CONV_M128I_TO_M128D(_mm_cvtepu32_pd, "vcvtudq2pd")
+
+    // AVX-512VL truncate-to-unsigned wrappers (f32x4 -> i32x4, with saturation)
+    WAH_ASM_CONV_M128_TO_M128I(_mm_cvttps_epu32, "vcvttps2udq")
+)
+
+// AVX-512IFMA 64x64->64 multiply
+WAH_IF_AVX512IFMA(
+    WAH_ASM_BINARY_M128I_3OP(_mm_mullox_epi64, "vpmullq")
+)
+
+// SSE4.1 wrapper with implicit xmm0 operand (pblendvb)
+#ifdef __GNUC__
+WAH_IF_SSE41(
+    static WAH_ALWAYS_INLINE __m128i wah_mm_blendv_epi8(__m128i a, __m128i b, __m128i mask) {
+        __m128i res = a;
+        __asm__ __volatile__("movdqa %2, %%xmm0; pblendvb %1, %0"
+            : "+x"(res)
+            : "x"(b), "x"(mask)
+            : "xmm0");
+        return res;
+    }
+)
+#else
+WAH_IF_SSE41(
+    static WAH_ALWAYS_INLINE __m128i wah_mm_blendv_epi8(__m128i a, __m128i b, __m128i mask) {
+        return _mm_blendv_epi8(a, b, mask);
+    }
+)
+#endif
+
+#undef WAH_ASM_UNARY_M128I
+#undef WAH_ASM_BINARY_M128I
+#undef WAH_ASM_BINARY_M128I_3OP
+#undef WAH_ASM_UNARY_M128
+#undef WAH_ASM_BINARY_M128
+#undef WAH_ASM_BINARY_M128_IMM
+#undef WAH_ASM_UNARY_M128D
+#undef WAH_ASM_BINARY_M128D
+#undef WAH_ASM_BINARY_M128D_IMM
+#undef WAH_ASM_TERNARY_M128I
+#undef WAH_ASM_CONV_M128I_TO_M128
+#undef WAH_ASM_CONV_M128I_TO_M128D
+#undef WAH_ASM_CONV_M128_TO_M128I
+
+typedef struct {
+    uint32_t ssse3 : 1, sse41 : 1, sse42 : 1, avx2 : 1;
+    uint32_t avx512f : 1, avx512vl : 1, avx512bw : 1, avx512ifma : 1;
+} wah_x86_64_features_t;
+
+static wah_x86_64_features_t wah_x86_64_features(void) {
+    uint32_t eax, ebx, ecx, edx;
+#if defined(_MSC_VER)
+    int cpu_info[4];
+    __cpuid(cpu_info, 1);
+    eax = (uint32_t)cpu_info[0];
+    ebx = (uint32_t)cpu_info[1];
+    ecx = (uint32_t)cpu_info[2];
+    edx = (uint32_t)cpu_info[3];
+#else
+    __cpuid(1, eax, ebx, ecx, edx);
+#endif
+    uint32_t avx512f = (ebx >> 16) & 1;
+    return (wah_x86_64_features_t){
+        .ssse3 = (ecx >> 9) & 1,
+        .sse41 = (ecx >> 19) & 1,
+        .sse42 = (ecx >> 20) & 1,
+        .avx2 = (ebx >> 5) & 1,
+        .avx512f = avx512f,
+        .avx512vl = avx512f & (ebx >> 17),
+        .avx512bw = avx512f & (ebx >> 30),
+        .avx512ifma = avx512f & (ebx >> 21),
+    };
 }
 
-static wah_opcode_t wah_mem0_from_opclass_MB(wah_opcode_t opcode) {
+static wah_opcode_t wah_x86_64_opcode(wah_opcode_t opcode, wah_x86_64_features_t features) {
     switch (opcode) {
-        case WAH_OP_V128_LOAD8_LANE: return WAH_OP_V128_LOAD8_LANE_mem0;
-        case WAH_OP_V128_LOAD16_LANE: return WAH_OP_V128_LOAD16_LANE_mem0;
-        case WAH_OP_V128_LOAD32_LANE: return WAH_OP_V128_LOAD32_LANE_mem0;
-        case WAH_OP_V128_LOAD64_LANE: return WAH_OP_V128_LOAD64_LANE_mem0;
-        default: return opcode;
+        // Single-version opcodes
+        #define WAH_X86_64_OPCODE_CASE(name, suffix) case WAH_OP_##name: if (features.suffix) return WAH_OP_##name##_##suffix;
+        WAH_X86_64_EXTRA_OPCODES_SINGLE(WAH_X86_64_OPCODE_CASE)
+        #undef WAH_X86_64_OPCODE_CASE
+
+        // Multi-version opcodes with priority ordering
+        case WAH_OP_I8X16_POPCNT:
+            if (features.avx512bw) return WAH_OP_I8X16_POPCNT_avx512f;
+            if (features.avx2) return WAH_OP_I8X16_POPCNT_avx2;
+            break;
+        case WAH_OP_I32X4_TRUNC_SAT_F32X4_U:
+            if (features.avx512vl) return WAH_OP_I32X4_TRUNC_SAT_F32X4_U_avx512vl;
+            if (features.sse41) return WAH_OP_I32X4_TRUNC_SAT_F32X4_U_sse41;
+            break;
+        case WAH_OP_I64X2_MUL:
+            if (features.avx512ifma) return WAH_OP_I64X2_MUL_avx512ifma;
+            if (features.avx512f) return WAH_OP_I64X2_MUL_avx512f;
+            break;
+        default: ; // pass through
     }
+    return opcode;
 }
+
+#endif
 
 // --- Memory Structure ---
 #define WAH_WASM_PAGE_SIZE 65536 // 64 KB
@@ -1675,7 +1973,7 @@ static WAH_ALWAYS_INLINE double wah_pmax(double a, double b) {
     return fmax(a, b);
 }
 
-#ifdef WAH_X86_64 // SSE2
+#ifdef WAH_X86_64
 
 #define DEFINE_PMINMAX(wasm_type, minmax, __m128x, suffix, canon_nan_s) \
 static WAH_ALWAYS_INLINE __m128x wah_##wasm_type##_p##minmax##_sse2(__m128x a, __m128x b) { \
@@ -1923,7 +2221,327 @@ static WAH_ALWAYS_INLINE __m128i wah_i8x16_shr_u_sse2(__m128i a, int32_t count) 
     return _mm_packus_epi16(lo, hi);
 }
 
+// I7X16 sign-extension: treat lower 7 bits as signed (bit6=sign, bit7 ignored)
+// (b & 0x7F) | ((b << 1) & 0x80) -- shifts bit6 into bit7 position for sign
+static WAH_ALWAYS_INLINE __m128i wah_i7x16_to_i8_sse2(__m128i b) {
+    return _mm_or_si128(
+        _mm_and_si128(b, _mm_set1_epi8(0x7F)),
+        _mm_and_si128(_mm_add_epi8(b, b), _mm_set1_epi8(0x80))
+    );
+}
+
+// I16X8 relaxed dot: i8x16 (signed) * i7x16 (7-bit signed), sum adjacent pairs -> i16x8
+// Correctly sign-extends i7 operand, unlike pmaddubsw which treats both as i8.
+static WAH_ALWAYS_INLINE __m128i wah_i16x8_relaxed_dot_i8x16_i7x16_s_sse2(__m128i a, __m128i b) {
+    __m128i b_i8 = wah_i7x16_to_i8_sse2(b);
+    __m128i zero = _mm_setzero_si128();
+    // Sign-extend i8 bytes to i16 for both operands
+    __m128i a_sign = _mm_cmplt_epi8(a, zero);      // 0xFF if negative, 0x00 otherwise
+    __m128i b_sign = _mm_cmplt_epi8(b_i8, zero);
+    __m128i a_lo = _mm_unpacklo_epi8(a, a_sign);   // bytes 0-7 as i16x8
+    __m128i a_hi = _mm_unpackhi_epi8(a, a_sign);   // bytes 8-15 as i16x8
+    __m128i b_lo = _mm_unpacklo_epi8(b_i8, b_sign);
+    __m128i b_hi = _mm_unpackhi_epi8(b_i8, b_sign);
+    // pmaddwd: result[i] = a[2i]*b[2i] + a[2i+1]*b[2i+1] as i32
+    __m128i dot_lo = _mm_madd_epi16(a_lo, b_lo);   // 4 i32 values from bytes 0-7
+    __m128i dot_hi = _mm_madd_epi16(a_hi, b_hi);   // 4 i32 values from bytes 8-15
+    // Pack i32 -> i16; max |result| = 127*63*2 = 16002 < 32767, no saturation
+    return _mm_packs_epi32(dot_lo, dot_hi);
+}
+
+// I32X4 relaxed dot-add: sum 4 consecutive (i8*i7) products per lane, add accumulator
+// Uses shuffle trick for horizontal add (avoids SSSE3 phaddd).
+static WAH_ALWAYS_INLINE __m128i wah_i32x4_relaxed_dot_i8x16_i7x16_add_s_sse2(__m128i a, __m128i b, __m128i c) {
+    __m128i b_i8 = wah_i7x16_to_i8_sse2(b);
+    __m128i zero = _mm_setzero_si128();
+    __m128i a_sign = _mm_cmplt_epi8(a, zero);
+    __m128i b_sign = _mm_cmplt_epi8(b_i8, zero);
+    __m128i a_lo = _mm_unpacklo_epi8(a, a_sign);
+    __m128i a_hi = _mm_unpackhi_epi8(a, a_sign);
+    __m128i b_lo = _mm_unpacklo_epi8(b_i8, b_sign);
+    __m128i b_hi = _mm_unpackhi_epi8(b_i8, b_sign);
+    // dots_lo[i] = a[2i]*b[2i] + a[2i+1]*b[2i+1] as i32 (4 results from bytes 0-7)
+    // dots_hi[i] = a[8+2i]*b[8+2i] + a[9+2i]*b[9+2i] as i32 (4 results from bytes 8-15)
+    __m128i dots_lo = _mm_madd_epi16(a_lo, b_lo);
+    __m128i dots_hi = _mm_madd_epi16(a_hi, b_hi);
+    // Horizontal sum of adjacent pairs using float shuffle (SSE1, no SSSE3 required):
+    // shuffle_ps(a, b, {0,2,0,2}) = [a[0],a[2],b[0],b[2]] (even lanes)
+    // shuffle_ps(a, b, {1,3,1,3}) = [a[1],a[3],b[1],b[3]] (odd lanes)
+    // sum = [a[0]+a[1], a[2]+a[3], b[0]+b[1], b[2]+b[3]]
+    __m128i evens = _mm_castps_si128(_mm_shuffle_ps(
+        _mm_castsi128_ps(dots_lo), _mm_castsi128_ps(dots_hi), _MM_SHUFFLE(2,0,2,0)));
+    __m128i odds  = _mm_castps_si128(_mm_shuffle_ps(
+        _mm_castsi128_ps(dots_lo), _mm_castsi128_ps(dots_hi), _MM_SHUFFLE(3,1,3,1)));
+    return _mm_add_epi32(_mm_add_epi32(evens, odds), c);
+}
+
+WAH_IF_SSE41(
+    static WAH_ALWAYS_INLINE __m128i wah_i16x8_extend_high_i8x16_s_sse41(__m128i a) {
+        // Shuffle bytes 8-15 to low positions: [8,9,10,11,12,13,14,15, 0x80,...]
+        return wah_mm_cvtepi8_epi16(wah_mm_shuffle_epi8(a, _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8)));
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i16x8_extend_high_i8x16_u_sse41(__m128i a) {
+        return wah_mm_cvtepu8_epi16(wah_mm_shuffle_epi8(a, _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8)));
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i32x4_extend_high_i16x8_s_sse41(__m128i a) {
+        // Shuffle words 4-7 (bytes 8-15) to low positions
+        return wah_mm_cvtepi16_epi32(wah_mm_shuffle_epi8(a, _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8)));
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i32x4_extend_high_i16x8_u_sse41(__m128i a) {
+        return wah_mm_cvtepu16_epi32(wah_mm_shuffle_epi8(a, _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8)));
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i64x2_extend_high_i32x4_s_sse41(__m128i a) {
+        // Shuffle dwords 2-3 (bytes 8-15) to low positions
+        return wah_mm_cvtepi32_epi64(wah_mm_shuffle_epi8(a, _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8)));
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i64x2_extend_high_i32x4_u_sse41(__m128i a) {
+        return wah_mm_cvtepu32_epi64(wah_mm_shuffle_epi8(a, _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8)));
+    }
+
+    static WAH_ALWAYS_INLINE __m128i wah_i16x8_extmul_low_i8x16_s_sse41(__m128i a, __m128i b) {
+        // Extract and sign-extend low 8 bytes of each input
+        __m128i zero = _mm_setzero_si128();
+        __m128i a_low = _mm_unpacklo_epi8(a, zero);
+        __m128i b_low = _mm_unpacklo_epi8(b, zero);
+
+        // Sign-extend from 8-bit to 16-bit
+        __m128i a_sign_ext = wah_mm_cvtepi8_epi16(wah_mm_shuffle_epi8(a_low,
+            _mm_set_epi8(7,6,5,4,3,2,1,0, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
+        __m128i b_sign_ext = wah_mm_cvtepi8_epi16(wah_mm_shuffle_epi8(b_low,
+            _mm_set_epi8(7,6,5,4,3,2,1,0, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
+
+        // Multiply sign-extended values
+        return _mm_mullo_epi16(a_sign_ext, b_sign_ext);
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i16x8_extmul_low_i8x16_u_sse41(__m128i a, __m128i b) {
+        // Extract and zero-extend low 8 bytes of each input
+        __m128i a_low = wah_mm_cvtepu8_epi16(wah_mm_shuffle_epi8(a,
+            _mm_set_epi8(7,6,5,4,3,2,1,0, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
+        __m128i b_low = wah_mm_cvtepu8_epi16(wah_mm_shuffle_epi8(b,
+            _mm_set_epi8(7,6,5,4,3,2,1,0, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
+        return _mm_mullo_epi16(a_low, b_low);
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i16x8_extmul_high_i8x16_s_sse41(__m128i a, __m128i b) {
+        __m128i a_high = wah_mm_cvtepi8_epi16(wah_mm_shuffle_epi8(a,
+            _mm_set_epi8(15,14,13,12,11,10,9,8, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
+        __m128i b_high = wah_mm_cvtepi8_epi16(wah_mm_shuffle_epi8(b,
+            _mm_set_epi8(15,14,13,12,11,10,9,8, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
+        return _mm_mullo_epi16(a_high, b_high);
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i16x8_extmul_high_i8x16_u_sse41(__m128i a, __m128i b) {
+        __m128i a_high = wah_mm_cvtepu8_epi16(wah_mm_shuffle_epi8(a,
+            _mm_set_epi8(15,14,13,12,11,10,9,8, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
+        __m128i b_high = wah_mm_cvtepu8_epi16(wah_mm_shuffle_epi8(b,
+            _mm_set_epi8(15,14,13,12,11,10,9,8, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
+        return _mm_mullo_epi16(a_high, b_high);
+    }
+
+    static WAH_ALWAYS_INLINE __m128i wah_i32x4_extmul_low_i16x8_s_sse41(__m128i a, __m128i b) {
+        // Use SSE2 mullo_epi16 for each pair
+        __m128i prod = _mm_mullo_epi16(a, b);
+        // Sign extend to 32-bit
+        __m128i prod_low = wah_mm_cvtepi16_epi32(prod);
+        __m128i prod_high = wah_mm_cvtepi16_epi32(_mm_srli_si128(prod, 8));
+        // Interleave results using 64-bit unpack to maintain correct order
+        return _mm_unpacklo_epi64(prod_low, prod_high);
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i32x4_extmul_low_i16x8_u_sse41(__m128i a, __m128i b) {
+        __m128i prod = _mm_mullo_epi16(a, b);
+        __m128i prod_low = wah_mm_cvtepu16_epi32(prod);
+        __m128i prod_high = wah_mm_cvtepu16_epi32(_mm_srli_si128(prod, 8));
+        return _mm_unpacklo_epi64(prod_low, prod_high);
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i32x4_extmul_high_i16x8_s_sse41(__m128i a, __m128i b) {
+        __m128i a_high = _mm_srli_si128(a, 8);
+        __m128i b_high = _mm_srli_si128(b, 8);
+        __m128i prod = _mm_mullo_epi16(a_high, b_high);
+        __m128i prod_low = wah_mm_cvtepi16_epi32(prod);
+        __m128i prod_high = wah_mm_cvtepi16_epi32(_mm_srli_si128(prod, 8));
+        return _mm_unpacklo_epi64(prod_low, prod_high);
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i32x4_extmul_high_i16x8_u_sse41(__m128i a, __m128i b) {
+        __m128i a_high = _mm_srli_si128(a, 8);
+        __m128i b_high = _mm_srli_si128(b, 8);
+        __m128i prod = _mm_mullo_epi16(a_high, b_high);
+        __m128i prod_low = wah_mm_cvtepu16_epi32(prod);
+        __m128i prod_high = wah_mm_cvtepu16_epi32(_mm_srli_si128(prod, 8));
+        return _mm_unpacklo_epi64(prod_low, prod_high);
+    }
+
+    static WAH_ALWAYS_INLINE __m128i wah_i64x2_extmul_low_i32x4_s_sse41(__m128i a, __m128i b) {
+        // Use SSE4.1's mul_epi32 (32x32->64) with sign extension
+        __m128i prod0 = wah_mm_mul_epi32(a, b);
+        __m128i prod1 = wah_mm_mul_epi32(_mm_srli_si128(a, 8), _mm_srli_si128(b, 8));
+        return _mm_unpacklo_epi64(prod0, prod1);
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i64x2_extmul_low_i32x4_u_sse41(__m128i a, __m128i b) {
+        // _mm_mul_epu32 only uses the low 32 bits of each lane, no need to zero-extend
+        __m128i prod0 = _mm_mul_epu32(a, b);
+        __m128i prod1 = _mm_mul_epu32(_mm_srli_si128(a, 8), _mm_srli_si128(b, 8));
+        return _mm_unpacklo_epi64(prod0, prod1);
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i64x2_extmul_high_i32x4_s_sse41(__m128i a, __m128i b) {
+        __m128i a_high = _mm_srli_si128(a, 8);
+        __m128i b_high = _mm_srli_si128(b, 8);
+        __m128i prod0 = wah_mm_mul_epi32(a_high, b_high);
+        __m128i prod1 = wah_mm_mul_epi32(_mm_srli_si128(a_high, 8), _mm_srli_si128(b_high, 8));
+        return _mm_unpacklo_epi64(prod0, prod1);
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i64x2_extmul_high_i32x4_u_sse41(__m128i a, __m128i b) {
+        __m128i a_high = _mm_srli_si128(a, 8);
+        __m128i b_high = _mm_srli_si128(b, 8);
+        __m128i prod0 = _mm_mul_epu32(a_high, b_high);
+        __m128i prod1 = _mm_mul_epu32(_mm_srli_si128(a_high, 8), _mm_srli_si128(b_high, 8));
+        return _mm_unpacklo_epi64(prod0, prod1);
+    }
+
+    static WAH_ALWAYS_INLINE __m128i wah_i32x4_trunc_sat_f32x4_s_sse41(__m128 a) {
+        // First truncate (no saturation)
+        __m128i truncated = _mm_cvttps_epi32(a);
+
+        // Check for NaN and create a mask
+        __m128 cmp_nan = _mm_cmpunord_ps(a, a);
+
+        // Check for overflow - use >= and <= to handle exact boundary values
+        __m128 cmp_gt = _mm_cmpge_ps(a, _mm_set1_ps((float)INT32_MAX));
+        __m128 cmp_lt = _mm_cmple_ps(a, _mm_set1_ps((float)INT32_MIN));
+
+        // Select: if NaN -> 0, if >= max -> INT32_MAX, if <= min -> INT32_MIN, else truncated
+        __m128i result = truncated;
+        result = wah_mm_blendv_epi8(result, _mm_setzero_si128(), _mm_castps_si128(cmp_nan));
+        result = wah_mm_blendv_epi8(result, _mm_set1_epi32(INT32_MAX), _mm_castps_si128(cmp_gt));
+        result = wah_mm_blendv_epi8(result, _mm_set1_epi32(INT32_MIN), _mm_castps_si128(cmp_lt));
+        return result;
+    }
+
+    static WAH_ALWAYS_INLINE __m128i wah_i32x4_trunc_sat_f32x4_u_sse41(__m128 a) {
+        // Check for NaN
+        __m128 cmp_nan = _mm_cmpunord_ps(a, a);
+
+        // Check for negative
+        __m128 cmp_lt = _mm_cmplt_ps(a, _mm_setzero_ps());
+
+        // Check for overflow (>= UINT32_MAX)
+        __m128 cmp_gt = _mm_cmpge_ps(a, _mm_set1_ps((float)UINT32_MAX));
+
+        // Truncate
+        __m128i truncated = _mm_cvttps_epi32(a);
+
+        // Select: if NaN or < 0 -> 0, if > max -> UINT32_MAX, else truncated
+        __m128i result = truncated;
+        __m128i invalid = _mm_or_si128(_mm_castps_si128(cmp_nan), _mm_castps_si128(cmp_lt));
+        result = wah_mm_blendv_epi8(result, _mm_setzero_si128(), invalid);
+        result = wah_mm_blendv_epi8(result, _mm_set1_epi32(UINT32_MAX), _mm_castps_si128(cmp_gt));
+        return result;
+    }
+)
+
+WAH_IF_SSE42(
+    // SSE4.2 64-bit comparison wrappers (pcmpgtq)
+    static WAH_ALWAYS_INLINE __m128i wah_i64x2_lt_s_sse42(__m128i a, __m128i b) {
+        return wah_mm_cmpgt_epi64(b, a);
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i64x2_gt_s_sse42(__m128i a, __m128i b) {
+        return wah_mm_cmpgt_epi64(a, b);
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i64x2_le_s_sse42(__m128i a, __m128i b) {
+        return wah_v128_not_sse2(wah_mm_cmpgt_epi64(a, b)); // a <= b  is  NOT(a > b)
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_i64x2_ge_s_sse42(__m128i a, __m128i b) {
+        return wah_v128_not_sse2(wah_mm_cmpgt_epi64(b, a)); // a >= b  is  NOT(b > a)
+    }
+)
+
+WAH_IF_AVX2(
+    // AVX2 optimized popcount using SSSE3 pshufb lookup table
+    static WAH_ALWAYS_INLINE __m128i wah_i8x16_popcnt_avx2(__m128i v) {
+        // Split bytes into nibbles, look up popcount for each
+        __m128i low_nibbles = _mm_and_si128(v, _mm_set1_epi8(0x0F));
+        __m128i high_nibbles = _mm_and_si128(_mm_srli_epi16(v, 4), _mm_set1_epi8(0x0F));
+
+        // Popcount lookup table (for nibbles 0-15)
+        __m128i popcnt_table = _mm_set_epi8(4,3,3,2,3,2,2,1,3,2,2,1,2,1,1,0);
+
+        // Look up popcount for each nibble
+        __m128i low_popcnt = wah_mm_shuffle_epi8(popcnt_table, low_nibbles);
+        __m128i high_popcnt = wah_mm_shuffle_epi8(popcnt_table, high_nibbles);
+
+        // Add the two popcounts together
+        return _mm_add_epi8(low_popcnt, high_popcnt);
+    }
+)
+
+WAH_IF_AVX512F(
+    // AVX-512F 64x64->64 multiply (partial products method, more efficient than SSE2)
+    static WAH_ALWAYS_INLINE __m128i wah_i64x2_mul_avx512f(__m128i a, __m128i b) {
+        __m128i a_lo = _mm_and_si128(a, _mm_set1_epi32(0xFFFFFFFF));
+        __m128i b_lo = _mm_and_si128(b, _mm_set1_epi32(0xFFFFFFFF));
+
+        __m128i a_hi = _mm_srli_epi64(a, 32);
+        __m128i b_hi = _mm_srli_epi64(b, 32);
+
+        __m128i p0 = _mm_mul_epu32(a_lo, b_lo);
+        __m128i p1 = _mm_mul_epu32(a_lo, b_hi);
+        __m128i p2 = _mm_mul_epu32(a_hi, b_lo);
+
+        __m128i p1_p2 = _mm_add_epi64(p1, p2);
+        p1_p2 = _mm_slli_epi64(p1_p2, 32);
+
+        __m128i result = _mm_add_epi64(p0, p1_p2);
+        return result;
+    }
+)
+
+WAH_IF_AVX512VL(
+    // AVX-512VL HIGH conversion helpers (shuffle high 64 bits then convert)
+    static WAH_ALWAYS_INLINE __m128 wah_f32x4_convert_i32x4_u_high_avx512vl(__m128i a) {
+        __m128i a_high = _mm_srli_si128(a, 8);
+        return wah_mm_cvtepu32_ps(a_high);
+    }
+
+    static WAH_ALWAYS_INLINE __m128d wah_f64x2_convert_high_i32x4_u_avx512vl(__m128i a) {
+        __m128i a_high = _mm_srli_si128(a, 8);
+        return wah_mm_cvtepu32_pd(a_high);
+    }
+)
+
+// AVX-512BW comparison helpers (vpcmpeqb/vpcmpb -> k -> vpmovm2b, no __mmask types needed)
+#if defined(__GNUC__)
+WAH_IF_AVX512BW(
+    static WAH_ALWAYS_INLINE __m128i wah_mm_cmpeq_epi8_avx512(__m128i a, __m128i b) {
+        __m128i result;
+        __asm__("vpcmpeqb %[b], %[a], %%k1\n\t vpmovm2b %%k1, %[result]"
+            : [result] "=v" (result) : [a] "v" (a), [b] "v" (b) : "k1");
+        return result;
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_mm_cmpgt_epi8_avx512(__m128i a, __m128i b) {
+        __m128i result;
+        __asm__("vpcmpb $6, %[b], %[a], %%k1\n\t vpmovm2b %%k1, %[result]"
+            : [result] "=v" (result) : [a] "v" (a), [b] "v" (b) : "k1");
+        return result;
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_mm_cmplt_epu8_avx512(__m128i a, __m128i b) {
+        __m128i result;
+        __asm__("vpcmpub $1, %[b], %[a], %%k1\n\t vpmovm2b %%k1, %[result]"
+            : [result] "=v" (result) : [a] "v" (a), [b] "v" (b) : "k1");
+        return result;
+    }
+)
+#else
+WAH_IF_AVX512BW(
+    static WAH_ALWAYS_INLINE __m128i wah_mm_cmpeq_epi8_avx512(__m128i a, __m128i b) {
+        return _mm_mask_blend_epi8(_mm_cmpeq_epi8_mask(a, b), _mm_setzero_si128(), _mm_set1_epi8(-1));
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_mm_cmpgt_epi8_avx512(__m128i a, __m128i b) {
+        return _mm_mask_blend_epi8(_mm_cmpgt_epi8_mask(a, b), _mm_setzero_si128(), _mm_set1_epi8(-1));
+    }
+    static WAH_ALWAYS_INLINE __m128i wah_mm_cmplt_epu8_avx512(__m128i a, __m128i b) {
+        return _mm_mask_blend_epi8(_mm_cmplt_epu8_mask(a, b), _mm_setzero_si128(), _mm_set1_epi8(-1));
+    }
+)
 #endif
+
+#endif // defined WAH_X86_64
 
 // Helper function for Q15 multiplication with rounding and saturation
 static WAH_ALWAYS_INLINE wah_v128_t wah_q15mulr_sat_s(wah_v128_t a, wah_v128_t b) {
@@ -3641,6 +4259,10 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
     uint8_t* write_ptr = parsed_code->bytecode;
     uint32_t current_block_idx = 0;
 
+    #ifdef WAH_X86_64
+    wah_x86_64_features_t features = wah_x86_64_features(); // TODO: cache across multiple calls
+    #endif
+
     while (ptr < end) {
         uint16_t opcode;
         const uint8_t* saved_ptr = ptr;
@@ -3656,7 +4278,13 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
             if (control_sp > 0) { control_sp--; continue; }
         }
 
-        wah_write_u16_le(write_ptr, opcode);
+        #ifdef WAH_X86_64
+        uint16_t native_opcode = wah_x86_64_opcode(opcode, features);
+        #else
+        uint16_t native_opcode = opcode;
+        #endif
+
+        wah_write_u16_le(write_ptr, native_opcode);
         write_ptr += sizeof(uint16_t);
 
         switch (wah_opclasses[opcode]) {
@@ -3692,7 +4320,12 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 WAH_CHECK_GOTO(wah_decode_memarg(&ptr, end, &align, &memidx, &offset), cleanup);
                 if (memidx == 0) {
                     // Redirect to _mem0 opcode
-                    wah_write_u16_le(write_ptr - sizeof(uint16_t), wah_mem0_from_opclass_M(opcode));
+                    switch (opcode) {
+                        #define WAH_MEM0_OPCODE_CASE(name, suffix) case WAH_OP_##name: opcode = WAH_OP_##name##_##suffix; break;
+                        WAH_MEM0_OPCODES_M(WAH_MEM0_OPCODE_CASE)
+                        #undef WAH_MEM0_OPCODE_CASE
+                    }
+                    wah_write_u16_le(write_ptr - sizeof(uint16_t), opcode);
                 } else {
                     // Use regular opcode with memidx
                     wah_write_u32_le(write_ptr, memidx);
@@ -3709,7 +4342,12 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 uint8_t lane_idx = *ptr++;
                 if (memidx == 0) {
                     // Redirect to _mem0 opcode
-                    wah_write_u16_le(write_ptr - sizeof(uint16_t), wah_mem0_from_opclass_MB(opcode));
+                    switch (opcode) {
+                        #define WAH_MEM0_OPCODE_CASE(name, suffix) case WAH_OP_##name: opcode = WAH_OP_##name##_##suffix; break;
+                        WAH_MEM0_OPCODES_MB(WAH_MEM0_OPCODE_CASE)
+                        #undef WAH_MEM0_OPCODE_CASE
+                    }
+                    wah_write_u16_le(write_ptr - sizeof(uint16_t), opcode);
                 } else {
                     // Use regular opcode with memidx
                     wah_write_u32_le(write_ptr, memidx);
@@ -6130,58 +6768,143 @@ WAH_RUN(I16X8_RELAXED_Q15MULR_S) {
     WAH_NEXT();
 }
 
-WAH_RUN(I16X8_RELAXED_DOT_I8X16_I7X16_S) {
+WAH_RUN(I16X8_RELAXED_DOT_I8X16_I7X16_S) WAH_IF_X86_64(M128I_BINARY_OP(wah_i16x8_relaxed_dot_i8x16_i7x16_s_sse2), {
     wah_v128_t b = sp[-1].v128, a = sp[-2].v128;
     wah_v128_t result;
     for (int i = 0; i < 8; ++i) {
-        // Extract two i8 lanes from 'a'
-        int8_t a_lane0 = a.i8[i * 2];
-        int8_t a_lane1 = a.i8[i * 2 + 1];
-
-        // Extract two i7 lanes from 'b' and sign-extend to i8
-        // A 7-bit signed integer means the MSB (bit 7) is the sign bit.
-        // If the 8-bit value is 0bSxxxxxxx, we need to sign extend S to bit 7.
-        // This is equivalent to taking the lower 7 bits and then sign extending.
-        int8_t b_lane0 = (int8_t)((b.u8[i * 2] & 0x7F) | ((b.u8[i * 2] & 0x40) ? 0x80 : 0x00));
-        int8_t b_lane1 = (int8_t)((b.u8[i * 2 + 1] & 0x7F) | ((b.u8[i * 2 + 1] & 0x40) ? 0x80 : 0x00));
-
-        result.i16[i] = (int16_t)a_lane0 * b_lane0 + (int16_t)a_lane1 * b_lane1;
+        int8_t a0 = a.i8[i * 2], a1 = a.i8[i * 2 + 1];
+        int8_t b0 = (int8_t)((b.u8[i * 2]     & 0x7F) | ((b.u8[i * 2]     & 0x40) ? 0x80 : 0x00));
+        int8_t b1 = (int8_t)((b.u8[i * 2 + 1] & 0x7F) | ((b.u8[i * 2 + 1] & 0x40) ? 0x80 : 0x00));
+        result.i16[i] = (int16_t)a0 * b0 + (int16_t)a1 * b1;
     }
     sp[-2].v128 = result;
     sp--;
     WAH_NEXT();
-}
-WAH_RUN(I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S) {
-    wah_v128_t c = sp[-1].v128; // Accumulator
+})
+WAH_RUN(I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S) WAH_IF_X86_64(M128I_TERNARY_OP(wah_i32x4_relaxed_dot_i8x16_i7x16_add_s_sse2(a, b, c)), {
+    wah_v128_t c = sp[-1].v128;
     sp--;
-    wah_v128_t b = sp[-1].v128; // i7x16
+    wah_v128_t b = sp[-1].v128;
     sp--;
-    wah_v128_t a = sp[-1].v128; // i8x16
-
+    wah_v128_t a = sp[-1].v128;
     wah_v128_t result;
     for (int i = 0; i < 4; ++i) {
-        // Extract four i8 lanes from 'a'
-        int8_t a_lane0 = a.i8[i * 4];
-        int8_t a_lane1 = a.i8[i * 4 + 1];
-        int8_t a_lane2 = a.i8[i * 4 + 2];
-        int8_t a_lane3 = a.i8[i * 4 + 3];
-
-        // Extract four i7 lanes from 'b' and sign-extend to i8
-        int8_t b_lane0 = (int8_t)((b.u8[i * 4] & 0x7F) | ((b.u8[i * 4] & 0x40) ? 0x80 : 0x00));
-        int8_t b_lane1 = (int8_t)((b.u8[i * 4 + 1] & 0x7F) | ((b.u8[i * 4 + 1] & 0x40) ? 0x80 : 0x00));
-        int8_t b_lane2 = (int8_t)((b.u8[i * 4 + 2] & 0x7F) | ((b.u8[i * 4 + 2] & 0x40) ? 0x80 : 0x00));
-        int8_t b_lane3 = (int8_t)((b.u8[i * 4 + 3] & 0x7F) | ((b.u8[i * 4 + 3] & 0x40) ? 0x80 : 0x00));
-
-        // Perform dot product and accumulate into i32 lanes of result
-        result.i32[i] = c.i32[i] +
-                        (int32_t)a_lane0 * b_lane0 +
-                        (int32_t)a_lane1 * b_lane1 +
-                        (int32_t)a_lane2 * b_lane2 +
-                        (int32_t)a_lane3 * b_lane3;
+        int8_t a0 = a.i8[i*4], a1 = a.i8[i*4+1], a2 = a.i8[i*4+2], a3 = a.i8[i*4+3];
+        int8_t b0 = (int8_t)((b.u8[i*4]   & 0x7F) | ((b.u8[i*4]   & 0x40) ? 0x80 : 0x00));
+        int8_t b1 = (int8_t)((b.u8[i*4+1] & 0x7F) | ((b.u8[i*4+1] & 0x40) ? 0x80 : 0x00));
+        int8_t b2 = (int8_t)((b.u8[i*4+2] & 0x7F) | ((b.u8[i*4+2] & 0x40) ? 0x80 : 0x00));
+        int8_t b3 = (int8_t)((b.u8[i*4+3] & 0x7F) | ((b.u8[i*4+3] & 0x40) ? 0x80 : 0x00));
+        result.i32[i] = c.i32[i] + (int32_t)a0*b0 + (int32_t)a1*b1 + (int32_t)a2*b2 + (int32_t)a3*b3;
     }
     sp[-1].v128 = result;
     WAH_NEXT();
-}
+})
+
+// x86-64 specific optimized opcodes
+WAH_IF_X86_64(
+    WAH_IF_SSSE3(
+        WAH_RUN(I8X16_ABS_ssse3) M128I_UNARY_OP(wah_mm_abs_epi8)
+        WAH_RUN(I16X8_ABS_ssse3) M128I_UNARY_OP(wah_mm_abs_epi16)
+        WAH_RUN(I32X4_ABS_ssse3) M128I_UNARY_OP(wah_mm_abs_epi32)
+        WAH_RUN(I8X16_RELAXED_SWIZZLE_ssse3) {
+            // pshufb only zeros lanes when mask MSB is set. For WASM semantics,
+            // we need to zero lanes where mask >= 16. Set MSB for those lanes.
+            __m128i mask = sp[-1]._m128i;
+            __m128i oob_mask = _mm_cmpgt_epi8(mask, _mm_set1_epi8(15));
+            mask = _mm_or_si128(mask, oob_mask);
+            sp[-2]._m128i = wah_mm_shuffle_epi8(sp[-2]._m128i, mask);
+            sp--;
+            WAH_NEXT();
+        }
+        WAH_RUN(I16X8_Q15MULR_SAT_S_ssse3) M128I_BINARY_OP(wah_mm_mulhrs_epi16)
+        WAH_RUN(I16X8_RELAXED_Q15MULR_S_ssse3) M128I_BINARY_OP(wah_mm_mulhrs_epi16)
+    )
+
+    WAH_IF_SSE41(
+        WAH_RUN(I32X4_MUL_sse41) M128I_BINARY_OP(wah_mm_mullo_epi32)
+        WAH_RUN(I8X16_MIN_S_sse41) M128I_BINARY_OP(wah_mm_min_epi8)
+        WAH_RUN(I8X16_MAX_S_sse41) M128I_BINARY_OP(wah_mm_max_epi8)
+        WAH_RUN(I16X8_EXTEND_LOW_I8X16_S_sse41) M128I_UNARY_OP(wah_mm_cvtepi8_epi16)
+        WAH_RUN(I16X8_EXTEND_HIGH_I8X16_S_sse41) M128I_UNARY_OP(wah_i16x8_extend_high_i8x16_s_sse41)
+        WAH_RUN(I16X8_EXTEND_LOW_I8X16_U_sse41) M128I_UNARY_OP(wah_mm_cvtepu8_epi16)
+        WAH_RUN(I16X8_EXTEND_HIGH_I8X16_U_sse41) M128I_UNARY_OP(wah_i16x8_extend_high_i8x16_u_sse41)
+        WAH_RUN(I16X8_MIN_U_sse41) M128I_BINARY_OP(wah_mm_min_epu16)
+        WAH_RUN(I16X8_MAX_U_sse41) M128I_BINARY_OP(wah_mm_max_epu16)
+        WAH_RUN(I16X8_EXTMUL_LOW_I8X16_S_sse41) M128I_BINARY_OP(wah_i16x8_extmul_low_i8x16_s_sse41)
+        WAH_RUN(I16X8_EXTMUL_HIGH_I8X16_S_sse41) M128I_BINARY_OP(wah_i16x8_extmul_high_i8x16_s_sse41)
+        WAH_RUN(I16X8_EXTMUL_LOW_I8X16_U_sse41) M128I_BINARY_OP(wah_i16x8_extmul_low_i8x16_u_sse41)
+        WAH_RUN(I16X8_EXTMUL_HIGH_I8X16_U_sse41) M128I_BINARY_OP(wah_i16x8_extmul_high_i8x16_u_sse41)
+        WAH_RUN(I32X4_EXTEND_LOW_I16X8_S_sse41) M128I_UNARY_OP(wah_mm_cvtepi16_epi32)
+        WAH_RUN(I32X4_EXTEND_HIGH_I16X8_S_sse41) M128I_UNARY_OP(wah_i32x4_extend_high_i16x8_s_sse41)
+        WAH_RUN(I32X4_EXTEND_LOW_I16X8_U_sse41) M128I_UNARY_OP(wah_mm_cvtepu16_epi32)
+        WAH_RUN(I32X4_EXTEND_HIGH_I16X8_U_sse41) M128I_UNARY_OP(wah_i32x4_extend_high_i16x8_u_sse41)
+        WAH_RUN(I32X4_MIN_S_sse41) M128I_BINARY_OP(wah_mm_min_epi32)
+        WAH_RUN(I32X4_MIN_U_sse41) M128I_BINARY_OP(wah_mm_min_epu32)
+        WAH_RUN(I32X4_MAX_S_sse41) M128I_BINARY_OP(wah_mm_max_epi32)
+        WAH_RUN(I32X4_MAX_U_sse41) M128I_BINARY_OP(wah_mm_max_epu32)
+        WAH_RUN(I32X4_EXTMUL_LOW_I16X8_S_sse41) M128I_BINARY_OP(wah_i32x4_extmul_low_i16x8_s_sse41)
+        WAH_RUN(I32X4_EXTMUL_HIGH_I16X8_S_sse41) M128I_BINARY_OP(wah_i32x4_extmul_high_i16x8_s_sse41)
+        WAH_RUN(I32X4_EXTMUL_LOW_I16X8_U_sse41) M128I_BINARY_OP(wah_i32x4_extmul_low_i16x8_u_sse41)
+        WAH_RUN(I32X4_EXTMUL_HIGH_I16X8_U_sse41) M128I_BINARY_OP(wah_i32x4_extmul_high_i16x8_u_sse41)
+        WAH_RUN(I64X2_EXTEND_LOW_I32X4_S_sse41) M128I_UNARY_OP(wah_mm_cvtepi32_epi64)
+        WAH_RUN(I64X2_EXTEND_HIGH_I32X4_S_sse41) M128I_UNARY_OP(wah_i64x2_extend_high_i32x4_s_sse41)
+        WAH_RUN(I64X2_EXTEND_LOW_I32X4_U_sse41) M128I_UNARY_OP(wah_mm_cvtepu32_epi64)
+        WAH_RUN(I64X2_EXTEND_HIGH_I32X4_U_sse41) M128I_UNARY_OP(wah_i64x2_extend_high_i32x4_u_sse41)
+        WAH_RUN(I64X2_EXTMUL_LOW_I32X4_S_sse41) M128I_BINARY_OP(wah_i64x2_extmul_low_i32x4_s_sse41)
+        WAH_RUN(I64X2_EXTMUL_HIGH_I32X4_S_sse41) M128I_BINARY_OP(wah_i64x2_extmul_high_i32x4_s_sse41)
+        WAH_RUN(I64X2_EXTMUL_LOW_I32X4_U_sse41) M128I_BINARY_OP(wah_i64x2_extmul_low_i32x4_u_sse41)
+        WAH_RUN(I64X2_EXTMUL_HIGH_I32X4_U_sse41) M128I_BINARY_OP(wah_i64x2_extmul_high_i32x4_u_sse41)
+        WAH_RUN(F32X4_CEIL_sse41) M128_UNARY_OP(wah_mm_ceil_ps)
+        WAH_RUN(F32X4_FLOOR_sse41) M128_UNARY_OP(wah_mm_floor_ps)
+        WAH_RUN(F32X4_TRUNC_sse41) { sp[-1]._m128 = wah_mm_round_ps_trunc(sp[-1]._m128); WAH_NEXT(); }
+        WAH_RUN(F32X4_NEAREST_sse41) { sp[-1]._m128 = wah_mm_round_ps_nearest(sp[-1]._m128); WAH_NEXT(); }
+        WAH_RUN(F64X2_CEIL_sse41) M128D_UNARY_OP(wah_mm_ceil_pd)
+        WAH_RUN(F64X2_FLOOR_sse41) M128D_UNARY_OP(wah_mm_floor_pd)
+        WAH_RUN(F64X2_TRUNC_sse41) { sp[-1]._m128d = wah_mm_round_pd_trunc(sp[-1]._m128d); WAH_NEXT(); }
+        WAH_RUN(F64X2_NEAREST_sse41) { sp[-1]._m128d = wah_mm_round_pd_nearest(sp[-1]._m128d); WAH_NEXT(); }
+        WAH_RUN(I64X2_EQ_sse41) M128I_BINARY_OP(wah_mm_cmpeq_epi64)
+        WAH_RUN(I64X2_NE_sse41) M128I_NOT_BINARY_OP(wah_mm_cmpeq_epi64)
+        WAH_RUN(I32X4_TRUNC_SAT_F32X4_S_sse41) { sp[-1]._m128i = wah_i32x4_trunc_sat_f32x4_s_sse41(sp[-1]._m128); WAH_NEXT(); }
+        WAH_RUN(I32X4_TRUNC_SAT_F32X4_U_sse41) { sp[-1]._m128i = wah_i32x4_trunc_sat_f32x4_u_sse41(sp[-1]._m128); WAH_NEXT(); }
+    )
+
+    WAH_IF_SSE42(
+        WAH_RUN(I64X2_LT_S_sse42) M128I_BINARY_OP(wah_i64x2_lt_s_sse42)
+        WAH_RUN(I64X2_GT_S_sse42) M128I_BINARY_OP(wah_i64x2_gt_s_sse42)
+        WAH_RUN(I64X2_LE_S_sse42) M128I_BINARY_OP(wah_i64x2_le_s_sse42)
+        WAH_RUN(I64X2_GE_S_sse42) M128I_BINARY_OP(wah_i64x2_ge_s_sse42)
+    )
+
+    WAH_IF_AVX2(
+        WAH_RUN(I8X16_POPCNT_avx2) M128I_UNARY_OP(wah_i8x16_popcnt_avx2)
+    )
+
+    WAH_IF_AVX512F(
+        WAH_RUN(I64X2_MUL_avx512f) M128I_BINARY_OP(wah_i64x2_mul_avx512f)
+        WAH_RUN(I8X16_POPCNT_avx512f) M128I_UNARY_OP(wah_mm_popcnt_epi8)
+        WAH_RUN(F32X4_PMIN_avx512f) M128_BINARY_OP(wah_mm_range_ps_min)
+        WAH_RUN(F32X4_PMAX_avx512f) M128_BINARY_OP(wah_mm_range_ps_max)
+        WAH_RUN(F64X2_PMIN_avx512f) M128D_BINARY_OP(wah_mm_range_pd_min)
+        WAH_RUN(F64X2_PMAX_avx512f) M128D_BINARY_OP(wah_mm_range_pd_max)
+    )
+
+    WAH_IF_AVX512VL(
+        WAH_RUN(I32X4_TRUNC_SAT_F32X4_U_avx512vl) { sp[-1]._m128i = wah_mm_cvttps_epu32(sp[-1]._m128); WAH_NEXT(); }
+        WAH_RUN(F32X4_CONVERT_I32X4_U_avx512vl) { sp[-1]._m128 = wah_mm_cvtepu32_ps(sp[-1]._m128i); WAH_NEXT(); }
+        WAH_RUN(F64X2_CONVERT_LOW_I32X4_U_avx512vl) { sp[-1]._m128d = wah_mm_cvtepu32_pd(sp[-1]._m128i); WAH_NEXT(); }
+    )
+
+    WAH_IF_AVX512BW(
+        WAH_RUN(V128_BITSELECT_avx512f) M128I_TERNARY_OP(wah_mm_ternarylogic_epi32_bitselect(a, b, c))
+        WAH_RUN(I8X16_EQ_avx512f) M128I_BINARY_OP(wah_mm_cmpeq_epi8_avx512)
+        WAH_RUN(I8X16_LT_U_avx512f) M128I_BINARY_OP(wah_mm_cmplt_epu8_avx512)
+        WAH_RUN(I8X16_GT_S_avx512f) M128I_BINARY_OP(wah_mm_cmpgt_epi8_avx512)
+    )
+
+    WAH_IF_AVX512IFMA(
+        WAH_RUN(I64X2_MUL_avx512ifma) M128I_BINARY_OP(wah_mm_mullox_epi64)
+    )
+)
 
 #undef V128_UNARY_OP
 #undef V128_BINARY_OP
@@ -6219,9 +6942,9 @@ static wah_error_t wah_run_single(wah_exec_context_t *ctx, wah_call_frame_t *fra
     bytecode_ip += sizeof(uint16_t);
 
     switch (opcode) {
-        #define WAH_OPCODE_CASES(opcode, cls, val) WAH_EXTRA_OPCODE_CASES(opcode)
-        #define WAH_EXTRA_OPCODE_CASES(opcode) \
+        #define WAH_OPCODE_CASES(opcode, cls, val) \
             case WAH_OP_##opcode: __attribute__((musttail)) return wah_run_##opcode(ctx, frame, bytecode_ip, bytecode_base, sp, err);
+        #define WAH_EXTRA_OPCODE_CASES(opcode, suffix) WAH_OPCODE_CASES(opcode##_##suffix,,)
         WAH_OPCODES(WAH_OPCODE_CASES)
         WAH_EXTRA_OPCODES(WAH_EXTRA_OPCODE_CASES)
         #undef WAH_OPCODE_CASES
@@ -6244,6 +6967,8 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 #else
 
 #ifndef WAH_USE_COMPUTED_GOTO
+        default:
+            WAH_UNREACHABLE();
         }
     }
 #endif
