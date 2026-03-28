@@ -7,6 +7,7 @@
 #include <stddef.h>
 #include <stdbool.h>
 #include <assert.h>
+#include <math.h>
 
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #define WAH_X86_64
@@ -20,7 +21,7 @@
 #ifdef WAH_DEBUG
 #define WAH_ASSERT(cond) assert(cond)
 #else
-#define WAH_ASSERT(cond) ((void)0)
+#define WAH_ASSERT(cond) ((void)(cond))
 #endif
 #endif
 
@@ -310,12 +311,12 @@ static inline int64_t wah_entry_i64(const wah_entry_t *entry) {
 
 static inline float wah_entry_f32(const wah_entry_t *entry) {
     WAH_ASSERT(entry);
-    return entry->type == WAH_TYPE_F32 ? entry->u.global_val.f32 : 0.0f / 0.0f;
+    return entry->type == WAH_TYPE_F32 ? entry->u.global_val.f32 : NAN;
 }
 
 static inline double wah_entry_f64(const wah_entry_t *entry) {
     WAH_ASSERT(entry);
-    return entry->type == WAH_TYPE_F64 ? entry->u.global_val.f64 : 0.0 / 0.0;
+    return entry->type == WAH_TYPE_F64 ? entry->u.global_val.f64 : NAN;
 }
 
 static inline wah_error_t wah_entry_memory(const wah_entry_t *entry, uint32_t *min_pages, uint32_t *max_pages) {
@@ -851,7 +852,7 @@ typedef struct wah_element_segment_s {
     union {
         uint32_t *func_indices;              // For is_expr_elem == false
         struct {
-            const uint8_t **bytecodes;      // Array of pointers to each expression
+            uint8_t **bytecodes;                // Array of pointers to each expression
             uint32_t *bytecode_sizes;           // Array of sizes for each expression
         } expr;
     } u;
@@ -2800,7 +2801,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
             }
         }
 
-        module->code_bodies[i].code_size = code_body_end - *ptr;
+        module->code_bodies[i].code_size = (uint32_t)(code_body_end - *ptr);
         module->code_bodies[i].code = *ptr;
 
         // --- Validation Pass for Code Body ---
@@ -3611,8 +3612,8 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     break;
                 }
                 case WAH_OP_REF_FUNC: {
-                    uint32_t func_idx;
-                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &func_idx), cleanup);
+                    uint32_t ref_func_idx;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &ref_func_idx), cleanup);
                     preparsed_instr_size += sizeof(uint32_t); // For function index
                     break;
                 }
@@ -3777,9 +3778,9 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     break;
                 }
                 case WAH_OP_REF_FUNC: {
-                    uint32_t func_idx;
-                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &func_idx), cleanup);
-                    wah_write_u32_le(write_ptr, func_idx);
+                    uint32_t ref_func_idx;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &ref_func_idx), cleanup);
+                    wah_write_u32_le(write_ptr, ref_func_idx);
                     write_ptr += sizeof(uint32_t);
                     break;
                 }
@@ -4705,7 +4706,7 @@ WAH_RUN(CALL_INDIRECT) {
 
 WAH_RUN(RETURN) {
     uint32_t results_to_keep = frame->result_count;
-    wah_value_t result_val;
+    wah_value_t result_val = {0};
     if (results_to_keep == 1) {
         result_val = sp[-1];
     }
@@ -4724,7 +4725,7 @@ WAH_RUN(RETURN) {
 
 WAH_RUN(END) { // End of function
     uint32_t results_to_keep = frame->result_count;
-    wah_value_t result_val;
+    wah_value_t result_val = {0};
     if (results_to_keep == 1) {
         if (sp - ctx->value_stack > frame->locals_offset) {
              result_val = sp[-1];
@@ -5371,7 +5372,7 @@ WAH_RUN(V128_STORE_mem0) {
 
 #define SPLAT_OP(VEC_TYPE, C_VEC_TYPE, SCALAR_TYPE) { \
     wah_value_t scalar_val = *--sp; \
-    wah_v128_t result; \
+    wah_v128_t result = {0}; \
     for (uint32_t i = 0; i < sizeof(wah_v128_t) / sizeof(result.VEC_TYPE[0]); ++i) { \
         result.VEC_TYPE[i] = (C_VEC_TYPE)scalar_val.SCALAR_TYPE; \
     } \
@@ -5382,7 +5383,7 @@ WAH_RUN(V128_STORE_mem0) {
 WAH_RUN(I8X16_SHUFFLE) {
     wah_v128_t vec2 = (*--sp).v128;
     wah_v128_t vec1 = (*--sp).v128;
-    wah_v128_t result;
+    wah_v128_t result = {0};
     for (uint32_t i = 0; i < 16; ++i) {
         uint8_t lane_idx = bytecode_ip[i];
         result.u8[i] = lane_idx < 16 ? vec1.u8[lane_idx] : vec2.u8[lane_idx - 16];
@@ -6268,12 +6269,12 @@ static wah_error_t wah_call_module_multi(wah_exec_context_t *exec_ctx, const wah
         // Call host function using helper
         WAH_CHECK(wah_call_host_function_internal(exec_ctx, fn, params, param_count, results));
 
-        *actual_results = nresults;
+        *actual_results = (uint32_t)nresults;
         return WAH_OK;
     }
 
     // WASM function call
-    uint32_t local_idx = fn->local_idx;
+    uint32_t local_idx = (uint32_t)fn->local_idx;
     const wah_func_type_t *func_type = &module->types[module->function_type_indices[local_idx]];
     WAH_ENSURE(param_count == func_type->param_count, WAH_ERROR_VALIDATION_FAILED);
     WAH_ENSURE(max_results >= func_type->result_count, WAH_ERROR_VALIDATION_FAILED);
@@ -6509,7 +6510,8 @@ wah_error_t wah_module_export_funcv(wah_module_t *mod, const char *name, size_t 
     }
 
     // Duplicate name and type arrays
-    WAH_ENSURE_GOTO(name_copy = wah_strdup(name), WAH_ERROR_OUT_OF_MEMORY, cleanup);
+    name_copy = wah_strdup(name);
+    WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
 
     if (nparams > 0) {
         WAH_MALLOC_ARRAY_GOTO(param_types_copy, nparams, cleanup);
@@ -6816,7 +6818,8 @@ static wah_error_t wah_module_export_global_internal(wah_module_t *mod, const ch
     WAH_REALLOC_ARRAY_GOTO(mod->globals, new_global_count, cleanup);
 
     // Duplicate name
-    WAH_ENSURE_GOTO(name_copy = wah_strdup(name), WAH_ERROR_OUT_OF_MEMORY, cleanup);
+    name_copy = wah_strdup(name);
+    WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
 
     // Fill in the global entry
     wah_global_t *global = &mod->globals[mod->global_count];
@@ -6872,7 +6875,8 @@ wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint32
     WAH_REALLOC_ARRAY_GOTO(mod->memories, new_memory_count, cleanup);
 
     // Duplicate name
-    WAH_ENSURE_GOTO(name_copy = wah_strdup(name), WAH_ERROR_OUT_OF_MEMORY, cleanup);
+    name_copy = wah_strdup(name);
+    WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
 
     // Fill in the memory entry
     wah_memory_type_t *mem = &mod->memories[mod->memory_count];
@@ -7289,9 +7293,9 @@ wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_entry_
         out->name_len = export_entry->name_len;
         out->is_mutable = false;
 
-        out->u.func.param_count = fn->nparams;
+        out->u.func.param_count = (uint32_t)fn->nparams;
         out->u.func.param_types = fn->param_types;
-        out->u.func.result_count = fn->nresults;
+        out->u.func.result_count = (uint32_t)fn->nresults;
         out->u.func.result_types = fn->result_types;
 
         return WAH_OK;
@@ -7373,9 +7377,9 @@ wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id
                 if (module->functions[local_fn_idx].is_host) {
                     const wah_function_t *fn = &module->functions[local_fn_idx];
                     out->type = WAH_TYPE_HOST_FUNCTION;
-                    out->u.func.param_count = fn->nparams;
+                    out->u.func.param_count = (uint32_t)fn->nparams;
                     out->u.func.param_types = fn->param_types;
-                    out->u.func.result_count = fn->nresults;
+                    out->u.func.result_count = (uint32_t)fn->nresults;
                     out->u.func.result_types = fn->result_types;
                 } else {
                     WAH_ENSURE(local_fn_idx < module->function_count, WAH_ERROR_NOT_FOUND);

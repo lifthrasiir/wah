@@ -80,8 +80,9 @@ void run_simd_v128_op_test(const char* test_name, const wah_v128_t* expected_val
 #define DEFINE_OPCODE() \
     const char *opcode_end = strchr(test_name, ' '); \
     const size_t opcode_len = opcode_end ? (size_t)(opcode_end - test_name) : strlen(test_name); \
-    char opcode[opcode_len + 1]; \
-    strncpy(opcode, test_name, opcode_len); \
+    char opcode[64]; \
+    if (opcode_len >= 64) abort(); \
+    memcpy(opcode, test_name, opcode_len); \
     opcode[opcode_len] = '\0'
 
 void run_simd_nullary_op_test(const char* test_name, const char *spec, const wah_v128_t* expected_val) {
