@@ -435,52 +435,120 @@ static void test_unreachable_if_validation() {
 
 // --- Multi-Value Control Flow Tests ---
 
-// Test block with multiple results: (i32, i32) -> (i32, i32)
+// Test block with multiple results using a type-indexed block type ([] -> [i32, i32])
 void test_block_multi_result() {
     printf("Testing block with multiple results...\n");
 
     wah_module_t module;
-    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
-        types {[ fn [i32, i32] [i32, i32] ]} \
+    // type 0: function [i32,i32]->[i32,i32], type 1: block []->[i32,i32]
+    assert_ok(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [i32, i32] [i32, i32], fn [] [i32, i32] ]} \
         funcs {[ 0 ]} \
         code {[ {[] \
-            block void \
+            block 1 \
                 local.get 0 \
                 local.get 1 \
             end \
-        end } ]}");
-    if (err == WAH_OK) {
-        printf("[v] Multi-value block parsed successfully\n");
-        wah_free_module(&module);
-    } else {
-        printf("[i] Multi-value block not yet supported: %s\n", wah_strerror(err));
-    }
+        end } ]}"));
+
+    wah_exec_context_t ctx;
+    assert_ok(wah_exec_context_create(&ctx, &module));
+
+    wah_value_t params[2] = {{.i32 = 7}, {.i32 = 13}};
+    wah_value_t results[2];
+    uint32_t cnt;
+    assert_ok(wah_call_multi(&ctx, 0, params, 2, results, 2, &cnt));
+    assert_eq_u32(cnt, 2);
+    assert_eq_i32(results[0].i32, 7);
+    assert_eq_i32(results[1].i32, 13);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
 }
 
-// Test if-else with multiple results
+// Test if-else with multiple results using a type-indexed block type ([] -> [i32, i32])
 void test_if_else_multi_result() {
     printf("Testing if-else with multiple results...\n");
 
     wah_module_t module;
-    wah_error_t err = wah_parse_module_from_spec(&module, "wasm \
-        types {[ fn [i32] [i32, i32] ]} \
+    // type 0: function [i32]->[i32,i32], type 1: block []->[i32,i32]
+    assert_ok(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [i32] [i32, i32], fn [] [i32, i32] ]} \
         funcs {[ 0 ]} \
         code {[ {[] \
-            if void \
-                local.get 0 \
+            local.get 0 \
+            if 1 \
                 i32.const 1 \
                 i32.const 2 \
             else \
                 i32.const 3 \
                 i32.const 4 \
             end \
-        end } ]}");
-    if (err == WAH_OK) {
-        printf("[v] Multi-value if-else parsed successfully\n");
-        wah_free_module(&module);
-    } else {
-        printf("[i] Multi-value if-else not yet supported: %s\n", wah_strerror(err));
-    }
+        end } ]}"));
+
+    wah_exec_context_t ctx;
+    assert_ok(wah_exec_context_create(&ctx, &module));
+
+    wah_value_t param;
+    wah_value_t results[2];
+    uint32_t cnt;
+
+    param.i32 = 1;
+    assert_ok(wah_call_multi(&ctx, 0, &param, 1, results, 2, &cnt));
+    assert_eq_u32(cnt, 2);
+    assert_eq_i32(results[0].i32, 1);
+    assert_eq_i32(results[1].i32, 2);
+
+    param.i32 = 0;
+    assert_ok(wah_call_multi(&ctx, 0, &param, 1, results, 2, &cnt));
+    assert_eq_u32(cnt, 2);
+    assert_eq_i32(results[0].i32, 3);
+    assert_eq_i32(results[1].i32, 4);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// Block type validation error tests
+static void test_block_type_validation_errors() {
+    printf("Testing block type validation errors...\n");
+    wah_module_t module;
+
+    // block i32 but i64 is on the stack at end
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+        code {[ {[] block i32 i64.const 0 end end } ]}"),
+        WAH_ERROR_VALIDATION_FAILED);
+
+    // block i32 but nothing on the stack at end
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+        code {[ {[] block i32 end end } ]}"),
+        WAH_ERROR_VALIDATION_FAILED);
+
+    // block with type index: params type mismatch (i64 on stack, block expects i32)
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [i32], fn [i32] [i32] ]} funcs {[ 0 ]} \
+        code {[ {[] i64.const 0 block 1 end end } ]}"),
+        WAH_ERROR_VALIDATION_FAILED);
+
+    // block with out-of-range type index
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} funcs {[ 0 ]} \
+        code {[ {[] block 99 end end } ]}"),
+        WAH_ERROR_VALIDATION_FAILED);
+
+    // if: true branch returns i32, else branch returns i64
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+        code {[ {[] i32.const 0 if i32 i32.const 1 else i64.const 2 end end } ]}"),
+        WAH_ERROR_VALIDATION_FAILED);
+
+    // if with result but no else branch (if without else must have void type)
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+        code {[ {[] i32.const 0 if i32 i32.const 1 end end } ]}"),
+        WAH_ERROR_VALIDATION_FAILED);
 }
 
 // This tests that an ELSE without a matching IF fails validation.
@@ -530,6 +598,9 @@ int main() {
     printf("\n=== Multi-Value Control Flow Tests ===\n");
     test_block_multi_result();
     test_if_else_multi_result();
+
+    printf("\n=== Block Type Validation Error Tests ===\n");
+    test_block_type_validation_errors();
 
     printf("\n=== Validation Assertion Tests ===\n");
     test_else_without_if();

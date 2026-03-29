@@ -3570,6 +3570,11 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
             wah_validation_control_frame_t* frame = &vctx->control_stack[vctx->control_sp - 1];
 
+            // if without else is only valid when the block type has no results
+            if (frame->opcode == WAH_OP_IF && !frame->else_found) {
+                WAH_ENSURE(frame->block_type.result_count == 0, WAH_ERROR_VALIDATION_FAILED);
+            }
+
             // Pop results from the executed branch and verify
             for (int32_t i = frame->block_type.result_count - 1; i >= 0; --i) {
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, frame->block_type.result_types[i]));
@@ -5744,16 +5749,14 @@ WAH_RUN(CALL_INDIRECT) {
 
 WAH_RUN(RETURN) {
     uint32_t results_to_keep = frame->result_count;
-    wah_value_t result_val = {0};
-    if (results_to_keep == 1) {
-        result_val = sp[-1];
-    }
+    wah_value_t *results_src = sp - results_to_keep;
 
     sp = ctx->value_stack + frame->locals_offset;
     ctx->call_depth--;
 
-    if (results_to_keep == 1) {
-        *sp++ = result_val;
+    if (results_to_keep > 0) {
+        memmove(sp, results_src, sizeof(wah_value_t) * results_to_keep);
+        sp += results_to_keep;
     }
 
     RELOAD_FRAME();
@@ -5763,20 +5766,14 @@ WAH_RUN(RETURN) {
 
 WAH_RUN(END) { // End of function
     uint32_t results_to_keep = frame->result_count;
-    wah_value_t result_val = {0};
-    if (results_to_keep == 1) {
-        if (sp - ctx->value_stack > frame->locals_offset) {
-             result_val = sp[-1];
-        } else {
-            results_to_keep = 0;
-        }
-    }
+    wah_value_t *results_src = sp - results_to_keep;
 
     sp = ctx->value_stack + frame->locals_offset;
     ctx->call_depth--;
 
-    if (results_to_keep == 1) {
-        *sp++ = result_val;
+    if (results_to_keep > 0) {
+        memmove(sp, results_src, sizeof(wah_value_t) * results_to_keep);
+        sp += results_to_keep;
     }
 
     RELOAD_FRAME();
@@ -7458,7 +7455,6 @@ static wah_error_t wah_call_module_multi(wah_exec_context_t *exec_ctx, const wah
     uint32_t local_idx = (uint32_t)fn->local_idx;
     const wah_func_type_t *func_type = &module->types[module->function_type_indices[local_idx]];
     WAH_ENSURE(param_count == func_type->param_count, WAH_ERROR_VALIDATION_FAILED);
-    WAH_ENSURE(max_results >= func_type->result_count, WAH_ERROR_VALIDATION_FAILED);
 
     // Push initial params onto the value stack
     for (uint32_t i = 0; i < param_count; ++i) {
@@ -7481,14 +7477,17 @@ static wah_error_t wah_call_module_multi(wah_exec_context_t *exec_ctx, const wah
     WAH_CHECK(wah_run_interpreter(exec_ctx));
 
     // After execution, copy multiple results from the stack
+    uint32_t copy_count = func_type->result_count;
+    if (copy_count > max_results) copy_count = max_results;
+
     if (results) {
         if (func_type->result_count == 0) {
             // Zero return function - zeroize results for safety
             memset(results, 0, sizeof(wah_value_t) * max_results);
             *actual_results = 0;
         } else if (exec_ctx->sp >= func_type->result_count) {
-            // Copy results in reverse order (last result is on top of stack)
-            for (uint32_t i = 0; i < func_type->result_count; ++i) {
+            // Copy results (as many as fit in the provided buffer)
+            for (uint32_t i = 0; i < copy_count; ++i) {
                 results[i] = exec_ctx->value_stack[exec_ctx->sp - func_type->result_count + i];
             }
             *actual_results = func_type->result_count;

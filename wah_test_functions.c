@@ -178,10 +178,11 @@ void test_multi_return_buffer_validation() {
     assert_ok(wah_parse_module_from_spec(&module, wasm_binary_spec));
     assert_ok(wah_exec_context_create(&ctx, &module));
 
-    // Test with insufficient buffer (should return validation error)
-    wah_value_t results[1]; // No space for result, but [0] warns
+    // Test with max_results=0: function executes, actual_results reports true count
+    wah_value_t results[1];
     uint32_t actual_results;
-    assert_err(wah_call_multi(&ctx, 0, NULL, 0, results, 0, &actual_results), WAH_ERROR_VALIDATION_FAILED);
+    assert_ok(wah_call_multi(&ctx, 0, NULL, 0, results, 0, &actual_results));
+    assert_eq_u32(actual_results, 1);
     
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
