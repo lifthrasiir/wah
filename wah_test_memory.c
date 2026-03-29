@@ -15,8 +15,7 @@ void wah_test_data_and_bulk_memory_ops() {
 
     printf("Running data segments and bulk memory operations tests...\n");
 
-    const char *wasm_data_and_bulk_memory_spec =
-        "wasm \
+    const char *wasm_data_and_bulk_memory_spec = "wasm \
         types {[ \
             fn [i32, i32, i32] [], \
             fn [i32] [i32], \
@@ -49,15 +48,15 @@ void wah_test_data_and_bulk_memory_ops() {
 
     // Test 2: Create execution context
     assert_ok(wah_exec_context_create(&ctx, &module));
-    assert_true(ctx.memory_base != NULL);
-    assert_eq_u32(ctx.memory_size, WAH_WASM_PAGE_SIZE);
+    assert_true(ctx.memories[0] != NULL);
+    assert_eq_u32(ctx.memory_sizes[0], WAH_WASM_PAGE_SIZE);
 
     // Verify initial memory state (active data segment 0 should be initialized)
-    assert_eq_u32(ctx.memory_base[0], 0x01);
-    assert_eq_u32(ctx.memory_base[1], 0x02);
-    assert_eq_u32(ctx.memory_base[2], 0x03);
-    assert_eq_u32(ctx.memory_base[3], 0x04);
-    assert_eq_u32(ctx.memory_base[4], 0x00);
+    assert_eq_u32(ctx.memories[0][0], 0x01);
+    assert_eq_u32(ctx.memories[0][1], 0x02);
+    assert_eq_u32(ctx.memories[0][2], 0x03);
+    assert_eq_u32(ctx.memories[0][3], 0x04);
+    assert_eq_u32(ctx.memories[0][4], 0x00);
 
     // Test 3: memory.init - initialize data segment 0 at memory offset 100, data segment offset 0
     uint32_t dest_offset_1 = 100;
@@ -169,8 +168,8 @@ void test_memory_api() {
 
     // Test 2: Create execution context
     assert_ok(wah_exec_context_create(&ctx, &module));
-    assert_true(ctx.memory_base != NULL);
-    assert_eq_u32(ctx.memory_size, WAH_WASM_PAGE_SIZE);
+    assert_true(ctx.memories[0] != NULL);
+    assert_eq_u32(ctx.memory_sizes[0], WAH_WASM_PAGE_SIZE);
 
     // Test 3: Store a value
     uint32_t test_address = 1024;
@@ -180,7 +179,7 @@ void test_memory_api() {
     assert_ok(wah_call(&ctx, 0, params, 2, NULL)); // Call store_val (func 0)
 
     // Verify directly in memory
-    int32_t *mem_ptr = (int32_t*)(ctx.memory_base + test_address);
+    int32_t *mem_ptr = (int32_t*)(ctx.memories[0] + test_address);
     assert_eq_i32(*mem_ptr, test_value);
 
     // Test 4: Load the value
@@ -259,8 +258,8 @@ void test_memory_ops() {
 
     // Test 9: Create execution context for memory operations
     assert_ok(wah_exec_context_create(&ctx, &module));
-    assert_true(ctx.memory_base != NULL);
-    assert_eq_u32(ctx.memory_size, WAH_WASM_PAGE_SIZE);
+    assert_true(ctx.memories[0] != NULL);
+    assert_eq_u32(ctx.memory_sizes[0], WAH_WASM_PAGE_SIZE);
 
     // Test 10: memory.size - initial
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result)); // Call get_memory_size (func 0)
@@ -270,7 +269,7 @@ void test_memory_ops() {
     params[0].i32 = 1; // Grow by 1 page
     assert_ok(wah_call(&ctx, 1, params, 1, &result)); // Call grow_memory (func 1)
     assert_eq_i32(result.i32, 1);
-    assert_eq_u32(ctx.memory_size, 2 * WAH_WASM_PAGE_SIZE);
+    assert_eq_u32(ctx.memory_sizes[0], 2 * WAH_WASM_PAGE_SIZE);
 
     // Test 12: memory.size - after grow
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result)); // Call get_memory_size (func 0)
@@ -280,7 +279,7 @@ void test_memory_ops() {
     params[0].i32 = 1; // Grow by 1 page (total 3, max 2)
     assert_ok(wah_call(&ctx, 1, params, 1, &result)); // Should return -1, not trap
     assert_eq_i32(result.i32, -1);
-    assert_eq_u32(ctx.memory_size, 2 * WAH_WASM_PAGE_SIZE);
+    assert_eq_u32(ctx.memory_sizes[0], 2 * WAH_WASM_PAGE_SIZE);
 
     // Test 14: memory.fill - basic
     uint32_t fill_offset = 100;
@@ -293,11 +292,11 @@ void test_memory_ops() {
 
     // Verify filled memory directly
     for (uint32_t i = 0; i < fill_size; ++i) {
-        assert_eq_u32(ctx.memory_base[fill_offset + i], fill_value);
+        assert_eq_u32(ctx.memories[0][fill_offset + i], fill_value);
     }
 
     // Test 15: memory.fill - out of bounds
-    uint32_t oob_fill_offset = ctx.memory_size - 100; // Near end of memory
+    uint32_t oob_fill_offset = ctx.memory_sizes[0] - 100; // Near end of memory
     uint32_t oob_fill_size = 200; // Will go out of bounds
     params[0].i32 = oob_fill_offset;
     params[1].i32 = 0xBB;
@@ -309,10 +308,184 @@ void test_memory_ops() {
     wah_free_module(&module);
 }
 
+void test_multiple_memories() {
+    wah_module_t module;
+    wah_exec_context_t ctx;
+    wah_value_t params[3];
+    wah_value_t result;
+
+    printf("Running multiple memories tests...\n");
+
+    // Module with 2 memories:
+    //   Memory 0: 1 page (no max)
+    //   Memory 1: 1 page, max 2 pages
+    const char *spec = "wasm \
+        types {[ \
+            fn [i32, i32] [], \
+            fn [i32] [i32], \
+            fn [] [i32], \
+            fn [i32] [i32], \
+            fn [i32, i32, i32] [], \
+        ]} \
+        funcs {[ 0, 1, 0, 1, 2, 2, 3, 4 ]} \
+        memories {[ limits.i32/1 1, limits.i32/2 1 2 ]} \
+        exports {[ \
+            {'store0'} fn# 0, \
+            {'load0'}  fn# 1, \
+            {'store1'} fn# 2, \
+            {'load1'}  fn# 3, \
+            {'size0'}  fn# 4, \
+            {'size1'}  fn# 5, \
+            {'grow1'}  fn# 6, \
+            {'copy1to0'} fn# 7, \
+        ]} \
+        code {[ \
+            {[] local.get 0 local.get 1 i32.store align=4 offset=0 end}, \
+            {[] local.get 0 i32.load align=4 offset=0 end}, \
+            {[] local.get 0 local.get 1 i32.store align=4.mem# 1 offset=0 end}, \
+            {[] local.get 0 i32.load align=4.mem# 1 offset=0 end}, \
+            {[] memory.size 0 end}, \
+            {[] memory.size 1 end}, \
+            {[] local.get 0 memory.grow 1 end}, \
+            {[] local.get 0 local.get 1 local.get 2 memory.copy 0 1 end}, \
+        ]}";
+
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_eq_u32(module.memory_count, 2);
+
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_true(ctx.memories[0] != NULL);
+    assert_true(ctx.memories[1] != NULL);
+    assert_eq_u32(ctx.memory_count, 2);
+    assert_eq_u32(ctx.memory_sizes[0], WAH_WASM_PAGE_SIZE);
+    assert_eq_u32(ctx.memory_sizes[1], WAH_WASM_PAGE_SIZE);
+    // memory_base/memory_size must be aliases to memory 0
+    assert_true(ctx.memory_base == ctx.memories[0]);
+    assert_eq_u32(ctx.memory_size, ctx.memory_sizes[0]);
+
+    // Test 1: store to memory 0, verify memory 1 is unaffected
+    params[0].i32 = 100; params[1].i32 = 0xAABBCCDD;
+    assert_ok(wah_call(&ctx, 0, params, 2, NULL));
+    assert_eq_i32(*(int32_t*)(ctx.memories[0] + 100), (int32_t)0xAABBCCDD);
+    assert_eq_i32(*(int32_t*)(ctx.memories[1] + 100), 0);
+
+    // Test 2: store to memory 1, verify memory 0 is unaffected
+    params[0].i32 = 100; params[1].i32 = 0x11223344;
+    assert_ok(wah_call(&ctx, 2, params, 2, NULL));
+    assert_eq_i32(*(int32_t*)(ctx.memories[0] + 100), (int32_t)0xAABBCCDD);
+    assert_eq_i32(*(int32_t*)(ctx.memories[1] + 100), 0x11223344);
+
+    // Test 3: load from memory 0
+    params[0].i32 = 100;
+    assert_ok(wah_call(&ctx, 1, params, 1, &result));
+    assert_eq_i32(result.i32, (int32_t)0xAABBCCDD);
+
+    // Test 4: load from memory 1
+    params[0].i32 = 100;
+    assert_ok(wah_call(&ctx, 3, params, 1, &result));
+    assert_eq_i32(result.i32, 0x11223344);
+
+    // Test 5: memory.size 0 and memory.size 1
+    assert_ok(wah_call(&ctx, 4, NULL, 0, &result));
+    assert_eq_i32(result.i32, 1);
+    assert_ok(wah_call(&ctx, 5, NULL, 0, &result));
+    assert_eq_i32(result.i32, 1);
+
+    // Test 6: memory.grow on memory 1 (not memory 0)
+    params[0].i32 = 1;
+    assert_ok(wah_call(&ctx, 6, params, 1, &result));
+    assert_eq_i32(result.i32, 1); // returns old size
+    assert_eq_u32(ctx.memory_sizes[1], 2 * WAH_WASM_PAGE_SIZE);
+    assert_eq_u32(ctx.memory_sizes[0], WAH_WASM_PAGE_SIZE); // memory 0 unchanged
+
+    // Test 7: memory.grow beyond max_pages of memory 1 should fail
+    params[0].i32 = 1; // would make 3 pages, but max is 2
+    assert_ok(wah_call(&ctx, 6, params, 1, &result));
+    assert_eq_i32(result.i32, -1);
+    assert_eq_u32(ctx.memory_sizes[1], 2 * WAH_WASM_PAGE_SIZE); // unchanged
+
+    // Test 8: memory.size 1 after grow
+    assert_ok(wah_call(&ctx, 5, NULL, 0, &result));
+    assert_eq_i32(result.i32, 2);
+    assert_eq_u32(ctx.memory_size, WAH_WASM_PAGE_SIZE); // memory_base alias unchanged
+
+    // Test 9: memory.copy from memory 1 to memory 0
+    // copy1to0(dst_in_mem0, src_in_mem1, n)
+    params[0].i32 = 200; params[1].i32 = 100; params[2].i32 = 4;
+    assert_ok(wah_call(&ctx, 7, params, 3, NULL));
+    assert_eq_i32(*(int32_t*)(ctx.memories[0] + 200), 0x11223344);
+    assert_eq_i32(*(int32_t*)(ctx.memories[0] + 100), (int32_t)0xAABBCCDD); // original unaffected
+
+    // Test 10: out-of-bounds access on memory 1 (after grow, it has 2 pages)
+    params[0].i32 = 2 * WAH_WASM_PAGE_SIZE - 2; params[1].i32 = 0;
+    assert_err(wah_call(&ctx, 2, params, 2, NULL), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+void test_multiple_memories_data_segment() {
+    wah_module_t module;
+    wah_exec_context_t ctx;
+    wah_value_t params[1];
+    wah_value_t result;
+
+    printf("Running multiple memories data segment tests...\n");
+
+    // Module with 2 memories, active data segments targeting each memory
+    // data.active.table# syntax: 0x02 <memidx> <offset_expr>
+    const char *spec = "wasm \
+        types {[ \
+            fn [i32] [i32], \
+            fn [i32] [i32], \
+        ]} \
+        funcs {[ 0, 1 ]} \
+        memories {[ limits.i32/1 1, limits.i32/1 1 ]} \
+        exports {[ \
+            {'get_byte0'} fn# 0, \
+            {'get_byte1'} fn# 1, \
+        ]} \
+        code {[ \
+            {[] local.get 0 i32.load8_u align=1 offset=0 end}, \
+            {[] local.get 0 i32.load8_u align=1.mem# 1 offset=0 end}, \
+        ]} \
+        data {[ \
+            data.active.table#0 i32.const 0 end {%'01020304'}, \
+            data.active.table# 1 i32.const 0 end {%'0A0B0C0D'}, \
+        ]}";
+
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_eq_u32(module.memory_count, 2);
+    assert_eq_u32(module.data_segment_count, 2);
+
+    assert_ok(wah_exec_context_create(&ctx, &module));
+
+    // Active data segment 0 should be in memory 0
+    assert_eq_u32(ctx.memories[0][0], 0x01);
+    assert_eq_u32(ctx.memories[0][1], 0x02);
+    // Active data segment 1 should be in memory 1
+    assert_eq_u32(ctx.memories[1][0], 0x0A);
+    assert_eq_u32(ctx.memories[1][1], 0x0B);
+
+    // Verify via wasm functions
+    params[0].i32 = 0;
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i32(result.i32, 0x01);
+
+    params[0].i32 = 0;
+    assert_ok(wah_call(&ctx, 1, params, 1, &result));
+    assert_eq_i32(result.i32, 0x0A);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 int main() {
     test_memory_api();
     test_memory_ops();
     wah_test_data_and_bulk_memory_ops();
+    test_multiple_memories();
+    test_multiple_memories_data_segment();
 
     printf("\nAll memory tests passed!\n");
     return 0;

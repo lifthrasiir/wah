@@ -416,6 +416,10 @@ static const token_entry_t token_table[] = {
     TOKEN("align=2", 0x01),
     TOKEN("align=4", 0x02),
     TOKEN("align=8", 0x03),
+    TOKEN("align=1.mem#", 0x40),
+    TOKEN("align=2.mem#", 0x41),
+    TOKEN("align=4.mem#", 0x42),
+    TOKEN("align=8.mem#", 0x43),
 
     // Miscellaneous
     TOKEN("mut", 0x01),           // Mutable flag for globals
