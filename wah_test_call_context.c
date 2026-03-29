@@ -7,6 +7,43 @@
 #include <string.h>
 #include <assert.h>
 
+// --- Host functions for overlap tests (Tests 5-7) ---
+// These deliberately write results FIRST, then read params, to verify overlap safety.
+
+// (i32) -> (i32): write result first, then read param
+static void host_write_result_then_read_param(wah_call_context_t *ctx, void *userdata) {
+    (void)userdata;
+    // Write result first (potentially corrupting param[0] if they overlap)
+    wah_result_i32(ctx, 0, 0xDEAD);
+    // Now read param -- must still be the original value
+    int32_t p = wah_param_i32(ctx, 0);
+    // Overwrite result with the correct answer based on the (still intact) param
+    wah_result_i32(ctx, 0, p * 3);
+}
+
+// (i32, i32) -> (i32): write result first, then read both params
+static void host_write_result_then_read_two_params(wah_call_context_t *ctx, void *userdata) {
+    (void)userdata;
+    // Write result first
+    wah_result_i32(ctx, 0, 0xDEAD);
+    // Read both params -- must still be intact
+    int32_t a = wah_param_i32(ctx, 0);
+    int32_t b = wah_param_i32(ctx, 1);
+    wah_result_i32(ctx, 0, a + b);
+}
+
+// (i32, i32, i32) -> (i32): write result first, then read all three params
+static void host_write_result_then_read_three_params(wah_call_context_t *ctx, void *userdata) {
+    (void)userdata;
+    // Write result first
+    wah_result_i32(ctx, 0, 0xDEAD);
+    // Read all params
+    int32_t a = wah_param_i32(ctx, 0);
+    int32_t b = wah_param_i32(ctx, 1);
+    int32_t c = wah_param_i32(ctx, 2);
+    wah_result_i32(ctx, 0, a + b + c);
+}
+
 // Test host function that uses all param accessors
 void test_params(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
@@ -169,6 +206,121 @@ int main() {
         assert_err(ctx.trap_reason, WAH_ERROR_TRAP);
 
         // results[0] is not guaranteed to be preserved after a trap, but in our implementation it is
+    }
+
+    // Test 5: write result THEN read param -- (i32) -> (i32), overlap at index 0
+    printf("Test 5: wah_result then wah_param, (i32)->(i32)\n");
+    {
+        // Host writes result[0] first, then reads param[0] -- they'd overlap in the old code
+        static const char *wasm_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            imports {[ {'env'} {'f'} fn# 0 ]} \
+            funcs {[ ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ ]}";
+
+        wah_module_t wasm_mod = {0}, env_mod = {0};
+        wah_exec_context_t ctx = {0};
+
+        assert_ok(wah_new_module(&env_mod));
+        wah_type_t hp[] = { WAH_TYPE_I32 };
+        wah_type_t hr[] = { WAH_TYPE_I32 };
+        assert_ok(wah_module_export_funcv(&env_mod, "f", 1, hp, 1, hr,
+            host_write_result_then_read_param, NULL, NULL));
+
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, wasm_spec));
+        assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+        assert_ok(wah_link_module(&ctx, "env", &env_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_entry_t entry;
+        assert_ok(wah_module_export_by_name(&wasm_mod, "f", &entry));
+
+        // param=7 -> host writes result=0xDEAD, reads param (must be 7), sets result=7*3=21
+        wah_value_t param = { .i32 = 7 };
+        wah_value_t result = {0};
+        assert_ok(wah_call(&ctx, entry.id, &param, 1, &result));
+        assert_eq_i32(result.i32, 21);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
+    // Test 6: write result THEN read params -- (i32, i32) -> (i32), result overlaps param[0]
+    printf("Test 6: wah_result then wah_param, (i32,i32)->(i32)\n");
+    {
+        static const char *wasm_spec = "wasm \
+            types {[ fn [i32, i32] [i32] ]} \
+            imports {[ {'env'} {'f'} fn# 0 ]} \
+            funcs {[ ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ ]}";
+
+        wah_module_t wasm_mod = {0}, env_mod = {0};
+        wah_exec_context_t ctx = {0};
+
+        assert_ok(wah_new_module(&env_mod));
+        wah_type_t hp[] = { WAH_TYPE_I32, WAH_TYPE_I32 };
+        wah_type_t hr[] = { WAH_TYPE_I32 };
+        assert_ok(wah_module_export_funcv(&env_mod, "f", 2, hp, 1, hr,
+            host_write_result_then_read_two_params, NULL, NULL));
+
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, wasm_spec));
+        assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+        assert_ok(wah_link_module(&ctx, "env", &env_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_entry_t entry;
+        assert_ok(wah_module_export_by_name(&wasm_mod, "f", &entry));
+
+        // params=(10,20) -> host writes result, then reads a=10,b=20 -> result=30
+        wah_value_t params[2] = {{ .i32 = 10 }, { .i32 = 20 }};
+        wah_value_t result = {0};
+        assert_ok(wah_call(&ctx, entry.id, params, 2, &result));
+        assert_eq_i32(result.i32, 30);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
+    // Test 7: write result THEN read params -- (i32, i32, i32) -> (i32)
+    printf("Test 7: wah_result then wah_param, (i32,i32,i32)->(i32)\n");
+    {
+        static const char *wasm_spec = "wasm \
+            types {[ fn [i32, i32, i32] [i32] ]} \
+            imports {[ {'env'} {'f'} fn# 0 ]} \
+            funcs {[ ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ ]}";
+
+        wah_module_t wasm_mod = {0}, env_mod = {0};
+        wah_exec_context_t ctx = {0};
+
+        assert_ok(wah_new_module(&env_mod));
+        wah_type_t hp[] = { WAH_TYPE_I32, WAH_TYPE_I32, WAH_TYPE_I32 };
+        wah_type_t hr[] = { WAH_TYPE_I32 };
+        assert_ok(wah_module_export_funcv(&env_mod, "f", 3, hp, 1, hr,
+            host_write_result_then_read_three_params, NULL, NULL));
+
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, wasm_spec));
+        assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+        assert_ok(wah_link_module(&ctx, "env", &env_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_entry_t entry;
+        assert_ok(wah_module_export_by_name(&wasm_mod, "f", &entry));
+
+        // params=(10,20,30) -> host writes result, then reads all three -> result=60
+        wah_value_t params[3] = {{ .i32 = 10 }, { .i32 = 20 }, { .i32 = 30 }};
+        wah_value_t result = {0};
+        assert_ok(wah_call(&ctx, entry.id, params, 3, &result));
+        assert_eq_i32(result.i32, 60);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
     }
 
     printf("All tests passed!\n");

@@ -5589,16 +5589,22 @@ WAH_RUN(CALL) {
         // Validate parameter count
         WAH_ASSERT((size_t)(sp - ctx->value_stack) >= nparams && "validation bug; is this even possible?");
 
-        // Pointers to params and result storage (reuse param space for results)
+        // Params are at [sp - nparams, sp). Place results ABOVE params so they don't overlap.
         wah_value_t *param_vals = sp - nparams;
-        wah_value_t *result_vals = param_vals;  // Reuse param space for results
+        wah_value_t *result_vals = sp;
 
-        // Adjust stack pointer (pop params, push results)
-        sp -= nparams;  // Pop params
-        sp += nresults;  // Push results
+        // Reserve space for results above params
+        WAH_ENSURE_GOTO((size_t)(result_vals + nresults - ctx->value_stack) <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup);
+        memset(result_vals, 0, sizeof(wah_value_t) * nresults);
 
-        // Call host function using helper
+        // Call host function: params and results are in distinct, non-overlapping regions
         WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, called_fn, param_vals, (uint32_t)nparams, result_vals), cleanup);
+
+        // Move results down to where params were (standard wasm calling convention)
+        if (nresults > 0) {
+            memmove(param_vals, result_vals, sizeof(wah_value_t) * nresults);
+        }
+        sp = param_vals + nresults;
 
         frame->bytecode_ip = bytecode_ip;
     } else {
@@ -5674,16 +5680,22 @@ WAH_RUN(CALL_INDIRECT) {
         // Validate parameter count
         WAH_ASSERT((size_t)(sp - ctx->value_stack) >= nparams && "validation bug; is this even possible?");
 
-        // Pointers to params and result storage (reuse param space for results)
+        // Params are at [sp - nparams, sp). Place results ABOVE params so they don't overlap.
         wah_value_t *param_vals = sp - nparams;
-        wah_value_t *result_vals = param_vals;  // Reuse param space for results
+        wah_value_t *result_vals = sp;
 
-        // Adjust stack pointer (pop params, push results)
-        sp -= nparams;  // Pop params
-        sp += nresults;  // Push results
+        // Reserve space for results above params
+        WAH_ENSURE_GOTO((size_t)(result_vals + nresults - ctx->value_stack) <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup);
+        memset(result_vals, 0, sizeof(wah_value_t) * nresults);
 
-        // Call host function using helper
+        // Call host function: params and results are in distinct, non-overlapping regions
         WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, actual_fn, param_vals, (uint32_t)nparams, result_vals), cleanup);
+
+        // Move results down to where params were
+        if (nresults > 0) {
+            memmove(param_vals, result_vals, sizeof(wah_value_t) * nresults);
+        }
+        sp = param_vals + nresults;
 
         frame->bytecode_ip = bytecode_ip;
     } else {
