@@ -111,6 +111,27 @@ int main(void) {
     // The final stack size is still 1, so it should not trigger the END check.
     assert_err(wah_parse_module_from_spec(&module, const_expr_stack_overflow_spec), WAH_ERROR_TOO_LARGE);
 
+    printf("10. Testing i32 memory load with offset=0xffffffff (u32 max) passes validation...\n");
+    const char *i32_mem_offset_max_spec = "wasm \
+        types {[ fn [i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        code {[ \
+            {[] local.get 0 i32.load align=4 offset=0xffffffff end} \
+        ]}";
+    assert_ok(wah_parse_module_from_spec(&module, i32_mem_offset_max_spec));
+    wah_free_module(&module);
+
+    printf("11. Testing i32 memory load with offset=2^32 (exceeds u32 max) is rejected at validation...\n");
+    const char *i32_mem_offset_overflow_spec = "wasm \
+        types {[ fn [i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        code {[ \
+            {[] local.get 0 i32.load align=4 offset=0x100000000 end} \
+        ]}";
+    assert_err(wah_parse_module_from_spec(&module, i32_mem_offset_overflow_spec), WAH_ERROR_VALIDATION_FAILED);
+
     printf("--- All Overflow Tests Passed ---\n");
     return 0;
 }

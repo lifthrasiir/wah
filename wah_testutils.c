@@ -412,6 +412,8 @@ static const token_entry_t token_table[] = {
     TOKEN("offset=0", 0x00),
     TOKEN("offset=0x1233", 0xb3, 0x24),
     TOKEN("offset=0x1234", 0xb4, 0x24),
+    TOKEN("offset=0xffffffff", 0xff, 0xff, 0xff, 0xff, 0x0f),
+    TOKEN("offset=0x100000000", 0x80, 0x80, 0x80, 0x80, 0x10),
     TOKEN("align=1", 0x00),
     TOKEN("align=2", 0x01),
     TOKEN("align=4", 0x02),
@@ -425,6 +427,8 @@ static const token_entry_t token_table[] = {
     TOKEN("mut", 0x01),           // Mutable flag for globals
     TOKEN("limits.i32/1", 0x00),  // limits.i32/1 <min> (max is infinite)
     TOKEN("limits.i32/2", 0x01),  // limits.i32/2 <min> <max>
+    TOKEN("limits.i64/1", 0x04),  // limits.i64/1 <min> (max is infinite)
+    TOKEN("limits.i64/2", 0x05),  // limits.i64/2 <min> <max>
 
     {NULL, NULL, 0}  // Sentinel
 };
