@@ -2336,7 +2336,7 @@ static WAH_ALWAYS_INLINE int32_t wah_i64x2_all_true_sse2(__m128i v) {
     __m128i eq_lo = _mm_cmpeq_epi32(v, _mm_setzero_si128());
     __m128i eq_hi = _mm_cmpeq_epi32(v_hi, _mm_setzero_si128());
     __m128i eq64 = _mm_and_si128(eq_lo, eq_hi);
-    return _mm_movemask_epi8(eq64) == 0xffff;
+    return _mm_movemask_epi8(eq64) == 0;
 }
 
 // Since SSE2 has no byte shift, we unpack to 16-bit, shift, and repack
@@ -7285,7 +7285,7 @@ WAH_RUN(F64X2_DIV) M128D_BINARY_OP(_mm_div_pd, N128_BINARY_OP(wah_vdivq_f64, V12
             break; \
         } \
     } \
-    (*sp++).i32 = result; \
+    sp[-1].i32 = result; \
     WAH_NEXT(); \
 }
 
@@ -7346,7 +7346,7 @@ WAH_RUN(I8X16_NEG)
         N128_UNARY_OP(wah_vnegq_s8, V128_UNARY_OP_LANE(8, -, i8)))
 WAH_RUN(I8X16_POPCNT) M128I_UNARY_OP(wah_i8x16_popcnt_sse2, N128_UNARY_OP(vcntq_u8, V128_UNARY_OP_LANE_FN(8, wah_popcount_u8, u8)))
 WAH_RUN(I8X16_ALL_TRUE)
-    WAH_IF_X86_64({ sp[-1].i32 = (_mm_movemask_epi8(_mm_cmpeq_epi8(sp[-1]._m128i, _mm_setzero_si128())) == 0xffff); WAH_NEXT(); },
+    WAH_IF_X86_64({ sp[-1].i32 = (_mm_movemask_epi8(_mm_cmpeq_epi8(sp[-1]._m128i, _mm_setzero_si128())) == 0); WAH_NEXT(); },
         N128_UNARY_I32_OP(wah_all_true_i8x16_neon, V128_ALL_TRUE_OP(8, u8)))
 WAH_RUN(I8X16_BITMASK) M128I_UNARY_I32_OP(_mm_movemask_epi8, N128_UNARY_I32_OP(wah_bitmask_i8x16_neon, V128_BITMASK_OP(8, i8)))
 WAH_RUN(I8X16_NARROW_I16X8_S)
@@ -7403,7 +7403,7 @@ WAH_RUN(I16X8_Q15MULR_SAT_S) {
     WAH_NEXT();
 }
 WAH_RUN(I16X8_ALL_TRUE)
-    WAH_IF_X86_64({ sp[-1].i32 = (_mm_movemask_epi8(_mm_cmpeq_epi16(sp[-1]._m128i, _mm_setzero_si128())) == 0xffff); WAH_NEXT(); },
+    WAH_IF_X86_64({ sp[-1].i32 = (_mm_movemask_epi8(_mm_cmpeq_epi16(sp[-1]._m128i, _mm_setzero_si128())) == 0); WAH_NEXT(); },
         V128_ALL_TRUE_OP(16, u16))
 WAH_RUN(I16X8_BITMASK) M128I_UNARY_I32_OP(wah_i16x8_bitmask_sse2, N128_UNARY_I32_OP(wah_bitmask_i16x8_neon, V128_BITMASK_OP(16, i16)))
 WAH_RUN(I16X8_NARROW_I32X4_S)
@@ -7463,7 +7463,7 @@ WAH_RUN(I32X4_NEG)
     WAH_IF_X86_64({ sp[-1]._m128i = _mm_sub_epi32(_mm_setzero_si128(), sp[-1]._m128i); WAH_NEXT(); },
         N128_UNARY_OP(wah_vnegq_s32, V128_UNARY_OP_LANE(32, -, i32)))
 WAH_RUN(I32X4_ALL_TRUE)
-    WAH_IF_X86_64({ sp[-1].i32 = (_mm_movemask_epi8(_mm_cmpeq_epi32(sp[-1]._m128i, _mm_setzero_si128())) == 0xffff); WAH_NEXT(); },
+    WAH_IF_X86_64({ sp[-1].i32 = (_mm_movemask_epi8(_mm_cmpeq_epi32(sp[-1]._m128i, _mm_setzero_si128())) == 0); WAH_NEXT(); },
         N128_UNARY_I32_OP(wah_all_true_i32x4_neon, V128_ALL_TRUE_OP(32, u32)))
 WAH_RUN(I32X4_BITMASK) M128I_UNARY_I32_OP(wah_i32x4_bitmask_sse2, N128_UNARY_I32_OP(wah_bitmask_i32x4_neon, V128_BITMASK_OP(32, i32)))
 WAH_RUN(I32X4_EXTEND_LOW_I16X8_S) N128_UNARY_OP(wah_i32x4_extend_low_i16x8_s_neon, V128_EXTEND_LOW_OP(32, i32, 16, i16, int))
