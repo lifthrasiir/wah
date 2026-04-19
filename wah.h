@@ -471,12 +471,16 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
 #endif
 #if WAH_CHECK_COMPILER(700, 407, 1932)
 #define WAH_IF_AVX512F(...) __VA_ARGS__
+#define WAH_IF_AVX512DQ(...) __VA_ARGS__
 #define WAH_IF_AVX512VL(...) __VA_ARGS__
 #define WAH_IF_AVX512BW(...) __VA_ARGS__
+#define WAH_IF_AVX512BITALG(...) __VA_ARGS__
 #else
 #define WAH_IF_AVX512F(...)
+#define WAH_IF_AVX512DQ(...)
 #define WAH_IF_AVX512VL(...)
 #define WAH_IF_AVX512BW(...)
+#define WAH_IF_AVX512BITALG(...)
 #endif
 #if WAH_CHECK_COMPILER(700, 600, 1932)
 #define WAH_IF_AVX512IFMA(...) __VA_ARGS__
@@ -803,17 +807,17 @@ typedef enum {
     X(F64X2_CEIL,sse41) X(F64X2_FLOOR,sse41) X(F64X2_TRUNC,sse41) X(F64X2_NEAREST,sse41) \
     X(I64X2_GT_S,sse42) X(I64X2_LT_S,sse42) \
     X(I64X2_LE_S,sse42) X(I64X2_GE_S,sse42) \
-    X(I8X16_EQ,avx512f) X(I8X16_GT_S,avx512f) X(I8X16_LT_U,avx512f) \
-    X(F32X4_PMIN,avx512f) X(F32X4_PMAX,avx512f) X(F64X2_PMIN,avx512f) X(F64X2_PMAX,avx512f) \
-    X(V128_BITSELECT,avx512f) \
     X(F32X4_CONVERT_I32X4_U,avx512vl) X(F64X2_CONVERT_LOW_I32X4_U,avx512vl)
 
 // Multi-version opcodes (multiple implementations with priority ordering)
 // These are handled manually in wah_x86_64_opcode function
 #define WAH_X86_64_EXTRA_OPCODES_MULTI(X) \
-    X(I8X16_POPCNT,avx2) X(I8X16_POPCNT,avx512f) \
-    X(I32X4_TRUNC_SAT_F32X4_U,sse41) X(I32X4_TRUNC_SAT_F32X4_U,avx512vl) \
-    X(I64X2_MUL,avx512f) X(I64X2_MUL,avx512ifma)
+    X(I8X16_POPCNT,avx2) X(I8X16_POPCNT,avx512) \
+    X(I8X16_EQ,avx512) X(I8X16_GT_S,avx512) X(I8X16_LT_U,avx512) \
+    X(F32X4_PMIN,avx512) X(F32X4_PMAX,avx512) X(F64X2_PMIN,avx512) X(F64X2_PMAX,avx512) \
+    X(V128_BITSELECT,avx512) \
+    X(I32X4_TRUNC_SAT_F32X4_U,sse41) X(I32X4_TRUNC_SAT_F32X4_U,avx512) \
+    X(I64X2_MUL,avx512) X(I64X2_MUL,avx512ifma)
 
 #endif
 
@@ -953,10 +957,9 @@ WAH_IF_SSE41(
     WAH_ASM_UNARY_M128D(_mm_round_pd_nearest, "roundpd $0x0,")
 )
 
-WAH_IF_AVX512F(
+WAH_IF_AVX512BITALG(
     // AVX-512 popcount wrappers
     WAH_ASM_UNARY_M128I(_mm_popcnt_epi8, "vpopcntb")
-    WAH_ASM_UNARY_M128I(_mm_popcnt_epi32, "vpopcntd")
 )
 
 // AVX-512 ternary logic wrapper (vpternlogd)
@@ -979,7 +982,7 @@ WAH_IF_AVX512F(
 
 // AVX-512 FP min/max wrappers (vrange)
 // Using SAE=1 with mode 3 (<= min) and mode 7 (>= max)
-WAH_IF_AVX512F(
+WAH_IF_AVX512DQ(
     WAH_ASM_BINARY_M128_IMM(_mm_range_ps_min, "vrangeps", 0x83)
     WAH_ASM_BINARY_M128_IMM(_mm_range_ps_max, "vrangeps", 0x87)
     WAH_ASM_BINARY_M128D_IMM(_mm_range_pd_min, "vrangepd", 0x83)
@@ -1036,53 +1039,117 @@ WAH_IF_SSE41(
 
 typedef struct {
     uint32_t ssse3 : 1, sse41 : 1, sse42 : 1, avx2 : 1;
-    uint32_t avx512f : 1, avx512vl : 1, avx512bw : 1, avx512ifma : 1;
+    uint32_t avx512f : 1, avx512dq : 1, avx512vl : 1, avx512bw : 1;
+    uint32_t avx512ifma : 1, avx512bitalg : 1;
 } wah_x86_64_features_t;
+
+static WAH_ALWAYS_INLINE uint64_t wah_x86_64_xgetbv(uint32_t xcr) {
+#if defined(_MSC_VER)
+    return _xgetbv(xcr);
+#else
+    uint32_t eax, edx;
+    __asm__ volatile("xgetbv" : "=a"(eax), "=d"(edx) : "c"(xcr));
+    return ((uint64_t)edx << 32) | eax;
+#endif
+}
 
 static wah_x86_64_features_t wah_x86_64_features(void) {
     uint32_t eax, ebx, ecx, edx;
+    uint32_t max_basic_leaf;
 #if defined(_MSC_VER)
     int cpu_info[4];
+    __cpuid(cpu_info, 0);
+    max_basic_leaf = (uint32_t)cpu_info[0];
+    if (max_basic_leaf < 1) return (wah_x86_64_features_t){0};
     __cpuid(cpu_info, 1);
     eax = (uint32_t)cpu_info[0];
     ebx = (uint32_t)cpu_info[1];
     ecx = (uint32_t)cpu_info[2];
     edx = (uint32_t)cpu_info[3];
 #else
+    __cpuid(0, max_basic_leaf, ebx, ecx, edx);
+    if (max_basic_leaf < 1) return (wah_x86_64_features_t){0};
     __cpuid(1, eax, ebx, ecx, edx);
 #endif
-    uint32_t avx512f = (ebx >> 16) & 1;
+
+    uint32_t has_osxsave = (ecx >> 27) & 1;
+    uint32_t has_avx = (ecx >> 28) & 1;
+    uint32_t avx_usable = 0, avx512_usable = 0;
+    if (has_osxsave && has_avx) {
+        uint64_t xcr0 = wah_x86_64_xgetbv(0);
+        avx_usable = (xcr0 & 0x6) == 0x6;
+        avx512_usable = avx_usable && (xcr0 & 0xE0) == 0xE0;
+    }
+
+    uint32_t leaf7_ebx = 0, leaf7_ecx = 0;
+    if (max_basic_leaf >= 7) {
+#if defined(_MSC_VER)
+        __cpuidex(cpu_info, 7, 0);
+        leaf7_ebx = (uint32_t)cpu_info[1];
+        leaf7_ecx = (uint32_t)cpu_info[2];
+#else
+        __cpuid_count(7, 0, eax, leaf7_ebx, leaf7_ecx, edx);
+#endif
+    }
+
+    uint32_t avx512f = avx512_usable && ((leaf7_ebx >> 16) & 1);
     return (wah_x86_64_features_t){
         .ssse3 = (ecx >> 9) & 1,
         .sse41 = (ecx >> 19) & 1,
         .sse42 = (ecx >> 20) & 1,
-        .avx2 = (ebx >> 5) & 1,
+        .avx2 = avx_usable && ((leaf7_ebx >> 5) & 1),
         .avx512f = avx512f,
-        .avx512vl = avx512f & (ebx >> 17),
-        .avx512bw = avx512f & (ebx >> 30),
-        .avx512ifma = avx512f & (ebx >> 21),
+        .avx512dq = avx512f && ((leaf7_ebx >> 17) & 1),
+        .avx512vl = avx512f && ((leaf7_ebx >> 31) & 1),
+        .avx512bw = avx512f && ((leaf7_ebx >> 30) & 1),
+        .avx512ifma = avx512f && ((leaf7_ebx >> 21) & 1),
+        .avx512bitalg = avx512f && ((leaf7_ecx >> 12) & 1),
     };
 }
 
 static wah_opcode_t wah_x86_64_opcode(wah_opcode_t opcode, wah_x86_64_features_t features) {
     switch (opcode) {
         // Single-version opcodes
-        #define WAH_X86_64_OPCODE_CASE(name, suffix) case WAH_OP_##name: if (features.suffix) return WAH_OP_##name##_##suffix;
+        #define WAH_X86_64_OPCODE_CASE(name, suffix) case WAH_OP_##name: if (features.suffix) return WAH_OP_##name##_##suffix; break;
         WAH_X86_64_EXTRA_OPCODES_SINGLE(WAH_X86_64_OPCODE_CASE)
         #undef WAH_X86_64_OPCODE_CASE
 
         // Multi-version opcodes with priority ordering
         case WAH_OP_I8X16_POPCNT:
-            if (features.avx512bw) return WAH_OP_I8X16_POPCNT_avx512f;
+            if (features.avx512bitalg && features.avx512vl) return WAH_OP_I8X16_POPCNT_avx512;
             if (features.avx2) return WAH_OP_I8X16_POPCNT_avx2;
             break;
+        case WAH_OP_I8X16_EQ:
+            if (features.avx512bw && features.avx512vl) return WAH_OP_I8X16_EQ_avx512;
+            break;
+        case WAH_OP_I8X16_GT_S:
+            if (features.avx512bw && features.avx512vl) return WAH_OP_I8X16_GT_S_avx512;
+            break;
+        case WAH_OP_I8X16_LT_U:
+            if (features.avx512bw && features.avx512vl) return WAH_OP_I8X16_LT_U_avx512;
+            break;
+        case WAH_OP_F32X4_PMIN:
+            if (features.avx512dq && features.avx512vl) return WAH_OP_F32X4_PMIN_avx512;
+            break;
+        case WAH_OP_F32X4_PMAX:
+            if (features.avx512dq && features.avx512vl) return WAH_OP_F32X4_PMAX_avx512;
+            break;
+        case WAH_OP_F64X2_PMIN:
+            if (features.avx512dq && features.avx512vl) return WAH_OP_F64X2_PMIN_avx512;
+            break;
+        case WAH_OP_F64X2_PMAX:
+            if (features.avx512dq && features.avx512vl) return WAH_OP_F64X2_PMAX_avx512;
+            break;
+        case WAH_OP_V128_BITSELECT:
+            if (features.avx512f && features.avx512vl) return WAH_OP_V128_BITSELECT_avx512;
+            break;
         case WAH_OP_I32X4_TRUNC_SAT_F32X4_U:
-            if (features.avx512vl) return WAH_OP_I32X4_TRUNC_SAT_F32X4_U_avx512vl;
+            if (features.avx512vl) return WAH_OP_I32X4_TRUNC_SAT_F32X4_U_avx512;
             if (features.sse41) return WAH_OP_I32X4_TRUNC_SAT_F32X4_U_sse41;
             break;
         case WAH_OP_I64X2_MUL:
-            if (features.avx512ifma) return WAH_OP_I64X2_MUL_avx512ifma;
-            if (features.avx512f) return WAH_OP_I64X2_MUL_avx512f;
+            if (features.avx512ifma) return WAH_OP_I64X2_MUL_avx512;
+            if (features.avx512f) return WAH_OP_I64X2_MUL_avx512;
             break;
         default: ; // pass through
     }
@@ -2292,6 +2359,14 @@ static WAH_ALWAYS_INLINE __m128i wah_i32x4_max_u_sse2(__m128i a, __m128i b) {
     return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b));
 }
 
+static WAH_ALWAYS_INLINE __m128 wah_f32x4_convert_i32x4_u_sse2(__m128i a) {
+    __m128i low31 = _mm_and_si128(a, _mm_set1_epi32(0x7FFFFFFF));
+    __m128 base = _mm_cvtepi32_ps(low31);
+    __m128i hi_bit = _mm_srli_epi32(a, 31);
+    __m128 hi = _mm_mul_ps(_mm_cvtepi32_ps(hi_bit), _mm_set1_ps(2147483648.0f));
+    return _mm_add_ps(base, hi);
+}
+
 static WAH_ALWAYS_INLINE __m128i wah_i16x8_narrow_i32x4_u_sse2(__m128i a, __m128i b) {
     __m128i max_val = _mm_set1_epi32(65535);
     __m128i a_gt_max = _mm_cmpgt_epi32(a, max_val);
@@ -2577,7 +2652,7 @@ WAH_IF_AVX2(
 
 WAH_IF_AVX512F(
     // AVX-512F 64x64->64 multiply (partial products method, more efficient than SSE2)
-    static WAH_ALWAYS_INLINE __m128i wah_i64x2_mul_avx512f(__m128i a, __m128i b) {
+    static WAH_ALWAYS_INLINE __m128i wah_i64x2_mul_avx512(__m128i a, __m128i b) {
         __m128i a_lo = _mm_and_si128(a, _mm_set1_epi32(0xFFFFFFFF));
         __m128i b_lo = _mm_and_si128(b, _mm_set1_epi32(0xFFFFFFFF));
 
@@ -2598,12 +2673,12 @@ WAH_IF_AVX512F(
 
 WAH_IF_AVX512VL(
     // AVX-512VL HIGH conversion helpers (shuffle high 64 bits then convert)
-    static WAH_ALWAYS_INLINE __m128 wah_f32x4_convert_i32x4_u_high_avx512vl(__m128i a) {
+    static WAH_ALWAYS_INLINE __m128 wah_f32x4_convert_i32x4_u_high_avx512(__m128i a) {
         __m128i a_high = _mm_srli_si128(a, 8);
         return wah_mm_cvtepu32_ps(a_high);
     }
 
-    static WAH_ALWAYS_INLINE __m128d wah_f64x2_convert_high_i32x4_u_avx512vl(__m128i a) {
+    static WAH_ALWAYS_INLINE __m128d wah_f64x2_convert_high_i32x4_u_avx512(__m128i a) {
         __m128i a_high = _mm_srli_si128(a, 8);
         return wah_mm_cvtepu32_pd(a_high);
     }
@@ -7630,12 +7705,15 @@ WAH_RUN(F32X4_CONVERT_I32X4_S) WAH_IF_X86_64({
     sp[-1].v128 = val;
     WAH_NEXT();
 }))
-WAH_RUN(F32X4_CONVERT_I32X4_U) N128_UNARY_OP(wah_f32x4_convert_i32x4_u_neon, {
+WAH_RUN(F32X4_CONVERT_I32X4_U) WAH_IF_X86_64({
+    sp[-1]._m128 = wah_f32x4_convert_i32x4_u_sse2(sp[-1]._m128i);
+    WAH_NEXT();
+}, N128_UNARY_OP(wah_f32x4_convert_i32x4_u_neon, {
     wah_v128_t val = sp[-1].v128;
     for (int i = 0; i < 4; ++i) val.f32[i] = (float)val.u32[i];
     sp[-1].v128 = val;
     WAH_NEXT();
-})
+}))
 WAH_RUN(I32X4_TRUNC_SAT_F64X2_S_ZERO) {
     wah_v128_t val = sp[-1].v128;
     wah_v128_t result = { .i32 = {wah_trunc_sat_f64_to_i32(val.f64[0]), wah_trunc_sat_f64_to_i32(val.f64[1])} };
@@ -7849,25 +7927,25 @@ WAH_IF_X86_64(
     )
 
     WAH_IF_AVX512F(
-        WAH_RUN(I64X2_MUL_avx512f) M128I_BINARY_OP(wah_i64x2_mul_avx512f)
-        WAH_RUN(I8X16_POPCNT_avx512f) M128I_UNARY_OP(wah_mm_popcnt_epi8)
-        WAH_RUN(F32X4_PMIN_avx512f) M128_BINARY_OP(wah_mm_range_ps_min)
-        WAH_RUN(F32X4_PMAX_avx512f) M128_BINARY_OP(wah_mm_range_ps_max)
-        WAH_RUN(F64X2_PMIN_avx512f) M128D_BINARY_OP(wah_mm_range_pd_min)
-        WAH_RUN(F64X2_PMAX_avx512f) M128D_BINARY_OP(wah_mm_range_pd_max)
+        WAH_RUN(I64X2_MUL_avx512) M128I_BINARY_OP(wah_i64x2_mul_avx512)
+        WAH_RUN(I8X16_POPCNT_avx512) M128I_UNARY_OP(wah_mm_popcnt_epi8)
+        WAH_RUN(F32X4_PMIN_avx512) M128_BINARY_OP(wah_mm_range_ps_min)
+        WAH_RUN(F32X4_PMAX_avx512) M128_BINARY_OP(wah_mm_range_ps_max)
+        WAH_RUN(F64X2_PMIN_avx512) M128D_BINARY_OP(wah_mm_range_pd_min)
+        WAH_RUN(F64X2_PMAX_avx512) M128D_BINARY_OP(wah_mm_range_pd_max)
     )
 
     WAH_IF_AVX512VL(
-        WAH_RUN(I32X4_TRUNC_SAT_F32X4_U_avx512vl) { sp[-1]._m128i = wah_mm_cvttps_epu32(sp[-1]._m128); WAH_NEXT(); }
+        WAH_RUN(I32X4_TRUNC_SAT_F32X4_U_avx512) { sp[-1]._m128i = wah_mm_cvttps_epu32(sp[-1]._m128); WAH_NEXT(); }
         WAH_RUN(F32X4_CONVERT_I32X4_U_avx512vl) { sp[-1]._m128 = wah_mm_cvtepu32_ps(sp[-1]._m128i); WAH_NEXT(); }
         WAH_RUN(F64X2_CONVERT_LOW_I32X4_U_avx512vl) { sp[-1]._m128d = wah_mm_cvtepu32_pd(sp[-1]._m128i); WAH_NEXT(); }
     )
 
     WAH_IF_AVX512BW(
-        WAH_RUN(V128_BITSELECT_avx512f) M128I_TERNARY_OP(wah_mm_ternarylogic_epi32_bitselect(a, b, c))
-        WAH_RUN(I8X16_EQ_avx512f) M128I_BINARY_OP(wah_mm_cmpeq_epi8_avx512)
-        WAH_RUN(I8X16_LT_U_avx512f) M128I_BINARY_OP(wah_mm_cmplt_epu8_avx512)
-        WAH_RUN(I8X16_GT_S_avx512f) M128I_BINARY_OP(wah_mm_cmpgt_epi8_avx512)
+        WAH_RUN(V128_BITSELECT_avx512) M128I_TERNARY_OP(wah_mm_ternarylogic_epi32_bitselect(a, b, c))
+        WAH_RUN(I8X16_EQ_avx512) M128I_BINARY_OP(wah_mm_cmpeq_epi8_avx512)
+        WAH_RUN(I8X16_LT_U_avx512) M128I_BINARY_OP(wah_mm_cmplt_epu8_avx512)
+        WAH_RUN(I8X16_GT_S_avx512) M128I_BINARY_OP(wah_mm_cmpgt_epi8_avx512)
     )
 
     WAH_IF_AVX512IFMA(
