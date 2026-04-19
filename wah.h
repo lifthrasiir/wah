@@ -8972,8 +8972,35 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                         WAH_ENSURE_GOTO(local_k < linked->function_count,
                                         WAH_ERROR_VALIDATION_FAILED, cleanup);
                         ctx->globals[lg_offset + k].ref = &linked->functions[local_k];
+                    } else {
+                        // ref.func to linked module's own import: resolve from another linked module
+                        wah_func_import_t *fi = &linked->func_imports[fidx];
+                        const wah_module_t *provider = NULL;
+                        for (uint32_t m = 0; m < ctx->linked_module_count; m++) {
+                            const char *lname = ctx->linked_modules[m].name;
+                            if (strncmp(lname, fi->module_name, fi->module_name_len) == 0 &&
+                                lname[fi->module_name_len] == '\0') {
+                                provider = ctx->linked_modules[m].module;
+                                break;
+                            }
+                        }
+                        WAH_ENSURE_GOTO(provider != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                        const wah_export_t *exp = NULL;
+                        for (uint32_t m = 0; m < provider->export_count; m++) {
+                            if (provider->exports[m].kind == 0 &&
+                                provider->exports[m].name_len == fi->field_name_len &&
+                                memcmp(provider->exports[m].name, fi->field_name, fi->field_name_len) == 0) {
+                                exp = &provider->exports[m];
+                                break;
+                            }
+                        }
+                        WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                        uint32_t provider_import_count = provider->import_function_count;
+                        WAH_ENSURE_GOTO(exp->index >= provider_import_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                        uint32_t provider_local_idx = exp->index - provider_import_count;
+                        WAH_ENSURE_GOTO(provider_local_idx < provider->total_function_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                        ctx->globals[lg_offset + k].ref = &provider->functions[provider_local_idx];
                     }
-                    // ref.func to linked module's own import: not yet handled
                 }
             }
             lg_offset += linked->global_count;

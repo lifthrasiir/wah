@@ -320,6 +320,58 @@ int main() {
         wah_free_module(&mod_b);
     }
 
+    // Test 10: Linked module global initializer using ref.func referencing the linked module's own import.
+    // Regression: ref.func <N> in a linked module's global, where N < import_function_count,
+    // was left as a prefuncref sentinel instead of being resolved to the actual imported function.
+    printf("Test 10: Linked module global uses ref.func pointing at its own import\n");
+    {
+        // Module C (host): exports "getConst" () -> i32 returning 42.
+        wah_module_t mod_c = {0};
+        assert_ok(wah_new_module(&mod_c));
+        assert_ok(wah_module_export_funcv(&mod_c, "getConst", 0, NULL, 1,
+                                          (wah_type_t[]){WAH_TYPE_I32},
+                                          simple_host_func, NULL, NULL));
+
+        // Module B: imports "moduleC"."getConst" (func idx 0).
+        // global[0] = funcref mut ref.func 0 (= the IMPORT, not a local).
+        // local func 0 (global idx 1): stores global[0] into table[0][0], then call_indirect.
+        const char *spec_b = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'moduleC'} {'getConst'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            globals {[ funcref mut ref.func 0 end ]} \
+            exports {[ {'callViaRef'} fn# 1 ]} \
+            code {[ \
+                {[] i32.const 0 global.get 0 table.set 0 i32.const 0 call_indirect 0 0 end} \
+            ]}";
+
+        // Module A: imports callViaRef from moduleB; provides table[0] used at runtime.
+        const char *spec_a = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'moduleB'} {'callViaRef'} fn# 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]}";
+
+        wah_module_t mod_a = {0}, mod_b = {0};
+        wah_exec_context_t ctx = {0};
+
+        assert_ok(wah_parse_module_from_spec(&mod_b, spec_b));
+        assert_ok(wah_parse_module_from_spec(&mod_a, spec_a));
+        assert_ok(wah_exec_context_create(&ctx, &mod_a));
+        assert_ok(wah_link_module(&ctx, "moduleB", &mod_b));
+        assert_ok(wah_link_module(&ctx, "moduleC", &mod_c));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&mod_a);
+        wah_free_module(&mod_b);
+        wah_free_module(&mod_c);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
