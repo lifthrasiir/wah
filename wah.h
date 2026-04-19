@@ -128,7 +128,7 @@ typedef struct {
     union {
         wah_value_t global_val; // For WAH_TYPE_IS_GLOBAL
         struct { // For WAH_TYPE_IS_MEMORY
-            uint32_t min_pages, max_pages;
+            uint64_t min_pages, max_pages;
         } memory;
         struct { // For WAH_TYPE_IS_TABLE
             wah_type_t elem_type;
@@ -261,7 +261,7 @@ void wah_free_module(wah_module_t *module);
 wah_error_t wah_new_module(wah_module_t *mod);
 wah_error_t wah_module_export_funcv(wah_module_t *mod, const char *name, size_t nparams, const wah_type_t *param_types, size_t nresults, const wah_type_t *result_types, wah_func_t func, void *userdata, wah_finalize_t finalize);
 wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const char *types, wah_func_t func, void *userdata, wah_finalize_t finalize);
-wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint32_t min_pages, uint32_t max_pages);
+wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages);
 wah_error_t wah_module_export_global_i32(wah_module_t *mod, const char *name, bool mutable, int32_t init_value);
 wah_error_t wah_module_export_global_i64(wah_module_t *mod, const char *name, bool mutable, int64_t init_value);
 wah_error_t wah_module_export_global_f32(wah_module_t *mod, const char *name, bool mutable, float init_value);
@@ -333,7 +333,7 @@ static inline double wah_entry_f64(const wah_entry_t *entry) {
     return entry->type == WAH_TYPE_F64 ? entry->u.global_val.f64 : NAN;
 }
 
-static inline wah_error_t wah_entry_memory(const wah_entry_t *entry, uint32_t *min_pages, uint32_t *max_pages) {
+static inline wah_error_t wah_entry_memory(const wah_entry_t *entry, uint64_t *min_pages, uint64_t *max_pages) {
     if (!entry) return WAH_ERROR_MISUSE;
     if (!min_pages) return WAH_ERROR_MISUSE;
     if (!max_pages) return WAH_ERROR_MISUSE;
@@ -1096,7 +1096,7 @@ static wah_opcode_t wah_x86_64_opcode(wah_opcode_t opcode, wah_x86_64_features_t
 
 typedef struct wah_memory_type_s {
     wah_type_t addr_type;     // WAH_TYPE_I32 or WAH_TYPE_I64
-    uint32_t min_pages, max_pages; // max_pages: UINT32_MAX if no maximum
+    uint64_t min_pages, max_pages; // max_pages: UINT64_MAX if no maximum
 } wah_memory_type_t;
 
 // --- WebAssembly Table Structures ---
@@ -1397,6 +1397,24 @@ static inline wah_error_t wah_decode_uleb128(const uint8_t **ptr, const uint8_t 
         shift += 7;
     }
     // If we get here, it means the 5th byte had the continuation bit set.
+    return WAH_ERROR_TOO_LARGE;
+}
+
+// Helper function to decode an unsigned LEB128 integer (64-bit)
+static inline wah_error_t wah_decode_uleb128_u64(const uint8_t **ptr, const uint8_t *end, uint64_t *result) {
+    uint64_t val = 0;
+    uint32_t shift = 0;
+    uint8_t byte;
+    for (int i = 0; i < 10; ++i) { // Max 10 bytes for a 64-bit value
+        WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
+        byte = *(*ptr)++;
+        val |= (uint64_t)(byte & 0x7F) << shift;
+        if ((byte & 0x80) == 0) {
+            *result = val;
+            return WAH_OK;
+        }
+        shift += 7;
+    }
     return WAH_ERROR_TOO_LARGE;
 }
 
@@ -4152,12 +4170,23 @@ static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *
                 return WAH_ERROR_VALIDATION_FAILED; // Unknown memory type flags
             }
 
-            WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->memories[i].min_pages));
-
-            if (flags & 0x01) { // has explicit max, read it
-                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->memories[i].max_pages));
+            if (flags == 0x04 || flags == 0x05) {
+                WAH_CHECK(wah_decode_uleb128_u64(ptr, section_end, &module->memories[i].min_pages));
+                if (flags & 0x01) {
+                    WAH_CHECK(wah_decode_uleb128_u64(ptr, section_end, &module->memories[i].max_pages));
+                } else {
+                    module->memories[i].max_pages = UINT64_MAX;
+                }
             } else {
-                module->memories[i].max_pages = UINT32_MAX; // no maximum
+                uint32_t min32, max32;
+                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &min32));
+                module->memories[i].min_pages = min32;
+                if (flags & 0x01) {
+                    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &max32));
+                    module->memories[i].max_pages = max32;
+                } else {
+                    module->memories[i].max_pages = UINT64_MAX;
+                }
             }
         }
     }
@@ -5159,12 +5188,12 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->memories, module->memory_count, cleanup);
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->memory_sizes, module->memory_count, cleanup);
         memset(exec_ctx->memories, 0, sizeof(uint8_t*) * module->memory_count);
-        memset(exec_ctx->memory_sizes, 0, sizeof(uint32_t) * module->memory_count);
+        memset(exec_ctx->memory_sizes, 0, sizeof(uint64_t) * module->memory_count);
         exec_ctx->memory_count = module->memory_count;
 
         for (uint32_t i = 0; i < module->memory_count; ++i) {
-            WAH_ENSURE_GOTO(module->memories[i].min_pages <= UINT32_MAX / WAH_WASM_PAGE_SIZE, WAH_ERROR_TOO_LARGE, cleanup);
-            exec_ctx->memory_sizes[i] = module->memories[i].min_pages * WAH_WASM_PAGE_SIZE;
+            WAH_ENSURE_GOTO(module->memories[i].min_pages <= SIZE_MAX / WAH_WASM_PAGE_SIZE, WAH_ERROR_TOO_LARGE, cleanup);
+            exec_ctx->memory_sizes[i] = module->memories[i].min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
             if (exec_ctx->memory_sizes[i] > 0) {
                 WAH_MALLOC_ARRAY_GOTO(exec_ctx->memories[i], exec_ctx->memory_sizes[i], cleanup);
                 memset(exec_ctx->memories[i], 0, exec_ctx->memory_sizes[i]);
@@ -6362,8 +6391,8 @@ WAH_RUN(MEMORY_GROW) {
         memset(ctx->memories[mem_idx] + ctx->memory_sizes[mem_idx], 0, new_memory_size - ctx->memory_sizes[mem_idx]);
     }
 
-    WAH_ENSURE_GOTO(new_memory_size <= UINT32_MAX, WAH_ERROR_TOO_LARGE, cleanup);
-    ctx->memory_sizes[mem_idx] = (uint32_t)new_memory_size;
+    WAH_ENSURE_GOTO(new_memory_size <= UINT64_MAX, WAH_ERROR_TOO_LARGE, cleanup);
+    ctx->memory_sizes[mem_idx] = (uint64_t)new_memory_size;
     // Keep memory_base/memory_size (fast-path aliases) in sync for memory 0
     if (mem_idx == 0) {
         ctx->memory_base = ctx->memories[0];
@@ -8524,7 +8553,7 @@ cleanup:
     return err;
 }
 
-wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint32_t min_pages, uint32_t max_pages) {
+wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages) {
     wah_error_t err;
     char *name_copy = NULL;
     wah_memory_type_t *new_memories = NULL;

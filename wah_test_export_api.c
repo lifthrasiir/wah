@@ -18,8 +18,8 @@ int main(void) {
         wah_entry_t entry = {0};
         assert_ok(wah_module_export_by_name(&mod, "memory", &entry));
         assert_true(WAH_TYPE_IS_MEMORY(entry.type));
-        assert_eq_u32(mod.memories[0].min_pages, 1);
-        assert_eq_u32(mod.memories[0].max_pages, 10);
+        assert_eq_u64(mod.memories[0].min_pages, 1);
+        assert_eq_u64(mod.memories[0].max_pages, 10);
 
         wah_free_module(&mod);
     }
