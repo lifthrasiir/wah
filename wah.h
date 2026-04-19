@@ -2453,99 +2453,67 @@ WAH_IF_SSE41(
     }
 
     static WAH_ALWAYS_INLINE __m128i wah_i16x8_extmul_low_i8x16_s_sse41(__m128i a, __m128i b) {
-        // Extract and sign-extend low 8 bytes of each input
-        __m128i zero = _mm_setzero_si128();
-        __m128i a_low = _mm_unpacklo_epi8(a, zero);
-        __m128i b_low = _mm_unpacklo_epi8(b, zero);
-
-        // Sign-extend from 8-bit to 16-bit
-        __m128i a_sign_ext = wah_mm_cvtepi8_epi16(wah_mm_shuffle_epi8(a_low,
-            _mm_set_epi8(7,6,5,4,3,2,1,0, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
-        __m128i b_sign_ext = wah_mm_cvtepi8_epi16(wah_mm_shuffle_epi8(b_low,
-            _mm_set_epi8(7,6,5,4,3,2,1,0, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
-
-        // Multiply sign-extended values
-        return _mm_mullo_epi16(a_sign_ext, b_sign_ext);
+        return _mm_mullo_epi16(wah_mm_cvtepi8_epi16(a), wah_mm_cvtepi8_epi16(b));
     }
     static WAH_ALWAYS_INLINE __m128i wah_i16x8_extmul_low_i8x16_u_sse41(__m128i a, __m128i b) {
-        // Extract and zero-extend low 8 bytes of each input
-        __m128i a_low = wah_mm_cvtepu8_epi16(wah_mm_shuffle_epi8(a,
-            _mm_set_epi8(7,6,5,4,3,2,1,0, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
-        __m128i b_low = wah_mm_cvtepu8_epi16(wah_mm_shuffle_epi8(b,
-            _mm_set_epi8(7,6,5,4,3,2,1,0, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
-        return _mm_mullo_epi16(a_low, b_low);
+        return _mm_mullo_epi16(wah_mm_cvtepu8_epi16(a), wah_mm_cvtepu8_epi16(b));
     }
     static WAH_ALWAYS_INLINE __m128i wah_i16x8_extmul_high_i8x16_s_sse41(__m128i a, __m128i b) {
-        __m128i a_high = wah_mm_cvtepi8_epi16(wah_mm_shuffle_epi8(a,
-            _mm_set_epi8(15,14,13,12,11,10,9,8, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
-        __m128i b_high = wah_mm_cvtepi8_epi16(wah_mm_shuffle_epi8(b,
-            _mm_set_epi8(15,14,13,12,11,10,9,8, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
-        return _mm_mullo_epi16(a_high, b_high);
+        __m128i hi_shuf = _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8);
+        return _mm_mullo_epi16(
+            wah_mm_cvtepi8_epi16(wah_mm_shuffle_epi8(a, hi_shuf)),
+            wah_mm_cvtepi8_epi16(wah_mm_shuffle_epi8(b, hi_shuf)));
     }
     static WAH_ALWAYS_INLINE __m128i wah_i16x8_extmul_high_i8x16_u_sse41(__m128i a, __m128i b) {
-        __m128i a_high = wah_mm_cvtepu8_epi16(wah_mm_shuffle_epi8(a,
-            _mm_set_epi8(15,14,13,12,11,10,9,8, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
-        __m128i b_high = wah_mm_cvtepu8_epi16(wah_mm_shuffle_epi8(b,
-            _mm_set_epi8(15,14,13,12,11,10,9,8, 0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80)));
-        return _mm_mullo_epi16(a_high, b_high);
+        __m128i hi_shuf = _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8);
+        return _mm_mullo_epi16(
+            wah_mm_cvtepu8_epi16(wah_mm_shuffle_epi8(a, hi_shuf)),
+            wah_mm_cvtepu8_epi16(wah_mm_shuffle_epi8(b, hi_shuf)));
     }
 
     static WAH_ALWAYS_INLINE __m128i wah_i32x4_extmul_low_i16x8_s_sse41(__m128i a, __m128i b) {
-        // Use SSE2 mullo_epi16 for each pair
-        __m128i prod = _mm_mullo_epi16(a, b);
-        // Sign extend to 32-bit
-        __m128i prod_low = wah_mm_cvtepi16_epi32(prod);
-        __m128i prod_high = wah_mm_cvtepi16_epi32(_mm_srli_si128(prod, 8));
-        // Interleave results using 64-bit unpack to maintain correct order
-        return _mm_unpacklo_epi64(prod_low, prod_high);
+        __m128i a_ext = wah_mm_cvtepi16_epi32(a);
+        __m128i b_ext = wah_mm_cvtepi16_epi32(b);
+        return wah_mm_mullo_epi32(a_ext, b_ext);
     }
     static WAH_ALWAYS_INLINE __m128i wah_i32x4_extmul_low_i16x8_u_sse41(__m128i a, __m128i b) {
-        __m128i prod = _mm_mullo_epi16(a, b);
-        __m128i prod_low = wah_mm_cvtepu16_epi32(prod);
-        __m128i prod_high = wah_mm_cvtepu16_epi32(_mm_srli_si128(prod, 8));
-        return _mm_unpacklo_epi64(prod_low, prod_high);
+        __m128i a_ext = wah_mm_cvtepu16_epi32(a);
+        __m128i b_ext = wah_mm_cvtepu16_epi32(b);
+        return wah_mm_mullo_epi32(a_ext, b_ext);
     }
     static WAH_ALWAYS_INLINE __m128i wah_i32x4_extmul_high_i16x8_s_sse41(__m128i a, __m128i b) {
-        __m128i a_high = _mm_srli_si128(a, 8);
-        __m128i b_high = _mm_srli_si128(b, 8);
-        __m128i prod = _mm_mullo_epi16(a_high, b_high);
-        __m128i prod_low = wah_mm_cvtepi16_epi32(prod);
-        __m128i prod_high = wah_mm_cvtepi16_epi32(_mm_srli_si128(prod, 8));
-        return _mm_unpacklo_epi64(prod_low, prod_high);
+        __m128i a_ext = wah_mm_cvtepi16_epi32(_mm_srli_si128(a, 8));
+        __m128i b_ext = wah_mm_cvtepi16_epi32(_mm_srli_si128(b, 8));
+        return wah_mm_mullo_epi32(a_ext, b_ext);
     }
     static WAH_ALWAYS_INLINE __m128i wah_i32x4_extmul_high_i16x8_u_sse41(__m128i a, __m128i b) {
-        __m128i a_high = _mm_srli_si128(a, 8);
-        __m128i b_high = _mm_srli_si128(b, 8);
-        __m128i prod = _mm_mullo_epi16(a_high, b_high);
-        __m128i prod_low = wah_mm_cvtepu16_epi32(prod);
-        __m128i prod_high = wah_mm_cvtepu16_epi32(_mm_srli_si128(prod, 8));
-        return _mm_unpacklo_epi64(prod_low, prod_high);
+        __m128i a_ext = wah_mm_cvtepu16_epi32(_mm_srli_si128(a, 8));
+        __m128i b_ext = wah_mm_cvtepu16_epi32(_mm_srli_si128(b, 8));
+        return wah_mm_mullo_epi32(a_ext, b_ext);
     }
 
     static WAH_ALWAYS_INLINE __m128i wah_i64x2_extmul_low_i32x4_s_sse41(__m128i a, __m128i b) {
-        // Use SSE4.1's mul_epi32 (32x32->64) with sign extension
         __m128i prod0 = wah_mm_mul_epi32(a, b);
-        __m128i prod1 = wah_mm_mul_epi32(_mm_srli_si128(a, 8), _mm_srli_si128(b, 8));
+        __m128i prod1 = wah_mm_mul_epi32(_mm_srli_epi64(a, 32), _mm_srli_epi64(b, 32));
         return _mm_unpacklo_epi64(prod0, prod1);
     }
     static WAH_ALWAYS_INLINE __m128i wah_i64x2_extmul_low_i32x4_u_sse41(__m128i a, __m128i b) {
-        // _mm_mul_epu32 only uses the low 32 bits of each lane, no need to zero-extend
         __m128i prod0 = _mm_mul_epu32(a, b);
-        __m128i prod1 = _mm_mul_epu32(_mm_srli_si128(a, 8), _mm_srli_si128(b, 8));
+        __m128i prod1 = _mm_mul_epu32(_mm_srli_epi64(a, 32), _mm_srli_epi64(b, 32));
         return _mm_unpacklo_epi64(prod0, prod1);
     }
     static WAH_ALWAYS_INLINE __m128i wah_i64x2_extmul_high_i32x4_s_sse41(__m128i a, __m128i b) {
-        __m128i a_high = _mm_srli_si128(a, 8);
-        __m128i b_high = _mm_srli_si128(b, 8);
-        __m128i prod0 = wah_mm_mul_epi32(a_high, b_high);
-        __m128i prod1 = wah_mm_mul_epi32(_mm_srli_si128(a_high, 8), _mm_srli_si128(b_high, 8));
+        __m128i a_hi = _mm_srli_si128(a, 8);
+        __m128i b_hi = _mm_srli_si128(b, 8);
+        __m128i prod0 = wah_mm_mul_epi32(a_hi, b_hi);
+        __m128i prod1 = wah_mm_mul_epi32(_mm_srli_epi64(a_hi, 32), _mm_srli_epi64(b_hi, 32));
         return _mm_unpacklo_epi64(prod0, prod1);
     }
     static WAH_ALWAYS_INLINE __m128i wah_i64x2_extmul_high_i32x4_u_sse41(__m128i a, __m128i b) {
-        __m128i a_high = _mm_srli_si128(a, 8);
-        __m128i b_high = _mm_srli_si128(b, 8);
-        __m128i prod0 = _mm_mul_epu32(a_high, b_high);
-        __m128i prod1 = _mm_mul_epu32(_mm_srli_si128(a_high, 8), _mm_srli_si128(b_high, 8));
+        __m128i a_hi = _mm_srli_si128(a, 8);
+        __m128i b_hi = _mm_srli_si128(b, 8);
+        __m128i prod0 = _mm_mul_epu32(a_hi, b_hi);
+        __m128i prod1 = _mm_mul_epu32(_mm_srli_epi64(a_hi, 32), _mm_srli_epi64(b_hi, 32));
         return _mm_unpacklo_epi64(prod0, prod1);
     }
 
