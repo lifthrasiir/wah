@@ -70,6 +70,7 @@ typedef union {
     double f64;
     wah_v128_t v128;
     void* ref;  // Unified reference type (externref or funcref as wah_function_t*)
+    struct { void *sentinel; uint32_t func_idx; } prefuncref; // const_expr funcref intermediate
 
     // Internal fields
 #ifdef WAH_X86_64
@@ -1253,6 +1254,11 @@ typedef struct {
 // --- Forward Declarations ---
 
 static wah_error_t wah_call_module(wah_exec_context_t *exec_ctx, const wah_module_t *module, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
+
+// Sentinel used by wah_value_t.prefuncref to distinguish ref.func 0 from ref.null.
+// A prefuncref with .sentinel == wah_funcref_sentinel is a valid function reference;
+// .ref == NULL means null. This sentinel is never executed.
+static wah_function_t wah_funcref_sentinel[1];
 
 // --- Helper Macros ---
 #define WAH_CHECK(expr) do { \
@@ -3426,8 +3432,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &table_idx));
             WAH_ENSURE(table_idx < vctx->module->table_count, WAH_ERROR_VALIDATION_FAILED);
             wah_type_t elem_type = vctx->module->tables[table_idx].elem_type;
-            POP(I32); // index
-            WAH_CHECK(wah_validation_pop_and_match_type(vctx, elem_type)); // value
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, elem_type)); // value (top)
+            POP(I32); // index (below)
             break;
         }
         case WAH_OP_TABLE_SIZE: {
@@ -5696,24 +5702,25 @@ WAH_RUN(TABLE_INIT) {
     WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
 
     for (uint32_t i = 0; i < size; ++i) {
-        uint32_t global_func_idx;
         if (!segment->is_expr_elem) {
-            global_func_idx = segment->u.func_indices[src_offset + i];
+            uint32_t global_func_idx = segment->u.func_indices[src_offset + i];
+            WAH_ASSERT(global_func_idx < ctx->function_table_count && "validation didn't catch out-of-bound function index");
+            ctx->tables[table_idx][dst_offset + i].ref = &ctx->function_table[global_func_idx];
         } else {
-            // Evaluate expression element
             wah_value_t elem_val;
             WAH_ENSURE_GOTO(src_offset + i < segment->num_elems, WAH_ERROR_TRAP, cleanup);
             WAH_CHECK_GOTO(wah_eval_const_expr(ctx,
                                                segment->u.expr.bytecodes[src_offset + i],
                                                segment->u.expr.bytecode_sizes[src_offset + i],
                                                &elem_val), cleanup);
-            // ref.func stores function index as (pointer_value - 1)
-            global_func_idx = (uint32_t)(uintptr_t)elem_val.ref;
+            if (elem_val.ref == NULL) {
+                ctx->tables[table_idx][dst_offset + i].ref = NULL;
+            } else {
+                uint32_t global_func_idx = elem_val.prefuncref.func_idx;
+                WAH_ASSERT(global_func_idx < ctx->function_table_count && "validation didn't catch out-of-bound function index");
+                ctx->tables[table_idx][dst_offset + i].ref = &ctx->function_table[global_func_idx];
+            }
         }
-
-        // Use function_table to get the actual function pointer
-        WAH_ASSERT(global_func_idx < ctx->function_table_count && "validation didn't catch out-of-bound function index");
-        ctx->tables[table_idx][dst_offset + i].ref = &ctx->function_table[global_func_idx];
     }
     WAH_NEXT();
     WAH_CLEANUP();
@@ -8757,10 +8764,11 @@ static wah_error_t wah_eval_const_expr(
             case WAH_OP_REF_FUNC: {
                 uint32_t func_idx = wah_read_u32_le(ip);
                 ip += sizeof(uint32_t);
-                // func_idx is the module-local function index (ref.func uses module-local index)
-                // Convert to global function index by adding import_function_count
-                uint32_t global_func_idx = ctx->module->import_function_count + func_idx;
-                ctx->value_stack[ctx->sp++].ref = (void*)(uintptr_t)global_func_idx;
+                // Use prefuncref so func_idx==0 is never confused with ref.null (NULL pointer).
+                wah_value_t val;
+                val.prefuncref.sentinel = wah_funcref_sentinel;
+                val.prefuncref.func_idx = func_idx;
+                ctx->value_stack[ctx->sp++] = val;
                 break;
             }
 
@@ -8803,6 +8811,12 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                                            module->globals[i].init_expr.bytecode,
                                            module->globals[i].init_expr.bytecode_size,
                                            &ctx->globals[i]), cleanup);
+        // Convert funcref prefuncref format (from const_expr) to runtime pointer format
+        if (module->globals[i].type == WAH_TYPE_FUNCREF && ctx->globals[i].ref != NULL) {
+            uint32_t fidx = ctx->globals[i].prefuncref.func_idx;
+            WAH_ENSURE_GOTO(fidx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            ctx->globals[i].ref = &ctx->function_table[fidx];
+        }
     }
 
     // Allocate and initialize globals for linked modules
@@ -8923,26 +8937,24 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         WAH_ASSERT((uint64_t)offset + segment->num_elems <= module->tables[segment->table_idx].min_elements);
 
         for (uint32_t j = 0; j < segment->num_elems; ++j) {
-            uint32_t global_func_idx;
-
             if (!segment->is_expr_elem) {
-                // elem* are function indices
-                global_func_idx = segment->u.func_indices[j];
+                uint32_t global_func_idx = segment->u.func_indices[j];
+                WAH_ENSURE_GOTO(global_func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                ctx->tables[segment->table_idx][offset + j].ref = &ctx->function_table[global_func_idx];
             } else {
-                // elem* are constant expressions - evaluate this one
                 wah_value_t elem_val;
                 WAH_CHECK_GOTO(wah_eval_const_expr(ctx,
                                                    segment->u.expr.bytecodes[j],
                                                    segment->u.expr.bytecode_sizes[j],
                                                    &elem_val), cleanup);
-                // ref.func stores function index as (pointer_value - 1)
-                global_func_idx = (uint32_t)(uintptr_t)elem_val.ref;
+                if (elem_val.ref == NULL) {
+                    ctx->tables[segment->table_idx][offset + j].ref = NULL;
+                } else {
+                    uint32_t global_func_idx = elem_val.prefuncref.func_idx;
+                    WAH_ENSURE_GOTO(global_func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    ctx->tables[segment->table_idx][offset + j].ref = &ctx->function_table[global_func_idx];
+                }
             }
-
-            WAH_ENSURE_GOTO(global_func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-
-            // Use function_table to get the actual function pointer
-            ctx->tables[segment->table_idx][offset + j].ref = &ctx->function_table[global_func_idx];
         }
     }
 
