@@ -5224,11 +5224,6 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
         }
     }
 
-    // If a start function is defined, call it.
-    if (module->has_start_function) {
-        WAH_CHECK_GOTO(wah_call_module(exec_ctx, module->start_function_idx, NULL, 0, NULL), cleanup);
-    }
-
     return WAH_OK;
 
 cleanup:
@@ -8957,6 +8952,11 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 }
             }
         }
+    }
+
+    // If a start function is defined, call it after all imports/globals/elements are ready.
+    if (module->has_start_function) {
+        WAH_CHECK_GOTO(wah_call_module(ctx, module->start_function_idx, NULL, 0, NULL), cleanup);
     }
 
     ctx->is_instantiated = true;

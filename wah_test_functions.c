@@ -22,8 +22,9 @@ void test_start_section() {
     printf("Testing Start Section...\n");
     assert_ok(wah_parse_module_from_spec(&module, start_section_wasm_spec));
 
-    // Create execution context. This should trigger the start function.
     assert_ok(wah_exec_context_create(&ctx, &module));
+    // Start function runs during instantiation (after globals/imports/elements are ready).
+    assert_ok(wah_instantiate(&ctx));
 
     // Verify that the global variable was set by the start function
     assert_eq_i32(ctx.globals[0].i32, 42);

@@ -16,6 +16,14 @@ void simple_host_func(wah_call_context_t *ctx, void *userdata) {
     wah_return_i32(ctx, 42);
 }
 
+// Host function for imported start function test
+int imported_start_called = 0;
+void imported_start_host_func(wah_call_context_t *ctx, void *userdata) {
+    (void)ctx;
+    (void)userdata;
+    imported_start_called = 1;
+}
+
 int main() {
     printf("Testing linkage...\n\n");
 
@@ -235,6 +243,37 @@ int main() {
         wah_exec_context_destroy(&ctx);
         wah_free_module(&mod_a);
         wah_free_module(&mod_b);
+    }
+
+    // Test 8: Imported start function is called during instantiation (not before import resolution)
+    // Regression: wah_exec_context_create called start function before wah_instantiate resolved
+    // imports, so function_table import slots were zero-initialized, causing wrong dispatch/crash.
+    printf("Test 8: Imported start function\n");
+    {
+        wah_module_t host_mod = {0};
+        assert_ok(wah_new_module(&host_mod));
+        assert_ok(wah_module_export_funcv(&host_mod, "initFunc", 0, NULL, 0, NULL,
+                                          imported_start_host_func, NULL, NULL));
+
+        // Module imports initFunc from 'host' and declares it (index 0) as start function.
+        const char *spec_a = "wasm \
+            types {[ fn [] [] ]} \
+            imports {[ {'host'} {'initFunc'} fn# 0 ]} \
+            start { 0 }";
+
+        wah_module_t mod_a = {0};
+        wah_exec_context_t ctx = {0};
+
+        imported_start_called = 0;
+        assert_ok(wah_parse_module_from_spec(&mod_a, spec_a));
+        assert_ok(wah_exec_context_create(&ctx, &mod_a));
+        assert_ok(wah_link_module(&ctx, "host", &host_mod));
+        assert_ok(wah_instantiate(&ctx));
+        assert_true(imported_start_called);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&mod_a);
+        wah_free_module(&host_mod);
     }
 
     printf("All linkage tests passed!\n");
