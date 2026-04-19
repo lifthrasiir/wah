@@ -12,7 +12,9 @@ else
 endif
 
 # List of test source files
-TEST_SRCS := $(wildcard tests/test_*.c)
+ALL_TEST_SRCS := $(wildcard tests/test_*.c)
+SPECTEST_SRC := tests/test_spectest.c
+TEST_SRCS := $(filter-out $(SPECTEST_SRC),$(ALL_TEST_SRCS))
 # List of compiled test executables
 TEST_BINS := $(patsubst %.c, %, $(TEST_SRCS))
 
@@ -76,7 +78,7 @@ $(patsubst tests/test_%.c, test_%, $(1)):
 endef
 
 # Generate individual test targets using the template
-$(foreach test_src, $(TEST_SRCS), $(eval $(call RUN_SINGLE_TEST_TEMPLATE,$(test_src))))
+$(foreach test_src, $(ALL_TEST_SRCS), $(eval $(call RUN_SINGLE_TEST_TEMPLATE,$(test_src))))
 
 # New target for coverage report generation for all tests
 coverage: clean
