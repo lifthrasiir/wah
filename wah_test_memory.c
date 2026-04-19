@@ -46,10 +46,11 @@ void wah_test_data_and_bulk_memory_ops() {
     assert_eq_u32(module.data_segment_count, 2);
     assert_true(module.has_data_count_section == true);
 
-    // Test 2: Create execution context
+    // Test 2: Create and instantiate execution context
     assert_ok(wah_exec_context_create(&ctx, &module));
     assert_true(ctx.memories[0] != NULL);
     assert_eq_u32(ctx.memory_sizes[0], WAH_WASM_PAGE_SIZE);
+    assert_ok(wah_instantiate(&ctx));
 
     // Verify initial memory state (active data segment 0 should be initialized)
     assert_eq_u32(ctx.memories[0][0], 0x01);
@@ -459,6 +460,7 @@ void test_multiple_memories_data_segment() {
     assert_eq_u32(module.data_segment_count, 2);
 
     assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
 
     // Active data segment 0 should be in memory 0
     assert_eq_u32(ctx.memories[0][0], 0x01);
@@ -613,6 +615,7 @@ void test_memory64_data_segment() {
     assert_eq_u32(module.data_segments[0].offset, 0);
 
     assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
 
     // Active data segment should be initialized
     assert_eq_u32(ctx.memories[0][0], 0x01);

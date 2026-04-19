@@ -5220,16 +5220,6 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
 
     }
 
-    // Initialize active data segments
-    for (uint32_t i = 0; i < module->data_segment_count; ++i) {
-        const wah_data_segment_t *segment = &module->data_segments[i];
-        if (segment->flags == 0x00 || segment->flags == 0x02) { // Active segments
-            WAH_ENSURE_GOTO(segment->memory_idx < exec_ctx->memory_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-            WAH_ENSURE_GOTO((uint64_t)segment->offset + segment->data_len <= exec_ctx->memory_sizes[segment->memory_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-            memcpy(exec_ctx->memories[segment->memory_idx] + segment->offset, segment->data, segment->data_len);
-        }
-    }
-
     // Build the runtime function_table (global index space: imports + locals + hosts).
     // Import slots are zero-initialized here; wah_instantiate() fills them in.
     {
@@ -9004,6 +8994,16 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 }
             }
             lg_offset += linked->global_count;
+        }
+    }
+
+    // Initialize active data segments
+    for (uint32_t i = 0; i < module->data_segment_count; ++i) {
+        const wah_data_segment_t *segment = &module->data_segments[i];
+        if (segment->flags == 0x00 || segment->flags == 0x02) { // Active segments
+            WAH_ENSURE_GOTO(segment->memory_idx < ctx->memory_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            WAH_ENSURE_GOTO((uint64_t)segment->offset + segment->data_len <= ctx->memory_sizes[segment->memory_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+            memcpy(ctx->memories[segment->memory_idx] + segment->offset, segment->data, segment->data_len);
         }
     }
 
