@@ -1,0 +1,65 @@
+(module definition binary "\00\61\73\6d\01\00\00\00")
+(module instance)
+(module definition binary "\00\61\73\6d\01\00\00\00")
+(module instance)
+(module definition binary
+  "\00\61\73\6d\01\00\00\00\01\87\80\80\80\00\01\60"
+  "\02\7f\7f\01\7f\03\82\80\80\80\00\01\00\07\8a\80"
+  "\80\80\00\01\06\61\64\64\54\77\6f\00\00\0a\8d\80"
+  "\80\80\00\01\87\80\80\80\00\00\20\00\20\01\6a\0b"
+)
+(module instance)
+(assert_malformed
+  (module binary "\00\61\73\6d\01\00\00\00\00")
+  "unexpected end"
+)
+(assert_malformed
+  (module binary "\00\61\73\6d\01\00\00\00\00\00")
+  "unexpected end"
+)
+(assert_malformed
+  (module binary "\00\61\73\6d\01\00\00\00\00\00\00\05\01\00\07\00" "\00")
+  "unexpected end"
+)
+(assert_malformed
+  (module binary
+    "\00\61\73\6d\01\00\00\00\00\26\10\61\20\63\75\73"
+    "\74\6f\6d\20\73\65\63\74\69\6f\6e\74\68\69\73\20"
+    "\69\73\20\74\68\65\20\70\61\79\6c\6f\61\64"
+  )
+  "length out of bounds"
+)
+(assert_malformed
+  (module binary
+    "\00\61\73\6d\01\00\00\00\00\25\10\61\20\63\75\73"
+    "\74\6f\6d\20\73\65\63\74\69\6f\6e\74\68\69\73\20"
+    "\69\73\20\74\68\65\20\70\61\79\6c\6f\61\64\00\24"
+    "\10\61\20\63\75\73\74\6f\6d\20\73\65\63\74\69\6f"
+    "\6e\74\68\69\73\20\69\73\20\74\68\65\20\70\61\79"
+    "\6c\6f\61\64"
+  )
+  "malformed section id"
+)
+(assert_malformed
+  (module binary
+    "\00\61\73\6d\01\00\00\00\01\07\01\60\02\7f\7f\01"
+    "\7f\00\25\10\61\20\63\75\73\74\6f\6d\20\73\65\63"
+    "\74\69\6f\6e\74\68\69\73\20\69\73\20\74\68\65\20"
+    "\70\61\79\6c\6f\61\64\03\02\01\00\0a\09\01\07\00"
+    "\20\00\20\01\6a\0b\00\1b\07\63\75\73\74\6f\6d\32"
+    "\74\68\69\73\20\69\73\20\74\68\65\20\70\61\79\6c"
+    "\6f\61\64"
+  )
+  "function and code section have inconsistent lengths"
+)
+(assert_malformed
+  (module binary "\00\61\73\6d\01\00\00\00\00\61\73\6d\01\00\00\00")
+  "length out of bounds"
+)
+(assert_malformed
+  (module binary
+    "\00\61\73\6d\01\00\00\00\05\03\01\00\01\0c\01\02"
+    "\0b\06\01\00\41\00\0b\00"
+  )
+  "data count and data section have inconsistent lengths"
+)
