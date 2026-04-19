@@ -3684,19 +3684,16 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         }
         case WAH_OP_END: {
             if (vctx->control_sp == 0) {
-                // This is the final 'end' of the function body.
-                // Final validation for the function's result types.
-                // The stack should contain exactly the function's result types.
-                if (vctx->func_type->result_count == 0) {
+                if (vctx->is_unreachable) {
+                    vctx->type_stack.sp = 0;
+                    vctx->current_stack_depth = 0;
+                } else if (vctx->func_type->result_count == 0) {
                     WAH_ENSURE(vctx->type_stack.sp == 0, WAH_ERROR_VALIDATION_FAILED);
-                } else { // handle multi-results
-                    WAH_ENSURE(vctx->type_stack.sp == vctx->func_type->result_count, WAH_ERROR_VALIDATION_FAILED);
-                    // Pop and match each result type in reverse order
+                } else {
                     for (int32_t j = vctx->func_type->result_count - 1; j >= 0; --j) {
                         WAH_CHECK(wah_validation_pop_and_match_type(vctx, vctx->func_type->result_types[j]));
                     }
                 }
-                // Reset unreachable state for the function's end
                 vctx->is_unreachable = false;
                 return WAH_OK;
             }
@@ -3969,18 +3966,18 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
             if (current_opcode_val == WAH_OP_END) {
                  if (vctx.control_sp == 0) { // End of function
-                    if (vctx.func_type->result_count == 0) {
-                        WAH_ENSURE_GOTO(vctx.type_stack.sp == 0, WAH_ERROR_VALIDATION_FAILED, cleanup); // Unmatched control frames
-                    } else { // handle multi-results
-                        // If unreachable, the stack is polymorphic, so we don't strictly check sp.
-                        // We still pop to ensure the conceptual stack height is correct.
+                    if (vctx.is_unreachable) {
+                        vctx.type_stack.sp = 0;
+                        vctx.current_stack_depth = 0;
+                    } else if (vctx.func_type->result_count == 0) {
+                        WAH_ENSURE_GOTO(vctx.type_stack.sp == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    } else {
                         for (int32_t j = vctx.func_type->result_count - 1; j >= 0; --j) {
                             WAH_CHECK_GOTO(wah_validation_pop_and_match_type(&vctx, vctx.func_type->result_types[j]), cleanup);
                         }
                     }
-                    // END opcode must be the very last byte in function body
                     WAH_ENSURE_GOTO(code_ptr_validation == validation_end, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                    break; // End of validation loop
+                    break;
                 }
             }
             WAH_CHECK_GOTO(wah_validate_opcode(current_opcode_val, &code_ptr_validation, validation_end, &vctx, &module->code_bodies[i]), cleanup);
