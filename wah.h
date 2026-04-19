@@ -1714,6 +1714,39 @@ static const union { uint64_t i; double f; } WAH_CANONICAL_NAN64 = { .i = 0x7ff8
 static inline float wah_canonicalize_f32(float val) { return val == val ? val : WAH_CANONICAL_NAN32.f; }
 static inline double wah_canonicalize_f64(double val) { return val == val ? val : WAH_CANONICAL_NAN64.f; }
 
+// C fmin/fmax don't match Wasm semantics for signed zeros:
+// Wasm requires min(+0,-0)=-0 and max(+0,-0)=+0, but C leaves this unspecified.
+// When both operands compare equal, bitwise OR of sign bits picks -0 (for min)
+// and bitwise AND picks +0 (for max).
+static inline float wah_minf(float a, float b) {
+    if (a != a || b != b) return WAH_CANONICAL_NAN32.f;
+    if (a < b) return a;
+    if (b < a) return b;
+    union { float f; uint32_t u; } ua = {a}, ub = {b};
+    ua.u |= ub.u; return ua.f;
+}
+static inline float wah_maxf(float a, float b) {
+    if (a != a || b != b) return WAH_CANONICAL_NAN32.f;
+    if (a > b) return a;
+    if (b > a) return b;
+    union { float f; uint32_t u; } ua = {a}, ub = {b};
+    ua.u &= ub.u; return ua.f;
+}
+static inline double wah_min(double a, double b) {
+    if (a != a || b != b) return WAH_CANONICAL_NAN64.f;
+    if (a < b) return a;
+    if (b < a) return b;
+    union { double f; uint64_t u; } ua = {a}, ub = {b};
+    ua.u |= ub.u; return ua.f;
+}
+static inline double wah_max(double a, double b) {
+    if (a != a || b != b) return WAH_CANONICAL_NAN64.f;
+    if (a > b) return a;
+    if (b > a) return b;
+    union { double f; uint64_t u; } ua = {a}, ub = {b};
+    ua.u &= ub.u; return ua.f;
+}
+
 #ifdef WAH_X86_64 // SSE2
 
 static inline __m128 wah_canonicalize_f32x4_sse2(__m128 v) {
@@ -6042,8 +6075,8 @@ WAH_RUN(END) { // End of function
     WAH_RUN(F##N##_GT) CMP_F(N,>) \
     WAH_RUN(F##N##_LE) CMP_F(N,<=) \
     WAH_RUN(F##N##_GE) CMP_F(N,>=) \
-    WAH_RUN(F##N##_MIN) BINOP_F_FN(N, fmin##_F) \
-    WAH_RUN(F##N##_MAX) BINOP_F_FN(N, fmax##_F) \
+    WAH_RUN(F##N##_MIN) BINOP_F_FN(N, wah_min##_F) \
+    WAH_RUN(F##N##_MAX) BINOP_F_FN(N, wah_max##_F) \
     WAH_RUN(F##N##_COPYSIGN) BINOP_F_FN(N, copysign##_F)
 
 #define LOAD_OP(N, T, value_field, cast) { \
