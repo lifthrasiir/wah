@@ -2030,8 +2030,9 @@ static WAH_ALWAYS_INLINE double wah_nearest_f64(double d) {
 #define DEFINE_TRUNC_F2I(N, fty, T, ity, lo, hi, call) \
 static WAH_ALWAYS_INLINE wah_error_t wah_trunc_f##N##_to_##T(fty val, ity *result) { \
     if (isnan(val) || isinf(val)) return WAH_ERROR_TRAP; \
-    if (val < (lo) || val >= (hi)) return WAH_ERROR_TRAP; \
-    *result = (ity)call(val); \
+    fty tv = call(val); \
+    if (tv < (lo) || tv >= (hi)) return WAH_ERROR_TRAP; \
+    *result = (ity)tv; \
     return WAH_OK; \
 }
 
@@ -8052,7 +8053,7 @@ static wah_error_t wah_call_module_multi(wah_exec_context_t *exec_ctx, uint32_t 
 
     // Push initial params onto the value stack
     for (uint32_t i = 0; i < param_count; ++i) {
-        WAH_ENSURE(exec_ctx->sp < exec_ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW); // Value stack overflow
+        WAH_ENSURE(exec_ctx->sp < exec_ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW);
         exec_ctx->value_stack[exec_ctx->sp++] = params[i];
     }
 
