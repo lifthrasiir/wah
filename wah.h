@@ -7526,13 +7526,13 @@ WAH_RUN(F64X2_MAX) M128D_BINARY_OP(wah_f64x2_max_sse2, N128_BINARY_OP(wah_vmaxq_
 WAH_RUN(F64X2_PMIN) M128D_BINARY_OP(wah_f64x2_pmin_sse2, N128_BINARY_OP(wah_f64x2_pmin_neon, V128_BINARY_OP_LANE_FN(64, wah_pmin, f64)))
 WAH_RUN(F64X2_PMAX) M128D_BINARY_OP(wah_f64x2_pmax_sse2, N128_BINARY_OP(wah_f64x2_pmax_neon, V128_BINARY_OP_LANE_FN(64, wah_pmax, f64)))
 
-WAH_RUN(V128_BITSELECT) M128I_TERNARY_OP(_mm_or_si128(_mm_and_si128(a, b), _mm_andnot_si128(a, c)), N128_TERNARY_OP(vbslq_u8(a, b, c), {
+WAH_RUN(V128_BITSELECT) M128I_TERNARY_OP(_mm_or_si128(_mm_and_si128(c, a), _mm_andnot_si128(c, b)), N128_TERNARY_OP(vbslq_u8(c, a, b), {
     wah_v128_t v3 = sp[-1].v128;
     wah_v128_t v2 = sp[-2].v128;
     wah_v128_t v1 = sp[-3].v128;
     wah_v128_t result;
     for (int i = 0; i < 16; ++i) {
-        result.u8[i] = (v1.u8[i] & v2.u8[i]) | (~v1.u8[i] & v3.u8[i]);
+        result.u8[i] = (v1.u8[i] & v3.u8[i]) | (v2.u8[i] & ~v3.u8[i]);
     }
     sp[-3].v128 = result;
     sp -= 2;
