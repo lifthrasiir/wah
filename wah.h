@@ -3186,6 +3186,23 @@ static wah_error_t wah_parse_function_section(const uint8_t **ptr, const uint8_t
     return WAH_OK;
 }
 
+// Resolve a branch label index to its target result types and stack height.
+// label_idx == control_sp targets the implicit function frame (equivalent to return).
+static void wah_validation_resolve_br_target(const wah_validation_context_t *vctx, uint32_t label_idx,
+                                              uint32_t *out_result_count, const wah_type_t **out_result_types,
+                                              uint32_t *out_stack_height) {
+    if (label_idx == vctx->control_sp) {
+        *out_result_count = vctx->func_type->result_count;
+        *out_result_types = vctx->func_type->result_types;
+        *out_stack_height = 0;
+    } else {
+        const wah_validation_control_frame_t *frame = &vctx->control_stack[vctx->control_sp - 1 - label_idx];
+        *out_result_count = frame->block_type.result_count;
+        *out_result_types = frame->block_type.result_types;
+        *out_stack_height = frame->stack_height;
+    }
+}
+
 // Validation helper function that handles a single opcode
 static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code_ptr, const uint8_t *code_end, wah_validation_context_t *vctx, const wah_code_body_t* code_body) {
 #define POP(T) WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_##T))
@@ -3765,110 +3782,101 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_BR: {
             uint32_t label_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
-            WAH_ENSURE(label_idx < vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(label_idx <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
 
-            wah_validation_control_frame_t *target_frame = &vctx->control_stack[vctx->control_sp - 1 - label_idx];
+            uint32_t br_result_count;
+            const wah_type_t *br_result_types;
+            uint32_t br_stack_height;
+            wah_validation_resolve_br_target(vctx, label_idx, &br_result_count, &br_result_types, &br_stack_height);
 
-            // Pop the expected result types of the target block from the current stack
-            // The stack must contain these values for the branch to be valid.
-            for (int32_t i = target_frame->block_type.result_count - 1; i >= 0; --i) {
-                WAH_CHECK(wah_validation_pop_and_match_type(vctx, target_frame->block_type.result_types[i]));
+            for (int32_t i = br_result_count - 1; i >= 0; --i) {
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, br_result_types[i]));
             }
 
-            // Discard any remaining values on the stack above the target frame's stack height
-            while (vctx->current_stack_depth > target_frame->stack_height) {
+            while (vctx->current_stack_depth > br_stack_height) {
                 wah_type_t temp_type;
                 WAH_CHECK(wah_validation_pop_type(vctx, &temp_type));
             }
 
-            vctx->is_unreachable = true; // br makes the current path unreachable
+            vctx->is_unreachable = true;
             return WAH_OK;
         }
 
         case WAH_OP_BR_IF: {
             uint32_t label_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
-            WAH_ENSURE(label_idx < vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(label_idx <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
 
-            // Pop condition (i32) from stack for br_if
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_I32));
 
-            // If the current path is unreachable, the stack is polymorphic, so type checks are trivial.
-            // We only need to ensure the conceptual stack height is maintained.
             if (vctx->is_unreachable) {
                 return WAH_OK;
             }
 
-            wah_validation_control_frame_t *target_frame = &vctx->control_stack[vctx->control_sp - 1 - label_idx];
+            uint32_t br_result_count;
+            const wah_type_t *br_result_types;
+            uint32_t br_stack_height;
+            wah_validation_resolve_br_target(vctx, label_idx, &br_result_count, &br_result_types, &br_stack_height);
 
-            // Check if there are enough values on the stack for the target block's results
-            // (which become parameters to the target block if branched to).
-            WAH_ENSURE(vctx->current_stack_depth >= target_frame->block_type.result_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(vctx->current_stack_depth >= br_result_count, WAH_ERROR_VALIDATION_FAILED);
 
-            // Check the types of these values without popping them
-            for (uint32_t i = 0; i < target_frame->block_type.result_count; ++i) {
-                // Access the type stack directly to peek at values
-                wah_type_t actual_type = vctx->type_stack.data[vctx->type_stack.sp - target_frame->block_type.result_count + i];
-                WAH_CHECK(wah_validate_type_match(actual_type, target_frame->block_type.result_types[i]));
+            for (uint32_t i = 0; i < br_result_count; ++i) {
+                wah_type_t actual_type = vctx->type_stack.data[vctx->type_stack.sp - br_result_count + i];
+                WAH_CHECK(wah_validate_type_match(actual_type, br_result_types[i]));
             }
 
-            // The stack state for the fall-through path is now correct (condition popped).
-            // The current path remains reachable.
             return WAH_OK;
         }
 
         case WAH_OP_BR_TABLE: {
-            wah_error_t err = WAH_OK; // Declare err here for goto cleanup
+            wah_error_t err = WAH_OK;
             uint32_t num_targets;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &num_targets));
 
-            // Store all label_idx values to process them after decoding all
             uint32_t* label_indices = NULL;
-            WAH_MALLOC_ARRAY_GOTO(label_indices, num_targets + 1, cleanup_br_table); // +1 for default target
+            WAH_MALLOC_ARRAY_GOTO(label_indices, num_targets + 1, cleanup_br_table);
 
-            // Decode target table (vector of label_idx)
             for (uint32_t i = 0; i < num_targets; ++i) {
                 WAH_CHECK_GOTO(wah_decode_uleb128(code_ptr, code_end, &label_indices[i]), cleanup_br_table);
-                WAH_ENSURE_GOTO(label_indices[i] < vctx->control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
+                WAH_ENSURE_GOTO(label_indices[i] <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
             }
 
-            // Decode default target (label_idx)
-            WAH_CHECK_GOTO(wah_decode_uleb128(code_ptr, code_end, &label_indices[num_targets]), cleanup_br_table); // Last element is default
-            WAH_ENSURE_GOTO(label_indices[num_targets] < vctx->control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
+            WAH_CHECK_GOTO(wah_decode_uleb128(code_ptr, code_end, &label_indices[num_targets]), cleanup_br_table);
+            WAH_ENSURE_GOTO(label_indices[num_targets] <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
 
-            // Pop index (i32) from stack
             WAH_CHECK_GOTO(wah_validation_pop_and_match_type(vctx, WAH_TYPE_I32), cleanup_br_table);
 
-            // Get the block type of the default target as the reference
-            wah_validation_control_frame_t *default_target_frame = &vctx->control_stack[vctx->control_sp - 1 - label_indices[num_targets]];
-            const wah_func_type_t *expected_block_type = &default_target_frame->block_type;
+            uint32_t default_result_count;
+            const wah_type_t *default_result_types;
+            uint32_t default_stack_height;
+            wah_validation_resolve_br_target(vctx, label_indices[num_targets],
+                                              &default_result_count, &default_result_types, &default_stack_height);
 
-            // Check type consistency for all targets
             for (uint32_t i = 0; i < num_targets + 1; ++i) {
-                wah_validation_control_frame_t *current_target_frame = &vctx->control_stack[vctx->control_sp - 1 - label_indices[i]];
-                const wah_func_type_t *current_block_type = &current_target_frame->block_type;
+                uint32_t cur_result_count;
+                const wah_type_t *cur_result_types;
+                uint32_t cur_stack_height;
+                wah_validation_resolve_br_target(vctx, label_indices[i],
+                                                  &cur_result_count, &cur_result_types, &cur_stack_height);
+                (void)cur_stack_height;
 
-                // All target blocks must have the same result count and types
-                WAH_ENSURE_GOTO(current_block_type->result_count == expected_block_type->result_count, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
-                for (uint32_t j = 0; j < expected_block_type->result_count; ++j) {
-                    WAH_ENSURE_GOTO(current_block_type->result_types[j] == expected_block_type->result_types[j], WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
+                WAH_ENSURE_GOTO(cur_result_count == default_result_count, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
+                for (uint32_t j = 0; j < default_result_count; ++j) {
+                    WAH_ENSURE_GOTO(cur_result_types[j] == default_result_types[j], WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
                 }
             }
 
-            // Pop the expected result types of the target block from the current stack
-            // The stack must contain these values for the branch to be valid.
-            for (int32_t i = expected_block_type->result_count - 1; i >= 0; --i) {
-                WAH_CHECK_GOTO(wah_validation_pop_and_match_type(vctx, expected_block_type->result_types[i]), cleanup_br_table);
+            for (int32_t i = default_result_count - 1; i >= 0; --i) {
+                WAH_CHECK_GOTO(wah_validation_pop_and_match_type(vctx, default_result_types[i]), cleanup_br_table);
             }
 
-            // Discard any remaining values on the stack above the target frame's stack height
-            while (vctx->current_stack_depth > default_target_frame->stack_height) {
+            while (vctx->current_stack_depth > default_stack_height) {
                 wah_type_t temp_type;
                 WAH_CHECK_GOTO(wah_validation_pop_type(vctx, &temp_type), cleanup_br_table);
             }
 
-            vctx->is_unreachable = true; // br_table makes the current path unreachable
-            err = WAH_OK; // Set err to WAH_OK before cleanup
+            vctx->is_unreachable = true;
+            err = WAH_OK;
         cleanup_br_table:
             free(label_indices);
             return err;
@@ -5004,9 +5012,13 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 case WAH_OP_BR: case WAH_OP_BR_IF: {
                     uint32_t relative_depth;
                     WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &relative_depth), cleanup);
-                    WAH_ASSERT(relative_depth < control_sp && "validation should have verified relative depth");
-                    wah_control_frame_t* frame = &control_stack[control_sp - 1 - relative_depth];
-                    wah_write_u32_le(write_ptr, block_targets[frame->target_idx]);
+                    if (relative_depth == control_sp) {
+                        wah_write_u32_le(write_ptr, preparsed_size - sizeof(uint16_t));
+                    } else {
+                        WAH_ASSERT(relative_depth < control_sp && "validation should have verified relative depth");
+                        wah_control_frame_t* frame = &control_stack[control_sp - 1 - relative_depth];
+                        wah_write_u32_le(write_ptr, block_targets[frame->target_idx]);
+                    }
                     write_ptr += sizeof(uint32_t);
                     break;
                 }
@@ -5018,9 +5030,13 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     for (uint32_t i = 0; i < num_targets + 1; ++i) {
                         uint32_t relative_depth;
                         WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &relative_depth), cleanup);
-                        WAH_ASSERT(relative_depth < control_sp && "validation should have verified relative depth");
-                        wah_control_frame_t* frame = &control_stack[control_sp - 1 - relative_depth];
-                        wah_write_u32_le(write_ptr, block_targets[frame->target_idx]);
+                        if (relative_depth == control_sp) {
+                            wah_write_u32_le(write_ptr, preparsed_size - sizeof(uint16_t));
+                        } else {
+                            WAH_ASSERT(relative_depth < control_sp && "validation should have verified relative depth");
+                            wah_control_frame_t* frame = &control_stack[control_sp - 1 - relative_depth];
+                            wah_write_u32_le(write_ptr, block_targets[frame->target_idx]);
+                        }
                         write_ptr += sizeof(uint32_t);
                     }
                     break;

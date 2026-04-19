@@ -207,13 +207,13 @@ static void test_validation_unreachable_br_return() {
     assert_ok(wah_parse_module_from_spec(&module, return_i32_pass_wasm_spec));
     wah_free_module(&module);
 
-    // --- Failure Case 4: br to an outer block that is no longer on the control stack ---
+    // --- Failure Case 4: br to a label index beyond all enclosing blocks and the function frame ---
     const char *br_to_outer_block_fail_wasm_spec = "wasm \
         types {[ fn [] [] ]} \
         funcs {[ 0 ]} \
         code {[ {[] \
             block void end \
-            block void br 1 end \
+            block void br 2 end \
         end } ]}";
     assert_err(wah_parse_module_from_spec(&module, br_to_outer_block_fail_wasm_spec), WAH_ERROR_VALIDATION_FAILED);
     wah_free_module(&module);
