@@ -262,13 +262,15 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/utf8-invalid-encoding.bin.wast",
 };
 
-int main(void) {
+int main(int argc, char **argv) {
     size_t i;
+    const char *filter = argc > 1 ? argv[1] : NULL;
     tally_t tally = {0};
     if (!run_parser_sanity()) {
         return 1;
     }
     for (i = 0; i < sizeof(SPECTEST_FILES) / sizeof(SPECTEST_FILES[0]); ++i) {
+        if (filter && !strstr(SPECTEST_FILES[i], filter)) continue;
         run_file(SPECTEST_FILES[i], &tally);
     }
     printf("\nSpectest tally: %u passed, %u failed, %u total checks across %u files (%u files with failures)\n",

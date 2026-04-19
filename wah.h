@@ -3575,13 +3575,11 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             frame->opcode = (wah_opcode_t)opcode_val;
             frame->else_found = false;
             frame->is_unreachable = vctx->is_unreachable; // Initialize with current reachability
-            frame->stack_height = vctx->current_stack_depth; // Store current stack height
-
             wah_func_type_t* bt = &frame->block_type;
             *bt = (wah_func_type_t){0};
 
             if (block_type_val < 0) { // Value type
-                wah_type_t result_type = 0; // Initialize to a default invalid value
+                wah_type_t result_type = 0;
                 switch(block_type_val) {
                     case -1: result_type = WAH_TYPE_I32; break;
                     case -2: result_type = WAH_TYPE_I64; break;
@@ -3591,7 +3589,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                     default: return WAH_ERROR_VALIDATION_FAILED;
                 }
 
-                if (result_type != 0) { // If not empty
+                if (result_type != 0) {
                     bt->result_count = 1;
                     WAH_MALLOC_ARRAY(bt->result_types, 1);
                     bt->result_types[0] = result_type;
@@ -3614,16 +3612,14 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 }
             }
 
-            // Check params are available on stack (but don't consume them for block type)
-            // Block type parameters are inputs to the block, not consumed by block declaration
             WAH_ENSURE(vctx->current_stack_depth >= bt->param_count, WAH_ERROR_VALIDATION_FAILED);
             for (uint32_t i = 0; i < bt->param_count; ++i) {
-                // Peek at the type without popping: stack[sp - param_count + i]
                 wah_type_t actual_type = vctx->type_stack.data[vctx->type_stack.sp - bt->param_count + i];
                 WAH_CHECK(wah_validate_type_match(actual_type, bt->param_types[i]));
             }
 
-            frame->type_stack_sp = vctx->type_stack.sp;
+            frame->stack_height = vctx->current_stack_depth - bt->param_count;
+            frame->type_stack_sp = vctx->type_stack.sp - bt->param_count;
             return WAH_OK;
         }
         case WAH_OP_ELSE: {
@@ -3638,11 +3634,13 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, frame->block_type.result_types[i]));
             }
 
-            // Reset stack to the state before the 'if' block
             vctx->type_stack.sp = frame->type_stack_sp;
             vctx->current_stack_depth = frame->type_stack_sp;
 
-            // The 'else' branch is now reachable
+            for (uint32_t i = 0; i < frame->block_type.param_count; ++i) {
+                WAH_CHECK(wah_validation_push_type(vctx, frame->block_type.param_types[i]));
+            }
+
             vctx->is_unreachable = false;
             return WAH_OK;
         }
@@ -3667,9 +3665,11 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
             wah_validation_control_frame_t* frame = &vctx->control_stack[vctx->control_sp - 1];
 
-            // if without else is only valid when the block type has no results
             if (frame->opcode == WAH_OP_IF && !frame->else_found) {
-                WAH_ENSURE(frame->block_type.result_count == 0, WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(frame->block_type.param_count == frame->block_type.result_count, WAH_ERROR_VALIDATION_FAILED);
+                for (uint32_t i = 0; i < frame->block_type.param_count; ++i) {
+                    WAH_ENSURE(frame->block_type.param_types[i] == frame->block_type.result_types[i], WAH_ERROR_VALIDATION_FAILED);
+                }
             }
 
             // Pop results from the executed branch and verify
