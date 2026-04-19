@@ -4276,7 +4276,6 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
             wah_type_t elem_type;
             WAH_CHECK(wah_decode_ref_type(ptr, section_end, &elem_type));
             module->tables[i].elem_type = elem_type;
-            WAH_ENSURE(elem_type == WAH_TYPE_FUNCREF, WAH_ERROR_VALIDATION_FAILED); // Only funcref is supported for now
 
             WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
             uint8_t flags = *(*ptr)++; // Flags for table type (0x00 for fixed, 0x01 for resizable)
