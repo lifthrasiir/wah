@@ -6092,8 +6092,8 @@ WAH_RUN(END) { // End of function
     WAH_RUN(I##N##_GE_U) CMP_I_U(N,>=) \
     WAH_RUN(I##N##_EQZ) { sp[-1].i32 = (sp[-1].i##N == 0) ? 1 : 0; WAH_NEXT(); } \
     \
-    WAH_RUN(F##N##_ABS) UNOP_F_FN(N, fabs##_F) \
-    WAH_RUN(F##N##_NEG) UNOP_F_FN(N, -) \
+    WAH_RUN(F##N##_ABS) { sp[-1].f##N = fabs##_F(sp[-1].f##N); WAH_NEXT(); } \
+    WAH_RUN(F##N##_NEG) { sp[-1].f##N = -(sp[-1].f##N); WAH_NEXT(); } \
     WAH_RUN(F##N##_CEIL) UNOP_F_FN(N, ceil##_F) \
     WAH_RUN(F##N##_FLOOR) UNOP_F_FN(N, floor##_F) \
     WAH_RUN(F##N##_TRUNC) UNOP_F_FN(N, trunc##_F) \
@@ -6111,7 +6111,7 @@ WAH_RUN(END) { // End of function
     WAH_RUN(F##N##_GE) CMP_F(N,>=) \
     WAH_RUN(F##N##_MIN) BINOP_F_FN(N, wah_min##_F) \
     WAH_RUN(F##N##_MAX) BINOP_F_FN(N, wah_max##_F) \
-    WAH_RUN(F##N##_COPYSIGN) BINOP_F_FN(N, copysign##_F)
+    WAH_RUN(F##N##_COPYSIGN) { sp[-2].f##N = copysign##_F(sp[-2].f##N, sp[-1].f##N); sp--; WAH_NEXT(); }
 
 #define LOAD_OP(N, T, value_field, cast) { \
     uint32_t memidx = wah_read_u32_le(bytecode_ip); \
