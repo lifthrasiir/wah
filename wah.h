@@ -2168,32 +2168,14 @@ static WAH_ALWAYS_INLINE __m128i wah_v128_andnot_rev_sse2(__m128i a, __m128i b) 
 // I64X2 multiply using SSE2
 // Computes low 64 bits of 64x64 multiplication (what WebAssembly requires)
 static WAH_ALWAYS_INLINE __m128i wah_i64x2_mul_sse2(__m128i a, __m128i b) {
-    // For each 64-bit element: result = (a * b) & 0xffffffffffffffff
-    // Split each 64-bit value into high and low 32-bit parts
-    // a = a_hi * 2^32 + a_lo, b = b_hi * 2^32 + b_lo
-    // low_64(a * b) = ((a_hi * b_lo + a_lo * b_hi) << 32) + low_32(a_lo * b_lo)
-
-    __m128i a_lo = _mm_shuffle_epi32(a, _MM_SHUFFLE(2, 0, 2, 0));  // [a0_lo, a0_lo, a1_lo, a1_lo]
-    __m128i a_hi = _mm_shuffle_epi32(a, _MM_SHUFFLE(3, 1, 3, 1));  // [a0_hi, a0_hi, a1_hi, a1_hi]
-    __m128i b_lo = _mm_shuffle_epi32(b, _MM_SHUFFLE(2, 0, 2, 0));  // [b0_lo, b0_lo, b1_lo, b1_lo]
-    __m128i b_hi = _mm_shuffle_epi32(b, _MM_SHUFFLE(3, 1, 3, 1));  // [b0_hi, b0_hi, b1_hi, b1_hi]
-
-    // 32x32 -> 64 multiplications
-    __m128i prod_ll = _mm_mul_epu32(a_lo, b_lo);  // [a0_lo*b0_lo, a1_lo*b1_lo]
-    __m128i prod_hl = _mm_mul_epu32(a_hi, b_lo);  // [a0_hi*b0_lo, a1_hi*b1_lo]
-    __m128i prod_lh = _mm_mul_epu32(a_lo, b_hi);  // [a0_lo*b0_hi, a1_lo*b1_hi]
-
-    // Sum cross terms
-    __m128i prod_cross = _mm_add_epi64(prod_hl, prod_lh);
-
-    // Shift cross terms left by 32 bits (each 64-bit element)
-    __m128i prod_cross_shuffled = _mm_shuffle_epi32(prod_cross, _MM_SHUFFLE(3, 1, 2, 0));
-    __m128i prod_cross_shifted = _mm_slli_si128(prod_cross_shuffled, 4);
-
-    // Add low parts
-    __m128i result = _mm_add_epi64(prod_ll, prod_cross_shifted);
-
-    return result;
+    __m128i a_hi = _mm_srli_epi64(a, 32);
+    __m128i b_hi = _mm_srli_epi64(b, 32);
+    __m128i prod_ll = _mm_mul_epu32(a, b);
+    __m128i prod_hl = _mm_mul_epu32(a_hi, b);
+    __m128i prod_lh = _mm_mul_epu32(a, b_hi);
+    __m128i cross = _mm_add_epi64(prod_hl, prod_lh);
+    __m128i cross_shifted = _mm_slli_epi64(cross, 32);
+    return _mm_add_epi64(prod_ll, cross_shifted);
 }
 
 // I8X16 popcount using SSE2
