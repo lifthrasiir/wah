@@ -2102,45 +2102,50 @@ static WAH_ALWAYS_INLINE uint8_t WAH_MIN_U_8(uint8_t a, uint8_t b) { return a < 
 static WAH_ALWAYS_INLINE int8_t WAH_MAX_S_8(int8_t a, int8_t b) { return a > b ? a : b; }
 static WAH_ALWAYS_INLINE uint8_t WAH_MAX_U_8(uint8_t a, uint8_t b) { return a > b ? a : b; }
 
-static WAH_ALWAYS_INLINE float wah_pminf(float a, float b) {
-    if (isnan(a) || isnan(b)) return WAH_CANONICAL_NAN32.f;
-    return fminf(a, b);
-}
-
-static WAH_ALWAYS_INLINE float wah_pmaxf(float a, float b) {
-    if (isnan(a) || isnan(b)) return WAH_CANONICAL_NAN32.f;
-    return fmaxf(a, b);
-}
-
-static WAH_ALWAYS_INLINE double wah_pmin(double a, double b) {
-    if (isnan(a) || isnan(b)) return WAH_CANONICAL_NAN64.f;
-    return fmin(a, b);
-}
-
-static WAH_ALWAYS_INLINE double wah_pmax(double a, double b) {
-    if (isnan(a) || isnan(b)) return WAH_CANONICAL_NAN64.f;
-    return fmax(a, b);
-}
+static WAH_ALWAYS_INLINE float wah_pminf(float a, float b) { return b < a ? b : a; }
+static WAH_ALWAYS_INLINE float wah_pmaxf(float a, float b) { return a < b ? b : a; }
+static WAH_ALWAYS_INLINE double wah_pmin(double a, double b) { return b < a ? b : a; }
+static WAH_ALWAYS_INLINE double wah_pmax(double a, double b) { return a < b ? b : a; }
 
 #ifdef WAH_X86_64
 
-#define DEFINE_PMINMAX(wasm_type, minmax, __m128x, suffix, canon_nan_s) \
-static WAH_ALWAYS_INLINE __m128x wah_##wasm_type##_p##minmax##_sse2(__m128x a, __m128x b) { \
-    /* Check for NaN in either operand */ \
-    __m128x a_is_nan = _mm_cmpunord_##suffix(a, a); \
-    __m128x b_is_nan = _mm_cmpunord_##suffix(b, b); \
-    __m128x any_nan = _mm_or_##suffix(a_is_nan, b_is_nan); \
-    /* Regular min/max for non-NaN case */ \
-    __m128x result = _mm_##minmax##_##suffix(a, b); \
-    /* If either operand is NaN, replace result with canonical NaN (WASM semantics) */ \
-    __m128x canon_nan = _mm_set1_##suffix(canon_nan_s); \
-    return _mm_or_##suffix(_mm_andnot_##suffix(any_nan, result), _mm_and_##suffix(any_nan, canon_nan)); \
-}
+static WAH_ALWAYS_INLINE __m128 wah_f32x4_pmin_sse2(__m128 a, __m128 b) { return _mm_min_ps(b, a); }
+static WAH_ALWAYS_INLINE __m128 wah_f32x4_pmax_sse2(__m128 a, __m128 b) { return _mm_max_ps(b, a); }
+static WAH_ALWAYS_INLINE __m128d wah_f64x2_pmin_sse2(__m128d a, __m128d b) { return _mm_min_pd(b, a); }
+static WAH_ALWAYS_INLINE __m128d wah_f64x2_pmax_sse2(__m128d a, __m128d b) { return _mm_max_pd(b, a); }
 
-DEFINE_PMINMAX(f32x4, min, __m128,  ps, WAH_CANONICAL_NAN32.f)
-DEFINE_PMINMAX(f32x4, max, __m128,  ps, WAH_CANONICAL_NAN32.f)
-DEFINE_PMINMAX(f64x2, min, __m128d, pd, WAH_CANONICAL_NAN64.f)
-DEFINE_PMINMAX(f64x2, max, __m128d, pd, WAH_CANONICAL_NAN64.f)
+static WAH_ALWAYS_INLINE __m128 wah_f32x4_min_sse2(__m128 a, __m128 b) {
+    __m128 nan_mask = _mm_or_ps(_mm_cmpunord_ps(a, a), _mm_cmpunord_ps(b, b));
+    __m128 canon_nan = _mm_set1_ps(WAH_CANONICAL_NAN32.f);
+    __m128 min_ab = _mm_min_ps(a, b);
+    __m128 min_ba = _mm_min_ps(b, a);
+    __m128 result = _mm_or_ps(min_ab, min_ba);
+    return _mm_or_ps(_mm_andnot_ps(nan_mask, result), _mm_and_ps(nan_mask, canon_nan));
+}
+static WAH_ALWAYS_INLINE __m128 wah_f32x4_max_sse2(__m128 a, __m128 b) {
+    __m128 nan_mask = _mm_or_ps(_mm_cmpunord_ps(a, a), _mm_cmpunord_ps(b, b));
+    __m128 canon_nan = _mm_set1_ps(WAH_CANONICAL_NAN32.f);
+    __m128 max_ab = _mm_max_ps(a, b);
+    __m128 max_ba = _mm_max_ps(b, a);
+    __m128 result = _mm_and_ps(max_ab, max_ba);
+    return _mm_or_ps(_mm_andnot_ps(nan_mask, result), _mm_and_ps(nan_mask, canon_nan));
+}
+static WAH_ALWAYS_INLINE __m128d wah_f64x2_min_sse2(__m128d a, __m128d b) {
+    __m128d nan_mask = _mm_or_pd(_mm_cmpunord_pd(a, a), _mm_cmpunord_pd(b, b));
+    __m128d canon_nan = _mm_set1_pd(WAH_CANONICAL_NAN64.f);
+    __m128d min_ab = _mm_min_pd(a, b);
+    __m128d min_ba = _mm_min_pd(b, a);
+    __m128d result = _mm_or_pd(min_ab, min_ba);
+    return _mm_or_pd(_mm_andnot_pd(nan_mask, result), _mm_and_pd(nan_mask, canon_nan));
+}
+static WAH_ALWAYS_INLINE __m128d wah_f64x2_max_sse2(__m128d a, __m128d b) {
+    __m128d nan_mask = _mm_or_pd(_mm_cmpunord_pd(a, a), _mm_cmpunord_pd(b, b));
+    __m128d canon_nan = _mm_set1_pd(WAH_CANONICAL_NAN64.f);
+    __m128d max_ab = _mm_max_pd(a, b);
+    __m128d max_ba = _mm_max_pd(b, a);
+    __m128d result = _mm_and_pd(max_ab, max_ba);
+    return _mm_or_pd(_mm_andnot_pd(nan_mask, result), _mm_and_pd(nan_mask, canon_nan));
+}
 
 #define DEFINE_CMP_U(wasm_type, cmp, const, N) \
 static WAH_ALWAYS_INLINE __m128i wah_##wasm_type##_##cmp##_u_sse2(__m128i a, __m128i b) { \
@@ -3001,30 +3006,18 @@ static WAH_ALWAYS_INLINE uint8x16_t wah_i32x4_trunc_sat_f32x4_u_neon(uint8x16_t 
     return vreinterpretq_u8_u32(result);
 }
 
-// pmin/pmax for float (NaN canonicalization)
+// pmin/pmax: IEEE 754 minNum/maxNum - no NaN canonicalization
 static WAH_ALWAYS_INLINE uint8x16_t wah_f32x4_pmin_neon(uint8x16_t a, uint8x16_t b) {
-    float32x4_t fa = vreinterpretq_f32_u8(a), fb = vreinterpretq_f32_u8(b);
-    float32x4_t ca = vreinterpretq_f32_u8(wah_canonicalize_f32x4_neon(a));
-    float32x4_t cb = vreinterpretq_f32_u8(wah_canonicalize_f32x4_neon(b));
-    return vreinterpretq_u8_f32(vbslq_f32(vcltq_f32(cb, ca), fb, fa));
+    return vreinterpretq_u8_f32(vminnmq_f32(vreinterpretq_f32_u8(a), vreinterpretq_f32_u8(b)));
 }
 static WAH_ALWAYS_INLINE uint8x16_t wah_f32x4_pmax_neon(uint8x16_t a, uint8x16_t b) {
-    float32x4_t fa = vreinterpretq_f32_u8(a), fb = vreinterpretq_f32_u8(b);
-    float32x4_t ca = vreinterpretq_f32_u8(wah_canonicalize_f32x4_neon(a));
-    float32x4_t cb = vreinterpretq_f32_u8(wah_canonicalize_f32x4_neon(b));
-    return vreinterpretq_u8_f32(vbslq_f32(vcltq_f32(ca, cb), fb, fa));
+    return vreinterpretq_u8_f32(vmaxnmq_f32(vreinterpretq_f32_u8(a), vreinterpretq_f32_u8(b)));
 }
 static WAH_ALWAYS_INLINE uint8x16_t wah_f64x2_pmin_neon(uint8x16_t a, uint8x16_t b) {
-    float64x2_t fa = vreinterpretq_f64_u8(a), fb = vreinterpretq_f64_u8(b);
-    float64x2_t ca = vreinterpretq_f64_u8(wah_canonicalize_f64x2_neon(a));
-    float64x2_t cb = vreinterpretq_f64_u8(wah_canonicalize_f64x2_neon(b));
-    return vreinterpretq_u8_f64(vbslq_f64(vcltq_f64(cb, ca), fb, fa));
+    return vreinterpretq_u8_f64(vminnmq_f64(vreinterpretq_f64_u8(a), vreinterpretq_f64_u8(b)));
 }
 static WAH_ALWAYS_INLINE uint8x16_t wah_f64x2_pmax_neon(uint8x16_t a, uint8x16_t b) {
-    float64x2_t fa = vreinterpretq_f64_u8(a), fb = vreinterpretq_f64_u8(b);
-    float64x2_t ca = vreinterpretq_f64_u8(wah_canonicalize_f64x2_neon(a));
-    float64x2_t cb = vreinterpretq_f64_u8(wah_canonicalize_f64x2_neon(b));
-    return vreinterpretq_u8_f64(vbslq_f64(vcltq_f64(ca, cb), fb, fa));
+    return vreinterpretq_u8_f64(vmaxnmq_f64(vreinterpretq_f64_u8(a), vreinterpretq_f64_u8(b)));
 }
 
 // Float convert i32x4 signed
@@ -7563,8 +7556,8 @@ WAH_RUN(F32X4_NEG)
     WAH_IF_X86_64({ sp[-1]._m128 = _mm_xor_ps(_mm_set1_ps(-0.0f), sp[-1]._m128); WAH_NEXT(); },
         N128_UNARY_OP(wah_vnegq_f32, V128_UNARY_OP_LANE(32, -, f32)))
 WAH_RUN(F32X4_SQRT) M128_UNARY_OP(_mm_sqrt_ps, N128_UNARY_OP(wah_vsqrtq_f32, V128_UNARY_OP_LANE_FN(32, sqrtf, f32)))
-WAH_RUN(F32X4_MIN) M128_BINARY_OP(_mm_min_ps, N128_BINARY_OP(wah_vminq_f32, V128_BINARY_OP_LANE_FN(32, fminf, f32)))
-WAH_RUN(F32X4_MAX) M128_BINARY_OP(_mm_max_ps, N128_BINARY_OP(wah_vmaxq_f32, V128_BINARY_OP_LANE_FN(32, fmaxf, f32)))
+WAH_RUN(F32X4_MIN) M128_BINARY_OP(wah_f32x4_min_sse2, N128_BINARY_OP(wah_vminq_f32, V128_BINARY_OP_LANE_FN(32, wah_minf, f32)))
+WAH_RUN(F32X4_MAX) M128_BINARY_OP(wah_f32x4_max_sse2, N128_BINARY_OP(wah_vmaxq_f32, V128_BINARY_OP_LANE_FN(32, wah_maxf, f32)))
 WAH_RUN(F32X4_PMIN) M128_BINARY_OP(wah_f32x4_pmin_sse2, N128_BINARY_OP(wah_f32x4_pmin_neon, V128_BINARY_OP_LANE_FN(32, wah_pminf, f32)))
 WAH_RUN(F32X4_PMAX) M128_BINARY_OP(wah_f32x4_pmax_sse2, N128_BINARY_OP(wah_f32x4_pmax_neon, V128_BINARY_OP_LANE_FN(32, wah_pmaxf, f32)))
 
@@ -7579,8 +7572,8 @@ WAH_RUN(F64X2_NEG)
     WAH_IF_X86_64({ sp[-1]._m128d = _mm_xor_pd(_mm_set1_pd(-0.0), sp[-1]._m128d); WAH_NEXT(); },
         N128_UNARY_OP(wah_vnegq_f64, V128_UNARY_OP_LANE(64, -, f64)))
 WAH_RUN(F64X2_SQRT) M128D_UNARY_OP(_mm_sqrt_pd, N128_UNARY_OP(wah_vsqrtq_f64, V128_UNARY_OP_LANE_FN(64, sqrt, f64)))
-WAH_RUN(F64X2_MIN) M128D_BINARY_OP(_mm_min_pd, N128_BINARY_OP(wah_vminq_f64, V128_BINARY_OP_LANE_FN(64, fmin, f64)))
-WAH_RUN(F64X2_MAX) M128D_BINARY_OP(_mm_max_pd, N128_BINARY_OP(wah_vmaxq_f64, V128_BINARY_OP_LANE_FN(64, fmax, f64)))
+WAH_RUN(F64X2_MIN) M128D_BINARY_OP(wah_f64x2_min_sse2, N128_BINARY_OP(wah_vminq_f64, V128_BINARY_OP_LANE_FN(64, wah_min, f64)))
+WAH_RUN(F64X2_MAX) M128D_BINARY_OP(wah_f64x2_max_sse2, N128_BINARY_OP(wah_vmaxq_f64, V128_BINARY_OP_LANE_FN(64, wah_max, f64)))
 WAH_RUN(F64X2_PMIN) M128D_BINARY_OP(wah_f64x2_pmin_sse2, N128_BINARY_OP(wah_f64x2_pmin_neon, V128_BINARY_OP_LANE_FN(64, wah_pmin, f64)))
 WAH_RUN(F64X2_PMAX) M128D_BINARY_OP(wah_f64x2_pmax_sse2, N128_BINARY_OP(wah_f64x2_pmax_neon, V128_BINARY_OP_LANE_FN(64, wah_pmax, f64)))
 
