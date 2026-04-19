@@ -537,7 +537,7 @@ typedef enum {
     X(BR,, 0x0C) X(BR_IF,, 0x0D) X(BR_TABLE,, 0x0E) X(RETURN,, 0x0F) X(CALL,I, 0x10) X(CALL_INDIRECT,II, 0x11) \
     \
     /* Parametric Operators */ \
-    X(DROP,, 0x1A) X(SELECT,, 0x1B) \
+    X(DROP,, 0x1A) X(SELECT,, 0x1B) X(SELECT_T,, 0x1C) \
     \
     /* Variable Access */ \
     X(LOCAL_GET,I, 0x20) X(LOCAL_SET,I, 0x21) X(LOCAL_TEE,I, 0x22) X(GLOBAL_GET,I, 0x23) X(GLOBAL_SET,I, 0x24) \
@@ -3579,14 +3579,23 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_I32));
             WAH_CHECK(wah_validation_pop_type(vctx, &b_type));
             WAH_CHECK(wah_validation_pop_type(vctx, &a_type));
-            // If a_type and b_type are different, and neither is ANY, then it's an error.
             WAH_ENSURE(a_type == b_type || a_type == WAH_TYPE_ANY || b_type == WAH_TYPE_ANY, WAH_ERROR_VALIDATION_FAILED);
-            // If either is ANY, the result is ANY. Otherwise, it's a_type (which equals b_type).
             if (a_type == WAH_TYPE_ANY || b_type == WAH_TYPE_ANY) {
                 return wah_validation_push_type(vctx, WAH_TYPE_ANY);
             } else {
                 return wah_validation_push_type(vctx, a_type);
             }
+        }
+        case WAH_OP_SELECT_T: {
+            uint32_t vec_len;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &vec_len));
+            WAH_ENSURE(vec_len == 1, WAH_ERROR_VALIDATION_FAILED);
+            wah_type_t sel_type;
+            WAH_CHECK(wah_decode_val_type(code_ptr, code_end, &sel_type));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_I32));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, sel_type));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, sel_type));
+            return wah_validation_push_type(vctx, sel_type);
         }
 
         // Control flow operations
@@ -4773,6 +4782,16 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 case WAH_OP_F32_CONST: ptr += 4; preparsed_instr_size += 4; break;
                 case WAH_OP_F64_CONST: ptr += 8; preparsed_instr_size += 8; break;
                 case WAH_OP_V128_CONST: case WAH_OP_I8X16_SHUFFLE: ptr += 16; preparsed_instr_size += 16; break;
+                case WAH_OP_SELECT_T: {
+                    uint32_t vec_len;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &vec_len), cleanup);
+                    for (uint32_t j = 0; j < vec_len; j++) {
+                        wah_type_t sel_type;
+                        WAH_CHECK_GOTO(wah_decode_val_type(&ptr, end, &sel_type), cleanup);
+                    }
+                    preparsed_instr_size = 0;
+                    break;
+                }
                 case WAH_OP_REF_NULL: {
                     wah_type_t ref_type;
                     WAH_CHECK_GOTO(wah_decode_ref_type(&ptr, end, &ref_type), cleanup);
@@ -5005,6 +5024,18 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 case WAH_OP_F32_CONST: memcpy(write_ptr, ptr, 4); ptr += 4; write_ptr += 4; break;
                 case WAH_OP_F64_CONST: memcpy(write_ptr, ptr, 8); ptr += 8; write_ptr += 8; break;
                 case WAH_OP_V128_CONST: case WAH_OP_I8X16_SHUFFLE: memcpy(write_ptr, ptr, 16); ptr += 16; write_ptr += 16; break;
+                case WAH_OP_SELECT_T: {
+                    uint32_t vec_len;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &vec_len), cleanup);
+                    for (uint32_t j = 0; j < vec_len; j++) {
+                        wah_type_t sel_type;
+                        WAH_CHECK_GOTO(wah_decode_val_type(&ptr, end, &sel_type), cleanup);
+                    }
+                    write_ptr -= sizeof(uint16_t);
+                    wah_write_u16_le(write_ptr, WAH_OP_SELECT);
+                    write_ptr += sizeof(uint16_t);
+                    break;
+                }
                 case WAH_OP_REF_NULL: {
                     wah_type_t ref_type;
                     WAH_CHECK_GOTO(wah_decode_ref_type(&ptr, end, &ref_type), cleanup);
@@ -6605,6 +6636,12 @@ WAH_RUN(SELECT) {
     wah_value_t b = *--sp;
     wah_value_t a = *--sp;
     *sp++ = c.i32 ? a : b;
+    WAH_NEXT();
+}
+
+WAH_RUN(SELECT_T) { // Should not appear in preparsed code
+    (void)bytecode_base;
+    WAH_UNREACHABLE();
     WAH_NEXT();
 }
 
