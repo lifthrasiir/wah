@@ -159,6 +159,48 @@ int main() {
         wah_free_module(&module_b);
     }
 
+    // Test 6: Linked module global initializer using global.get
+    printf("Test 6: Linked module global initializer using global.get\n");
+    {
+        // Module A: global[0]=100, imports getGlobal1 from moduleB, wraps and exports it
+        const char *spec_a = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'moduleB'} {'getGlobal1'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            globals {[ i32 mut i32.const 100 end ]} \
+            exports {[ {'callGetGlobal1'} fn# 1 ]} \
+            code {[ {[] call 0 end} ]}";
+
+        // Module B: global[0]=42, global[1]=global.get 0 (must resolve to B's own global[0]=42,
+        //           not A's global[0]=100)
+        const char *spec_b = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            globals {[ \
+                i32 mut i32.const 42 end, \
+                i32 mut global.get 0 end \
+            ]} \
+            exports {[ {'getGlobal1'} fn# 0 ]} \
+            code {[ {[] global.get 1 end} ]}";
+
+        wah_module_t mod_a = {0}, mod_b = {0};
+        wah_exec_context_t ctx = {0};
+
+        assert_ok(wah_parse_module_from_spec(&mod_a, spec_a));
+        assert_ok(wah_parse_module_from_spec(&mod_b, spec_b));
+        assert_ok(wah_exec_context_create(&ctx, &mod_a));
+        assert_ok(wah_link_module(&ctx, "moduleB", &mod_b));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&mod_a);
+        wah_free_module(&mod_b);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

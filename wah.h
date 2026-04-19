@@ -8815,18 +8815,32 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         // Copy primary module's globals
         memcpy(new_globals, ctx->globals, module->global_count * sizeof(wah_value_t));
 
-        // Initialize globals for each linked module by evaluating const expressions
+        // Initialize globals for each linked module by evaluating const expressions.
+        // Temporarily redirect ctx->globals to each linked module's own slot in new_globals
+        // so that global.get inside an initializer resolves against the linked module's
+        // own globals rather than the primary module's.
+        wah_value_t *saved_globals = ctx->globals;
+        uint32_t saved_global_count = ctx->global_count;
         uint32_t offset = module->global_count;
         for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
             const wah_module_t *linked = ctx->linked_modules[j].module;
+            ctx->globals = new_globals + offset;
+            ctx->global_count = linked->global_count;
             for (uint32_t k = 0; k < linked->global_count; k++) {
-                WAH_CHECK_GOTO(wah_eval_const_expr(ctx,
-                                                   linked->globals[k].init_expr.bytecode,
-                                                   linked->globals[k].init_expr.bytecode_size,
-                                                   &new_globals[offset + k]), cleanup);
+                err = wah_eval_const_expr(ctx,
+                                         linked->globals[k].init_expr.bytecode,
+                                         linked->globals[k].init_expr.bytecode_size,
+                                         &new_globals[offset + k]);
+                if (err != WAH_OK) {
+                    ctx->globals = saved_globals;
+                    ctx->global_count = saved_global_count;
+                    goto cleanup;
+                }
             }
             offset += linked->global_count;
         }
+        ctx->globals = saved_globals;
+        ctx->global_count = saved_global_count;
 
         free(ctx->globals);
         ctx->globals = new_globals;
