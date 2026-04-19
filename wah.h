@@ -3346,9 +3346,10 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             uint32_t mem_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &mem_idx));
             WAH_ENSURE(mem_idx < vctx->module->memory_count, WAH_ERROR_VALIDATION_FAILED);
-            // Stack: [i32_size, i32_val, addr] (val is always i32)
             wah_type_t addr_type = vctx->module->memories[mem_idx].addr_type;
-            POP(I32); POP(I32); WAH_CHECK(wah_validation_pop_and_match_type(vctx, addr_type));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, addr_type));
+            POP(I32);
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, addr_type));
             break;
         }
         case WAH_OP_MEMORY_INIT: {
@@ -3356,7 +3357,6 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &data_idx));
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &mem_idx));
             WAH_ENSURE(mem_idx < vctx->module->memory_count, WAH_ERROR_VALIDATION_FAILED);
-            // Stack: [i32_size, i32_src_offset, addr] (src_offset is always i32)
             wah_type_t addr_type = vctx->module->memories[mem_idx].addr_type;
             POP(I32); POP(I32); WAH_CHECK(wah_validation_pop_and_match_type(vctx, addr_type));
             if (data_idx + 1 > vctx->module->min_data_segment_count_required) {
@@ -3370,10 +3370,12 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &src_mem_idx));
             WAH_ENSURE(dest_mem_idx < vctx->module->memory_count, WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(src_mem_idx < vctx->module->memory_count, WAH_ERROR_VALIDATION_FAILED);
-            // Stack: [i32_size, src_addr, dest_addr]
-            WAH_CHECK(wah_validation_pop_and_match_type(vctx, vctx->module->memories[src_mem_idx].addr_type));
-            WAH_CHECK(wah_validation_pop_and_match_type(vctx, vctx->module->memories[dest_mem_idx].addr_type));
-            POP(I32); // size is always i32
+            wah_type_t dst_at = vctx->module->memories[dest_mem_idx].addr_type;
+            wah_type_t src_at = vctx->module->memories[src_mem_idx].addr_type;
+            wah_type_t n_type = (dst_at == WAH_TYPE_I64 || src_at == WAH_TYPE_I64) ? WAH_TYPE_I64 : WAH_TYPE_I32;
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, n_type));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, src_at));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, dst_at));
             break;
         }
         case WAH_OP_CALL: {
