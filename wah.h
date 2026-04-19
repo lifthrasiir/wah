@@ -8047,6 +8047,9 @@ static wah_error_t wah_call_module_multi(wah_exec_context_t *exec_ctx, uint32_t 
     const wah_func_type_t *func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
     WAH_ENSURE(param_count == func_type->param_count, WAH_ERROR_VALIDATION_FAILED);
 
+    uint32_t saved_sp = exec_ctx->sp;
+    uint32_t saved_call_depth = exec_ctx->call_depth;
+
     // Push initial params onto the value stack
     for (uint32_t i = 0; i < param_count; ++i) {
         WAH_ENSURE(exec_ctx->sp < exec_ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW); // Value stack overflow
@@ -8065,7 +8068,14 @@ static wah_error_t wah_call_module_multi(wah_exec_context_t *exec_ctx, uint32_t 
     }
 
     // Run the main interpreter loop
-    WAH_CHECK(wah_run_interpreter(exec_ctx));
+    {
+        wah_error_t run_err = wah_run_interpreter(exec_ctx);
+        if (run_err != WAH_OK) {
+            exec_ctx->sp = saved_sp;
+            exec_ctx->call_depth = saved_call_depth;
+            return run_err;
+        }
+    }
 
     // After execution, copy multiple results from the stack
     uint32_t copy_count = func_type->result_count;
