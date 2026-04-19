@@ -201,6 +201,42 @@ int main() {
         wah_free_module(&mod_b);
     }
 
+    // Test 7: Call imported linked-wasm function directly via wah_call (exported imported function call)
+    // Regression: wah_call_module_multi used caller module's function_type_indices instead of callee's,
+    // causing out-of-bounds access when the primary module has no local functions.
+    printf("Test 7: Call imported linked-wasm function directly\n");
+    {
+        // Module B: exports getValue () -> i32 returning 42
+        const char *spec_b = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'getValue'} fn# 0 ]} \
+            code {[ {[] i32.const 42 end} ]}";
+
+        // Module A: imports getValue from moduleB, NO local functions
+        const char *spec_a = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'moduleB'} {'getValue'} fn# 0 ]}";
+
+        wah_module_t mod_a = {0}, mod_b = {0};
+        wah_exec_context_t ctx = {0};
+
+        assert_ok(wah_parse_module_from_spec(&mod_b, spec_b));
+        assert_ok(wah_parse_module_from_spec(&mod_a, spec_a));
+        assert_ok(wah_exec_context_create(&ctx, &mod_a));
+        assert_ok(wah_link_module(&ctx, "moduleB", &mod_b));
+        assert_ok(wah_instantiate(&ctx));
+
+        // Call the imported function at global index 0 directly
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&mod_a);
+        wah_free_module(&mod_b);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
