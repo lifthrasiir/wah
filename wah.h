@@ -5003,6 +5003,8 @@ cleanup:
 static void wah_free_parsed_code(wah_parsed_code_t *parsed_code) {
     if (!parsed_code) return;
     free(parsed_code->bytecode);
+    parsed_code->bytecode = NULL;
+    parsed_code->bytecode_size = 0;
 }
 
 static wah_error_t wah_decode_opcode(const uint8_t **ptr, const uint8_t *end, uint16_t *opcode_val) {
