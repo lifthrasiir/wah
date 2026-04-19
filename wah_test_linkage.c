@@ -276,6 +276,50 @@ int main() {
         wah_free_module(&host_mod);
     }
 
+    // Test 9: Linked module global initializer using ref.func
+    // Regression: linked module funcref globals were left as prefuncref after instantiation
+    // (missing conversion step), causing call_indirect to dispatch through garbage pointers.
+    printf("Test 9: Linked module global initializer using ref.func\n");
+    {
+        // Module B: func 0 returns 42; func 1 reads funcref global 0 (= ref.func 0),
+        // stores it in table[0][0], then calls via call_indirect.
+        // Global 0 must resolve to B's own func 0, not the primary module's func 0.
+        const char *spec_b = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0, 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            globals {[ funcref mut ref.func 0 end ]} \
+            exports {[ {'callViaRef'} fn# 1 ]} \
+            code {[ \
+                {[] i32.const 42 end}, \
+                {[] i32.const 0 global.get 0 table.set 0 i32.const 0 call_indirect 0 0 end} \
+            ]}";
+
+        // Module A: imports callViaRef from B; provides table[0] used at runtime.
+        const char *spec_a = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'moduleB'} {'callViaRef'} fn# 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]}";
+
+        wah_module_t mod_a = {0}, mod_b = {0};
+        wah_exec_context_t ctx = {0};
+
+        assert_ok(wah_parse_module_from_spec(&mod_b, spec_b));
+        assert_ok(wah_parse_module_from_spec(&mod_a, spec_a));
+        assert_ok(wah_exec_context_create(&ctx, &mod_a));
+        assert_ok(wah_link_module(&ctx, "moduleB", &mod_b));
+        assert_ok(wah_instantiate(&ctx));
+
+        // Calling import 0 (B's callViaRef) should return 42 via the funcref global.
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&mod_a);
+        wah_free_module(&mod_b);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

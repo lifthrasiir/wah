@@ -5813,13 +5813,13 @@ WAH_RUN(CALL_INDIRECT) {
 
     WAH_ENSURE_GOTO(func_table_idx < ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup); // Function index out of table bounds
 
-    // Get wah_function_t* from table, then use global_idx to dispatch via function_table
-    const wah_function_t *table_fn = (const wah_function_t *)ctx->tables[table_idx][func_table_idx].ref;
-    WAH_ENSURE_GOTO(table_fn != NULL, WAH_ERROR_TRAP, cleanup); // Null function reference
-
-    uint32_t actual_func_idx = table_fn->global_idx;
-    WAH_ASSERT(actual_func_idx < ctx->function_table_count && "function entry contains out-of-bound function index");
-    const wah_function_t *actual_fn = &ctx->function_table[actual_func_idx];
+    // Get wah_function_t* from table and use it directly.
+    // For functions initialized from element segments, table_fn == &ctx->function_table[global_idx],
+    // so using table_fn directly is equivalent to the old global_idx indirection.
+    // Using table_fn directly also supports linked-module functions not in ctx->function_table.
+    const wah_function_t *actual_fn = (const wah_function_t *)ctx->tables[table_idx][func_table_idx].ref;
+    WAH_ENSURE_GOTO(actual_fn != NULL, WAH_ERROR_TRAP, cleanup); // Null function reference
+    WAH_ASSERT(actual_fn != wah_funcref_sentinel && "prefuncref stored in table without conversion to funcref");
 
     if (actual_fn->is_host) {
         // Host function path
@@ -8912,6 +8912,43 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         module->functions[i].global_idx = import_count + i;
         // Also update function_table since it's a shallow copy
         ctx->function_table[import_count + i].global_idx = import_count + i;
+    }
+
+    // Set local_idx and fn_module on linked module local functions so that funcref
+    // globals resolved to them can be dispatched correctly via call_indirect.
+    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+        const wah_module_t *linked = ctx->linked_modules[j].module;
+        for (uint32_t k = 0; k < linked->function_count; k++) {
+            if (!linked->functions[k].is_host) {
+                linked->functions[k].local_idx = k;
+                linked->functions[k].fn_module = linked;
+            }
+        }
+    }
+
+    // Convert funcref globals for linked modules from prefuncref to real pointers.
+    // Primary module globals were converted above (after their own eval loop);
+    // linked module globals are handled here, after local_idx/fn_module are set.
+    {
+        uint32_t lg_offset = module->global_count;
+        for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+            const wah_module_t *linked = ctx->linked_modules[j].module;
+            for (uint32_t k = 0; k < linked->global_count; k++) {
+                if (linked->globals[k].type == WAH_TYPE_FUNCREF &&
+                    ctx->globals[lg_offset + k].ref != NULL) {
+                    uint32_t fidx = ctx->globals[lg_offset + k].prefuncref.func_idx;
+                    uint32_t linked_import_count = linked->import_function_count;
+                    if (fidx >= linked_import_count) {
+                        uint32_t local_k = fidx - linked_import_count;
+                        WAH_ENSURE_GOTO(local_k < linked->function_count,
+                                        WAH_ERROR_VALIDATION_FAILED, cleanup);
+                        ctx->globals[lg_offset + k].ref = &linked->functions[local_k];
+                    }
+                    // ref.func to linked module's own import: not yet handled
+                }
+            }
+            lg_offset += linked->global_count;
+        }
     }
 
     // Initialize active element segments
