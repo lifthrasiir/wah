@@ -9025,7 +9025,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         WAH_CHECK_GOTO(wah_eval_const_expr(ctx, segment->offset_expr.bytecode, segment->offset_expr.bytecode_size, &offset_val), cleanup);
         uint32_t offset = (uint32_t)offset_val.i32;
 
-        WAH_ASSERT((uint64_t)offset + segment->num_elems <= module->tables[segment->table_idx].min_elements);
+        WAH_ENSURE_GOTO((uint64_t)offset + segment->num_elems <= ctx->table_sizes[segment->table_idx], WAH_ERROR_TRAP, cleanup);
 
         for (uint32_t j = 0; j < segment->num_elems; ++j) {
             if (!segment->is_expr_elem) {
