@@ -560,7 +560,7 @@ typedef enum {
     X(I32_STORE,M, 0x36) X(I64_STORE,M, 0x37) X(F32_STORE,M, 0x38) X(F64_STORE,M, 0x39) \
     X(I32_STORE8,M, 0x3A) X(I32_STORE16,M, 0x3B) X(I64_STORE8,M, 0x3C) X(I64_STORE16,M, 0x3D) X(I64_STORE32,M, 0x3E) \
     X(MEMORY_SIZE,I, 0x3F) X(MEMORY_GROW,I, 0x40) \
-    X(MEMORY_INIT,II, WAH_FC+0x08) X(MEMORY_COPY,II, WAH_FC+0x0A) X(MEMORY_FILL,I, WAH_FC+0x0B) \
+    X(MEMORY_INIT,II, WAH_FC+0x08) X(DATA_DROP,I, WAH_FC+0x09) X(MEMORY_COPY,II, WAH_FC+0x0A) X(MEMORY_FILL,I, WAH_FC+0x0B) \
     \
     /* Vector Memory Operators */ \
     X(V128_LOAD,M, WAH_FD+0x00) \
@@ -3402,6 +3402,14 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             }
             break;
         }
+        case WAH_OP_DATA_DROP: {
+            uint32_t data_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &data_idx));
+            if (data_idx + 1 > vctx->module->min_data_segment_count_required) {
+                vctx->module->min_data_segment_count_required = data_idx + 1;
+            }
+            break;
+        }
         case WAH_OP_MEMORY_COPY: {
             uint32_t dest_mem_idx, src_mem_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &dest_mem_idx));
@@ -5810,8 +5818,11 @@ WAH_RUN(TABLE_INIT) {
 
     const wah_element_segment_t *segment = &ctx->module->element_segments[elem_idx];
 
-    // Check if element segment has been dropped
-    WAH_ENSURE_GOTO(!segment->is_dropped, WAH_ERROR_TRAP, cleanup);
+    if (segment->is_dropped) {
+        WAH_ENSURE_GOTO(size == 0 && src_offset == 0, WAH_ERROR_TRAP, cleanup);
+        WAH_ENSURE_GOTO((uint64_t)dst_offset <= ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
+        WAH_NEXT();
+    }
 
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->num_elems, WAH_ERROR_TRAP, cleanup);
     WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
@@ -6531,6 +6542,17 @@ WAH_RUN(MEMORY_INIT) {
     memcpy(ctx->memories[mem_idx] + dest_offset, segment->data + src_offset, size);
     WAH_NEXT();
     WAH_CLEANUP();
+}
+
+WAH_RUN(DATA_DROP) {
+    uint32_t data_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    WAH_ASSERT(data_idx < ctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index");
+
+    wah_data_segment_t *segment = &ctx->module->data_segments[data_idx];
+    segment->data = NULL;
+    segment->data_len = 0;
+    WAH_NEXT();
 }
 
 WAH_RUN(MEMORY_COPY) {
