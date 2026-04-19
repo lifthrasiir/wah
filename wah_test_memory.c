@@ -685,6 +685,38 @@ void test_memory64_validation() {
     wah_free_module(&module);
 }
 
+void test_memory_no_max_is_unbounded() {
+    // Regression: limits.i32/1 (flags=0x00) must set max_pages=UINT32_MAX, not min_pages.
+    printf("Running test_memory_no_max_is_unbounded...\n");
+
+    wah_module_t module;
+    wah_exec_context_t ctx;
+    wah_value_t params[1], result;
+
+    const char *spec = "wasm \
+        types {[ fn [i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        exports {[ {'grow'} fn# 0 ]} \
+        code {[ \
+            {[] local.get 0 memory.grow 0 end}, \
+        ]}";
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_eq_u32(module.memories[0].min_pages, 1);
+    assert_eq_u32(module.memories[0].max_pages, UINT32_MAX);
+
+    assert_ok(wah_exec_context_create(&ctx, &module));
+
+    // Growing by 3 from min=1 must succeed (no max limit)
+    params[0].i32 = 3;
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i32(result.i32, 1);  // returns old size in pages
+    assert_eq_u32(ctx.memory_sizes[0], 4 * WAH_WASM_PAGE_SIZE);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 int main() {
     test_memory_api();
     test_memory_ops();
@@ -695,6 +727,7 @@ int main() {
     test_memory64_size_grow();
     test_memory64_data_segment();
     test_memory64_validation();
+    test_memory_no_max_is_unbounded();
 
     printf("\nAll memory tests passed!\n");
     return 0;

@@ -94,7 +94,7 @@ void wah_test_table_grow() {
     const char *table_grow_spec = "wasm \
         types {[ fn [] [i32] ]} \
         funcs {[ 0 ]} \
-        tables {[ funcref limits.i32/2 10 20 ]} \
+        tables {[ funcref limits.i32/1 10 ]} \
         exports {[ {'grow_table'} fn# 0 ]} \
         code {[ \
             {[] ref.null funcref i32.const 1 table.grow 0 end}, \
@@ -545,7 +545,7 @@ void wah_test_table_grow_isolated() {
     const char *spec = "wasm \
         types {[ fn [] [i32] ]} \
         funcs {[ 0, 0 ]} \
-        tables {[ funcref limits.i32/2 5 10 ]} \
+        tables {[ funcref limits.i32/1 5 ]} \
         exports {[ {'grow'} fn# 0, {'size'} fn# 1 ]} \
         code {[ \
             {[] ref.null funcref i32.const 1 table.grow 0 end}, \
@@ -582,6 +582,36 @@ void wah_test_table_grow_isolated() {
     wah_free_module(&module);
 }
 
+void wah_test_table_no_max_is_unbounded() {
+    // Regression: limits.i32/1 (flags=0x00) must set max_elements=UINT32_MAX, not min_elements.
+    printf("Running wah_test_table_no_max_is_unbounded...\n");
+
+    wah_module_t module;
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 3 ]} \
+        exports {[ {'grow'} fn# 0 ]} \
+        code {[ \
+            {[] ref.null funcref i32.const 5 table.grow 0 end}, \
+        ]}";
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_eq_u32(module.tables[0].min_elements, 3);
+    assert_eq_u32(module.tables[0].max_elements, UINT32_MAX);
+
+    wah_exec_context_t ctx;
+    assert_ok(wah_exec_context_create(&ctx, &module));
+
+    // Growing by 5 from min=3 yields old_size=3; must succeed (no max limit)
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 3);  // returns old size
+    assert_eq_u32(ctx.table_sizes[0], 8);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 int main() {
     wah_test_table_indirect_call();
     wah_test_table_size();
@@ -597,5 +627,6 @@ int main() {
     wah_test_elem_multiple_segments();
     wah_test_elem_passive_with_imports();
     wah_test_table_grow_isolated();
+    wah_test_table_no_max_is_unbounded();
     return 0;
 }

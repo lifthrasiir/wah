@@ -1095,14 +1095,14 @@ static wah_opcode_t wah_x86_64_opcode(wah_opcode_t opcode, wah_x86_64_features_t
 
 typedef struct wah_memory_type_s {
     wah_type_t addr_type;     // WAH_TYPE_I32 or WAH_TYPE_I64
-    uint32_t min_pages, max_pages;
+    uint32_t min_pages, max_pages; // max_pages: UINT32_MAX if no maximum
 } wah_memory_type_t;
 
 // --- WebAssembly Table Structures ---
 typedef struct wah_table_type_s {
     wah_type_t elem_type;
     uint32_t min_elements;
-    uint32_t max_elements; // 0 if no maximum
+    uint32_t max_elements; // UINT32_MAX if no maximum
 } wah_table_type_t;
 
 typedef struct wah_data_segment_s {
@@ -4148,10 +4148,10 @@ static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->memories[i].min_pages));
 
-            if (flags & 0x01) { // If resizable, read max_pages
+            if (flags & 0x01) { // has explicit max, read it
                 WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->memories[i].max_pages));
             } else {
-                module->memories[i].max_pages = module->memories[i].min_pages; // Fixed size, max is same as min
+                module->memories[i].max_pages = UINT32_MAX; // no maximum
             }
         }
     }
@@ -4178,10 +4178,10 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->tables[i].min_elements));
 
-            if (flags & 0x01) { // If resizable, read max_elements
+            if (flags & 0x01) { // has explicit max, read it
                 WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->tables[i].max_elements));
             } else {
-                module->tables[i].max_elements = module->tables[i].min_elements; // Fixed size, max is same as min
+                module->tables[i].max_elements = UINT32_MAX; // no maximum
             }
         }
     }
@@ -5599,9 +5599,9 @@ WAH_RUN(TABLE_GROW) {
     uint32_t old_size = ctx->table_sizes[table_idx];
     uint64_t new_size = (uint64_t)old_size + delta;
 
-    // Check max_elements limit
-    if (ctx->module->tables[table_idx].max_elements > 0) {
-        WAH_ENSURE_GOTO(new_size <= ctx->module->tables[table_idx].max_elements, WAH_ERROR_TRAP, cleanup);
+    if (new_size > ctx->module->tables[table_idx].max_elements) {
+        (*sp++).i32 = -1;
+        WAH_NEXT();
     }
 
     // Reallocate table
@@ -6347,7 +6347,7 @@ WAH_RUN(MEMORY_GROW) {
     uint32_t old_pages = ctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE;
     uint64_t new_pages = (uint64_t)old_pages + pages_to_grow;
 
-    if (ctx->module->memories[mem_idx].max_pages > 0 && new_pages > ctx->module->memories[mem_idx].max_pages) {
+    if (new_pages > ctx->module->memories[mem_idx].max_pages) {
         (*sp++).i32 = -1; // Exceeds max memory
         WAH_NEXT();
     }
@@ -6455,7 +6455,7 @@ WAH_RUN(MEMORY_GROW_i64) {
     uint64_t old_pages = ctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE;
     uint64_t new_pages = old_pages + (uint64_t)pages_to_grow;
 
-    if (ctx->module->memories[mem_idx].max_pages > 0 && new_pages > ctx->module->memories[mem_idx].max_pages) {
+    if (new_pages > ctx->module->memories[mem_idx].max_pages) {
         (*sp++).i64 = -1;
         WAH_NEXT();
     }
