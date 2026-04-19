@@ -12,13 +12,13 @@ else
 endif
 
 # List of test source files
-TEST_SRCS := $(wildcard wah_test_*.c)
-# List of compiled test executables (without .exe extension for WSL environment)
+TEST_SRCS := $(wildcard tests/test_*.c)
+# List of compiled test executables
 TEST_BINS := $(patsubst %.c, %, $(TEST_SRCS))
 
 # Rule for fuzzing with afl-fuzz
-FUZZ_HARNESS_SRC := wah_fuzz_afl.c
-FUZZ_HARNESS_BIN := wah_fuzz_afl
+FUZZ_HARNESS_SRC := fuzz/fuzz_afl.c
+FUZZ_HARNESS_BIN := fuzz/fuzz_afl
 
 # Default fuzzing directories
 IN_DIR ?= fuzz/in_dir
@@ -52,28 +52,27 @@ test: $(TEST_BINS)
 	@echo "## All tests passed."
 
 # Rule to compile a single test source file into an executable
-# This rule is used by the 'test' target to build all test binaries.
 % : %.c
 	@echo "## Compiling $<..."
 	$(CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
 
 # Template for individual test rules
-# $(1) is the test source file (e.g., wah_test_simd.c)
+# $(1) is the test source file (e.g., tests/test_simd.c)
 define RUN_SINGLE_TEST_TEMPLATE
-TEST_NAME := $(patsubst wah_test_%.c, %, $(1))
-TEST_TARGET := $(patsubst wah_test_%.c, test_%, $(1))
+TEST_NAME_$(1) := $(patsubst tests/test_%.c, %, $(1))
+TEST_TARGET_$(1) := $(patsubst tests/test_%.c, test_%, $(1))
 
-.PHONY: $(TEST_TARGET)
-$(TEST_TARGET):
-	@echo "## Running $(TEST_NAME)..."
-	$(CC) $(CFLAGS) $(1) -o $(TEST_NAME) $(LDFLAGS)
-	./$(TEST_NAME)
-	if [ $$? -ne 0 ]; then \
-		echo "## $(TEST_NAME) failed."; \
+.PHONY: $(patsubst tests/test_%.c, test_%, $(1))
+$(patsubst tests/test_%.c, test_%, $(1)):
+	@echo "## Running $(patsubst tests/test_%.c, %, $(1))..."
+	$(CC) $(CFLAGS) $(1) -o tests/$(patsubst tests/test_%.c, %, $(1)) $(LDFLAGS)
+	./tests/$(patsubst tests/test_%.c, %, $(1))
+	if [ $$$$? -ne 0 ]; then \
+		echo "## $(patsubst tests/test_%.c, %, $(1)) failed."; \
 		exit 1; \
 	fi
 	echo ""
-	rm -f $(TEST_NAME)
+	rm -f tests/$(patsubst tests/test_%.c, %, $(1))
 endef
 
 # Generate individual test targets using the template
@@ -85,7 +84,7 @@ coverage: clean
 	@for test_src in $(TEST_SRCS); do \
 		echo "## Compiling $$test_src with coverage flags..."; \
 		test_bin=$$(basename $$test_src .c); \
-		$(CC) $(CFLAGS) $(GCOV_CFLAGS) $$test_src -o $$test_bin $(LDFLAGS); \
+		$(CC) $(CFLAGS) $(GCOV_CFLAGS) $$test_src -o tests/$$test_bin $(LDFLAGS); \
 		if [ $$? -ne 0 ]; then \
 			echo "## Compilation of $$test_src failed."; \
 			exit 1; \
@@ -105,7 +104,7 @@ coverage: clean
 	# Initialize lcov and capture coverage data
 	lcov --capture --directory . --output-file coverage.info
 	# Filter out system headers and test files from the report
-	lcov --remove coverage.info '/usr/*' '*/wah_test_*.c' --output-file coverage.info
+	lcov --remove coverage.info '/usr/*' '*/tests/test_*.c' --output-file coverage.info
 	# Generate HTML report
 	genhtml coverage.info --output-directory coverage_report
 	@echo "## Coverage report generated in coverage_report/index.html"
@@ -131,6 +130,6 @@ clean:
 	@echo "## Cleaning up..."
 	@rm -f $(TEST_BINS)
 	@rm -f $(FUZZ_HARNESS_BIN) # Remove the afl-fuzz harness executable
-	@rm -f *.gcda *.gcno coverage.info # Remove gcov data files and lcov info file
+	@rm -f *.gcda *.gcno tests/*.gcda tests/*.gcno fuzz/*.gcda fuzz/*.gcno coverage.info
 	@rm -rf cov/ coverage_report/ # Remove coverage report directories
-	@rm -f *.exe # For Windows compatibility if compiled there (though this Makefile is for WSL)
+	@rm -f *.exe tests/*.exe fuzz/*.exe

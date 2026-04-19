@@ -3,8 +3,8 @@
 #include <assert.h>
 
 #define WAH_IMPLEMENTATION
-#include "wah.h"
-#include "wah_testutils.c"
+#include "../wah.h"
+#include "common.c"
 
 // Test 1: Simple const expression (i32.const)
 void test_simple_const(void) {

@@ -4,8 +4,8 @@
 #include <string.h>
 #include <math.h>
 #include <stdbool.h>
-#include "wah.h"
-#include "wah_testutils.c"
+#include "../wah.h"
+#include "common.c"
 
 static const char *memory_access_spec = "wasm \
     types {[ \

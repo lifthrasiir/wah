@@ -1,6 +1,6 @@
 #define WAH_IMPLEMENTATION
-#include "wah.h"
-#include "wah_testutils.c"
+#include "../wah.h"
+#include "common.c"
 #include <stdio.h>
 #include <assert.h>
 

@@ -62,7 +62,7 @@ All public API functions return a `wah_error_t` enum value. `WAH_OK` indicates s
 - **POSIX:** Run `make test` for all tests. Run `make test_<prefix>` for specific tests.
 - **Exit Codes:** Tests return 0 only on success, non-zero on any failure.
 - **Regression Tests:** Always add a failing regression test before fixing bugs to demonstrate the fix.
-- **Test Utilities:** Use `wah_testutils.c` DSL for creating simple wasm modules in tests without external tools.
+- **Test Utilities:** Use `tests/common.c` DSL for creating simple wasm modules in tests without external tools.
 
 ## Critical Implementation Details
 

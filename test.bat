@@ -6,9 +6,9 @@ if "%1" == "-g" (
     set cflags=-D WAH_DEBUG -g
 )
 set run=0
-for %%i in (wah_test_%1*.c) do (
-    echo ## Running %%i...
-    clang -W -Wall -Wextra %cflags% %%i -o %%~ni.exe && .\%%~ni.exe && del %%~ni.exe
+for %%i in (tests\test_%1*.c) do (
+    echo ## Running %%~nxi...
+    clang -W -Wall -Wextra %cflags% %%i -o tests\%%~ni.exe && tests\%%~ni.exe && del tests\%%~ni.exe
     if !errorlevel! neq 0 (
         echo.
         echo ## %%i failed.

@@ -29,7 +29,7 @@
 // `%v128` expects a const uint8_t* value and emits 16 bytes.
 // `%t` expects a const char* value and recursively interprets it as a DSL specification string.
 
-#include "wah.h"
+#include "../wah.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>

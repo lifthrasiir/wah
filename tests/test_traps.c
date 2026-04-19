@@ -1,8 +1,8 @@
 #define WAH_IMPLEMENTATION
-#include "wah.h"
+#include "../wah.h"
 #include <stdio.h>
 #include <stdint.h>
-#include "wah_testutils.c"
+#include "common.c"
 
 int main() {
     wah_module_t module;

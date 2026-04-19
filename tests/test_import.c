@@ -1,8 +1,8 @@
 // Tests for import section parsing and function import resolution
 #define WAH_IMPLEMENTATION
 #include <stdio.h>
-#include "wah.h"
-#include "wah_testutils.c"
+#include "../wah.h"
+#include "common.c"
 
 static int g_add_called = 0;
 

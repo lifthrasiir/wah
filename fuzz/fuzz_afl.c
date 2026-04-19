@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h> // For memcpy, memset
-#include "wah.h"
+#include "../wah.h"
 
 // Define maximum WASM input size to prevent excessive memory allocation.
 // afl-fuzz typically handles this by limiting input size.

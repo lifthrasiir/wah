@@ -1,8 +1,8 @@
 // Test for wah_module_export_memory and wah_module_export_global_* functions
 
 #define WAH_IMPLEMENTATION
-#include "wah.h"
-#include "wah_testutils.c"
+#include "../wah.h"
+#include "common.c"
 #include <stdio.h>
 #include <string.h>
 

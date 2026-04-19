@@ -3,8 +3,8 @@
 #include <math.h> // For fabsf
 
 #define WAH_IMPLEMENTATION
-#include "wah.h"
-#include "wah_testutils.c"
+#include "../wah.h"
+#include "common.c"
 
 void test_i64_global(wah_exec_context_t* exec_ctx) {
     wah_value_t result;

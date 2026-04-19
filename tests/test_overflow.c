@@ -3,8 +3,8 @@
 #include <assert.h>
 
 #define WAH_IMPLEMENTATION
-#include "wah.h"
-#include "wah_testutils.c"
+#include "../wah.h"
+#include "common.c"
 
 int main(void) {
     wah_module_t module;

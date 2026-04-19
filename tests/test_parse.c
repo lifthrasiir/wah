@@ -3,8 +3,8 @@
 #include <assert.h>
 
 #define WAH_IMPLEMENTATION
-#include "wah.h"
-#include "wah_testutils.c"
+#include "../wah.h"
+#include "common.c"
 
 static void test_malformed_code_body_size_wasm() {
     printf("Running test_malformed_code_body_size_wasm...\n");
