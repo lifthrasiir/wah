@@ -94,10 +94,10 @@ void wah_test_table_grow() {
     const char *table_grow_spec = "wasm \
         types {[ fn [] [i32] ]} \
         funcs {[ 0 ]} \
-        tables {[ funcref limits.i32/1 10 ]} \
+        tables {[ funcref limits.i32/2 10 20 ]} \
         exports {[ {'grow_table'} fn# 0 ]} \
         code {[ \
-            {[] i32.const 1 ref.null funcref table.grow 0 end}, \
+            {[] ref.null funcref i32.const 1 table.grow 0 end}, \
         ]}";
     assert_ok(wah_parse_module_from_spec(&module, table_grow_spec));
 
@@ -536,6 +536,52 @@ void wah_test_elem_passive_with_imports() {
     wah_free_module(&host_mod);
 }
 
+void wah_test_table_grow_isolated() {
+    // Regression test: table.grow must not affect a second exec context
+    // sharing the same module (bug: TABLE_GROW wrote back to module->tables[].min_elements)
+    printf("Running wah_test_table_grow_isolated...\n");
+
+    wah_module_t module;
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0, 0 ]} \
+        tables {[ funcref limits.i32/2 5 10 ]} \
+        exports {[ {'grow'} fn# 0, {'size'} fn# 1 ]} \
+        code {[ \
+            {[] ref.null funcref i32.const 1 table.grow 0 end}, \
+            {[] table.size 0 end}, \
+        ]}";
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx1, ctx2;
+    assert_ok(wah_exec_context_create(&ctx1, &module));
+    assert_ok(wah_exec_context_create(&ctx2, &module));
+
+    wah_entry_t grow_entry, size_entry;
+    assert_ok(wah_module_export_by_name(&module, "grow", &grow_entry));
+    assert_ok(wah_module_export_by_name(&module, "size", &size_entry));
+    uint32_t grow_idx = (uint32_t)grow_entry.id;
+    uint32_t size_idx = (uint32_t)size_entry.id;
+
+    wah_value_t result;
+
+    // Grow ctx1's table from 5 to 6; returns old size (5)
+    assert_ok(wah_call(&ctx1, grow_idx, NULL, 0, &result));
+    assert_eq_i32(result.i32, 5);
+
+    // ctx2's table must still be size 5 (isolated from ctx1's grow)
+    assert_ok(wah_call(&ctx2, size_idx, NULL, 0, &result));
+    assert_eq_i32(result.i32, 5);
+
+    // ctx1's table is now size 6
+    assert_ok(wah_call(&ctx1, size_idx, NULL, 0, &result));
+    assert_eq_i32(result.i32, 6);
+
+    wah_exec_context_destroy(&ctx1);
+    wah_exec_context_destroy(&ctx2);
+    wah_free_module(&module);
+}
+
 int main() {
     wah_test_table_indirect_call();
     wah_test_table_size();
@@ -550,5 +596,6 @@ int main() {
     wah_test_elem_expr_style();
     wah_test_elem_multiple_segments();
     wah_test_elem_passive_with_imports();
+    wah_test_table_grow_isolated();
     return 0;
 }

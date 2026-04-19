@@ -214,6 +214,7 @@ typedef struct wah_exec_context_s {
     uint32_t memory_count;   // Total number of instantiated memories
 
     wah_value_t **tables;
+    uint32_t *table_sizes; // Array[table_count] of current table sizes (mutable, per-instance)
     uint32_t table_count;
 
     // Linkage support
@@ -3440,8 +3441,9 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &table_idx));
             WAH_ENSURE(table_idx < vctx->module->table_count, WAH_ERROR_VALIDATION_FAILED);
             wah_type_t elem_type = vctx->module->tables[table_idx].elem_type;
+            POP(I32); // delta (on top: [ref t, i32] spec order)
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, elem_type)); // init value
-            POP(I32); PUSH(I32); break; // delta, old size or -1
+            PUSH(I32); break; // old size or -1
         }
         case WAH_OP_TABLE_FILL: {
             uint32_t table_idx;
@@ -5170,10 +5172,13 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
     if (module->table_count > 0) {
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables, module->table_count, cleanup);
         memset(exec_ctx->tables, 0, sizeof(wah_value_t*) * module->table_count);
+        WAH_MALLOC_ARRAY_GOTO(exec_ctx->table_sizes, module->table_count, cleanup);
+        memset(exec_ctx->table_sizes, 0, sizeof(uint32_t) * module->table_count);
 
         exec_ctx->table_count = module->table_count;
         for (uint32_t i = 0; i < exec_ctx->table_count; ++i) {
             uint32_t min_elements = module->tables[i].min_elements;
+            exec_ctx->table_sizes[i] = min_elements;
             WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables[i], min_elements, cleanup);
             memset(exec_ctx->tables[i], 0, sizeof(wah_value_t) * min_elements); // Initialize to null (0)
         }
@@ -5238,6 +5243,7 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
     }
     free(exec_ctx->memory_sizes);
     free(exec_ctx->function_table);
+    free(exec_ctx->table_sizes);
     if (exec_ctx->tables) {
         for (uint32_t i = 0; i < exec_ctx->table_count; ++i) {
             free(exec_ctx->tables[i]);
@@ -5552,7 +5558,7 @@ WAH_RUN(TABLE_GET) {
     bytecode_ip += sizeof(uint32_t);
     uint32_t elem_idx = (uint32_t)(*--sp).i32;
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    WAH_ENSURE_GOTO(elem_idx < ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(elem_idx < ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
     *sp++ = ctx->tables[table_idx][elem_idx];
     WAH_NEXT();
     WAH_CLEANUP();
@@ -5564,7 +5570,7 @@ WAH_RUN(TABLE_SET) {
     wah_value_t val = *--sp;
     uint32_t elem_idx = (uint32_t)(*--sp).i32;
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    WAH_ENSURE_GOTO(elem_idx < ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(elem_idx < ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
     ctx->tables[table_idx][elem_idx] = val;
     WAH_NEXT();
     WAH_CLEANUP();
@@ -5574,7 +5580,7 @@ WAH_RUN(TABLE_SIZE) {
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    (*sp++).i32 = (int32_t)ctx->module->tables[table_idx].min_elements;
+    (*sp++).i32 = (int32_t)ctx->table_sizes[table_idx];
     WAH_NEXT();
 }
 
@@ -5590,7 +5596,7 @@ WAH_RUN(TABLE_GROW) {
         WAH_NEXT();
     }
 
-    uint32_t old_size = ctx->module->tables[table_idx].min_elements;
+    uint32_t old_size = ctx->table_sizes[table_idx];
     uint64_t new_size = (uint64_t)old_size + delta;
 
     // Check max_elements limit
@@ -5607,7 +5613,7 @@ WAH_RUN(TABLE_GROW) {
     }
     free(ctx->tables[table_idx]);
     ctx->tables[table_idx] = new_table;
-    ctx->module->tables[table_idx].min_elements = (uint32_t)new_size;
+    ctx->table_sizes[table_idx] = (uint32_t)new_size;
 
     (*sp++).i32 = (int32_t)old_size;
     WAH_NEXT();
@@ -5622,7 +5628,7 @@ WAH_RUN(TABLE_FILL) {
     wah_value_t val = *--sp;
     uint32_t offset = (uint32_t)(*--sp).i32;
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    WAH_ENSURE_GOTO((uint64_t)offset + size <= ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)offset + size <= ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
 
     for (uint32_t i = 0; i < size; ++i) {
         ctx->tables[table_idx][offset + i] = val;
@@ -5642,8 +5648,8 @@ WAH_RUN(TABLE_COPY) {
     uint32_t dst_offset = (uint32_t)(*--sp).i32;
     WAH_ASSERT(src_table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
     WAH_ASSERT(dst_table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    WAH_ENSURE_GOTO((uint64_t)src_offset + size <= ctx->module->tables[src_table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
-    WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= ctx->module->tables[dst_table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)src_offset + size <= ctx->table_sizes[src_table_idx], WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= ctx->table_sizes[dst_table_idx], WAH_ERROR_TRAP, cleanup);
 
     if (src_table_idx == dst_table_idx && src_offset == dst_offset) {
         // Same table, same region - nothing to do
@@ -5687,7 +5693,7 @@ WAH_RUN(TABLE_INIT) {
     WAH_ENSURE_GOTO(!segment->is_dropped, WAH_ERROR_TRAP, cleanup);
 
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->num_elems, WAH_ERROR_TRAP, cleanup);
-    WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
 
     for (uint32_t i = 0; i < size; ++i) {
         uint32_t global_func_idx;
@@ -5803,8 +5809,7 @@ WAH_RUN(CALL_INDIRECT) {
     WAH_ASSERT(type_idx < ctx->module->type_count && "validation didn't catch out-of-bound type index");
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index");
 
-    // Validate func_table_idx against table size, Use min_elements as current size
-    WAH_ENSURE_GOTO(func_table_idx < ctx->module->tables[table_idx].min_elements, WAH_ERROR_TRAP, cleanup); // Function index out of table bounds
+    WAH_ENSURE_GOTO(func_table_idx < ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup); // Function index out of table bounds
 
     // Get wah_function_t* from table, then use global_idx to dispatch via function_table
     const wah_function_t *table_fn = (const wah_function_t *)ctx->tables[table_idx][func_table_idx].ref;
