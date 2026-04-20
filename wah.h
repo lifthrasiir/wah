@@ -893,15 +893,21 @@ typedef enum {
     WAH_I64_TABLE_OPCODES(X) \
     WAH_IF_X86_64(WAH_X86_64_EXTRA_OPCODES_SINGLE(X) WAH_X86_64_EXTRA_OPCODES_MULTI(X))
 
+#define WAH_INTERNAL_OPCODES(X) \
+    X(POLL)
+
 typedef enum {
 #define WAH_OPCODE_INIT(name, cls, val) WAH_OP_##name = val,
 #define WAH_EXTRA_OPCODE_INIT(name, suffix) WAH_OP_##name##_##suffix,
+#define WAH_INTERNAL_OPCODE_INIT(name) WAH_OP_##name,
     WAH_OPCODES(WAH_OPCODE_INIT)
     WAH_LAST_OPCODE = WAH_FE - 1, // To make the first extra opcode have value WAH_FE
+    WAH_INTERNAL_OPCODES(WAH_INTERNAL_OPCODE_INIT)
     WAH_EXTRA_OPCODES(WAH_EXTRA_OPCODE_INIT)
     WAH_NUM_OPCODES,
 #undef WAH_OPCODE_INIT
 #undef WAH_EXTRA_OPCODE_INIT
+#undef WAH_INTERNAL_OPCODE_INIT
 } wah_opcode_t;
 
 static const uint8_t wah_opclasses[WAH_FE] = {
@@ -6020,10 +6026,13 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
     static const void* wah_opcode_labels[] = {
 #define WAH_OPCODE_LABEL(name, cls, val) [WAH_OP_##name] = &&wah_op_##name,
 #define WAH_EXTRA_OPCODE_LABEL(name) [WAH_OP_##name] = &&wah_op_##name,
+#define WAH_INTERNAL_OPCODE_LABEL(name) [WAH_OP_##name] = &&wah_op_##name,
         WAH_OPCODES(WAH_OPCODE_LABEL)
+        WAH_INTERNAL_OPCODES(WAH_INTERNAL_OPCODE_LABEL)
         WAH_EXTRA_OPCODES(WAH_EXTRA_OPCODE_LABEL)
 #undef WAH_OPCODE_LABEL
 #undef WAH_EXTRA_OPCODE_LABEL
+#undef WAH_INTERNAL_OPCODE_LABEL
     };
 
     goto *wah_opcode_labels[wah_read_u16_le(bytecode_ip)];
@@ -6056,6 +6065,10 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 #endif
 
 //------------------------------------------------------------------------------
+WAH_RUN(POLL) {
+    WAH_NEXT();
+}
+
 WAH_RUN(BLOCK) { // Should not appear in preparsed code
     (void)bytecode_base;
     WAH_UNREACHABLE();
@@ -8688,10 +8701,13 @@ static wah_error_t wah_run_single(wah_exec_context_t *ctx, wah_call_frame_t *fra
         #define WAH_OPCODE_CASES(opcode, cls, val) \
             case WAH_OP_##opcode: __attribute__((musttail)) return wah_run_##opcode(ctx, frame, bytecode_ip, bytecode_base, sp, err);
         #define WAH_EXTRA_OPCODE_CASES(opcode, suffix) WAH_OPCODE_CASES(opcode##_##suffix,,)
+        #define WAH_INTERNAL_OPCODE_CASES(opcode) WAH_OPCODE_CASES(opcode,,)
         WAH_OPCODES(WAH_OPCODE_CASES)
+        WAH_INTERNAL_OPCODES(WAH_INTERNAL_OPCODE_CASES)
         WAH_EXTRA_OPCODES(WAH_EXTRA_OPCODE_CASES)
         #undef WAH_OPCODE_CASES
         #undef WAH_EXTRA_OPCODE_CASES
+        #undef WAH_INTERNAL_OPCODE_CASES
     default:
         WAH_UNREACHABLE();
     }
