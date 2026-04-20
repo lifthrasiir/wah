@@ -450,6 +450,75 @@ int main() {
         wah_free_module(&module);
     }
 
+    // --- GC diagnostics tests ---
+    printf("Testing GC heap stats...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 16);
+        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 32);
+        wah_gc_heap_stats_t stats;
+        wah_gc_heap_stats(&ctx, &stats);
+        assert_eq_u32(stats.object_count, 2);
+        assert_true(stats.allocated_bytes > 0);
+        assert_true(stats.phase == WAH_GC_PHASE_IDLE);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Testing GC heap stats without GC state...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        wah_gc_heap_stats_t stats;
+        wah_gc_heap_stats(&ctx, &stats);
+        assert_eq_u32(stats.object_count, 0);
+        assert_true(stats.allocated_bytes == 0);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Testing GC verify heap...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_true(wah_gc_verify_heap(&ctx));
+        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 16);
+        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 32);
+        assert_true(wah_gc_verify_heap(&ctx));
+        wah_gc_step(&ctx);
+        assert_true(wah_gc_verify_heap(&ctx));
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Testing GC verify heap without GC state...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_true(wah_gc_verify_heap(&ctx));
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }

@@ -234,7 +234,26 @@ typedef struct wah_gc_state_s {
     size_t allocation_threshold;
     bool gc_pending;
     bool interrupt_pending;
+#ifdef WAH_DEBUG
+    uint32_t total_collections;
+    uint32_t total_allocations;
+    uint32_t total_frees;
+    uint32_t total_polls;
+#endif
 } wah_gc_state_t;
+
+typedef struct wah_gc_heap_stats_s {
+    uint32_t object_count;
+    size_t allocated_bytes;
+    size_t allocation_threshold;
+    wah_gc_phase_t phase;
+#ifdef WAH_DEBUG
+    uint32_t total_collections;
+    uint32_t total_allocations;
+    uint32_t total_frees;
+    uint32_t total_polls;
+#endif
+} wah_gc_heap_stats_t;
 
 typedef struct wah_exec_context_s {
     wah_value_t *value_stack;       // A single, large stack for operands and locals
@@ -375,6 +394,10 @@ void wah_gc_reset(wah_exec_context_t *ctx);
 void wah_gc_destroy(wah_exec_context_t *ctx);
 // Runs one GC cycle (mark + sweep). Currently stop-the-world.
 void wah_gc_step(wah_exec_context_t *ctx);
+// Returns current GC heap statistics.
+void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats);
+// Verifies GC heap consistency. Returns true if valid. Logs errors via WAH_LOG in debug builds.
+bool wah_gc_verify_heap(const wah_exec_context_t *ctx);
 // Allocates a GC-managed object. Returns pointer to the payload (after the header).
 wah_gc_object_t *wah_gc_alloc(wah_exec_context_t *ctx, wah_gc_object_kind_t kind, uint32_t payload_size);
 // Returns the object header from a payload pointer.
@@ -5993,6 +6016,9 @@ wah_gc_object_t *wah_gc_alloc(wah_exec_context_t *ctx, wah_gc_object_kind_t kind
     gc->all_objects = obj;
     gc->object_count++;
     gc->allocated_bytes += total;
+#ifdef WAH_DEBUG
+    gc->total_allocations++;
+#endif
 
     if (gc->allocated_bytes >= gc->allocation_threshold) {
         gc->gc_pending = true;
@@ -6075,6 +6101,9 @@ static void wah_gc_step_sweep(wah_gc_state_t *gc) {
             size_t total = sizeof(wah_gc_object_t) + obj->size;
             gc->allocated_bytes -= total;
             gc->object_count--;
+#ifdef WAH_DEBUG
+            gc->total_frees++;
+#endif
             wah_gc_object_t *dead = obj;
             obj = obj->next;
             free(dead);
@@ -6098,6 +6127,9 @@ void wah_gc_step(wah_exec_context_t *ctx) {
     switch (gc->phase) {
         case WAH_GC_PHASE_IDLE:
             gc->phase = WAH_GC_PHASE_MARK;
+#ifdef WAH_DEBUG
+            gc->total_collections++;
+#endif
             wah_gc_step_mark(ctx);
             wah_gc_step_sweep(gc);
             break;
@@ -6111,9 +6143,53 @@ void wah_gc_step(wah_exec_context_t *ctx) {
     }
 }
 
+void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats) {
+    memset(stats, 0, sizeof(*stats));
+    if (!ctx->gc) return;
+    stats->object_count = ctx->gc->object_count;
+    stats->allocated_bytes = ctx->gc->allocated_bytes;
+    stats->allocation_threshold = ctx->gc->allocation_threshold;
+    stats->phase = ctx->gc->phase;
+#ifdef WAH_DEBUG
+    stats->total_collections = ctx->gc->total_collections;
+    stats->total_allocations = ctx->gc->total_allocations;
+    stats->total_frees = ctx->gc->total_frees;
+    stats->total_polls = ctx->gc->total_polls;
+#endif
+}
+
+bool wah_gc_verify_heap(const wah_exec_context_t *ctx) {
+    if (!ctx->gc) return true;
+    const wah_gc_state_t *gc = ctx->gc;
+
+    uint32_t counted = 0;
+    size_t counted_bytes = 0;
+    for (wah_gc_object_t *obj = gc->all_objects; obj; obj = obj->next) {
+        counted++;
+        counted_bytes += sizeof(wah_gc_object_t) + obj->size;
+        if (counted > gc->object_count + 1) {
+            WAH_LOG("GC verify: object list longer than object_count (%u)", gc->object_count);
+            return false;
+        }
+    }
+    if (counted != gc->object_count) {
+        WAH_LOG("GC verify: counted %u objects but object_count is %u", counted, gc->object_count);
+        return false;
+    }
+    if (counted_bytes != gc->allocated_bytes) {
+        WAH_LOG("GC verify: counted %zu bytes but allocated_bytes is %zu", counted_bytes, gc->allocated_bytes);
+        return false;
+    }
+    return true;
+}
+
 static wah_error_t wah_poll_handler(wah_exec_context_t *ctx) {
     wah_gc_state_t *gc = ctx->gc;
     if (!gc) return WAH_OK;
+
+#ifdef WAH_DEBUG
+    gc->total_polls++;
+#endif
 
     if (gc->interrupt_pending) {
         gc->interrupt_pending = false;
