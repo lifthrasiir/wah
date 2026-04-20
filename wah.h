@@ -2425,24 +2425,18 @@ static WAH_ALWAYS_INLINE __m128 wah_f32x4_convert_i32x4_u_sse2(__m128i a) {
 }
 
 static WAH_ALWAYS_INLINE __m128i wah_i16x8_narrow_i32x4_u_sse2(__m128i a, __m128i b) {
-    __m128i max_val = _mm_set1_epi32(65535);
-    __m128i a_gt_max = _mm_cmpgt_epi32(a, max_val);
-    __m128i b_gt_max = _mm_cmpgt_epi32(b, max_val);
-    __m128i a_lt_zero = _mm_cmplt_epi32(a, _mm_setzero_si128());
-    __m128i b_lt_zero = _mm_cmplt_epi32(b, _mm_setzero_si128());
-
-    __m128i a_clamped = _mm_or_si128(_mm_and_si128(a_gt_max, max_val), _mm_andnot_si128(a_gt_max, a));
-    __m128i b_clamped = _mm_or_si128(_mm_and_si128(b_gt_max, max_val), _mm_andnot_si128(b_gt_max, b));
-    a_clamped = _mm_andnot_si128(a_lt_zero, a_clamped);
-    b_clamped = _mm_andnot_si128(b_lt_zero, b_clamped);
-
-    __m128i ab_low = _mm_unpacklo_epi32(a_clamped, b_clamped);
-    __m128i ab_high = _mm_unpackhi_epi32(a_clamped, b_clamped);
-
-    __m128i low = _mm_shuffle_epi32(ab_low, _MM_SHUFFLE(3, 1, 2, 0));
-    __m128i high = _mm_shuffle_epi32(ab_high, _MM_SHUFFLE(3, 1, 2, 0));
-
-    return _mm_unpacklo_epi64(low, high);
+    __m128i max_val = _mm_set1_epi32(0xFFFF);
+    __m128i a_neg = _mm_srai_epi32(a, 31);
+    __m128i b_neg = _mm_srai_epi32(b, 31);
+    __m128i a_gt = _mm_cmpgt_epi32(a, max_val);
+    __m128i b_gt = _mm_cmpgt_epi32(b, max_val);
+    __m128i ac = _mm_andnot_si128(a_neg, _mm_or_si128(_mm_and_si128(a_gt, max_val), _mm_andnot_si128(a_gt, a)));
+    __m128i bc = _mm_andnot_si128(b_neg, _mm_or_si128(_mm_and_si128(b_gt, max_val), _mm_andnot_si128(b_gt, b)));
+    ac = _mm_and_si128(ac, max_val);
+    bc = _mm_and_si128(bc, max_val);
+    __m128i bias = _mm_set1_epi32(0x8000);
+    __m128i result = _mm_packs_epi32(_mm_sub_epi32(ac, bias), _mm_sub_epi32(bc, bias));
+    return _mm_add_epi16(result, _mm_set1_epi16((int16_t)0x8000));
 }
 
 static WAH_ALWAYS_INLINE int32_t wah_i64x2_all_true_sse2(__m128i v) {
