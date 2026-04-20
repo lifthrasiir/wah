@@ -1195,6 +1195,11 @@ typedef struct wah_memory_type_s {
     uint64_t min_pages, max_pages; // max_pages: UINT64_MAX if no maximum
 } wah_memory_type_t;
 
+typedef struct {
+    uint8_t *bytecode;
+    uint32_t bytecode_size;
+} wah_parsed_code_t;
+
 // --- WebAssembly Table Structures ---
 typedef struct wah_table_type_s {
     wah_type_t elem_type;
@@ -1202,11 +1207,6 @@ typedef struct wah_table_type_s {
     uint64_t min_elements;
     uint64_t max_elements; // UINT64_MAX if no maximum
 } wah_table_type_t;
-
-typedef struct {
-    uint8_t *bytecode;
-    uint32_t bytecode_size;
-} wah_parsed_code_t;
 
 typedef struct wah_data_segment_s {
     uint32_t flags;
