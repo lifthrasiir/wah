@@ -5993,6 +5993,14 @@ wah_gc_object_t *wah_gc_alloc(wah_exec_context_t *ctx, wah_gc_object_kind_t kind
     return obj;
 }
 
+static inline void wah_ref_store_global(wah_exec_context_t *ctx, uint32_t idx, wah_value_t val) {
+    ctx->globals[idx] = val;
+}
+
+static inline void wah_ref_store_table(wah_exec_context_t *ctx, uint32_t table_idx, uint64_t elem_idx, wah_value_t val) {
+    ctx->tables[table_idx][elem_idx] = val;
+}
+
 void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visitor, void *userdata) {
     if (!visitor) return;
 
@@ -6352,7 +6360,7 @@ WAH_RUN(GLOBAL_SET) {
     uint32_t global_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     uint32_t effective_global_idx = frame->globals_offset + global_idx;
-    ctx->globals[effective_global_idx] = *--sp;
+    wah_ref_store_global(ctx, effective_global_idx, *--sp);
     WAH_NEXT();
 }
 
@@ -6374,7 +6382,7 @@ WAH_RUN(TABLE_SET) {
     uint32_t elem_idx = (uint32_t)(*--sp).i32;
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
     WAH_ENSURE_GOTO(elem_idx < ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
-    ctx->tables[table_idx][elem_idx] = val;
+    wah_ref_store_table(ctx, table_idx, elem_idx, val);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -6434,7 +6442,7 @@ WAH_RUN(TABLE_FILL) {
     WAH_ENSURE_GOTO((uint64_t)offset + size <= ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
 
     for (uint32_t i = 0; i < size; ++i) {
-        ctx->tables[table_idx][offset + i] = val;
+        wah_ref_store_table(ctx, table_idx, offset + i, val);
     }
     WAH_NEXT();
     WAH_CLEANUP();
@@ -6446,18 +6454,14 @@ WAH_RUN(TABLE_FILL) {
     WAH_ENSURE_GOTO((uint64_t)(dst_offset) + (size) <= ctx->table_sizes[dst_table_idx], WAH_ERROR_TRAP, cleanup); \
     if (src_table_idx == dst_table_idx && (src_offset) == (dst_offset)) { \
         WAH_NEXT(); \
-    } else if (src_table_idx == dst_table_idx) { \
-        if ((dst_offset) <= (src_offset)) { \
-            for (uint64_t _i = 0; _i < (uint64_t)(size); ++_i) { \
-                ctx->tables[dst_table_idx][(dst_offset) + _i] = ctx->tables[src_table_idx][(src_offset) + _i]; \
-            } \
-        } else { \
-            for (uint64_t _i = (uint64_t)(size); _i > 0; --_i) { \
-                ctx->tables[dst_table_idx][(dst_offset) + _i - 1] = ctx->tables[src_table_idx][(src_offset) + _i - 1]; \
-            } \
+    } else if ((dst_offset) <= (src_offset) || src_table_idx != dst_table_idx) { \
+        for (uint64_t _i = 0; _i < (uint64_t)(size); ++_i) { \
+            wah_ref_store_table(ctx, dst_table_idx, (dst_offset) + _i, ctx->tables[src_table_idx][(src_offset) + _i]); \
         } \
     } else { \
-        memcpy(&ctx->tables[dst_table_idx][dst_offset], &ctx->tables[src_table_idx][src_offset], sizeof(wah_value_t) * (size)); \
+        for (uint64_t _i = (uint64_t)(size); _i > 0; --_i) { \
+            wah_ref_store_table(ctx, dst_table_idx, (dst_offset) + _i - 1, ctx->tables[src_table_idx][(src_offset) + _i - 1]); \
+        } \
     }
 
 // Common body for TABLE_INIT / TABLE_INIT_i64 after resolving dst_offset, src_offset, size
@@ -6472,10 +6476,11 @@ WAH_RUN(TABLE_FILL) {
         WAH_ENSURE_GOTO((uint64_t)(src_offset) + (size) <= segment->num_elems, WAH_ERROR_TRAP, cleanup); \
         WAH_ENSURE_GOTO((uint64_t)(dst_offset) + (size) <= ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup); \
         for (uint32_t _i = 0; _i < (uint32_t)(size); ++_i) { \
+            wah_value_t _store_val; \
             if (!segment->is_expr_elem) { \
                 uint32_t global_func_idx = segment->u.func_indices[(src_offset) + _i]; \
                 WAH_ASSERT(global_func_idx < ctx->function_table_count); \
-                ctx->tables[table_idx][(dst_offset) + _i].ref = &ctx->function_table[global_func_idx]; \
+                _store_val.ref = &ctx->function_table[global_func_idx]; \
             } else { \
                 wah_value_t elem_val; \
                 WAH_ENSURE_GOTO((src_offset) + _i < segment->num_elems, WAH_ERROR_TRAP, cleanup); \
@@ -6484,13 +6489,14 @@ WAH_RUN(TABLE_FILL) {
                                                    segment->u.expr.bytecode_sizes[(src_offset) + _i], \
                                                    &elem_val), cleanup); \
                 if (elem_val.ref == NULL) { \
-                    ctx->tables[table_idx][(dst_offset) + _i].ref = NULL; \
+                    _store_val.ref = NULL; \
                 } else { \
                     uint32_t global_func_idx = elem_val.prefuncref.func_idx; \
                     WAH_ASSERT(global_func_idx < ctx->function_table_count); \
-                    ctx->tables[table_idx][(dst_offset) + _i].ref = &ctx->function_table[global_func_idx]; \
+                    _store_val.ref = &ctx->function_table[global_func_idx]; \
                 } \
             } \
+            wah_ref_store_table(ctx, table_idx, (dst_offset) + _i, _store_val); \
         } \
     }
 
@@ -6542,7 +6548,7 @@ WAH_RUN(TABLE_SET_i64) {
     uint64_t elem_idx = (uint64_t)(*--sp).i64;
     WAH_ASSERT(table_idx < ctx->table_count);
     WAH_ENSURE_GOTO(elem_idx < ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
-    ctx->tables[table_idx][elem_idx] = val;
+    wah_ref_store_table(ctx, table_idx, elem_idx, val);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -6600,7 +6606,7 @@ WAH_RUN(TABLE_FILL_i64) {
     WAH_ENSURE_GOTO(offset + size <= ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
 
     for (uint64_t i = 0; i < size; ++i) {
-        ctx->tables[table_idx][offset + i] = val;
+        wah_ref_store_table(ctx, table_idx, offset + i, val);
     }
     WAH_NEXT();
     WAH_CLEANUP();
