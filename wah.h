@@ -208,6 +208,10 @@ typedef enum {
     WAH_GC_PHASE_SWEEP,
 } wah_gc_phase_t;
 
+typedef enum {
+    WAH_GC_KIND_NONE = 0,
+} wah_gc_object_kind_t;
+
 typedef struct wah_gc_object_s {
     struct wah_gc_object_s *next;
     uint32_t mark    : 1;
@@ -363,6 +367,16 @@ wah_error_t wah_gc_start(wah_exec_context_t *ctx);
 void wah_gc_reset(wah_exec_context_t *ctx);
 // Destroys GC state and frees all managed objects.
 void wah_gc_destroy(wah_exec_context_t *ctx);
+// Allocates a GC-managed object. Returns pointer to the payload (after the header).
+wah_gc_object_t *wah_gc_alloc(wah_exec_context_t *ctx, wah_gc_object_kind_t kind, uint32_t payload_size);
+// Returns the object header from a payload pointer.
+static inline wah_gc_object_t *wah_gc_header(void *payload) {
+    return (wah_gc_object_t *)((uint8_t *)payload - sizeof(wah_gc_object_t));
+}
+// Returns the payload pointer from an object header.
+static inline void *wah_gc_payload(wah_gc_object_t *obj) {
+    return (uint8_t *)obj + sizeof(wah_gc_object_t);
+}
 // Visitor callback for root enumeration. Called once per live reference slot.
 // slot points to the wah_value_t containing the reference; type is its declared type.
 typedef void (*wah_gc_ref_visitor_t)(wah_value_t *slot, wah_type_t type, void *userdata);
@@ -5953,6 +5967,30 @@ void wah_gc_destroy(wah_exec_context_t *ctx) {
     wah_gc_free_all_objects(ctx->gc);
     free(ctx->gc);
     ctx->gc = NULL;
+}
+
+wah_gc_object_t *wah_gc_alloc(wah_exec_context_t *ctx, wah_gc_object_kind_t kind, uint32_t payload_size) {
+    wah_gc_state_t *gc = ctx->gc;
+    if (!gc) return NULL;
+
+    size_t total = sizeof(wah_gc_object_t) + payload_size;
+    wah_gc_object_t *obj = (wah_gc_object_t *)malloc(total);
+    if (!obj) return NULL;
+    memset(obj, 0, total);
+
+    obj->kind = (uint32_t)kind;
+    obj->size = payload_size;
+    obj->mark = 0;
+    obj->next = gc->all_objects;
+    gc->all_objects = obj;
+    gc->object_count++;
+    gc->allocated_bytes += total;
+
+    if (gc->allocated_bytes >= gc->allocation_threshold) {
+        gc->gc_pending = true;
+    }
+
+    return obj;
 }
 
 void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visitor, void *userdata) {

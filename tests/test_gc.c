@@ -294,6 +294,90 @@ int main() {
         wah_free_module(&module);
     }
 
+    // --- GC allocation tests ---
+    printf("Testing GC alloc basic...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+
+        wah_gc_object_t *obj = wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 16);
+        assert_not_null(obj);
+        assert_true(obj->kind == WAH_GC_KIND_NONE);
+        assert_true(obj->size == 16);
+        assert_false(obj->mark);
+        assert_eq_u32(ctx.gc->object_count, 1);
+        assert_true(ctx.gc->allocated_bytes == sizeof(wah_gc_object_t) + 16);
+        assert_eq_ptr(ctx.gc->all_objects, obj);
+
+        void *payload = wah_gc_payload(obj);
+        assert_eq_ptr(wah_gc_header(payload), obj);
+
+        wah_gc_object_t *obj2 = wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 32);
+        assert_not_null(obj2);
+        assert_eq_u32(ctx.gc->object_count, 2);
+        assert_eq_ptr(ctx.gc->all_objects, obj2);
+        assert_eq_ptr(obj2->next, obj);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Testing GC alloc without GC state returns NULL...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        wah_gc_object_t *obj = wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 8);
+        assert_null(obj);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Testing GC alloc triggers gc_pending at threshold...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        ctx.gc->allocation_threshold = sizeof(wah_gc_object_t) + 8;
+        assert_false(ctx.gc->gc_pending);
+        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 8);
+        assert_true(ctx.gc->gc_pending);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Testing GC reset frees all objects...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 16);
+        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 32);
+        assert_eq_u32(ctx.gc->object_count, 2);
+        wah_gc_reset(&ctx);
+        assert_eq_u32(ctx.gc->object_count, 0);
+        assert_true(ctx.gc->allocated_bytes == 0);
+        assert_null(ctx.gc->all_objects);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }
