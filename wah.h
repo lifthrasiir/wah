@@ -5676,7 +5676,11 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
             exec_ctx->memory_count = total_memories;
 
             for (uint32_t i = 0; i < total_memories; ++i) {
-                exec_ctx->memory_max_pages[i] = wah_memory_type(module, i)->max_pages;
+                const wah_memory_type_t *mt = wah_memory_type(module, i);
+                uint64_t page_limit = (mt->addr_type == WAH_TYPE_I32) ? 65536ULL : (1ULL << 48);
+                uint64_t max_p = mt->max_pages;
+                if (max_p > page_limit) max_p = page_limit;
+                exec_ctx->memory_max_pages[i] = max_p;
             }
 
             // Import memory slots are left zero-initialized; wah_instantiate() fills them in.
