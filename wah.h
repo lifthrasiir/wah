@@ -3877,8 +3877,15 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             }
 
             // Pop results from the executed branch and verify
-            for (int32_t i = frame->block_type.result_count - 1; i >= 0; --i) {
-                WAH_CHECK(wah_validation_pop_and_match_type(vctx, frame->block_type.result_types[i]));
+            if (!vctx->is_unreachable) {
+                for (int32_t i = frame->block_type.result_count - 1; i >= 0; --i) {
+                    WAH_CHECK(wah_validation_pop_and_match_type(vctx, frame->block_type.result_types[i]));
+                }
+                WAH_ENSURE(vctx->current_stack_depth == frame->stack_height, WAH_ERROR_VALIDATION_FAILED);
+            } else {
+                for (int32_t i = frame->block_type.result_count - 1; i >= 0; --i) {
+                    WAH_CHECK(wah_validation_pop_and_match_type(vctx, frame->block_type.result_types[i]));
+                }
             }
 
             // Reset stack to the state before the block
