@@ -4,6 +4,23 @@
 #include "../wah.h"
 #include "common.c"
 
+static void count_roots_visitor(wah_value_t *slot, wah_type_t type, void *ud) {
+    (void)slot; (void)type;
+    (*(uint32_t*)ud)++;
+}
+
+static void count_ref_roots_visitor(wah_value_t *slot, wah_type_t type, void *ud) {
+    (void)slot;
+    assert(WAH_TYPE_IS_REF(type));
+    (*(uint32_t*)ud)++;
+}
+
+static void count_funcref_roots_visitor(wah_value_t *slot, wah_type_t type, void *ud) {
+    (void)slot;
+    assert(WAH_TYPE_IS_FUNCREF(type));
+    (*(uint32_t*)ud)++;
+}
+
 int main() {
     wah_module_t module;
     wah_exec_context_t ctx;
@@ -211,6 +228,68 @@ int main() {
         wah_value_t r;
         assert_err(wah_call(&ctx, 0, NULL, 0, &r), WAH_ERROR_TRAP);
         assert_false(ctx.gc->interrupt_pending);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    // --- Root enumeration tests ---
+    printf("Testing root enumeration: no roots in scalar-only module...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] i32.const 5 end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        uint32_t count = 0;
+        wah_gc_enumerate_roots(&ctx, count_roots_visitor, &count);
+        assert_eq_u32(count, 0);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Testing root enumeration: funcref global...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            globals {[ funcref mut ref.null funcref end ]} \
+            code {[ {[] i32.const 1 end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        uint32_t count = 0;
+        wah_gc_enumerate_roots(&ctx, count_ref_roots_visitor, &count);
+        assert_eq_u32(count, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Testing root enumeration: funcref table...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/2 3 3 ]} \
+            code {[ {[] i32.const 1 end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        uint32_t count = 0;
+        wah_gc_enumerate_roots(&ctx, count_funcref_roots_visitor, &count);
+        assert_eq_u32(count, 3);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Testing root enumeration: NULL visitor is no-op...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        wah_gc_enumerate_roots(&ctx, NULL, NULL);
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
     }

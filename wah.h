@@ -100,6 +100,7 @@ typedef int32_t wah_type_t;
 #define WAH_TYPE_IS_GLOBAL(t)   ((t) >= -5)
 #define WAH_TYPE_IS_FUNCREF(t)  ((t) == WAH_TYPE_FUNCREF)
 #define WAH_TYPE_IS_EXTERNREF(t) ((t) == WAH_TYPE_EXTERNREF)
+#define WAH_TYPE_IS_REF(t) (WAH_TYPE_IS_FUNCREF(t) || WAH_TYPE_IS_EXTERNREF(t))
 
 typedef uint64_t wah_entry_id_t;
 
@@ -362,6 +363,11 @@ wah_error_t wah_gc_start(wah_exec_context_t *ctx);
 void wah_gc_reset(wah_exec_context_t *ctx);
 // Destroys GC state and frees all managed objects.
 void wah_gc_destroy(wah_exec_context_t *ctx);
+// Visitor callback for root enumeration. Called once per live reference slot.
+// slot points to the wah_value_t containing the reference; type is its declared type.
+typedef void (*wah_gc_ref_visitor_t)(wah_value_t *slot, wah_type_t type, void *userdata);
+// Enumerates all live GC root slots reachable from the execution context.
+void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visitor, void *userdata);
 
 wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id, wah_entry_t *out);
 
@@ -5947,6 +5953,42 @@ void wah_gc_destroy(wah_exec_context_t *ctx) {
     wah_gc_free_all_objects(ctx->gc);
     free(ctx->gc);
     ctx->gc = NULL;
+}
+
+void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visitor, void *userdata) {
+    if (!visitor) return;
+
+    // 1. Locals in each call frame
+    for (uint32_t d = 0; d < ctx->call_depth; d++) {
+        wah_call_frame_t *frame = &ctx->call_stack[d];
+        const wah_code_body_t *code = frame->code;
+        if (!code) continue;
+        for (uint32_t i = 0; i < code->local_count; i++) {
+            if (WAH_TYPE_IS_REF(code->local_types[i])) {
+                visitor(&ctx->value_stack[frame->locals_offset + i], code->local_types[i], userdata);
+            }
+        }
+    }
+
+    // 2. Globals
+    const wah_module_t *module = ctx->module;
+    uint32_t total_globals = wah_total_global_count(module);
+    for (uint32_t i = 0; i < total_globals; i++) {
+        wah_type_t gt = wah_global_type(module, i);
+        if (WAH_TYPE_IS_REF(gt)) {
+            visitor(&ctx->globals[i], gt, userdata);
+        }
+    }
+
+    // 3. Table elements
+    for (uint32_t t = 0; t < ctx->table_count; t++) {
+        const wah_table_type_t *tt = wah_table_type(module, t);
+        if (WAH_TYPE_IS_REF(tt->elem_type)) {
+            for (uint32_t e = 0; e < ctx->table_sizes[t]; e++) {
+                visitor(&ctx->tables[t][e], tt->elem_type, userdata);
+            }
+        }
+    }
 }
 
 static wah_error_t wah_poll_handler(wah_exec_context_t *ctx) {
