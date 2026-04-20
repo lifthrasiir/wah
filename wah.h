@@ -4294,8 +4294,13 @@ static wah_error_t wah_validate_const_expr(
                 break;
             }
 
-            // Future extensions: REF_I31, STRUCT_NEW, ARRAY_NEW, etc.
-            // For now, reject all other opcodes
+            case WAH_OP_V128_CONST: {
+                WAH_ENSURE(*ptr + 16 <= section_end, WAH_ERROR_UNEXPECTED_EOF);
+                *ptr += 16;
+                CONST_PUSH(WAH_TYPE_V128);
+                break;
+            }
+
             default:
                 return WAH_ERROR_VALIDATION_FAILED;
         }
@@ -9419,6 +9424,11 @@ static wah_error_t wah_eval_const_expr(
                 ctx->value_stack[ctx->sp++] = val;
                 break;
             }
+
+            case WAH_OP_V128_CONST:
+                memcpy(&ctx->value_stack[ctx->sp++].v128, ip, sizeof(wah_v128_t));
+                ip += sizeof(wah_v128_t);
+                break;
 
             // Global get
             case WAH_OP_GLOBAL_GET: {
