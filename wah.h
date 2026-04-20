@@ -4818,6 +4818,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
             // Parse based on mode
             if (mode == 0) {
                 // Active: table 0, offset_expr, elem* (funcref type implied)
+                WAH_ENSURE(wah_total_table_count(module) > 0, WAH_ERROR_VALIDATION_FAILED);
                 segment->table_idx = 0;
             } else if (mode == 1) {
                 // Passive: elemkind/reftype, elem*
@@ -4825,6 +4826,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
             } else if (mode == 2) {
                 // Active: tableidx, offset_expr, elemkind/reftype, elem*
                 WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->table_idx));
+                WAH_ENSURE(segment->table_idx < wah_total_table_count(module), WAH_ERROR_VALIDATION_FAILED);
             } else { // mode == 3
                 // Declarative: elemkind/reftype, elem* (dropped after validation)
                 segment->is_dropped = true;
