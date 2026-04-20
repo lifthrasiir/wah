@@ -1627,7 +1627,9 @@ static inline wah_error_t wah_decode_sleb128_64(const uint8_t **ptr, const uint8
         shift += 7;
     } while (byte & 0x80);
 
-    if (shift < 64) {
+    if (shift == 70) {
+        WAH_ENSURE(byte == 0x00 || byte == 0x7F, WAH_ERROR_TOO_LARGE);
+    } else if (shift < 64) {
         uint64_t sign_bit = 1ULL << (shift - 1);
         if ((val & sign_bit) != 0) {
             val |= ~0ULL << shift;
