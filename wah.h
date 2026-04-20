@@ -3892,22 +3892,26 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             vctx->type_stack.sp = frame->type_stack_sp;
             vctx->current_stack_depth = frame->type_stack_sp;
 
-            // Push final results of the block
-            for (uint32_t i = 0; i < frame->block_type.result_count; ++i) {
-                WAH_CHECK(wah_validation_push_type(vctx, frame->block_type.result_types[i]));
-            }
-
-            // Free memory allocated for the block type in the control frame
-            free(frame->block_type.param_types);
-            free(frame->block_type.result_types);
-
             vctx->control_sp--;
             // Restore the unreachable state from the parent control frame
             if (vctx->control_sp > 0) {
                 vctx->is_unreachable = vctx->control_stack[vctx->control_sp - 1].is_unreachable;
             } else {
-                vctx->is_unreachable = false; // Function level is reachable by default
+                vctx->is_unreachable = false;
             }
+
+            // Push final results of the block with actual types (not ANY)
+            for (uint32_t i = 0; i < frame->block_type.result_count; ++i) {
+                WAH_CHECK(wah_type_stack_push(&vctx->type_stack, frame->block_type.result_types[i]));
+                vctx->current_stack_depth++;
+                if (vctx->current_stack_depth > vctx->max_stack_depth) {
+                    vctx->max_stack_depth = vctx->current_stack_depth;
+                }
+            }
+
+            // Free memory allocated for the block type in the control frame
+            free(frame->block_type.param_types);
+            free(frame->block_type.result_types);
             return WAH_OK;
         }
 
