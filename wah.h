@@ -585,6 +585,8 @@ typedef enum {
     X(V128_LOAD32_ZERO,M, WAH_FD+0x5C) X(V128_LOAD64_ZERO,M, WAH_FD+0x5D) \
     X(V128_LOAD8_LANE,MB, WAH_FD+0x54) X(V128_LOAD16_LANE,MB, WAH_FD+0x55) \
     X(V128_LOAD32_LANE,MB, WAH_FD+0x56) X(V128_LOAD64_LANE,MB, WAH_FD+0x57) \
+    X(V128_STORE8_LANE,MB, WAH_FD+0x58) X(V128_STORE16_LANE,MB, WAH_FD+0x59) \
+    X(V128_STORE32_LANE,MB, WAH_FD+0x5A) X(V128_STORE64_LANE,MB, WAH_FD+0x5B) \
     X(V128_STORE,M, WAH_FD+0x0B) \
     \
     /* Vector Lane Operations */ \
@@ -750,7 +752,8 @@ typedef enum {
     X(V128_LOAD32_ZERO,i32_mem0) X(V128_LOAD64_ZERO,i32_mem0) \
     X(V128_STORE,i32_mem0)
 #define WAH_I32_MEM0_OPCODES_MB(X) \
-    X(V128_LOAD8_LANE,i32_mem0) X(V128_LOAD16_LANE,i32_mem0) X(V128_LOAD32_LANE,i32_mem0) X(V128_LOAD64_LANE,i32_mem0)
+    X(V128_LOAD8_LANE,i32_mem0) X(V128_LOAD16_LANE,i32_mem0) X(V128_LOAD32_LANE,i32_mem0) X(V128_LOAD64_LANE,i32_mem0) \
+    X(V128_STORE8_LANE,i32_mem0) X(V128_STORE16_LANE,i32_mem0) X(V128_STORE32_LANE,i32_mem0) X(V128_STORE64_LANE,i32_mem0)
 
 // i64-addressed memory opcodes (non-mem0)
 #define WAH_I64_MEM_OPCODES_M(X) \
@@ -768,7 +771,8 @@ typedef enum {
     X(V128_LOAD32_ZERO,i64) X(V128_LOAD64_ZERO,i64) \
     X(V128_STORE,i64)
 #define WAH_I64_MEM_OPCODES_MB(X) \
-    X(V128_LOAD8_LANE,i64) X(V128_LOAD16_LANE,i64) X(V128_LOAD32_LANE,i64) X(V128_LOAD64_LANE,i64)
+    X(V128_LOAD8_LANE,i64) X(V128_LOAD16_LANE,i64) X(V128_LOAD32_LANE,i64) X(V128_LOAD64_LANE,i64) \
+    X(V128_STORE8_LANE,i64) X(V128_STORE16_LANE,i64) X(V128_STORE32_LANE,i64) X(V128_STORE64_LANE,i64)
 
 // i64-addressed memory 0 fast-path opcodes
 #define WAH_I64_MEM0_OPCODES_M(X) \
@@ -786,7 +790,8 @@ typedef enum {
     X(V128_LOAD32_ZERO,i64_mem0) X(V128_LOAD64_ZERO,i64_mem0) \
     X(V128_STORE,i64_mem0)
 #define WAH_I64_MEM0_OPCODES_MB(X) \
-    X(V128_LOAD8_LANE,i64_mem0) X(V128_LOAD16_LANE,i64_mem0) X(V128_LOAD32_LANE,i64_mem0) X(V128_LOAD64_LANE,i64_mem0)
+    X(V128_LOAD8_LANE,i64_mem0) X(V128_LOAD16_LANE,i64_mem0) X(V128_LOAD32_LANE,i64_mem0) X(V128_LOAD64_LANE,i64_mem0) \
+    X(V128_STORE8_LANE,i64_mem0) X(V128_STORE16_LANE,i64_mem0) X(V128_STORE32_LANE,i64_mem0) X(V128_STORE64_LANE,i64_mem0)
 
 // i64-addressed memory.size/grow/fill/init/copy opcodes (non-mem0 and mem0)
 #define WAH_I64_MEM_SIZE_OPCODES(X) \
@@ -3361,7 +3366,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(memidx < wah_total_memory_count(vctx->module), WAH_ERROR_VALIDATION_FAILED); \
             wah_type_t addr_type = wah_memory_type(vctx->module, memidx)->addr_type; \
             if (addr_type == WAH_TYPE_I32) WAH_ENSURE(offset <= 0xFFFFFFFFU, WAH_ERROR_VALIDATION_FAILED); \
-            WAH_CHECK(wah_validation_pop_and_match_type(vctx, addr_type)); POP(V128); PUSH(V128); break; \
+            POP(V128); WAH_CHECK(wah_validation_pop_and_match_type(vctx, addr_type)); PUSH(V128); break; \
         }
 
 #define EXTRACT_LANE_OP(SCALAR_TYPE, LANE_COUNT) { \
@@ -3414,6 +3419,25 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_V128_LOAD16_LANE: LOAD_V128_LANE_OP(1)
         case WAH_OP_V128_LOAD32_LANE: LOAD_V128_LANE_OP(2)
         case WAH_OP_V128_LOAD64_LANE: LOAD_V128_LANE_OP(3)
+
+#define STORE_V128_LANE_OP(max_lg_align) { \
+            uint32_t align, memidx; \
+            uint64_t offset; \
+            WAH_CHECK(wah_decode_memarg(code_ptr, code_end, &align, &memidx, &offset)); \
+            WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF); \
+            uint8_t lane_idx = *(*code_ptr)++; \
+            WAH_ENSURE(align <= max_lg_align, WAH_ERROR_VALIDATION_FAILED); \
+            WAH_ENSURE(lane_idx < (16 >> max_lg_align), WAH_ERROR_VALIDATION_FAILED); \
+            WAH_ENSURE(memidx < wah_total_memory_count(vctx->module), WAH_ERROR_VALIDATION_FAILED); \
+            wah_type_t addr_type = wah_memory_type(vctx->module, memidx)->addr_type; \
+            if (addr_type == WAH_TYPE_I32) WAH_ENSURE(offset <= 0xFFFFFFFFU, WAH_ERROR_VALIDATION_FAILED); \
+            POP(V128); WAH_CHECK(wah_validation_pop_and_match_type(vctx, addr_type)); break; \
+        }
+
+        case WAH_OP_V128_STORE8_LANE: STORE_V128_LANE_OP(0)
+        case WAH_OP_V128_STORE16_LANE: STORE_V128_LANE_OP(1)
+        case WAH_OP_V128_STORE32_LANE: STORE_V128_LANE_OP(2)
+        case WAH_OP_V128_STORE64_LANE: STORE_V128_LANE_OP(3)
 
         /* Vector Lane Operations */
         case WAH_OP_I8X16_SHUFFLE: {
@@ -7314,6 +7338,49 @@ WAH_RUN(V128_LOAD16_LANE_i32_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I32, 16)
 WAH_RUN(V128_LOAD32_LANE_i32_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I32, 32)
 WAH_RUN(V128_LOAD64_LANE_i32_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I32, 64)
 
+#define V128_STORE_LANE_OP(addr_expr, N) { \
+    uint32_t memidx = wah_read_u32_le(bytecode_ip); \
+    bytecode_ip += sizeof(uint32_t); \
+    uint64_t offset = wah_read_u64_le(bytecode_ip); \
+    bytecode_ip += sizeof(uint64_t); \
+    uint32_t lane_idx = *bytecode_ip++; \
+    wah_v128_t val = (*--sp).v128; \
+    uint64_t addr = (addr_expr); \
+    uint64_t effective_addr; \
+    \
+    WAH_ASSERT(memidx < ctx->memory_count); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, ctx->memory_sizes[memidx], &effective_addr), cleanup); \
+    WAH_ASSERT(lane_idx < 128/N); \
+    wah_write_u##N##_le(ctx->memories[memidx] + effective_addr, val.u##N[lane_idx]); \
+    WAH_NEXT(); \
+    WAH_CLEANUP(); \
+}
+
+#define V128_STORE_LANE_OP_MEM0(addr_expr, N) { \
+    uint64_t offset = wah_read_u64_le(bytecode_ip); \
+    bytecode_ip += sizeof(uint64_t); \
+    uint32_t lane_idx = *bytecode_ip++; \
+    wah_v128_t val = (*--sp).v128; \
+    uint64_t addr = (addr_expr); \
+    uint64_t effective_addr; \
+    \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, ctx->memory_size, &effective_addr), cleanup); \
+    WAH_ASSERT(lane_idx < 128/N); \
+    wah_write_u##N##_le(ctx->memory_base + effective_addr, val.u##N[lane_idx]); \
+    WAH_NEXT(); \
+    WAH_CLEANUP(); \
+}
+
+WAH_RUN(V128_STORE8_LANE) V128_STORE_LANE_OP(WAH_SP_ADDR_I32, 8)
+WAH_RUN(V128_STORE16_LANE) V128_STORE_LANE_OP(WAH_SP_ADDR_I32, 16)
+WAH_RUN(V128_STORE32_LANE) V128_STORE_LANE_OP(WAH_SP_ADDR_I32, 32)
+WAH_RUN(V128_STORE64_LANE) V128_STORE_LANE_OP(WAH_SP_ADDR_I32, 64)
+
+WAH_RUN(V128_STORE8_LANE_i32_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I32, 8)
+WAH_RUN(V128_STORE16_LANE_i32_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I32, 16)
+WAH_RUN(V128_STORE32_LANE_i32_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I32, 32)
+WAH_RUN(V128_STORE64_LANE_i32_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I32, 64)
+
 WAH_RUN(V128_STORE) {
     uint32_t memidx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
@@ -7414,6 +7481,16 @@ WAH_RUN(V128_LOAD8_LANE_i64_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I64, 8)
 WAH_RUN(V128_LOAD16_LANE_i64_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I64, 16)
 WAH_RUN(V128_LOAD32_LANE_i64_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I64, 32)
 WAH_RUN(V128_LOAD64_LANE_i64_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I64, 64)
+
+WAH_RUN(V128_STORE8_LANE_i64) V128_STORE_LANE_OP(WAH_SP_ADDR_I64, 8)
+WAH_RUN(V128_STORE16_LANE_i64) V128_STORE_LANE_OP(WAH_SP_ADDR_I64, 16)
+WAH_RUN(V128_STORE32_LANE_i64) V128_STORE_LANE_OP(WAH_SP_ADDR_I64, 32)
+WAH_RUN(V128_STORE64_LANE_i64) V128_STORE_LANE_OP(WAH_SP_ADDR_I64, 64)
+
+WAH_RUN(V128_STORE8_LANE_i64_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I64, 8)
+WAH_RUN(V128_STORE16_LANE_i64_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I64, 16)
+WAH_RUN(V128_STORE32_LANE_i64_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I64, 32)
+WAH_RUN(V128_STORE64_LANE_i64_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I64, 64)
 
 WAH_RUN(V128_STORE_i64) {
     uint32_t memidx = wah_read_u32_le(bytecode_ip);

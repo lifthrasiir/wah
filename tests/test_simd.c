@@ -220,7 +220,6 @@ void test_all_v128_loads() {
             {[] \
                 i32.const 0 \
                 v128.const %'00000000000000000000000000000000' \
-                i32.const 0 \
                 %t align=1 offset=0 %'00' \
             end} \
         ]} \
