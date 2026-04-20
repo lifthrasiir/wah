@@ -7749,7 +7749,7 @@ WAH_RUN(F64X2_SPLAT) SPLAT_OP(f64, double, f64)
     wah_v128_t v1 = (*--sp).v128; \
     wah_v128_t result; \
     for (int i = 0; i < 128/N; ++i) { \
-        result.U_FIELD[i] = (v1.U_FIELD[i] & v2.U_FIELD[i]) | (~v1.U_FIELD[i] & v3.U_FIELD[i]); \
+        result.U_FIELD[i] = (v3.U_FIELD[i] & v1.U_FIELD[i]) | (~v3.U_FIELD[i] & v2.U_FIELD[i]); \
     } \
     (*sp++).v128 = result; \
     WAH_NEXT(); \
@@ -8342,17 +8342,17 @@ WAH_RUN(F64X2_RELAXED_NMADD)
         N128_TERNARY_OP(wah_canonicalize_f64x2_neon(wah_vsubq_f64(c, wah_vmulq_f64(a, b))), V128_TERNARY_OP_F(64, *-, +, f64)))
 
 WAH_RUN(I8X16_RELAXED_LANESELECT)
-    M128I_TERNARY_OP(_mm_or_si128(_mm_and_si128(a, b), _mm_andnot_si128(a, c)),
-        N128_TERNARY_OP(vbslq_u8(a, b, c), V128_LANESELECT_OP(8, u8)))
+    M128I_TERNARY_OP(_mm_or_si128(_mm_and_si128(c, a), _mm_andnot_si128(c, b)),
+        N128_TERNARY_OP(vbslq_u8(c, a, b), V128_LANESELECT_OP(8, u8)))
 WAH_RUN(I16X8_RELAXED_LANESELECT)
-    M128I_TERNARY_OP(_mm_or_si128(_mm_and_si128(a, b), _mm_andnot_si128(a, c)),
-        N128_TERNARY_OP(vbslq_u8(a, b, c), V128_LANESELECT_OP(16, u16)))
+    M128I_TERNARY_OP(_mm_or_si128(_mm_and_si128(c, a), _mm_andnot_si128(c, b)),
+        N128_TERNARY_OP(vbslq_u8(c, a, b), V128_LANESELECT_OP(16, u16)))
 WAH_RUN(I32X4_RELAXED_LANESELECT)
-    M128I_TERNARY_OP(_mm_or_si128(_mm_and_si128(a, b), _mm_andnot_si128(a, c)),
-        N128_TERNARY_OP(vbslq_u8(a, b, c), V128_LANESELECT_OP(32, u32)))
+    M128I_TERNARY_OP(_mm_or_si128(_mm_and_si128(c, a), _mm_andnot_si128(c, b)),
+        N128_TERNARY_OP(vbslq_u8(c, a, b), V128_LANESELECT_OP(32, u32)))
 WAH_RUN(I64X2_RELAXED_LANESELECT)
-    M128I_TERNARY_OP(_mm_or_si128(_mm_and_si128(a, b), _mm_andnot_si128(a, c)),
-        N128_TERNARY_OP(vbslq_u8(a, b, c), V128_LANESELECT_OP(64, u64)))
+    M128I_TERNARY_OP(_mm_or_si128(_mm_and_si128(c, a), _mm_andnot_si128(c, b)),
+        N128_TERNARY_OP(vbslq_u8(c, a, b), V128_LANESELECT_OP(64, u64)))
 
 WAH_RUN(F32X4_RELAXED_MIN) M128_BINARY_OP(_mm_min_ps, N128_BINARY_OP(wah_vminq_f32, V128_BINARY_OP_LANE_FN(32, fminf, f32)))
 WAH_RUN(F32X4_RELAXED_MAX) M128_BINARY_OP(_mm_max_ps, N128_BINARY_OP(wah_vmaxq_f32, V128_BINARY_OP_LANE_FN(32, fmaxf, f32)))
