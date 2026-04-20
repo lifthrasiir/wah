@@ -5021,7 +5021,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
     wah_error_t err = WAH_OK;
     *parsed_code = (wah_parsed_code_t){0};
 
-    typedef struct { wah_opcode_t opcode; uint32_t target_idx; } wah_control_frame_t;
+    typedef struct { wah_opcode_t opcode; uint32_t target_idx; uint32_t end_target_idx; } wah_control_frame_t;
 
     uint32_t* block_targets = NULL;
     uint32_t block_target_count = 0, block_target_capacity = 0;
@@ -5089,18 +5089,25 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     GROW_BLOCK_TARGETS();
                     WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
                     uint32_t target_idx = block_target_count++;
-                    block_targets[target_idx] = preparsed_size; // To be overwritten for WAH_OP_IF
-                    control_stack[control_sp++] = (wah_control_frame_t){.opcode=(wah_opcode_t)opcode, .target_idx=target_idx};
+                    block_targets[target_idx] = preparsed_size;
+                    uint32_t end_target_idx = target_idx;
+                    if (opcode == WAH_OP_IF) {
+                        GROW_BLOCK_TARGETS();
+                        end_target_idx = block_target_count++;
+                        block_targets[end_target_idx] = preparsed_size;
+                    }
+                    control_stack[control_sp++] = (wah_control_frame_t){.opcode=(wah_opcode_t)opcode, .target_idx=target_idx, .end_target_idx=end_target_idx};
                     preparsed_instr_size = (opcode == WAH_OP_IF) ? sizeof(uint16_t) + sizeof(uint32_t) : 0;
                     break;
                 }
                 case WAH_OP_ELSE: {
                     WAH_ASSERT(control_sp > 0 && control_stack[control_sp - 1].opcode == WAH_OP_IF && "validation should have verified ELSE is inside IF");
+                    uint32_t if_end_target_idx = control_stack[control_sp - 1].end_target_idx;
                     preparsed_instr_size = sizeof(uint16_t) + sizeof(uint32_t);
                     block_targets[control_stack[control_sp - 1].target_idx] = preparsed_size + preparsed_instr_size;
                     GROW_BLOCK_TARGETS();
                     uint32_t target_idx = block_target_count++;
-                    control_stack[control_sp - 1] = (wah_control_frame_t){.opcode=(wah_opcode_t)opcode, .target_idx=target_idx};
+                    control_stack[control_sp - 1] = (wah_control_frame_t){.opcode=WAH_OP_ELSE, .target_idx=target_idx, .end_target_idx=if_end_target_idx};
                     break;
                 }
                 case WAH_OP_END: {
@@ -5108,6 +5115,9 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                         wah_control_frame_t frame = control_stack[--control_sp];
                         if (frame.opcode != WAH_OP_LOOP) { // BLOCK, IF, ELSE
                             block_targets[frame.target_idx] = preparsed_size;
+                            if (frame.end_target_idx != frame.target_idx) {
+                                block_targets[frame.end_target_idx] = preparsed_size;
+                            }
                         }
                         preparsed_instr_size = 0;
                     } else { // Final END
@@ -5195,7 +5205,8 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
         if (opcode == WAH_OP_BLOCK || opcode == WAH_OP_LOOP) {
             int32_t block_type; WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &block_type), cleanup);
             WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
-            control_stack[control_sp++] = (wah_control_frame_t){.opcode=(wah_opcode_t)opcode, .target_idx=current_block_idx++};
+            uint32_t idx = current_block_idx++;
+            control_stack[control_sp++] = (wah_control_frame_t){.opcode=(wah_opcode_t)opcode, .target_idx=idx, .end_target_idx=idx};
             continue;
         }
         if (opcode == WAH_OP_END) {
@@ -5366,14 +5377,18 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     int32_t block_type;
                     WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &block_type), cleanup);
                     WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
-                    control_stack[control_sp++] = (wah_control_frame_t){.opcode=WAH_OP_IF, .target_idx=current_block_idx};
-                    wah_write_u32_le(write_ptr, block_targets[current_block_idx++]);
+                    uint32_t if_false_idx = current_block_idx++;
+                    uint32_t if_end_idx = current_block_idx++;
+                    control_stack[control_sp++] = (wah_control_frame_t){.opcode=WAH_OP_IF, .target_idx=if_false_idx, .end_target_idx=if_end_idx};
+                    wah_write_u32_le(write_ptr, block_targets[if_false_idx]);
                     write_ptr += sizeof(uint32_t);
                     break;
                 }
                 case WAH_OP_ELSE: {
                     WAH_ASSERT(control_sp > 0 && control_stack[control_sp - 1].opcode == WAH_OP_IF && "validation should have verified ELSE is inside IF");
-                    control_stack[control_sp - 1] = (wah_control_frame_t){.opcode=WAH_OP_ELSE, .target_idx=current_block_idx};
+                    uint32_t if_end_target_idx = control_stack[control_sp - 1].end_target_idx;
+                    uint32_t else_target_idx = current_block_idx;
+                    control_stack[control_sp - 1] = (wah_control_frame_t){.opcode=WAH_OP_ELSE, .target_idx=else_target_idx, .end_target_idx=if_end_target_idx};
                     wah_write_u32_le(write_ptr, block_targets[current_block_idx++]);
                     write_ptr += sizeof(uint32_t);
                     break;
@@ -5386,7 +5401,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     } else {
                         WAH_ASSERT(relative_depth < control_sp && "validation should have verified relative depth");
                         wah_control_frame_t* frame = &control_stack[control_sp - 1 - relative_depth];
-                        wah_write_u32_le(write_ptr, block_targets[frame->target_idx]);
+                        wah_write_u32_le(write_ptr, block_targets[frame->end_target_idx]);
                     }
                     write_ptr += sizeof(uint32_t);
                     break;
@@ -5404,7 +5419,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                         } else {
                             WAH_ASSERT(relative_depth < control_sp && "validation should have verified relative depth");
                             wah_control_frame_t* frame = &control_stack[control_sp - 1 - relative_depth];
-                            wah_write_u32_le(write_ptr, block_targets[frame->target_idx]);
+                            wah_write_u32_le(write_ptr, block_targets[frame->end_target_idx]);
                         }
                         write_ptr += sizeof(uint32_t);
                     }
