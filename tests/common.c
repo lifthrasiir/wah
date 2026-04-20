@@ -84,6 +84,12 @@ static const token_entry_t token_table[] = {
     TOKEN("mem#", 0x02),      // Memory index space
     TOKEN("global#", 0x03),   // Global index space
 
+    // Exports
+    TOKEN("export.type#", 0x00), // Or use `fn#`
+    TOKEN("export.table", 0x01),
+    TOKEN("export.memory", 0x02),
+    TOKEN("export.global", 0x03),
+
     // Element kinds (for elemkind field)
     TOKEN("elem.funcref", 0x00),  // funcref as element kind
 
@@ -424,6 +430,7 @@ static const token_entry_t token_table[] = {
     TOKEN("align=8.mem#", 0x43),
 
     // Miscellaneous
+    TOKEN("immut", 0x00),         // Immutable flag for globals
     TOKEN("mut", 0x01),           // Mutable flag for globals
     TOKEN("limits.i32/1", 0x00),  // limits.i32/1 <min> (max is infinite)
     TOKEN("limits.i32/2", 0x01),  // limits.i32/2 <min> <max>

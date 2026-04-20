@@ -565,8 +565,22 @@ static int setup_spectest_host(spectest_env_t *env) {
 
 static spectest_module_def_t *add_module_def(spectest_env_t *env, const char *name) {
     spectest_module_def_t *def;
+    spectest_module_def_t *old_base = env->defs;
     if (!ensure_capacity((void **)&env->defs, &env->def_capacity, sizeof(*env->defs), env->def_count + 1)) {
         return NULL;
+    }
+    if (env->defs != old_base && old_base != NULL) {
+        ptrdiff_t delta = (char *)env->defs - (char *)old_base;
+        for (size_t i = 0; i < env->instance_count; i++) {
+            if (env->instances[i].def)
+                env->instances[i].def = (spectest_module_def_t *)((char *)env->instances[i].def + delta);
+        }
+        for (size_t i = 0; i < env->registered_count; i++) {
+            if (env->registered[i].def)
+                env->registered[i].def = (spectest_module_def_t *)((char *)env->registered[i].def + delta);
+        }
+        if (env->current_def)
+            env->current_def = (spectest_module_def_t *)((char *)env->current_def + delta);
     }
     def = &env->defs[env->def_count++];
     memset(def, 0, sizeof(*def));
@@ -581,9 +595,15 @@ static spectest_module_def_t *add_module_def(spectest_env_t *env, const char *na
 
 static spectest_instance_t *add_instance(spectest_env_t *env, const char *name, spectest_module_def_t *def) {
     spectest_instance_t *instance;
+    spectest_instance_t *old_base = env->instances;
     if (!ensure_capacity((void **)&env->instances, &env->instance_capacity,
                          sizeof(*env->instances), env->instance_count + 1)) {
         return NULL;
+    }
+    if (env->instances != old_base && old_base != NULL) {
+        ptrdiff_t delta = (char *)env->instances - (char *)old_base;
+        if (env->current_instance)
+            env->current_instance = (spectest_instance_t *)((char *)env->current_instance + delta);
     }
     instance = &env->instances[env->instance_count++];
     memset(instance, 0, sizeof(*instance));
