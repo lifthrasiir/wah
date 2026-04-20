@@ -242,6 +242,7 @@ static void test_br_if_validation() {
             i32.const 10 \
             local.get 0 \
             br_if 0 \
+            drop \
             i32.const 20 \
         end end } ]}";
     assert_ok(wah_parse_module_from_spec(&module, br_if_pass_wasm_spec));
@@ -338,9 +339,7 @@ static void test_br_table_type_consistency() {
                     i32.const 0 \
                     br_table [0, 1] 0 \
                 end \
-                i32.const 1 \
             end \
-            i32.const 2 \
         end } ]}";
     wah_module_t module_valid;
     assert_ok(wah_parse_module_from_spec(&module_valid, br_table_valid_wasm_spec));

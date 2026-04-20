@@ -3848,7 +3848,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 WAH_CHECK(wah_validation_push_type(vctx, frame->block_type.param_types[i]));
             }
 
-            vctx->is_unreachable = false;
+            vctx->is_unreachable = frame->is_unreachable;
             return WAH_OK;
         }
         case WAH_OP_END: {
@@ -3924,6 +3924,10 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             const wah_type_t *br_result_types;
             uint32_t br_stack_height;
             wah_validation_resolve_br_target(vctx, label_idx, &br_result_count, &br_result_types, &br_stack_height);
+
+            if (!vctx->is_unreachable) {
+                WAH_ENSURE(vctx->current_stack_depth >= br_stack_height + br_result_count, WAH_ERROR_VALIDATION_FAILED);
+            }
 
             for (int32_t i = br_result_count - 1; i >= 0; --i) {
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, br_result_types[i]));
