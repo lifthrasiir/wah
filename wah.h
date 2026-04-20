@@ -6038,14 +6038,23 @@ static inline void wah_ref_store_table(wah_exec_context_t *ctx, uint32_t table_i
 void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visitor, void *userdata) {
     if (!visitor) return;
 
-    // 1. Locals in each call frame
+    // 1. Parameters and locals in each call frame
     for (uint32_t d = 0; d < ctx->call_depth; d++) {
         wah_call_frame_t *frame = &ctx->call_stack[d];
         const wah_code_body_t *code = frame->code;
         if (!code) continue;
+        const wah_module_t *fmod = frame->module;
+        const wah_func_type_t *ftype = &fmod->types[fmod->function_type_indices[frame->func_idx]];
+        // 1a. Parameters (slots [locals_offset .. locals_offset + param_count))
+        for (uint32_t i = 0; i < ftype->param_count; i++) {
+            if (WAH_TYPE_IS_REF(ftype->param_types[i])) {
+                visitor(&ctx->value_stack[frame->locals_offset + i], ftype->param_types[i], userdata);
+            }
+        }
+        // 1b. Declared locals (slots [locals_offset + param_count .. + param_count + local_count))
         for (uint32_t i = 0; i < code->local_count; i++) {
             if (WAH_TYPE_IS_REF(code->local_types[i])) {
-                visitor(&ctx->value_stack[frame->locals_offset + i], code->local_types[i], userdata);
+                visitor(&ctx->value_stack[frame->locals_offset + ftype->param_count + i], code->local_types[i], userdata);
             }
         }
     }
