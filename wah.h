@@ -5949,6 +5949,24 @@ void wah_gc_destroy(wah_exec_context_t *ctx) {
     ctx->gc = NULL;
 }
 
+static wah_error_t wah_poll_handler(wah_exec_context_t *ctx) {
+    wah_gc_state_t *gc = ctx->gc;
+    if (!gc) return WAH_OK;
+
+    if (gc->interrupt_pending) {
+        gc->interrupt_pending = false;
+        return WAH_ERROR_TRAP;
+    }
+
+    if (gc->gc_pending) {
+        gc->gc_pending = false;
+        // Placeholder for wah_gc_step() integration (task 8).
+        // For now, just clear the flag so the interpreter can proceed.
+    }
+
+    return WAH_OK;
+}
+
 // Pushes a new call frame. This is an internal helper.
 // local_idx: index into fn_module->code_bodies[] for the function body.
 // result_count: number of return values (stored in frame for RETURN/END).
@@ -6101,7 +6119,18 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 
 //------------------------------------------------------------------------------
 WAH_RUN(POLL) {
+    wah_gc_state_t *gc = ctx->gc;
+    if (gc && (gc->gc_pending || gc->interrupt_pending)) {
+        frame->bytecode_ip = bytecode_ip;
+        ctx->sp = (uint32_t)(sp - ctx->value_stack);
+        WAH_CHECK_GOTO(wah_poll_handler(ctx), cleanup);
+        sp = ctx->value_stack + ctx->sp;
+        frame = &ctx->call_stack[ctx->call_depth - 1];
+        bytecode_ip = frame->bytecode_ip;
+        bytecode_base = frame->code->parsed_code.bytecode;
+    }
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(BLOCK) { // Should not appear in preparsed code

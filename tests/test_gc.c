@@ -164,6 +164,57 @@ int main() {
         wah_free_module(&module);
     }
 
+    // --- POLL handler tests ---
+    printf("Testing POLL fast path (no GC state)...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] i32.const 1 end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        wah_value_t r;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
+        assert_eq_i32(r.i32, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Testing POLL with gc_pending (clears flag)...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] i32.const 2 end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        ctx.gc->gc_pending = true;
+        wah_value_t r;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
+        assert_eq_i32(r.i32, 2);
+        assert_false(ctx.gc->gc_pending);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Testing POLL with interrupt_pending (traps)...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] i32.const 3 end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        ctx.gc->interrupt_pending = true;
+        wah_value_t r;
+        assert_err(wah_call(&ctx, 0, NULL, 0, &r), WAH_ERROR_TRAP);
+        assert_false(ctx.gc->interrupt_pending);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }
