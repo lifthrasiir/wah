@@ -7921,7 +7921,7 @@ WAH_RUN(F64X2_DIV) M128D_BINARY_OP(_mm_div_pd, N128_BINARY_OP(wah_vdivq_f64, V12
             result |= (1 << i); \
         } \
     } \
-    (*sp++).i32 = result; \
+    sp[-1].i32 = result; \
     WAH_NEXT(); \
 }
 
