@@ -222,6 +222,7 @@ typedef struct wah_exec_context_s {
     // Multiple memories support (memories[0] == memory_base, memory_sizes[0] == memory_size)
     uint8_t **memories;      // Array[memory_count] of all memory base pointers
     uint64_t *memory_sizes;  // Array[memory_count] of all memory sizes in bytes
+    uint64_t *memory_max_pages; // Array[memory_count] of max pages (runtime limit, may differ from import decl)
     uint32_t memory_count;   // Total number of instantiated memories
 
     wah_value_t **tables;
@@ -5653,11 +5654,16 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
         if (total_memories > 0) {
             WAH_MALLOC_ARRAY_GOTO(exec_ctx->memories, total_memories, cleanup);
             WAH_MALLOC_ARRAY_GOTO(exec_ctx->memory_sizes, total_memories, cleanup);
+            WAH_MALLOC_ARRAY_GOTO(exec_ctx->memory_max_pages, total_memories, cleanup);
             WAH_MALLOC_ARRAY_GOTO(exec_ctx->memory_is_imported, total_memories, cleanup);
             memset(exec_ctx->memories, 0, sizeof(uint8_t*) * total_memories);
             memset(exec_ctx->memory_sizes, 0, sizeof(uint64_t) * total_memories);
             memset(exec_ctx->memory_is_imported, 0, sizeof(bool) * total_memories);
             exec_ctx->memory_count = total_memories;
+
+            for (uint32_t i = 0; i < total_memories; ++i) {
+                exec_ctx->memory_max_pages[i] = wah_memory_type(module, i)->max_pages;
+            }
 
             // Import memory slots are left zero-initialized; wah_instantiate() fills them in.
             // Only allocate local memories (starting at offset import_memory_count).
@@ -5748,6 +5754,7 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
         free(exec_ctx->memories);
     }
     free(exec_ctx->memory_sizes);
+    free(exec_ctx->memory_max_pages);
     free(exec_ctx->memory_is_imported);
     free(exec_ctx->function_table);
     free(exec_ctx->table_sizes);
@@ -6946,29 +6953,26 @@ WAH_RUN(MEMORY_GROW) {
     uint32_t old_pages = ctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE;
     uint64_t new_pages = (uint64_t)old_pages + pages_to_grow;
 
-    if (new_pages > wah_memory_type(ctx->module, mem_idx)->max_pages) {
-        (*sp++).i32 = -1; // Exceeds max memory
+    if (new_pages > ctx->memory_max_pages[mem_idx] || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
+        (*sp++).i32 = -1;
         WAH_NEXT();
     }
 
     size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
-    WAH_REALLOC_ARRAY_GOTO(ctx->memories[mem_idx], new_memory_size, cleanup);
+    WAH_REALLOC_ARRAY_GOTO(ctx->memories[mem_idx], new_memory_size, grow_oom);
 
-    // Initialize newly allocated memory to zero
     if (new_memory_size > ctx->memory_sizes[mem_idx]) {
         memset(ctx->memories[mem_idx] + ctx->memory_sizes[mem_idx], 0, new_memory_size - ctx->memory_sizes[mem_idx]);
     }
 
-    WAH_ENSURE_GOTO(new_memory_size <= UINT64_MAX, WAH_ERROR_TOO_LARGE, cleanup);
     ctx->memory_sizes[mem_idx] = (uint64_t)new_memory_size;
-    // Keep memory_base/memory_size (fast-path aliases) in sync for memory 0
     if (mem_idx == 0) {
         ctx->memory_base = ctx->memories[0];
         ctx->memory_size = ctx->memory_sizes[0];
     }
     (*sp++).i32 = (int32_t)old_pages;
     WAH_NEXT();
-    WAH_CLEANUP();
+    if (0) { grow_oom: err = WAH_OK; (*sp++).i32 = -1; WAH_NEXT(); }
 }
 
 WAH_RUN(MEMORY_FILL) {
@@ -7065,13 +7069,13 @@ WAH_RUN(MEMORY_GROW_i64) {
     uint64_t old_pages = ctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE;
     uint64_t new_pages = old_pages + (uint64_t)pages_to_grow;
 
-    if (new_pages > wah_memory_type(ctx->module, mem_idx)->max_pages) {
+    if (new_pages > ctx->memory_max_pages[mem_idx] || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
         (*sp++).i64 = -1;
         WAH_NEXT();
     }
 
     size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
-    WAH_REALLOC_ARRAY_GOTO(ctx->memories[mem_idx], new_memory_size, cleanup);
+    WAH_REALLOC_ARRAY_GOTO(ctx->memories[mem_idx], new_memory_size, grow_i64_oom);
 
     if (new_memory_size > ctx->memory_sizes[mem_idx]) {
         memset(ctx->memories[mem_idx] + ctx->memory_sizes[mem_idx], 0, new_memory_size - ctx->memory_sizes[mem_idx]);
@@ -7084,6 +7088,7 @@ WAH_RUN(MEMORY_GROW_i64) {
     }
     (*sp++).i64 = (int64_t)old_pages;
     WAH_NEXT();
+    if (0) { grow_i64_oom: err = WAH_OK; (*sp++).i64 = -1; WAH_NEXT(); }
     WAH_CLEANUP();
 }
 
@@ -9734,6 +9739,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 WAH_ENSURE_GOTO(exp_mt->max_pages != UINT64_MAX, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
                 WAH_ENSURE_GOTO(exp_mt->max_pages <= mi->type.max_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             }
+            ctx->memory_max_pages[i] = exp_mt->max_pages;
             uint64_t min_pages = exp_mt->min_pages;
             uint64_t byte_size = min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
             ctx->memory_is_imported[i] = false;
