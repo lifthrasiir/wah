@@ -9412,6 +9412,7 @@ static wah_error_t wah_eval_const_expr(
 
             // Reference types
             case WAH_OP_REF_NULL:
+                ip += sizeof(uint32_t);
                 ctx->value_stack[ctx->sp++].ref = NULL;
                 break;
             case WAH_OP_REF_FUNC: {
