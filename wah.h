@@ -9259,6 +9259,7 @@ wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64
 
     // Fill in the memory entry
     wah_memory_type_t *mem = &mod->memories[mod->memory_count];
+    mem->addr_type = WAH_TYPE_I32;
     mem->min_pages = min_pages;
     mem->max_pages = max_pages;
 
@@ -9688,6 +9689,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             uint32_t local_table_idx = linked_table_idx - linked->import_table_count;
             wah_table_type_t *exp_tt = &linked->tables[local_table_idx];
             WAH_ENSURE_GOTO(exp_tt->elem_type == ti->type.elem_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            WAH_ENSURE_GOTO(exp_tt->addr_type == ti->type.addr_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             WAH_ENSURE_GOTO(exp_tt->min_elements >= ti->type.min_elements, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             if (ti->type.max_elements != UINT64_MAX) {
                 WAH_ENSURE_GOTO(exp_tt->max_elements != UINT64_MAX, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
@@ -9735,6 +9737,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         if (linked_mem_idx >= linked->import_memory_count) {
             uint32_t local_mem_idx = linked_mem_idx - linked->import_memory_count;
             wah_memory_type_t *exp_mt = &linked->memories[local_mem_idx];
+            WAH_ENSURE_GOTO(exp_mt->addr_type == mi->type.addr_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             WAH_ENSURE_GOTO(exp_mt->min_pages >= mi->type.min_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             if (mi->type.max_pages != UINT64_MAX) {
                 WAH_ENSURE_GOTO(exp_mt->max_pages != UINT64_MAX, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);

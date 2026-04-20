@@ -524,6 +524,7 @@ static int add_table_export(wah_module_t *mod, const char *name, uint32_t min, u
     if (!new_tables) return 0;
     mod->tables = new_tables;
     mod->tables[mod->table_count].elem_type = WAH_TYPE_FUNCREF;
+    mod->tables[mod->table_count].addr_type = WAH_TYPE_I32;
     mod->tables[mod->table_count].min_elements = min;
     mod->tables[mod->table_count].max_elements = max;
 
