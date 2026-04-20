@@ -3911,7 +3911,9 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             wah_validation_resolve_br_target(vctx, label_idx, &br_result_count, &br_result_types, &br_stack_height);
 
             if (!vctx->is_unreachable) {
+                uint32_t block_floor = (vctx->control_sp > 0) ? vctx->control_stack[vctx->control_sp - 1].stack_height : 0;
                 WAH_ENSURE(vctx->current_stack_depth >= br_stack_height + br_result_count, WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(vctx->current_stack_depth >= block_floor + br_result_count, WAH_ERROR_VALIDATION_FAILED);
             }
 
             for (int32_t i = br_result_count - 1; i >= 0; --i) {
@@ -4007,13 +4009,17 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             return err;
         }
 
-        case WAH_OP_RETURN:
-            // Pop the function's result types from the stack
+        case WAH_OP_RETURN: {
+            if (!vctx->is_unreachable) {
+                uint32_t block_floor = (vctx->control_sp > 0) ? vctx->control_stack[vctx->control_sp - 1].stack_height : 0;
+                WAH_ENSURE(vctx->current_stack_depth >= block_floor + vctx->func_type->result_count, WAH_ERROR_VALIDATION_FAILED);
+            }
             for (int32_t j = vctx->func_type->result_count - 1; j >= 0; --j) {
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, vctx->func_type->result_types[j]));
             }
-            vctx->is_unreachable = true; // After return, the current path becomes unreachable
+            vctx->is_unreachable = true;
             return WAH_OK;
+        }
 
         case WAH_OP_REF_NULL: {
             // Read ref type from original bytecode (validation happens before preparsing)
