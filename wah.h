@@ -2417,11 +2417,11 @@ static WAH_ALWAYS_INLINE __m128i wah_i32x4_max_u_sse2(__m128i a, __m128i b) {
 }
 
 static WAH_ALWAYS_INLINE __m128 wah_f32x4_convert_i32x4_u_sse2(__m128i a) {
-    __m128i low31 = _mm_and_si128(a, _mm_set1_epi32(0x7FFFFFFF));
-    __m128 base = _mm_cvtepi32_ps(low31);
-    __m128i hi_bit = _mm_srli_epi32(a, 31);
-    __m128 hi = _mm_mul_ps(_mm_cvtepi32_ps(hi_bit), _mm_set1_ps(2147483648.0f));
-    return _mm_add_ps(base, hi);
+    __m128i lo16 = _mm_and_si128(a, _mm_set1_epi32(0xFFFF));
+    __m128i hi16 = _mm_srli_epi32(a, 16);
+    __m128 lo_f = _mm_cvtepi32_ps(lo16);
+    __m128 hi_f = _mm_cvtepi32_ps(hi16);
+    return _mm_add_ps(lo_f, _mm_mul_ps(hi_f, _mm_set1_ps(65536.0f)));
 }
 
 static WAH_ALWAYS_INLINE __m128i wah_i16x8_narrow_i32x4_u_sse2(__m128i a, __m128i b) {
