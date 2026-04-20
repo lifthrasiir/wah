@@ -117,6 +117,12 @@ typedef struct wah_call_context_s {
 } wah_call_context_t;
 
 // Host function types
+//
+// GC host boundary policy: GC-managed references passed to host functions
+// (via params or accessible through the exec context) are valid only for the
+// duration of the host call. Host code must NOT retain pointers to managed
+// objects after returning. Violating this policy causes undefined behavior
+// when the GC relocates or frees the referenced object.
 typedef void (*wah_func_t)(wah_call_context_t *ctx, void *userdata);
 typedef void (*wah_finalize_t)(void *userdata);
 
@@ -9688,7 +9694,9 @@ static wah_error_t wah_call_host_function_internal(
     call_ctx.result_types = fn->result_types;
     call_ctx.trap_reason = WAH_OK;
 
+    WAH_ASSERT(!exec_ctx->gc || exec_ctx->gc->phase == WAH_GC_PHASE_IDLE);
     fn->func(&call_ctx, fn->userdata);
+    WAH_ASSERT(!exec_ctx->gc || exec_ctx->gc->phase == WAH_GC_PHASE_IDLE);
 
     WAH_ENSURE(call_ctx.trap_reason == WAH_OK, call_ctx.trap_reason);
 
