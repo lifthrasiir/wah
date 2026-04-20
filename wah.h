@@ -1291,6 +1291,8 @@ typedef struct wah_memory_type_s {
 typedef struct {
     uint8_t *bytecode;
     uint32_t bytecode_size;
+    uint8_t *operand_ref_map;
+    uint32_t operand_ref_map_size;
 } wah_parsed_code_t;
 
 // --- WebAssembly Table Structures ---
@@ -1363,6 +1365,7 @@ typedef struct wah_call_frame_s {
     uint32_t result_count;       // Number of return values (used by RETURN/END)
     const struct wah_module_s *module; // The module this function belongs to (for cross-module calls)
     uint32_t globals_offset;     // Offset into ctx->globals for this module's globals (for cross-module calls)
+    uint32_t ref_map_offset;     // Byte offset into parsed_code.operand_ref_map for current POLL point
 } wah_call_frame_t;
 
 // The main context for the entire WebAssembly interpretation.
@@ -4184,6 +4187,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
     wah_error_t err = WAH_OK;
     wah_validation_context_t vctx = {0};
+    uint8_t *ref_map = NULL;
 
     uint32_t count;
     // A code body entry requires at least 3 bytes (body_size, num_locals, END opcode).
@@ -4245,12 +4249,45 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
             .total_locals = func_type->param_count + module->code_bodies[i].local_count,
         };
 
+        ref_map = NULL;
+        uint32_t ref_map_size = 0, ref_map_capacity = 0;
+
+        #define WAH_CAPTURE_REF_MAP() do { \
+            uint32_t depth = vctx.is_unreachable ? 0 : vctx.type_stack.sp; \
+            uint32_t _words = (depth + 15) / 16; \
+            uint32_t _entry_bytes = sizeof(uint16_t) * (1 + _words); \
+            uint32_t needed = ref_map_size + _entry_bytes; \
+            if (needed > ref_map_capacity) { \
+                ref_map_capacity = needed < 64 ? 64 : needed * 2; \
+                uint8_t *tmp = (uint8_t *)realloc(ref_map, ref_map_capacity); \
+                if (!tmp) { free(ref_map); ref_map = NULL; err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; } \
+                ref_map = tmp; \
+            } \
+            wah_write_u16_le(ref_map + ref_map_size, (uint16_t)depth); \
+            memset(ref_map + ref_map_size + sizeof(uint16_t), 0, _words * sizeof(uint16_t)); \
+            for (uint32_t _j = 0; _j < depth; _j++) { \
+                if (WAH_TYPE_IS_REF(vctx.type_stack.data[_j])) { \
+                    uint32_t _byte_off = ref_map_size + sizeof(uint16_t) + (_j / 16) * sizeof(uint16_t); \
+                    uint16_t _bits = wah_read_u16_le(ref_map + _byte_off); \
+                    _bits |= (uint16_t)(1u << (_j % 16)); \
+                    wah_write_u16_le(ref_map + _byte_off, _bits); \
+                } \
+            } \
+            ref_map_size += _entry_bytes; \
+        } while (0)
+
         const uint8_t *code_ptr_validation = module->code_bodies[i].code;
         const uint8_t *validation_end = code_ptr_validation + module->code_bodies[i].code_size;
 
+        bool is_first_validation_instr = true;
         while (code_ptr_validation < validation_end) {
             uint16_t current_opcode_val;
             WAH_CHECK_GOTO(wah_decode_opcode(&code_ptr_validation, validation_end, &current_opcode_val), cleanup);
+
+            if (is_first_validation_instr) {
+                WAH_CAPTURE_REF_MAP();
+                is_first_validation_instr = false;
+            }
 
             if (current_opcode_val == WAH_OP_END) {
                  if (vctx.control_sp == 0) { // End of function
@@ -4268,10 +4305,23 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
                     break;
                 }
             }
+            if (current_opcode_val == WAH_OP_CALL || current_opcode_val == WAH_OP_CALL_INDIRECT) {
+                WAH_CAPTURE_REF_MAP();
+            }
             WAH_CHECK_GOTO(wah_validate_opcode(current_opcode_val, &code_ptr_validation, validation_end, &vctx, &module->code_bodies[i]), cleanup);
+
+            if (current_opcode_val == WAH_OP_LOOP) {
+                WAH_CAPTURE_REF_MAP();
+            }
         }
         WAH_ENSURE_GOTO(vctx.control_sp == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
         // --- End Validation Pass ---
+
+        #undef WAH_CAPTURE_REF_MAP
+
+        module->code_bodies[i].parsed_code.operand_ref_map = ref_map;
+        module->code_bodies[i].parsed_code.operand_ref_map_size = ref_map_size;
+        ref_map = NULL;
 
         module->code_bodies[i].max_stack_depth = vctx.max_stack_depth;
 
@@ -4283,6 +4333,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
     err = WAH_OK; // Ensure err is WAH_OK if everything succeeded
 
 cleanup:
+    free(ref_map);
     if (err != WAH_OK) {
         // Free memory allocated for control frames during validation
         for (int32_t j = vctx.control_sp - 1; j >= 0; --j) {
@@ -5121,7 +5172,11 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
     (void)module; (void)func_idx; // Suppress unused parameter warnings
 
     wah_error_t err = WAH_OK;
+    uint8_t *saved_ref_map = parsed_code->operand_ref_map;
+    uint32_t saved_ref_map_size = parsed_code->operand_ref_map_size;
     *parsed_code = (wah_parsed_code_t){0};
+    parsed_code->operand_ref_map = saved_ref_map;
+    parsed_code->operand_ref_map_size = saved_ref_map_size;
 
     typedef struct { wah_opcode_t opcode; uint32_t target_idx; uint32_t end_target_idx; } wah_control_frame_t;
 
@@ -5133,7 +5188,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
 
     const uint8_t *ptr = code, *end = code + code_size;
 
-    #define WAH_POLL_SIZE sizeof(uint16_t)
+    #define WAH_POLL_SIZE (sizeof(uint16_t) + sizeof(uint32_t))
 
     // --- Pass 1: Find block boundaries and calculate preparsed size ---
     bool is_first_instr = true;
@@ -5315,7 +5370,16 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
     wah_x86_64_features_t features = wah_x86_64_features(); // TODO: cache across multiple calls
     #endif
 
-    #define WAH_EMIT_POLL() do { wah_write_u16_le(write_ptr, WAH_OP_POLL); write_ptr += sizeof(uint16_t); } while (0)
+    uint32_t poll_ref_cursor = 0;
+
+    #define WAH_EMIT_POLL() do { \
+        wah_write_u16_le(write_ptr, WAH_OP_POLL); write_ptr += sizeof(uint16_t); \
+        wah_write_u32_le(write_ptr, poll_ref_cursor); write_ptr += sizeof(uint32_t); \
+        if (parsed_code->operand_ref_map && poll_ref_cursor < parsed_code->operand_ref_map_size) { \
+            uint16_t _cnt = wah_read_u16_le(parsed_code->operand_ref_map + poll_ref_cursor); \
+            poll_ref_cursor += sizeof(uint16_t) * (1 + (_cnt + 15) / 16); \
+        } \
+    } while (0)
 
     is_first_instr = true;
     while (ptr < end) {
@@ -5340,6 +5404,10 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
         }
         if (opcode == WAH_OP_END) {
             if (control_sp > 0) { control_sp--; continue; }
+        }
+
+        if (emit_poll && (opcode == WAH_OP_CALL || opcode == WAH_OP_CALL_INDIRECT)) {
+            WAH_EMIT_POLL();
         }
 
         #ifdef WAH_X86_64
@@ -5601,10 +5669,6 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
             }
         }
 
-        if (emit_poll && (opcode == WAH_OP_CALL || opcode == WAH_OP_CALL_INDIRECT)) {
-            WAH_EMIT_POLL();
-        }
-
         ptr = saved_ptr + (ptr - saved_ptr);
     }
 
@@ -5626,6 +5690,9 @@ static void wah_free_parsed_code(wah_parsed_code_t *parsed_code) {
     free(parsed_code->bytecode);
     parsed_code->bytecode = NULL;
     parsed_code->bytecode_size = 0;
+    free(parsed_code->operand_ref_map);
+    parsed_code->operand_ref_map = NULL;
+    parsed_code->operand_ref_map_size = 0;
 }
 
 static wah_error_t wah_decode_opcode(const uint8_t **ptr, const uint8_t *end, uint16_t *opcode_val) {
@@ -6057,6 +6124,37 @@ void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visito
                 visitor(&ctx->value_stack[frame->locals_offset + ftype->param_count + i], code->local_types[i], userdata);
             }
         }
+
+        // 1c. Operand stack slots (using ref map from POLL points)
+        uint32_t operand_base = frame->locals_offset + ftype->param_count + code->local_count;
+        const uint8_t *oref_map = code->parsed_code.operand_ref_map;
+        uint32_t rm_byte_offset;
+
+        if (d == ctx->call_depth - 1) {
+            rm_byte_offset = frame->ref_map_offset;
+        } else {
+            const uint8_t *ip = frame->bytecode_ip;
+            if (wah_read_u16_le(ip) == WAH_OP_POLL) {
+                rm_byte_offset = wah_read_u32_le(ip + sizeof(uint16_t));
+            } else {
+                oref_map = NULL;
+            }
+        }
+
+        if (oref_map && rm_byte_offset < code->parsed_code.operand_ref_map_size) {
+            uint16_t rm_count = wah_read_u16_le(oref_map + rm_byte_offset);
+            if (d < ctx->call_depth - 1) {
+                uint32_t callee_results = ctx->call_stack[d + 1].result_count;
+                rm_count = rm_count > callee_results ? rm_count - callee_results : 0;
+            }
+            const uint8_t *bits = oref_map + rm_byte_offset + sizeof(uint16_t);
+            for (uint16_t i = 0; i < rm_count; i++) {
+                uint16_t word = wah_read_u16_le(bits + (i / 16) * sizeof(uint16_t));
+                if (word & (1u << (i % 16))) {
+                    visitor(&ctx->value_stack[operand_base + i], WAH_TYPE_FUNCREF, userdata);
+                }
+            }
+        }
     }
 
     // 2. Globals
@@ -6228,6 +6326,7 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, const wah_module_t *f
     frame->func_idx = local_idx;
     frame->result_count = result_count;
     frame->module = fn_module;
+    frame->ref_map_offset = 0;
 
     // Calculate globals_offset for cross-module calls
     if (fn_module == ctx->module) {
@@ -6365,6 +6464,9 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 
 //------------------------------------------------------------------------------
 WAH_RUN(POLL) {
+    frame->ref_map_offset = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+
     wah_gc_state_t *gc = ctx->gc;
     if (gc && (gc->gc_pending || gc->interrupt_pending)) {
         frame->bytecode_ip = bytecode_ip;
