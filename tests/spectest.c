@@ -768,6 +768,13 @@ static int handle_assert_return(const wast_node_t *node, spectest_env_t *env) {
                     fail_check(env, "result %zu did not match expected pattern (got f32:%g)", i, (double)actual.values[i].value.f32);
                 } else if (actual.values[i].type == WAH_TYPE_F64) {
                     fail_check(env, "result %zu did not match expected pattern (got f64:%g)", i, actual.values[i].value.f64);
+                } else if (actual.values[i].type == WAH_TYPE_V128) {
+                    uint8_t vb[16];
+                    memcpy(vb, &actual.values[i].value.v128, 16);
+                    fail_check(env, "result %zu v128 mismatch (shape=%s, bytes=%02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x %02x%02x%02x%02x)",
+                        i, patterns[i].shape,
+                        vb[0],vb[1],vb[2],vb[3], vb[4],vb[5],vb[6],vb[7],
+                        vb[8],vb[9],vb[10],vb[11], vb[12],vb[13],vb[14],vb[15]);
                 } else {
                     fail_check(env, "result %zu did not match expected pattern (type=%d)", i, actual.values[i].type);
                 }

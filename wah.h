@@ -4399,15 +4399,22 @@ static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *
                     module->memories[i].max_pages = UINT64_MAX;
                 }
             } else {
-                uint32_t min32, max32;
-                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &min32));
-                module->memories[i].min_pages = min32;
+                uint64_t min64, max64;
+                WAH_CHECK(wah_decode_uleb128_u64(ptr, section_end, &min64));
+                module->memories[i].min_pages = min64;
                 if (flags & 0x01) {
-                    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &max32));
-                    module->memories[i].max_pages = max32;
+                    WAH_CHECK(wah_decode_uleb128_u64(ptr, section_end, &max64));
+                    module->memories[i].max_pages = max64;
                 } else {
                     module->memories[i].max_pages = UINT64_MAX;
                 }
+            }
+
+            {
+                uint64_t page_limit = (module->memories[i].addr_type == WAH_TYPE_I32) ? 65536ULL : (1ULL << 48);
+                WAH_ENSURE(module->memories[i].min_pages <= page_limit, WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(module->memories[i].max_pages <= page_limit || module->memories[i].max_pages == UINT64_MAX, WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(module->memories[i].min_pages <= module->memories[i].max_pages, WAH_ERROR_VALIDATION_FAILED);
             }
         }
     }
@@ -4601,16 +4608,22 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
                     mi->type.max_pages = UINT64_MAX;
                 }
             } else {
-                uint32_t min32;
-                WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &min32), cleanup);
-                mi->type.min_pages = min32;
+                uint64_t min64;
+                WAH_CHECK_GOTO(wah_decode_uleb128_u64(ptr, section_end, &min64), cleanup);
+                mi->type.min_pages = min64;
                 if (flags & 0x01) {
-                    uint32_t max32;
-                    WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &max32), cleanup);
-                    mi->type.max_pages = max32;
+                    uint64_t max64;
+                    WAH_CHECK_GOTO(wah_decode_uleb128_u64(ptr, section_end, &max64), cleanup);
+                    mi->type.max_pages = max64;
                 } else {
                     mi->type.max_pages = UINT64_MAX;
                 }
+            }
+            {
+                uint64_t page_limit = (mi->type.addr_type == WAH_TYPE_I32) ? 65536ULL : (1ULL << 48);
+                WAH_ENSURE_GOTO(mi->type.min_pages <= page_limit, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                WAH_ENSURE_GOTO(mi->type.max_pages <= page_limit || mi->type.max_pages == UINT64_MAX, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                WAH_ENSURE_GOTO(mi->type.min_pages <= mi->type.max_pages, WAH_ERROR_VALIDATION_FAILED, cleanup);
             }
             import_memory_count++;
         } else if (kind == 3) {
@@ -9673,10 +9686,17 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         // allocated in the primary context, we allocate them on demand.
         if (linked_table_idx >= linked->import_table_count) {
             uint32_t local_table_idx = linked_table_idx - linked->import_table_count;
-            uint32_t min_elements = linked->tables[local_table_idx].min_elements;
+            wah_table_type_t *exp_tt = &linked->tables[local_table_idx];
+            WAH_ENSURE_GOTO(exp_tt->elem_type == ti->type.elem_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            WAH_ENSURE_GOTO(exp_tt->min_elements >= ti->type.min_elements, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            if (ti->type.max_elements != UINT64_MAX) {
+                WAH_ENSURE_GOTO(exp_tt->max_elements != UINT64_MAX, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                WAH_ENSURE_GOTO(exp_tt->max_elements <= ti->type.max_elements, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            }
+            uint32_t min_elements = exp_tt->min_elements;
             ctx->table_is_imported[i] = false;
             ctx->table_sizes[i] = min_elements;
-            ctx->table_max_sizes[i] = linked->tables[local_table_idx].max_elements;
+            ctx->table_max_sizes[i] = exp_tt->max_elements;
             WAH_MALLOC_ARRAY_GOTO(ctx->tables[i], min_elements > 0 ? min_elements : 1, cleanup);
             memset(ctx->tables[i], 0, sizeof(wah_value_t) * min_elements);
         }
@@ -9714,7 +9734,13 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
 
         if (linked_mem_idx >= linked->import_memory_count) {
             uint32_t local_mem_idx = linked_mem_idx - linked->import_memory_count;
-            uint64_t min_pages = linked->memories[local_mem_idx].min_pages;
+            wah_memory_type_t *exp_mt = &linked->memories[local_mem_idx];
+            WAH_ENSURE_GOTO(exp_mt->min_pages >= mi->type.min_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            if (mi->type.max_pages != UINT64_MAX) {
+                WAH_ENSURE_GOTO(exp_mt->max_pages != UINT64_MAX, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                WAH_ENSURE_GOTO(exp_mt->max_pages <= mi->type.max_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            }
+            uint64_t min_pages = exp_mt->min_pages;
             uint64_t byte_size = min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
             ctx->memory_is_imported[i] = false;
             ctx->memory_sizes[i] = byte_size;
