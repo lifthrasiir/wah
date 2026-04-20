@@ -200,6 +200,31 @@ typedef struct wah_module_s {
     bool has_unimplemented;
 } wah_module_t;
 
+// --- GC State ---
+typedef enum {
+    WAH_GC_PHASE_IDLE = 0,
+    WAH_GC_PHASE_MARK,
+    WAH_GC_PHASE_SWEEP,
+} wah_gc_phase_t;
+
+typedef struct wah_gc_object_s {
+    struct wah_gc_object_s *next;
+    uint32_t mark    : 1;
+    uint32_t kind    : 7;
+    uint32_t size    : 24;
+} wah_gc_object_t;
+
+typedef struct wah_gc_state_s {
+    wah_gc_object_t *all_objects;
+    wah_gc_object_t *sweep_cursor;
+    wah_gc_phase_t phase;
+    uint32_t object_count;
+    size_t allocated_bytes;
+    size_t allocation_threshold;
+    bool gc_pending;
+    bool interrupt_pending;
+} wah_gc_state_t;
+
 typedef struct wah_exec_context_s {
     wah_value_t *value_stack;       // A single, large stack for operands and locals
     uint32_t sp;                    // Stack pointer for the value_stack (points to next free slot)
@@ -243,6 +268,9 @@ typedef struct wah_exec_context_s {
     // Runtime dispatch table (global function index space: imports + locals + hosts)
     struct wah_function_s *function_table;
     uint32_t function_table_count;
+
+    // GC heap state (NULL when GC is not enabled)
+    wah_gc_state_t *gc;
 } wah_exec_context_t;
 
 // Convert error code to human-readable string
@@ -326,6 +354,14 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
 // Optional. Ensures that the execution context is fully instantiated.
 // Any `wah_link_*` calls are now invalid. Any `wah_call` call will implicitly call this function.
 wah_error_t wah_instantiate(wah_exec_context_t *ctx);
+
+// --- GC Management ---
+// Enables GC on the execution context. Idempotent.
+wah_error_t wah_gc_start(wah_exec_context_t *ctx);
+// Resets the GC heap: frees all managed objects and resets counters.
+void wah_gc_reset(wah_exec_context_t *ctx);
+// Destroys GC state and frees all managed objects.
+void wah_gc_destroy(wah_exec_context_t *ctx);
 
 wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id, wah_entry_t *out);
 
@@ -5821,7 +5857,55 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
         free(exec_ctx->linked_modules);
     }
 
+    wah_gc_destroy(exec_ctx);
+
     memset(exec_ctx, 0, sizeof(wah_exec_context_t));
+}
+
+#define WAH_GC_DEFAULT_THRESHOLD (256 * 1024)
+
+static void wah_gc_free_all_objects(wah_gc_state_t *gc) {
+    wah_gc_object_t *obj = gc->all_objects;
+    while (obj) {
+        wah_gc_object_t *next = obj->next;
+        free(obj);
+        obj = next;
+    }
+    gc->all_objects = NULL;
+    gc->sweep_cursor = NULL;
+    gc->object_count = 0;
+    gc->allocated_bytes = 0;
+}
+
+wah_error_t wah_gc_start(wah_exec_context_t *ctx) {
+    if (ctx->gc) return WAH_OK;
+    wah_gc_state_t *gc = (wah_gc_state_t *)malloc(sizeof(wah_gc_state_t));
+    if (!gc) return WAH_ERROR_OUT_OF_MEMORY;
+    gc->all_objects = NULL;
+    gc->sweep_cursor = NULL;
+    gc->phase = WAH_GC_PHASE_IDLE;
+    gc->object_count = 0;
+    gc->allocated_bytes = 0;
+    gc->allocation_threshold = WAH_GC_DEFAULT_THRESHOLD;
+    gc->gc_pending = false;
+    gc->interrupt_pending = false;
+    ctx->gc = gc;
+    return WAH_OK;
+}
+
+void wah_gc_reset(wah_exec_context_t *ctx) {
+    if (!ctx->gc) return;
+    wah_gc_free_all_objects(ctx->gc);
+    ctx->gc->phase = WAH_GC_PHASE_IDLE;
+    ctx->gc->gc_pending = false;
+    ctx->gc->interrupt_pending = false;
+}
+
+void wah_gc_destroy(wah_exec_context_t *ctx) {
+    if (!ctx->gc) return;
+    wah_gc_free_all_objects(ctx->gc);
+    free(ctx->gc);
+    ctx->gc = NULL;
 }
 
 // Pushes a new call frame. This is an internal helper.
