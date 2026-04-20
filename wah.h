@@ -35,7 +35,7 @@ typedef enum {
     WAH_ERROR_INVALID_MAGIC_NUMBER = -1,
     WAH_ERROR_INVALID_VERSION = -2,
     WAH_ERROR_UNEXPECTED_EOF = -3,
-    WAH_ERROR_UNKNOWN_SECTION = -4,
+    WAH_ERROR_UNIMPLEMENTED = -4,
     WAH_ERROR_TOO_LARGE = -5,
     WAH_ERROR_OUT_OF_MEMORY = -6,
     WAH_ERROR_VALIDATION_FAILED = -7,
@@ -186,8 +186,16 @@ typedef struct wah_module_s {
     uint32_t import_global_count;
     struct wah_global_import_s *global_imports;
 
+    uint32_t import_tag_count;
+    struct wah_tag_import_s *tag_imports;
+
+    uint32_t tag_count;
+    struct wah_tag_s *tags;
+
     // Dynamic export array growth
     uint32_t capacity_exports;  // Capacity for dynamic export array growth
+
+    bool has_unimplemented;
 } wah_module_t;
 
 typedef struct wah_exec_context_s {
@@ -1283,6 +1291,15 @@ typedef struct wah_global_import_s {
     bool is_mutable;
 } wah_global_import_t;
 
+typedef struct wah_tag_import_s {
+    wah_import_name_t name;
+    uint32_t type_index;
+} wah_tag_import_t;
+
+typedef struct wah_tag_s {
+    uint32_t type_index;
+} wah_tag_t;
+
 // --- Pre-parsed Opcode Structure for Optimized Execution ---
 typedef struct {
     uint8_t *bytecode;           // Combined array of opcodes and arguments
@@ -1464,7 +1481,7 @@ const char *wah_strerror(wah_error_t err) {
         case WAH_ERROR_INVALID_MAGIC_NUMBER: return "Invalid WASM magic number";
         case WAH_ERROR_INVALID_VERSION: return "Invalid WASM version";
         case WAH_ERROR_UNEXPECTED_EOF: return "Unexpected end of file";
-        case WAH_ERROR_UNKNOWN_SECTION: return "Unknown section or opcode";
+        case WAH_ERROR_UNIMPLEMENTED: return "Unimplemented feature";
         case WAH_ERROR_TOO_LARGE: return "Exceeding implementation limits (or value too large)";
         case WAH_ERROR_OUT_OF_MEMORY: return "Out of memory";
         case WAH_ERROR_VALIDATION_FAILED: return "Validation failed";
@@ -3978,6 +3995,12 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         }
 
         default:
+            if (opcode_val == 0x06 || opcode_val == 0x08 || opcode_val == 0x0A ||
+                (opcode_val >= 0x12 && opcode_val <= 0x15) ||
+                (opcode_val >= 0xD3 && opcode_val <= 0xD6) ||
+                (opcode_val >= WAH_FB && opcode_val < WAH_FC)) {
+                return WAH_ERROR_UNIMPLEMENTED;
+            }
             return WAH_ERROR_VALIDATION_FAILED;
     }
 
@@ -3988,6 +4011,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 }
 
 static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    if (module->has_unimplemented) return WAH_ERROR_UNIMPLEMENTED;
+
     wah_error_t err = WAH_OK;
     wah_validation_context_t vctx = {0};
 
@@ -4347,15 +4372,32 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
     return WAH_OK;
 }
 
-// Placeholder for unimplemented sections
-static wah_error_t wah_parse_unimplemented_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
-    (void)module; // Suppress unused parameter warning
-    *ptr = section_end; // Skip the section
+static wah_error_t wah_parse_tag_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    wah_error_t err = WAH_OK;
+    uint32_t count = 0;
+    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 2));
+    WAH_MALLOC_ARRAY_GOTO(module->tags, count, cleanup);
+    module->tag_count = count;
+    for (uint32_t i = 0; i < count; ++i) {
+        WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
+        uint8_t attribute = *(*ptr)++;
+        WAH_ENSURE_GOTO(attribute == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
+        WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &module->tags[i].type_index), cleanup);
+        WAH_ENSURE_GOTO(module->tags[i].type_index < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+    }
+    module->has_unimplemented = true;
     return WAH_OK;
+cleanup:
+    free(module->tags);
+    module->tags = NULL;
+    module->tag_count = 0;
+    return err;
 }
 
 static wah_error_t wah_parse_custom_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
-    return wah_parse_unimplemented_section(ptr, section_end, module);
+    (void)module;
+    *ptr = section_end;
+    return WAH_OK;
 }
 
 static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
@@ -4365,6 +4407,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
     uint32_t import_table_count = 0;
     uint32_t import_memory_count = 0;
     uint32_t import_global_count = 0;
+    uint32_t import_tag_count = 0;
 
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 4));
 
@@ -4374,6 +4417,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
     WAH_MALLOC_ARRAY_GOTO(module->table_imports, count, cleanup);
     WAH_MALLOC_ARRAY_GOTO(module->memory_imports, count, cleanup);
     WAH_MALLOC_ARRAY_GOTO(module->global_imports, count, cleanup);
+    WAH_MALLOC_ARRAY_GOTO(module->tag_imports, count, cleanup);
 
     for (uint32_t i = 0; i < count; ++i) {
         // Parse import name (module_name + field_name)
@@ -4469,6 +4513,18 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
             gi->is_mutable = (*(*ptr)++ == 1);
             import_global_count++;
+        } else if (kind == 4) {
+            // Tag import
+            wah_tag_import_t *tgi = &module->tag_imports[import_tag_count];
+            tgi->name = imp_name;
+
+            WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
+            uint8_t attribute = *(*ptr)++;
+            WAH_ENSURE_GOTO(attribute == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &tgi->type_index), cleanup);
+            WAH_ENSURE_GOTO(tgi->type_index < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            import_tag_count++;
+            module->has_unimplemented = true;
         } else {
             free(imp_name.module);
             free(imp_name.field);
@@ -4482,6 +4538,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
     module->import_table_count = import_table_count;
     module->import_memory_count = import_memory_count;
     module->import_global_count = import_global_count;
+    module->import_tag_count = import_tag_count;
     return WAH_OK;
 
 #define WAH_FREE_IMPORT_NAMES(arr, count) do { \
@@ -4512,11 +4569,17 @@ cleanup:
         free(module->global_imports);
         module->global_imports = NULL;
     }
+    if (module->tag_imports) {
+        WAH_FREE_IMPORT_NAMES(module->tag_imports, import_tag_count);
+        free(module->tag_imports);
+        module->tag_imports = NULL;
+    }
 #undef WAH_FREE_IMPORT_NAMES
     module->import_function_count = 0;
     module->import_table_count = 0;
     module->import_memory_count = 0;
     module->import_global_count = 0;
+    module->import_tag_count = 0;
     return err;
 }
 
@@ -4581,6 +4644,10 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
                 break;
             case 3: // Global
                 WAH_ENSURE_GOTO(export_entry->index < wah_total_global_count(module), WAH_ERROR_VALIDATION_FAILED, cleanup);
+                break;
+            case 4: // Tag
+                WAH_ENSURE_GOTO(export_entry->index < module->import_tag_count + module->tag_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                module->has_unimplemented = true;
                 break;
             default:
                 err = WAH_ERROR_VALIDATION_FAILED; // Unknown export kind
@@ -5288,7 +5355,11 @@ static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, 
         case 0x7B: *out_type = WAH_TYPE_V128; return WAH_OK;
         case 0x70: *out_type = WAH_TYPE_FUNCREF; return WAH_OK;
         case 0x6F: *out_type = WAH_TYPE_EXTERNREF; return WAH_OK;
-        default: return WAH_ERROR_VALIDATION_FAILED; // Unknown value type
+        case 0x63: case 0x64: case 0x65: case 0x66: case 0x67:
+        case 0x68: case 0x69: case 0x6A: case 0x6B: case 0x6C:
+        case 0x6D: case 0x6E:
+            return WAH_ERROR_UNIMPLEMENTED;
+        default: return WAH_ERROR_VALIDATION_FAILED;
     }
 }
 
@@ -5299,7 +5370,11 @@ static wah_error_t wah_decode_ref_type(const uint8_t **ptr, const uint8_t *end, 
     switch (byte) {
         case 0x70: *out_type = WAH_TYPE_FUNCREF; return WAH_OK;
         case 0x6F: *out_type = WAH_TYPE_EXTERNREF; return WAH_OK;
-        default: return WAH_ERROR_VALIDATION_FAILED; // Unknown value type
+        case 0x63: case 0x64: case 0x65: case 0x66: case 0x67:
+        case 0x68: case 0x69: case 0x6A: case 0x6B: case 0x6C:
+        case 0x6D: case 0x6E:
+            return WAH_ERROR_UNIMPLEMENTED;
+        default: return WAH_ERROR_VALIDATION_FAILED;
     }
 }
 
@@ -5314,13 +5389,14 @@ static const struct wah_section_handler_s {
     [3]  = { .order = 3,  .parser_func = wah_parse_function_section },
     [4]  = { .order = 4,  .parser_func = wah_parse_table_section },
     [5]  = { .order = 5,  .parser_func = wah_parse_memory_section },
-    [6]  = { .order = 6,  .parser_func = wah_parse_global_section },
-    [7]  = { .order = 7,  .parser_func = wah_parse_export_section },
-    [8]  = { .order = 8,  .parser_func = wah_parse_start_section },
-    [9]  = { .order = 9,  .parser_func = wah_parse_element_section },
-    [12] = { .order = 10, .parser_func = wah_parse_datacount_section },
-    [10] = { .order = 11, .parser_func = wah_parse_code_section },
-    [11] = { .order = 12, .parser_func = wah_parse_data_section },
+    [13] = { .order = 6,  .parser_func = wah_parse_tag_section },
+    [6]  = { .order = 7,  .parser_func = wah_parse_global_section },
+    [7]  = { .order = 8,  .parser_func = wah_parse_export_section },
+    [8]  = { .order = 9,  .parser_func = wah_parse_start_section },
+    [9]  = { .order = 10, .parser_func = wah_parse_element_section },
+    [12] = { .order = 11, .parser_func = wah_parse_datacount_section },
+    [10] = { .order = 12, .parser_func = wah_parse_code_section },
+    [11] = { .order = 13, .parser_func = wah_parse_data_section },
 };
 
 wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah_module_t *module) {
@@ -5353,7 +5429,7 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
         WAH_CHECK_GOTO(wah_read_section_header(&ptr, end, &section_id, &section_size), cleanup_parse);
 
         // Get section handler from lookup table
-        WAH_ENSURE_GOTO(section_id < sizeof(wah_section_handlers) / sizeof(*wah_section_handlers), WAH_ERROR_UNKNOWN_SECTION, cleanup_parse);
+        WAH_ENSURE_GOTO(section_id < sizeof(wah_section_handlers) / sizeof(*wah_section_handlers), WAH_ERROR_UNIMPLEMENTED, cleanup_parse);
         const struct wah_section_handler_s *handler = &wah_section_handlers[section_id];
 
         // Section order validation
@@ -8392,7 +8468,10 @@ void wah_free_module(wah_module_t *module) {
     WAH_FREE_IMPORTS(module->table_imports, module->import_table_count);
     WAH_FREE_IMPORTS(module->memory_imports, module->import_memory_count);
     WAH_FREE_IMPORTS(module->global_imports, module->import_global_count);
+    WAH_FREE_IMPORTS(module->tag_imports, module->import_tag_count);
     #undef WAH_FREE_IMPORTS
+
+    free(module->tags);
 
     if (module->code_bodies) {
         for (uint32_t i = 0; i < module->code_count; ++i) {

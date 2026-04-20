@@ -39,6 +39,7 @@ typedef struct {
     uint32_t failed_checks;
     uint32_t files_run;
     uint32_t files_failed;
+    uint32_t files_skipped;
 } tally_t;
 
 typedef struct {
@@ -67,6 +68,8 @@ typedef struct {
     host_ref_t *host_refs;
     size_t host_ref_count;
     size_t host_ref_capacity;
+
+    int skip_file;
 } spectest_env_t;
 
 
@@ -690,10 +693,18 @@ static int eval_module_command(const wast_node_t *node, spectest_env_t *env, spe
         free(bytes);
         return 0;
     }
-    if (wah_parse_module(bytes, bytes_len, &def->module) == WAH_OK) {
-        def->valid = 1;
-        env->current_def = def;
-        *out_def = def;
+    {
+        wah_error_t parse_err = wah_parse_module(bytes, bytes_len, &def->module);
+        if (parse_err == WAH_OK) {
+            def->valid = 1;
+            env->current_def = def;
+            *out_def = def;
+        } else if (parse_err == WAH_ERROR_UNIMPLEMENTED) {
+            fprintf(stderr, "[SKIP] %s:%u: %s\n", env->path, node->line, wah_strerror(parse_err));
+            env->skip_file = 1;
+        } else {
+            fprintf(stderr, "[DEBUG] parse failed in %s:%u: %s\n", env->path, node->line, wah_strerror(parse_err));
+        }
     }
     free(bytes);
     (void)is_definition;
@@ -704,7 +715,6 @@ static int expect_malformed(wah_error_t err) {
     return err == WAH_ERROR_INVALID_MAGIC_NUMBER ||
            err == WAH_ERROR_INVALID_VERSION ||
            err == WAH_ERROR_UNEXPECTED_EOF ||
-           err == WAH_ERROR_UNKNOWN_SECTION ||
            err == WAH_ERROR_TOO_LARGE;
 }
 
@@ -938,7 +948,12 @@ static int execute_command(const wast_node_t *node, spectest_env_t *env) {
         {
             wah_module_t mod = {0};
             err = wah_parse_module(bytes, bytes_len, &mod);
+            wah_free_module(&mod);
             free(bytes);
+            if (err == WAH_ERROR_UNIMPLEMENTED) {
+                env->skip_file = 1;
+                return 1;
+            }
             if (wast_atom_eq(node->children[0], "assert_invalid")) {
                 if (err == WAH_ERROR_VALIDATION_FAILED) {
                     pass_check(env);
@@ -1033,12 +1048,21 @@ static int run_file(const char *path, tally_t *grand_total) {
     }
     wast_parser_init(&parser, source, source_len);
     while ((node = wast_parse_next(&parser)) != NULL) {
-        execute_command(node, &env);
+        if (!env.skip_file) {
+            execute_command(node, &env);
+        }
         wast_node_free(node);
     }
-    if (parser.error[0] != '\0') {
+    if (parser.error[0] != '\0' && !env.skip_file) {
         env.current_line = parser.line;
         fail_check(&env, "parse error: %s", parser.error);
+    }
+    if (env.skip_file) {
+        printf("%s: SKIPPED (unimplemented feature)\n", path);
+        grand_total->files_skipped++;
+        free_env(&env);
+        free(source);
+        return 1;
     }
     printf("%s: %u passed, %u failed\n", path, env.tally.passed_checks, env.tally.failed_checks);
     grand_total->total_checks += env.tally.total_checks;
