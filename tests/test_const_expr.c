@@ -70,7 +70,7 @@ void test_global_get(void) {
         types {[ fn [] [i32] ]} \
         funcs {[ 0 ]} \
         globals {[ \
-            i32 mut i32.const 100 end, \
+            i32 immut i32.const 100 end, \
             i32 mut global.get 0 end, \
         ]} \
         code {[ {[] global.get 1 end} ]}";
@@ -102,8 +102,8 @@ void test_complex_const_expr(void) {
         types {[ fn [] [i32] ]} \
         funcs {[ 0 ]} \
         globals {[ \
-            i32 mut i32.const 10 end, \
-            i32 mut i32.const 32 end, \
+            i32 immut i32.const 10 end, \
+            i32 immut i32.const 32 end, \
             i32 mut global.get 0 global.get 1 i32.add end, \
         ]} \
         code {[ {[] global.get 2 end} ]}";

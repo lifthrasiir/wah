@@ -47,6 +47,7 @@ typedef enum {
     WAH_ERROR_BAD_SPEC = -13,
     WAH_ERROR_IMPORT_NOT_FOUND = -14,
     WAH_ERROR_MALFORMED_UTF8 = -15,
+    WAH_ERROR_MALFORMED = -16,
     WAH_OK_BUT_MULTI_RETURN = 1,
 } wah_error_t;
 
@@ -1201,10 +1202,15 @@ typedef struct wah_table_type_s {
     uint64_t max_elements; // UINT64_MAX if no maximum
 } wah_table_type_t;
 
+typedef struct {
+    uint8_t *bytecode;
+    uint32_t bytecode_size;
+} wah_parsed_code_t;
+
 typedef struct wah_data_segment_s {
     uint32_t flags;
     uint32_t memory_idx; // Only for active segments (flags & 0x02)
-    uint64_t offset;     // Result of the offset_expr (i32.const X end or i64.const X end)
+    wah_parsed_code_t offset_expr; // Preparsed offset expression for active segments
     uint32_t data_len;
     const uint8_t *data; // Pointer to the raw data bytes within the WASM binary
 } wah_data_segment_t;
@@ -1314,12 +1320,6 @@ typedef struct wah_tag_import_s {
 typedef struct wah_tag_s {
     uint32_t type_index;
 } wah_tag_t;
-
-// --- Pre-parsed Opcode Structure for Optimized Execution ---
-typedef struct {
-    uint8_t *bytecode;           // Combined array of opcodes and arguments
-    uint32_t bytecode_size;      // Total size of the bytecode array
-} wah_parsed_code_t;
 
 // --- Code Body Structure ---
 typedef struct wah_code_body_s {
@@ -1507,6 +1507,7 @@ const char *wah_strerror(wah_error_t err) {
         case WAH_ERROR_MISUSE: return "API misused: invalid arguments";
         case WAH_ERROR_BAD_SPEC: return "Invalid DSL spec";
         case WAH_ERROR_MALFORMED_UTF8: return "Malformed UTF-8 encoding";
+        case WAH_ERROR_MALFORMED: return "Malformed binary encoding";
         case WAH_OK_BUT_MULTI_RETURN: return "Function succeeded but returned multiple values (only first value available)";
         default: return "Unknown error";
     }
@@ -4308,6 +4309,7 @@ static wah_error_t wah_validate_const_expr(
                 WAH_CHECK(wah_decode_uleb128(ptr, section_end, &global_idx));
                 WAH_ENSURE(global_idx < max_global_idx, WAH_ERROR_VALIDATION_FAILED);
                 WAH_ENSURE(global_idx < wah_total_global_count(module), WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(!wah_global_is_mutable(module, global_idx), WAH_ERROR_VALIDATION_FAILED);
                 CONST_PUSH(wah_global_type(module, global_idx));
                 break;
             }
@@ -4346,7 +4348,9 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
 
         // Mutability
         WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
-        module->globals[i].is_mutable = (*(*ptr)++ == 1);
+        uint8_t mut_byte = *(*ptr)++;
+        WAH_ENSURE(mut_byte <= 1, WAH_ERROR_MALFORMED);
+        module->globals[i].is_mutable = (mut_byte == 1);
 
         // Init Expr - store start position for validation and preparsing
         const uint8_t *expr_start = *ptr;
@@ -4626,7 +4630,9 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
 
             WAH_CHECK_GOTO(wah_decode_val_type(ptr, section_end, &gi->type), cleanup);
             WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
-            gi->is_mutable = (*(*ptr)++ == 1);
+            uint8_t mut_byte = *(*ptr)++;
+            WAH_ENSURE_GOTO(mut_byte <= 1, WAH_ERROR_MALFORMED, cleanup);
+            gi->is_mutable = (mut_byte == 1);
             import_global_count++;
         } else if (kind == 4) {
             // Tag import
@@ -4954,7 +4960,7 @@ static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *se
         module->data_segment_count = 0; // Doubles as how many entries have been initialized (for cleanup)
         for (uint32_t i = 0; i < count; ++i) {
             wah_data_segment_t *segment = &module->data_segments[i];
-            segment->data = NULL; // Initialize to NULL for safe cleanup
+            *segment = (wah_data_segment_t){0};
             ++module->data_segment_count;
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->flags));
@@ -4974,23 +4980,10 @@ static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *se
                 WAH_ENSURE(segment->memory_idx < wah_total_memory_count(module), WAH_ERROR_VALIDATION_FAILED);
                 wah_type_t mem_addr_type = wah_memory_type(module, segment->memory_idx)->addr_type;
 
-                WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
-                wah_opcode_t opcode = (wah_opcode_t)*(*ptr)++;
-
-                if (opcode == WAH_OP_I32_CONST && mem_addr_type == WAH_TYPE_I32) {
-                    int32_t offset_val;
-                    WAH_CHECK(wah_decode_sleb128_32(ptr, section_end, &offset_val));
-                    segment->offset = (uint32_t)offset_val;
-                } else if (opcode == WAH_OP_I64_CONST && mem_addr_type == WAH_TYPE_I64) {
-                    int64_t offset_val;
-                    WAH_CHECK(wah_decode_sleb128_64(ptr, section_end, &offset_val));
-                    segment->offset = (uint64_t)offset_val;
-                } else {
-                    return WAH_ERROR_VALIDATION_FAILED;
-                }
-
-                WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
-                WAH_ENSURE(*(*ptr)++ == WAH_OP_END, WAH_ERROR_VALIDATION_FAILED);
+                const uint8_t *offset_start = *ptr;
+                WAH_CHECK(wah_validate_const_expr(ptr, section_end, mem_addr_type, module, wah_total_global_count(module)));
+                uint32_t offset_expr_size = (uint32_t)(*ptr - offset_start);
+                WAH_CHECK(wah_preparse_code(module, 0, offset_start, offset_expr_size, &segment->offset_expr));
             }
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->data_len));
@@ -8822,6 +8815,7 @@ void wah_free_module(wah_module_t *module) {
     if (module->data_segments) {
         for (uint32_t i = 0; i < module->data_segment_count; ++i) {
             free((void *)module->data_segments[i].data);
+            wah_free_parsed_code(&module->data_segments[i].offset_expr);
         }
         free(module->data_segments);
     }
@@ -9870,8 +9864,16 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         const wah_data_segment_t *segment = &module->data_segments[i];
         if (segment->flags == 0x00 || segment->flags == 0x02) { // Active segments
             WAH_ENSURE_GOTO(segment->memory_idx < ctx->memory_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-            WAH_ENSURE_GOTO((uint64_t)segment->offset + segment->data_len <= ctx->memory_sizes[segment->memory_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-            memcpy(ctx->memories[segment->memory_idx] + segment->offset, segment->data, segment->data_len);
+            wah_value_t offset_val;
+            WAH_CHECK_GOTO(wah_eval_const_expr(ctx, segment->offset_expr.bytecode, segment->offset_expr.bytecode_size, &offset_val), cleanup);
+            uint64_t offset;
+            if (wah_memory_type(module, segment->memory_idx)->addr_type == WAH_TYPE_I64) {
+                offset = (uint64_t)offset_val.i64;
+            } else {
+                offset = (uint32_t)offset_val.i32;
+            }
+            WAH_ENSURE_GOTO(offset + segment->data_len <= ctx->memory_sizes[segment->memory_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+            memcpy(ctx->memories[segment->memory_idx] + offset, segment->data, segment->data_len);
         }
     }
 

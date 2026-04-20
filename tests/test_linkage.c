@@ -185,7 +185,7 @@ int main() {
             types {[ fn [] [i32] ]} \
             funcs {[ 0 ]} \
             globals {[ \
-                i32 mut i32.const 42 end, \
+                i32 immut i32.const 42 end, \
                 i32 mut global.get 0 end \
             ]} \
             exports {[ {'getGlobal1'} fn# 0 ]} \

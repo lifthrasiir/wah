@@ -612,7 +612,6 @@ void test_memory64_data_segment() {
 
     assert_ok(wah_parse_module_from_spec(&module, spec));
     assert_eq_u32(module.data_segment_count, 1);
-    assert_eq_u32(module.data_segments[0].offset, 0);
 
     assert_ok(wah_exec_context_create(&ctx, &module));
     assert_ok(wah_instantiate(&ctx));
