@@ -1852,6 +1852,15 @@ static const union { uint64_t i; double f; } WAH_CANONICAL_NAN64 = { .i = 0x7ff8
 static inline float wah_canonicalize_f32(float val) { return val == val ? val : WAH_CANONICAL_NAN32.f; }
 static inline double wah_canonicalize_f64(double val) { return val == val ? val : WAH_CANONICAL_NAN64.f; }
 
+#ifdef WAH_X86_64
+// Some libms, notably MSVCRT, don't have correctly rounding sqrt[f] implementations!!
+static inline float wah_sqrtf(float v) { return _mm_cvtss_f32(_mm_sqrt_ss(_mm_set_ss(v))); }
+static inline double wah_sqrt(double v) { double r; _mm_store_sd(&r, _mm_sqrt_sd(_mm_set_sd(v), _mm_set_sd(v))); return r; }
+#else
+static inline float wah_sqrtf(float v) { return sqrtf(v); }
+static inline double wah_sqrt(double v) { return sqrt(v); }
+#endif
+
 // C fmin/fmax don't match Wasm semantics for signed zeros:
 // Wasm requires min(+0,-0)=-0 and max(+0,-0)=+0, but C leaves this unspecified.
 // When both operands compare equal, bitwise OR of sign bits picks -0 (for min)
@@ -6643,7 +6652,7 @@ WAH_RUN(END) { // End of function
     WAH_RUN(F##N##_FLOOR) UNOP_F_FN(N, floor##_F) \
     WAH_RUN(F##N##_TRUNC) UNOP_F_FN(N, trunc##_F) \
     WAH_RUN(F##N##_NEAREST) UNOP_F_FN(N, wah_nearest_f##N) \
-    WAH_RUN(F##N##_SQRT) UNOP_F_FN(N, sqrt##_F) \
+    WAH_RUN(F##N##_SQRT) UNOP_F_FN(N, wah_sqrt##_F) \
     WAH_RUN(F##N##_ADD) BINOP_F(N,+) \
     WAH_RUN(F##N##_SUB) BINOP_F(N,-) \
     WAH_RUN(F##N##_MUL) BINOP_F(N,*) \
