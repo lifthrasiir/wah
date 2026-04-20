@@ -2467,11 +2467,11 @@ static WAH_ALWAYS_INLINE __m128i wah_i8x16_shl_sse2(__m128i a, int32_t count) {
     return _mm_packus_epi16(lo, hi);
 }
 static WAH_ALWAYS_INLINE __m128i wah_i8x16_shr_s_sse2(__m128i a, int32_t count) {
-    count &= 7;  // Mask to 0-7
+    count &= 7;
     if (count == 0) return a;
-    __m128i zero = _mm_setzero_si128();
-    __m128i a_lo = _mm_unpacklo_epi8(a, zero);
-    __m128i a_hi = _mm_unpackhi_epi8(a, zero);
+    __m128i sign = _mm_cmpgt_epi8(_mm_setzero_si128(), a);
+    __m128i a_lo = _mm_unpacklo_epi8(a, sign);
+    __m128i a_hi = _mm_unpackhi_epi8(a, sign);
     __m128i lo = _mm_srai_epi16(a_lo, count);
     __m128i hi = _mm_srai_epi16(a_hi, count);
     return _mm_packs_epi16(lo, hi);
