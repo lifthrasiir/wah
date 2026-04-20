@@ -46,6 +46,7 @@ typedef enum {
     WAH_ERROR_MISUSE = -12,
     WAH_ERROR_BAD_SPEC = -13,
     WAH_ERROR_IMPORT_NOT_FOUND = -14,
+    WAH_ERROR_MALFORMED_UTF8 = -15,
     WAH_OK_BUT_MULTI_RETURN = 1,
 } wah_error_t;
 
@@ -1504,6 +1505,7 @@ const char *wah_strerror(wah_error_t err) {
         case WAH_ERROR_NOT_FOUND: return "Item not found";
         case WAH_ERROR_MISUSE: return "API misused: invalid arguments";
         case WAH_ERROR_BAD_SPEC: return "Invalid DSL spec";
+        case WAH_ERROR_MALFORMED_UTF8: return "Malformed UTF-8 encoding";
         case WAH_OK_BUT_MULTI_RETURN: return "Function succeeded but returned multiple values (only first value available)";
         default: return "Unknown error";
     }
@@ -1675,7 +1677,7 @@ static inline bool wah_is_valid_utf8(const char *s, size_t len) {
             continue;
         }
         if ((byte & 0xF8) == 0xF0) { // 4-byte sequence (11110xxx 10xxxxxx 10xxxxxx 10xxxxxx)
-            if (i + 3 >= len || (bytes[i+1] & 0xC0) != 0x80 || (bytes[i+2] & 0xC0) != 0x80 || (bytes[i+3] & 0xC0) != 0x80 ||
+            if (byte > 0xF4 || i + 3 >= len || (bytes[i+1] & 0xC0) != 0x80 || (bytes[i+2] & 0xC0) != 0x80 || (bytes[i+3] & 0xC0) != 0x80 ||
                 (byte == 0xF0 && bytes[i+1] < 0x90) || // Overlong encoding
                 (byte == 0xF4 && bytes[i+1] >= 0x90)) return false; // Codepoint > 0x10FFFF
             i += 4;
@@ -4483,6 +4485,10 @@ cleanup:
 
 static wah_error_t wah_parse_custom_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     (void)module;
+    uint32_t name_len;
+    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &name_len));
+    WAH_ENSURE(*ptr + name_len <= section_end, WAH_ERROR_UNEXPECTED_EOF);
+    WAH_ENSURE(wah_is_valid_utf8((const char *)*ptr, name_len), WAH_ERROR_MALFORMED_UTF8);
     *ptr = section_end;
     return WAH_OK;
 }
@@ -4512,6 +4518,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
         uint32_t module_name_len;
         WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &module_name_len), cleanup);
         WAH_ENSURE_GOTO(*ptr + module_name_len <= section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
+        WAH_ENSURE_GOTO(wah_is_valid_utf8((const char *)*ptr, module_name_len), WAH_ERROR_MALFORMED_UTF8, cleanup);
         WAH_MALLOC_ARRAY_GOTO(imp_name.module, module_name_len + 1, cleanup);
         memcpy(imp_name.module, *ptr, module_name_len);
         imp_name.module[module_name_len] = '\0';
@@ -4521,6 +4528,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
         uint32_t field_name_len;
         WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &field_name_len), cleanup);
         WAH_ENSURE_GOTO(*ptr + field_name_len <= section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
+        WAH_ENSURE_GOTO(wah_is_valid_utf8((const char *)*ptr, field_name_len), WAH_ERROR_MALFORMED_UTF8, cleanup);
         WAH_MALLOC_ARRAY_GOTO(imp_name.field, field_name_len + 1, cleanup);
         memcpy(imp_name.field, *ptr, field_name_len);
         imp_name.field[field_name_len] = '\0';
@@ -4712,7 +4720,7 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
         memcpy((void*)export_entry->name, *ptr, name_len);
         ((char*)export_entry->name)[name_len] = '\0';
 
-        WAH_ENSURE_GOTO(wah_is_valid_utf8(export_entry->name, export_entry->name_len), WAH_ERROR_VALIDATION_FAILED, cleanup);
+        WAH_ENSURE_GOTO(wah_is_valid_utf8(export_entry->name, export_entry->name_len), WAH_ERROR_MALFORMED_UTF8, cleanup);
 
         // Check for duplicate export names
         for (uint32_t j = 0; j < i; ++j) {

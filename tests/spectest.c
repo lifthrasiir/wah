@@ -715,7 +715,8 @@ static int expect_malformed(wah_error_t err) {
     return err == WAH_ERROR_INVALID_MAGIC_NUMBER ||
            err == WAH_ERROR_INVALID_VERSION ||
            err == WAH_ERROR_UNEXPECTED_EOF ||
-           err == WAH_ERROR_TOO_LARGE;
+           err == WAH_ERROR_TOO_LARGE ||
+           err == WAH_ERROR_MALFORMED_UTF8;
 }
 
 static int expect_unlinkable(wah_error_t err) {

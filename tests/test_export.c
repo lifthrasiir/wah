@@ -135,7 +135,7 @@ void test_non_utf8_export_name() {
         exports {[ {'bad' %'ff' 'name'} fn# 0 ]} \
         code {[ {[] local.get 0 local.get 1 i32.add end } ]}";
     wah_module_t module;
-    assert_err(wah_parse_module_from_spec(&module, module_spec_non_utf8), WAH_ERROR_VALIDATION_FAILED);
+    assert_err(wah_parse_module_from_spec(&module, module_spec_non_utf8), WAH_ERROR_MALFORMED_UTF8);
     wah_free_module(&module);
 }
 
