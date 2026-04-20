@@ -9498,21 +9498,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     uint32_t import_count = module->import_function_count;
     uint32_t ig_count = module->import_global_count;
 
-    // Initialize primary module's local globals (at offset import_global_count)
-    for (uint32_t i = 0; i < module->global_count; ++i) {
-        uint32_t slot = ig_count + i;
-        WAH_CHECK_GOTO(wah_eval_const_expr(ctx,
-                                           module->globals[i].init_expr.bytecode,
-                                           module->globals[i].init_expr.bytecode_size,
-                                           &ctx->globals[slot]), cleanup);
-        if (module->globals[i].type == WAH_TYPE_FUNCREF && ctx->globals[slot].ref != NULL) {
-            uint32_t fidx = ctx->globals[slot].prefuncref.func_idx;
-            WAH_ENSURE_GOTO(fidx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-            ctx->globals[slot].ref = &ctx->function_table[fidx];
-        }
-    }
-
-    // Allocate and initialize globals for linked modules
+    // Allocate and initialize globals for linked modules (must happen before local globals
+    // and global import resolution, since imports may reference linked module globals)
     {
         uint32_t total_globals = wah_total_global_count(module);
         for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
@@ -9635,6 +9622,21 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         WAH_ENSURE_GOTO(linked_global_idx >= linked->import_global_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
         uint32_t linked_local_global_idx = linked_global_idx - linked->import_global_count;
         ctx->globals[i] = ctx->globals[linked_globals_offset + linked_local_global_idx];
+    }
+
+    // Initialize primary module's local globals (at offset import_global_count)
+    // Must happen after global import resolution so global.get in init exprs can see imported values
+    for (uint32_t i = 0; i < module->global_count; ++i) {
+        uint32_t slot = ig_count + i;
+        WAH_CHECK_GOTO(wah_eval_const_expr(ctx,
+                                           module->globals[i].init_expr.bytecode,
+                                           module->globals[i].init_expr.bytecode_size,
+                                           &ctx->globals[slot]), cleanup);
+        if (module->globals[i].type == WAH_TYPE_FUNCREF && ctx->globals[slot].ref != NULL) {
+            uint32_t fidx = ctx->globals[slot].prefuncref.func_idx;
+            WAH_ENSURE_GOTO(fidx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            ctx->globals[slot].ref = &ctx->function_table[fidx];
+        }
     }
 
     // Resolve table imports from linked modules
