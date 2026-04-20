@@ -6157,13 +6157,26 @@ void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visito
         }
     }
 
-    // 2. Globals
+    // 2. Globals (primary module + linked modules)
     const wah_module_t *module = ctx->module;
-    uint32_t total_globals = wah_total_global_count(module);
-    for (uint32_t i = 0; i < total_globals; i++) {
+    uint32_t primary_globals = wah_total_global_count(module);
+    for (uint32_t i = 0; i < primary_globals; i++) {
         wah_type_t gt = wah_global_type(module, i);
         if (WAH_TYPE_IS_REF(gt)) {
             visitor(&ctx->globals[i], gt, userdata);
+        }
+    }
+    {
+        uint32_t g_offset = primary_globals;
+        for (uint32_t m = 0; m < ctx->linked_module_count; m++) {
+            const wah_module_t *linked = ctx->linked_modules[m].module;
+            for (uint32_t k = 0; k < linked->global_count; k++) {
+                wah_type_t gt = linked->globals[k].type;
+                if (WAH_TYPE_IS_REF(gt)) {
+                    visitor(&ctx->globals[g_offset + k], gt, userdata);
+                }
+            }
+            g_offset += linked->global_count;
         }
     }
 
