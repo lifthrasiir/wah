@@ -378,6 +378,78 @@ int main() {
         wah_free_module(&module);
     }
 
+    // --- GC stepping tests ---
+    printf("Testing GC step sweeps all unreachable objects...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 16);
+        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 32);
+        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 64);
+        assert_eq_u32(ctx.gc->object_count, 3);
+        wah_gc_step(&ctx);
+        assert_eq_u32(ctx.gc->object_count, 0);
+        assert_true(ctx.gc->allocated_bytes == 0);
+        assert_true(ctx.gc->phase == WAH_GC_PHASE_IDLE);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Testing GC step on empty heap is no-op...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        wah_gc_step(&ctx);
+        assert_eq_u32(ctx.gc->object_count, 0);
+        assert_true(ctx.gc->phase == WAH_GC_PHASE_IDLE);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Testing GC step without GC state is no-op...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        wah_gc_step(&ctx);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Testing GC step via poll handler...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] i32.const 42 end } ]}";
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 16);
+        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 32);
+        ctx.gc->gc_pending = true;
+        wah_value_t r;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
+        assert_eq_i32(r.i32, 42);
+        assert_eq_u32(ctx.gc->object_count, 0);
+        assert_false(ctx.gc->gc_pending);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }

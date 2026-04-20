@@ -367,6 +367,8 @@ wah_error_t wah_gc_start(wah_exec_context_t *ctx);
 void wah_gc_reset(wah_exec_context_t *ctx);
 // Destroys GC state and frees all managed objects.
 void wah_gc_destroy(wah_exec_context_t *ctx);
+// Runs one GC cycle (mark + sweep). Currently stop-the-world.
+void wah_gc_step(wah_exec_context_t *ctx);
 // Allocates a GC-managed object. Returns pointer to the payload (after the header).
 wah_gc_object_t *wah_gc_alloc(wah_exec_context_t *ctx, wah_gc_object_kind_t kind, uint32_t payload_size);
 // Returns the object header from a payload pointer.
@@ -6037,6 +6039,72 @@ void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visito
     }
 }
 
+static void wah_gc_mark_visitor(wah_value_t *slot, wah_type_t type, void *userdata) {
+    (void)type; (void)userdata; (void)slot;
+    // Future: if slot->ref points to a GC-managed object, mark it.
+    // Currently no GC-managed types exist, so this is a no-op.
+}
+
+static void wah_gc_step_mark(wah_exec_context_t *ctx) {
+    wah_gc_state_t *gc = ctx->gc;
+
+    // Clear all marks
+    for (wah_gc_object_t *obj = gc->all_objects; obj; obj = obj->next) {
+        obj->mark = 0;
+    }
+
+    // Mark from roots
+    wah_gc_enumerate_roots(ctx, wah_gc_mark_visitor, NULL);
+
+    gc->phase = WAH_GC_PHASE_SWEEP;
+    gc->sweep_cursor = NULL;
+}
+
+static void wah_gc_step_sweep(wah_gc_state_t *gc) {
+    wah_gc_object_t **prev = &gc->all_objects;
+    wah_gc_object_t *obj = *prev;
+    while (obj) {
+        if (!obj->mark) {
+            *prev = obj->next;
+            size_t total = sizeof(wah_gc_object_t) + obj->size;
+            gc->allocated_bytes -= total;
+            gc->object_count--;
+            wah_gc_object_t *dead = obj;
+            obj = obj->next;
+            free(dead);
+        } else {
+            prev = &obj->next;
+            obj = obj->next;
+        }
+    }
+
+    gc->phase = WAH_GC_PHASE_IDLE;
+    gc->allocation_threshold = gc->allocated_bytes * 2;
+    if (gc->allocation_threshold < WAH_GC_DEFAULT_THRESHOLD) {
+        gc->allocation_threshold = WAH_GC_DEFAULT_THRESHOLD;
+    }
+}
+
+void wah_gc_step(wah_exec_context_t *ctx) {
+    wah_gc_state_t *gc = ctx->gc;
+    if (!gc) return;
+
+    switch (gc->phase) {
+        case WAH_GC_PHASE_IDLE:
+            gc->phase = WAH_GC_PHASE_MARK;
+            wah_gc_step_mark(ctx);
+            wah_gc_step_sweep(gc);
+            break;
+        case WAH_GC_PHASE_MARK:
+            wah_gc_step_mark(ctx);
+            wah_gc_step_sweep(gc);
+            break;
+        case WAH_GC_PHASE_SWEEP:
+            wah_gc_step_sweep(gc);
+            break;
+    }
+}
+
 static wah_error_t wah_poll_handler(wah_exec_context_t *ctx) {
     wah_gc_state_t *gc = ctx->gc;
     if (!gc) return WAH_OK;
@@ -6048,8 +6116,7 @@ static wah_error_t wah_poll_handler(wah_exec_context_t *ctx) {
 
     if (gc->gc_pending) {
         gc->gc_pending = false;
-        // Placeholder for wah_gc_step() integration (task 8).
-        // For now, just clear the flag so the interpreter can proceed.
+        wah_gc_step(ctx);
     }
 
     return WAH_OK;
