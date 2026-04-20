@@ -3789,6 +3789,9 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                     case -2: result_type = WAH_TYPE_I64; break;
                     case -3: result_type = WAH_TYPE_F32; break;
                     case -4: result_type = WAH_TYPE_F64; break;
+                    case -5: result_type = WAH_TYPE_V128; break;
+                    case -16: result_type = WAH_TYPE_FUNCREF; break;
+                    case -17: result_type = WAH_TYPE_EXTERNREF; break;
                     case -0x40: break; // empty
                     default: return WAH_ERROR_VALIDATION_FAILED;
                 }
