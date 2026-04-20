@@ -2148,7 +2148,10 @@ static WAH_ALWAYS_INLINE float wah_nearest_f32(float f) {
 #else
     if (isnan(f) || isinf(f) || f == 0.0f) return f;
     float rounded = roundf(f);
-    if (fabsf(f - rounded) == 0.5f && ((long long)rounded % 2) != 0) return rounded - copysignf(1.0f, f);
+    if (fabsf(f - rounded) == 0.5f && ((long long)rounded % 2) != 0) {
+        float adjusted = rounded - copysignf(1.0f, f);
+        return adjusted == 0.0f ? copysignf(0.0f, f) : adjusted;
+    }
     return rounded;
 #endif
 }
@@ -2159,7 +2162,10 @@ static WAH_ALWAYS_INLINE double wah_nearest_f64(double d) {
 #else
     if (isnan(d) || isinf(d) || d == 0.0) return d;
     double rounded = round(d);
-    if (fabs(d - rounded) == 0.5 && ((long long)rounded % 2) != 0) return rounded - copysign(1.0, d);
+    if (fabs(d - rounded) == 0.5 && ((long long)rounded % 2) != 0) {
+        double adjusted = rounded - copysign(1.0, d);
+        return adjusted == 0.0 ? copysign(0.0, d) : adjusted;
+    }
     return rounded;
 #endif
 }
