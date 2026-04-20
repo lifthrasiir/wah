@@ -6122,25 +6122,27 @@ void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visito
         // 1c. Operand stack slots (using ref map from POLL points)
         uint32_t operand_base = frame->locals_offset + ftype->param_count + code->local_count;
         const uint8_t *oref_map = code->parsed_code.operand_ref_map;
-        uint32_t rm_byte_offset;
+        uint32_t rm_byte_offset = frame->ref_map_offset;
 
-        if (d == ctx->call_depth - 1) {
-            rm_byte_offset = frame->ref_map_offset;
-        } else {
-            const uint8_t *ip = frame->bytecode_ip;
-            if (wah_read_u16_le(ip) == WAH_OP_POLL) {
-                rm_byte_offset = wah_read_u32_le(ip + sizeof(uint16_t));
-            } else {
-                oref_map = NULL;
-            }
+        // If bytecode_ip points to a POLL (frame suspended at a call site),
+        // read the ref map offset from the POLL operands directly.
+        const uint8_t *ip = frame->bytecode_ip;
+        if (ip && wah_read_u16_le(ip) == WAH_OP_POLL) {
+            rm_byte_offset = wah_read_u32_le(ip + sizeof(uint16_t));
         }
 
         if (oref_map && rm_byte_offset < code->parsed_code.operand_ref_map_size) {
             uint16_t rm_count = wah_read_u16_le(oref_map + rm_byte_offset);
-            if (d < ctx->call_depth - 1) {
-                uint32_t callee_results = ctx->call_stack[d + 1].result_count;
-                rm_count = rm_count > callee_results ? rm_count - callee_results : 0;
-            }
+            // The ref map describes the post-POLL type stack. Clamp to the
+            // actual operand stack depth to handle frames suspended mid-call
+            // (where callee results haven't been pushed yet).
+            uint32_t next_frame_base = (d < ctx->call_depth - 1)
+                ? ctx->call_stack[d + 1].locals_offset
+                : ctx->sp;
+            uint32_t actual_depth = (next_frame_base > operand_base)
+                ? next_frame_base - operand_base : 0;
+            if (rm_count > actual_depth) rm_count = (uint16_t)actual_depth;
+
             const uint8_t *bits = oref_map + rm_byte_offset + sizeof(uint16_t);
             for (uint16_t i = 0; i < rm_count; i++) {
                 uint16_t word = wah_read_u16_le(bits + (i / 16) * sizeof(uint16_t));
@@ -6949,6 +6951,10 @@ WAH_RUN(CALL) {
         WAH_ENSURE_GOTO((size_t)(result_vals + nresults - ctx->value_stack) <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup);
         memset(result_vals, 0, sizeof(wah_value_t) * nresults);
 
+        // Sync frame state so host callbacks can inspect the call stack
+        frame->bytecode_ip = bytecode_ip;
+        ctx->sp = (uint32_t)(sp - ctx->value_stack);
+
         // Call host function: params and results are in distinct, non-overlapping regions
         WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, called_fn, param_vals, (uint32_t)nparams, result_vals), cleanup);
 
@@ -6957,8 +6963,6 @@ WAH_RUN(CALL) {
             memmove(param_vals, result_vals, sizeof(wah_value_t) * nresults);
         }
         sp = param_vals + nresults;
-
-        frame->bytecode_ip = bytecode_ip;
     } else {
         // WASM function call
         const wah_module_t *fn_module = called_fn->fn_module ? called_fn->fn_module : ctx->module;
@@ -7008,12 +7012,13 @@ WAH_RUN(CALL) {
         wah_value_t *result_vals = sp; \
         WAH_ENSURE_GOTO((size_t)(result_vals + nresults - ctx->value_stack) <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup); \
         memset(result_vals, 0, sizeof(wah_value_t) * nresults); \
+        frame->bytecode_ip = bytecode_ip; \
+        ctx->sp = (uint32_t)(sp - ctx->value_stack); \
         WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, actual_fn, param_vals, (uint32_t)nparams, result_vals), cleanup); \
         if (nresults > 0) { \
             memmove(param_vals, result_vals, sizeof(wah_value_t) * nresults); \
         } \
         sp = param_vals + nresults; \
-        frame->bytecode_ip = bytecode_ip; \
     } else { \
         const wah_module_t *fn_module = actual_fn->fn_module ? actual_fn->fn_module : ctx->module; \
         uint32_t local_idx = actual_fn->local_idx; \

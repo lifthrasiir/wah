@@ -21,6 +21,15 @@ static void count_funcref_roots_visitor(wah_value_t *slot, wah_type_t type, void
     (*(uint32_t*)ud)++;
 }
 
+static uint32_t g_root_count;
+
+static void host_count_roots(wah_call_context_t *cc, void *ud) {
+    (void)ud;
+    g_root_count = 0;
+    wah_gc_enumerate_roots(cc->exec, count_ref_roots_visitor, &g_root_count);
+    wah_return_i32(cc, (int32_t)g_root_count);
+}
+
 int main() {
     wah_module_t module;
     wah_exec_context_t ctx;
@@ -517,6 +526,103 @@ int main() {
         assert_true(wah_gc_verify_heap(&ctx));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
+    }
+
+    // --- Regression tests for root enumeration gaps ---
+
+    printf("Testing root enumeration: funcref parameter is visited...\n");
+    {
+        wah_module_t env_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t ctx2 = {0};
+
+        assert_ok(wah_new_module(&env_mod));
+        wah_type_t i32_result[] = { WAH_TYPE_I32 };
+        assert_ok(wah_module_export_funcv(&env_mod, "count_roots", 0, NULL, 1, i32_result, host_count_roots, NULL, NULL));
+
+        const char *spec = "wasm \
+            types {[ fn [funcref] [i32], fn [] [i32] ]} \
+            imports {[ {'env'} {'count_roots'} fn# 1 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'test'} fn# 1 ]} \
+            code {[ {[] call 0 end} ]}";
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        assert_ok(wah_exec_context_create(&ctx2, &wasm_mod));
+        assert_ok(wah_link_module(&ctx2, "env", &env_mod));
+        assert_ok(wah_instantiate(&ctx2));
+
+        wah_value_t args[1]; args[0].ref = NULL;
+        wah_value_t result;
+        assert_ok(wah_call(&ctx2, 1, args, 1, &result));
+        assert_true(g_root_count >= 1);
+
+        wah_exec_context_destroy(&ctx2);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
+    printf("Testing root enumeration: operand-stack funcref is visited...\n");
+    {
+        wah_module_t env_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t ctx2 = {0};
+        assert_ok(wah_new_module(&env_mod));
+        wah_type_t i32_result[] = { WAH_TYPE_I32 };
+        assert_ok(wah_module_export_funcv(&env_mod, "count_roots", 0, NULL, 1, i32_result, host_count_roots, NULL, NULL));
+
+        // fn takes funcref param, pushes ref.null on operand stack, calls host
+        // local 0 = funcref param, local 1 = i32 temp
+        const char *spec = "wasm \
+            types {[ fn [funcref] [i32], fn [] [i32] ]} \
+            imports {[ {'env'} {'count_roots'} fn# 1 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'test'} fn# 1 ]} \
+            code {[ {[1 i32] ref.null funcref call 0 local.set 1 drop local.get 1 end} ]}";
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        assert_ok(wah_exec_context_create(&ctx2, &wasm_mod));
+        assert_ok(wah_link_module(&ctx2, "env", &env_mod));
+        assert_ok(wah_instantiate(&ctx2));
+
+        wah_value_t args[1]; args[0].ref = NULL;
+        wah_value_t result;
+        assert_ok(wah_call(&ctx2, 1, args, 1, &result));
+        // 1 param (funcref) + 1 operand stack (ref.null) = at least 2 ref roots
+        assert_true(g_root_count >= 2);
+
+        wah_exec_context_destroy(&ctx2);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
+    printf("Testing root enumeration: linked-module funcref global is visited...\n");
+    {
+        // Primary module: no ref globals. Linked module: one funcref global.
+        wah_module_t linked_mod = {0}, primary_mod = {0};
+        wah_exec_context_t ctx2 = {0};
+
+        const char *linked_spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            globals {[ funcref mut ref.null funcref end ]} \
+            exports {[ {'g'} global# 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&linked_mod, linked_spec));
+
+        const char *primary_spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+
+        assert_ok(wah_exec_context_create(&ctx2, &primary_mod));
+        assert_ok(wah_link_module(&ctx2, "linked", &linked_mod));
+        assert_ok(wah_instantiate(&ctx2));
+
+        uint32_t count = 0;
+        wah_gc_enumerate_roots(&ctx2, count_ref_roots_visitor, &count);
+        assert_eq_u32(count, 1);
+
+        wah_exec_context_destroy(&ctx2);
+        wah_free_module(&primary_mod);
+        wah_free_module(&linked_mod);
     }
 
     printf("All GC tests passed.\n");
