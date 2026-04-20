@@ -1877,7 +1877,7 @@ static wah_error_t wah_call_host_function_internal(
 static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code_ptr, const uint8_t *code_end, wah_validation_context_t *vctx, const wah_code_body_t* code_body);
 
 // Pre-parsing functions
-static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_idx, const uint8_t *code, uint32_t code_size, wah_parsed_code_t *parsed_code);
+static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_idx, const uint8_t *code, uint32_t code_size, wah_parsed_code_t *parsed_code, bool emit_poll);
 static void wah_free_parsed_code(wah_parsed_code_t *parsed_code);
 
 // Const expression functions
@@ -4225,7 +4225,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         module->code_bodies[i].max_stack_depth = vctx.max_stack_depth;
 
         // Pre-parse the code for optimized execution
-        WAH_CHECK_GOTO(wah_preparse_code(module, i, module->code_bodies[i].code, module->code_bodies[i].code_size, &module->code_bodies[i].parsed_code), cleanup);
+        WAH_CHECK_GOTO(wah_preparse_code(module, i, module->code_bodies[i].code, module->code_bodies[i].code_size, &module->code_bodies[i].parsed_code, true), cleanup);
 
         *ptr = code_body_end;
     }
@@ -4419,7 +4419,7 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
         // Step 2: Preparse const expression using existing preparsing infrastructure
         // Note: ptr was moved by validation, so we need to calculate the size
         uint32_t expr_size = (uint32_t)(*ptr - expr_start);
-        WAH_CHECK(wah_preparse_code(module, 0, expr_start, expr_size, &module->globals[i].init_expr));
+        WAH_CHECK(wah_preparse_code(module, 0, expr_start, expr_size, &module->globals[i].init_expr, false));
     }
     return WAH_OK;
 }
@@ -4921,7 +4921,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
 
                 // Preparse offset expression for later evaluation
                 uint32_t offset_expr_size = (uint32_t)(*ptr - offset_start);
-                WAH_CHECK(wah_preparse_code(module, 0, offset_start, offset_expr_size, &segment->offset_expr));
+                WAH_CHECK(wah_preparse_code(module, 0, offset_start, offset_expr_size, &segment->offset_expr, false));
             }
 
             // Parse elemkind/reftype
@@ -4990,7 +4990,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
 
                         // Preparse the expression for efficient evaluation
                         wah_parsed_code_t parsed_expr;
-                        WAH_CHECK(wah_preparse_code(module, 0, expr_start, raw_expr_size, &parsed_expr));
+                        WAH_CHECK(wah_preparse_code(module, 0, expr_start, raw_expr_size, &parsed_expr, false));
 
                         segment->u.expr.bytecode_sizes[j] = parsed_expr.bytecode_size;
                         segment->u.expr.bytecodes[j] = parsed_expr.bytecode; // Transfer ownership
@@ -5041,7 +5041,7 @@ static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *se
                 const uint8_t *offset_start = *ptr;
                 WAH_CHECK(wah_validate_const_expr(ptr, section_end, mem_addr_type, module, wah_total_global_count(module)));
                 uint32_t offset_expr_size = (uint32_t)(*ptr - offset_start);
-                WAH_CHECK(wah_preparse_code(module, 0, offset_start, offset_expr_size, &segment->offset_expr));
+                WAH_CHECK(wah_preparse_code(module, 0, offset_start, offset_expr_size, &segment->offset_expr, false));
             }
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->data_len));
@@ -5066,7 +5066,7 @@ static wah_error_t wah_parse_datacount_section(const uint8_t **ptr, const uint8_
 }
 
 // Pre-parsing function to convert bytecode to optimized structure
-static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_idx, const uint8_t *code, uint32_t code_size, wah_parsed_code_t *parsed_code) {
+static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_idx, const uint8_t *code, uint32_t code_size, wah_parsed_code_t *parsed_code, bool emit_poll) {
     (void)module; (void)func_idx; // Suppress unused parameter warnings
 
     wah_error_t err = WAH_OK;
@@ -5082,11 +5082,27 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
 
     const uint8_t *ptr = code, *end = code + code_size;
 
+    #define WAH_POLL_SIZE sizeof(uint16_t)
+
     // --- Pass 1: Find block boundaries and calculate preparsed size ---
+    bool is_first_instr = true;
     while (ptr < end) {
         const uint8_t* instr_ptr = ptr;
         uint16_t opcode;
         WAH_CHECK_GOTO(wah_decode_opcode(&ptr, end, &opcode), cleanup);
+
+        if (emit_poll) {
+            if (is_first_instr) {
+                preparsed_size += WAH_POLL_SIZE;
+                is_first_instr = false;
+            }
+            if (opcode == WAH_OP_LOOP) {
+                preparsed_size += WAH_POLL_SIZE;
+            }
+            if (opcode == WAH_OP_CALL || opcode == WAH_OP_CALL_INDIRECT) {
+                preparsed_size += WAH_POLL_SIZE;
+            }
+        }
 
         uint32_t preparsed_instr_size = sizeof(uint16_t);
 
@@ -5248,16 +5264,27 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
     wah_x86_64_features_t features = wah_x86_64_features(); // TODO: cache across multiple calls
     #endif
 
+    #define WAH_EMIT_POLL() do { wah_write_u16_le(write_ptr, WAH_OP_POLL); write_ptr += sizeof(uint16_t); } while (0)
+
+    is_first_instr = true;
     while (ptr < end) {
         uint16_t opcode;
         const uint8_t* saved_ptr = ptr;
         WAH_CHECK_GOTO(wah_decode_opcode(&ptr, end, &opcode), cleanup);
+
+        if (emit_poll && is_first_instr) {
+            WAH_EMIT_POLL();
+            is_first_instr = false;
+        }
 
         if (opcode == WAH_OP_BLOCK || opcode == WAH_OP_LOOP) {
             int32_t block_type; WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &block_type), cleanup);
             WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
             uint32_t idx = current_block_idx++;
             control_stack[control_sp++] = (wah_control_frame_t){.opcode=(wah_opcode_t)opcode, .target_idx=idx, .end_target_idx=idx};
+            if (emit_poll && opcode == WAH_OP_LOOP) {
+                WAH_EMIT_POLL();
+            }
             continue;
         }
         if (opcode == WAH_OP_END) {
@@ -5522,8 +5549,16 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 }
             }
         }
+
+        if (emit_poll && (opcode == WAH_OP_CALL || opcode == WAH_OP_CALL_INDIRECT)) {
+            WAH_EMIT_POLL();
+        }
+
         ptr = saved_ptr + (ptr - saved_ptr);
     }
+
+    #undef WAH_EMIT_POLL
+    #undef WAH_POLL_SIZE
 
 cleanup:
     free(block_targets);
