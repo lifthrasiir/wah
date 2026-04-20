@@ -253,6 +253,7 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
 size_t wah_module_num_exports(const wah_module_t *module);
 wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_entry_t *out);
 wah_error_t wah_module_export_by_name(const wah_module_t *module, const char *name, wah_entry_t *out);
+wah_error_t wah_module_export_by_name_len(const wah_module_t *module, const char *name, size_t name_len, wah_entry_t *out);
 
 wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id, wah_entry_t *out);
 
@@ -10000,15 +10001,17 @@ wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_entry_
 }
 
 wah_error_t wah_module_export_by_name(const wah_module_t *module, const char *name, wah_entry_t *out) {
+    return wah_module_export_by_name_len(module, name, strlen(name), out);
+}
+
+wah_error_t wah_module_export_by_name_len(const wah_module_t *module, const char *name, size_t name_len, wah_entry_t *out) {
     WAH_ENSURE(module, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(out, WAH_ERROR_MISUSE);
 
-    size_t lookup_name_len = strlen(name);
-
     for (uint32_t i = 0; i < module->export_count; ++i) {
         const wah_export_t *export_entry = &module->exports[i];
-        if (export_entry->name_len == lookup_name_len && strncmp(export_entry->name, name, lookup_name_len) == 0) {
+        if (export_entry->name_len == name_len && memcmp(export_entry->name, name, name_len) == 0) {
             return wah_module_export(module, i, out);
         }
     }

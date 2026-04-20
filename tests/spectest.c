@@ -359,6 +359,7 @@ static int ensure_instance_instantiated(spectest_instance_t *instance) {
 
 static int action_export(spectest_instance_t *instance,
                          const char *field_name,
+                         size_t field_name_len,
                          wah_entry_t *entry,
                          char *error_buf,
                          size_t error_buf_size) {
@@ -367,7 +368,7 @@ static int action_export(spectest_instance_t *instance,
         snprintf(error_buf, error_buf_size, "no current instance");
         return 0;
     }
-    err = wah_module_export_by_name(instance->def ? &instance->def->module : instance->exec.module, field_name, entry);
+    err = wah_module_export_by_name_len(instance->def ? &instance->def->module : instance->exec.module, field_name, field_name_len, entry);
     if (err != WAH_OK) {
         snprintf(error_buf, error_buf_size, "export \"%s\" not found (%s)", field_name, wah_strerror(err));
         return 0;
@@ -384,6 +385,7 @@ static int execute_action(const wast_node_t *action_node,
                           size_t error_buf_size) {
     spectest_instance_t *instance = NULL;
     char *field_name = NULL;
+    size_t field_name_len = 0;
     wah_entry_t entry = {0};
     size_t arg_index = 1;
     size_t param_count = 0;
@@ -413,12 +415,13 @@ static int execute_action(const wast_node_t *action_node,
             snprintf(error_buf, error_buf_size, "invoke missing export name");
             return 0;
         }
+        field_name_len = action_node->children[arg_index]->atom.len;
         field_name = wast_atom_dup_cstr(action_node->children[arg_index]);
         if (!field_name) {
             snprintf(error_buf, error_buf_size, "out of memory");
             return 0;
         }
-        if (!action_export(instance, field_name, &entry, error_buf, error_buf_size)) {
+        if (!action_export(instance, field_name, field_name_len, &entry, error_buf, error_buf_size)) {
             free(field_name);
             return 0;
         }
@@ -482,11 +485,12 @@ static int execute_action(const wast_node_t *action_node,
             snprintf(error_buf, error_buf_size, "get missing export name");
             return 0;
         }
+        field_name_len = action_node->children[arg_index]->atom.len;
         field_name = wast_atom_dup_cstr(action_node->children[arg_index]);
         if (!field_name) {
             return 0;
         }
-        if (!action_export(instance, field_name, &entry, error_buf, error_buf_size)) {
+        if (!action_export(instance, field_name, field_name_len, &entry, error_buf, error_buf_size)) {
             free(field_name);
             return 0;
         }
