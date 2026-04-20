@@ -2446,11 +2446,9 @@ static WAH_ALWAYS_INLINE __m128i wah_i16x8_narrow_i32x4_u_sse2(__m128i a, __m128
 }
 
 static WAH_ALWAYS_INLINE int32_t wah_i64x2_all_true_sse2(__m128i v) {
-    __m128i v_hi = _mm_shuffle_epi32(v, _MM_SHUFFLE(3, 3, 1, 1));
-    __m128i eq_lo = _mm_cmpeq_epi32(v, _mm_setzero_si128());
-    __m128i eq_hi = _mm_cmpeq_epi32(v_hi, _mm_setzero_si128());
-    __m128i eq64 = _mm_and_si128(eq_lo, eq_hi);
-    return _mm_movemask_epi8(eq64) == 0;
+    __m128i eq = _mm_cmpeq_epi32(v, _mm_setzero_si128());
+    __m128i eq64 = _mm_and_si128(eq, _mm_shuffle_epi32(eq, _MM_SHUFFLE(2, 3, 0, 1)));
+    return (_mm_movemask_epi8(eq64) & 0x0101) == 0;
 }
 
 // Since SSE2 has no byte shift, we unpack to 16-bit, shift, and repack
