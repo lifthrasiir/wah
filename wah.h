@@ -3821,10 +3821,11 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(frame->opcode == WAH_OP_IF && !frame->else_found, WAH_ERROR_VALIDATION_FAILED);
             frame->else_found = true;
 
-            // Pop results of 'if' branch and verify
             for (int32_t i = frame->block_type.result_count - 1; i >= 0; --i) {
-                // If the stack was unreachable, any type is fine. Otherwise, it must match.
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, frame->block_type.result_types[i]));
+            }
+            if (!vctx->is_unreachable) {
+                WAH_ENSURE(vctx->current_stack_depth == frame->stack_height, WAH_ERROR_VALIDATION_FAILED);
             }
 
             vctx->type_stack.sp = frame->type_stack_sp;
