@@ -3261,8 +3261,13 @@ static void wah_validation_resolve_br_target(const wah_validation_context_t *vct
         *out_stack_height = 0;
     } else {
         const wah_validation_control_frame_t *frame = &vctx->control_stack[vctx->control_sp - 1 - label_idx];
-        *out_result_count = frame->block_type.result_count;
-        *out_result_types = frame->block_type.result_types;
+        if (frame->opcode == WAH_OP_LOOP) {
+            *out_result_count = frame->block_type.param_count;
+            *out_result_types = frame->block_type.param_types;
+        } else {
+            *out_result_count = frame->block_type.result_count;
+            *out_result_types = frame->block_type.result_types;
+        }
         *out_stack_height = frame->stack_height;
     }
 }
