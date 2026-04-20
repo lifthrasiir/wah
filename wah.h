@@ -6040,14 +6040,8 @@ wah_error_t wah_gc_start(wah_exec_context_t *ctx) {
     if (ctx->gc) return WAH_OK;
     wah_gc_state_t *gc = (wah_gc_state_t *)malloc(sizeof(wah_gc_state_t));
     if (!gc) return WAH_ERROR_OUT_OF_MEMORY;
-    gc->all_objects = NULL;
-    gc->sweep_cursor = NULL;
-    gc->phase = WAH_GC_PHASE_IDLE;
-    gc->object_count = 0;
-    gc->allocated_bytes = 0;
+    memset(gc, 0, sizeof(*gc));
     gc->allocation_threshold = WAH_GC_DEFAULT_THRESHOLD;
-    gc->gc_pending = false;
-    gc->interrupt_pending = false;
     ctx->gc = gc;
     return WAH_OK;
 }
