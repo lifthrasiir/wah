@@ -4788,6 +4788,17 @@ cleanup:
 static wah_error_t wah_parse_start_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->start_function_idx));
     WAH_ENSURE(module->start_function_idx < wah_total_func_count(module), WAH_ERROR_VALIDATION_FAILED);
+
+    uint32_t type_idx;
+    if (module->start_function_idx < module->import_function_count) {
+        type_idx = module->func_imports[module->start_function_idx].type_index;
+    } else {
+        type_idx = module->function_type_indices[module->start_function_idx - module->import_function_count];
+    }
+    WAH_ENSURE(type_idx < module->type_count, WAH_ERROR_VALIDATION_FAILED);
+    const wah_func_type_t *ft = &module->types[type_idx];
+    WAH_ENSURE(ft->param_count == 0 && ft->result_count == 0, WAH_ERROR_VALIDATION_FAILED);
+
     module->has_start_function = true;
     return WAH_OK;
 }
