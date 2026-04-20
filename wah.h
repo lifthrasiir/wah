@@ -2109,28 +2109,19 @@ static WAH_ALWAYS_INLINE wah_v128_t wah_q15mulr_sat_s(wah_v128_t a, wah_v128_t b
 #ifdef WAH_X86_64
 
 static WAH_ALWAYS_INLINE int32_t wah_i16x8_bitmask_sse2(__m128i v) {
-    int32_t mask = _mm_movemask_epi8(_mm_cmpeq_epi16(v, _mm_setzero_si128())) & 0x5555; // 0a0b 0c0d 0e0f 0g0h
-    mask = (mask | (mask >> 1)) & 0x3333; // 00ab 00cd 00ef 00gh
-    mask = (mask | (mask >> 2)) & 0x0f0f; // 0000 abcd 0000 efgh
-    return (mask | (mask >> 4)) & 0x00ff; // 0000 0000 abcd efgh
+    int32_t mask = _mm_movemask_epi8(v) & 0xAAAA; // extract high bit of each byte, keep even bytes (MSB of each i16)
+    mask = (mask >> 1) & 0x5555; // shift to bit positions 0,2,4,...
+    mask = (mask | (mask >> 1)) & 0x3333;
+    mask = (mask | (mask >> 2)) & 0x0f0f;
+    return (mask | (mask >> 4)) & 0x00ff;
 }
 
 static WAH_ALWAYS_INLINE int32_t wah_i32x4_bitmask_sse2(__m128i v) {
-    int32_t mask = _mm_movemask_epi8(_mm_cmpeq_epi32(v, _mm_setzero_si128())) & 0x1111; // 000a 000b 000c 000d
-    mask = (mask | (mask >> 3)) & 0x0202; // 0000 00ab 0000 00cd
-    return (mask | (mask >> 6)) & 0x000f; // 0000 0000 0000 abcd
+    return _mm_movemask_ps(_mm_castsi128_ps(v));
 }
 
 static WAH_ALWAYS_INLINE int32_t wah_i64x2_bitmask_sse2(__m128i v) {
-    // Compare each 64-bit element with zero
-    // Since we're comparing with zero, we can check if both 32-bit halves are zero
-    __m128i v_hi = _mm_shuffle_epi32(v, _MM_SHUFFLE(3, 3, 1, 1));  // [v1_hi, v1_hi, v0_hi, v0_hi]
-    __m128i v_lo = v;  // [v1_lo, v1_lo, v0_lo, v0_lo]
-    __m128i eq_lo = _mm_cmpeq_epi32(v_lo, _mm_setzero_si128());  // v_lo == 0
-    __m128i eq_hi = _mm_cmpeq_epi32(v_hi, _mm_setzero_si128());  // v_hi == 0
-    __m128i eq64 = _mm_and_si128(eq_lo, eq_hi);  // Both halves equal (entire 64-bit is zero)
-    int32_t mask = _mm_movemask_epi8(eq64) & 0x0101;  // 0000 000a 0000 000b
-    return (mask | (mask >> 7)) & 0x0003;  // 0000 0000 0000 00ab
+    return _mm_movemask_pd(_mm_castsi128_pd(v));
 }
 
 #endif
