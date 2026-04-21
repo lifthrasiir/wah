@@ -882,6 +882,121 @@ int main() {
         wah_free_module(&module);
     }
 
+    printf("Running test_type_flags_ref_func_non_nullable_to_local...\n");
+    {
+        // ref.func produces non-nullable; storing into nullable local succeeds
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[1 funcref] ref.func 0 local.set 0 local.get 0 ref.is_null end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 0);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_type_flags_ref_as_non_null_on_ref_func...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [funcref] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] ref.func 0 ref.as_non_null end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_not_null(result.ref);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_type_flags_ref_as_non_null_traps_on_null...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [funcref] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] ref.null funcref ref.as_non_null end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        wah_value_t result;
+        assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_TRAP);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_type_flags_struct_new_non_nullable...\n");
+    {
+        // struct.new produces non-nullable; ref.as_non_null should not trap
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] i32.const 42 struct.new 0 ref.as_non_null struct.get 0 0 end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_type_flags_array_new_non_nullable...\n");
+    {
+        const char *spec = "wasm \
+            types {[ array i32 mut, fn [] [i32] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] i32.const 99 i32.const 3 array.new 0 ref.as_non_null i32.const 0 array.get 0 end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 99);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_type_flags_global_get_nullable...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            globals {[ funcref mut ref.null funcref end ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] global.get 0 ref.is_null end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
     printf("\nAll Reference Types tests passed!\n");
     return 0;
 }
