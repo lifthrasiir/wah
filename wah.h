@@ -178,6 +178,14 @@ static inline bool wah_repr_is_positive(wah_repr_t id) { return id >= 0; }
 static inline bool wah_repr_is_builtin(wah_repr_t id) { return id < 0; }
 
 typedef struct {
+    int32_t value;
+} wah_gc_i31_body_t;
+
+typedef struct {
+    uint32_t length;
+} wah_gc_array_body_t;
+
+typedef struct {
     uint32_t count;
     wah_repr_t *ids;
     bool accepts_i31;
@@ -464,6 +472,15 @@ static inline wah_gc_object_t *wah_gc_header(void *payload) {
 // Returns the payload pointer from an object header.
 static inline void *wah_gc_payload(wah_gc_object_t *obj) {
     return (uint8_t *)obj + sizeof(wah_gc_object_t);
+}
+static inline uint32_t wah_gc_struct_alloc_size(const wah_repr_info_t *info) {
+    return (uint32_t)(sizeof(wah_gc_object_t) + info->size);
+}
+static inline uint32_t wah_gc_array_alloc_size(const wah_repr_info_t *info, uint32_t length) {
+    return (uint32_t)(sizeof(wah_gc_object_t) + sizeof(wah_gc_array_body_t) + info->size * length);
+}
+static inline uint32_t wah_gc_i31_alloc_size(void) {
+    return (uint32_t)(sizeof(wah_gc_object_t) + sizeof(wah_gc_i31_body_t));
 }
 // Visitor callback for root enumeration. Called once per live reference slot.
 // slot points to the wah_value_t containing the reference; type is its declared type.
