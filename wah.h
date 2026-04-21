@@ -231,6 +231,9 @@ typedef struct {
 #define WAH_REPR_NONE ((wah_repr_t)-1)
 #define WAH_REPR_I31  ((wah_repr_t)-2)
 
+static inline bool wah_repr_is_positive(wah_repr_t id) { return id >= 0; }
+static inline bool wah_repr_is_builtin(wah_repr_t id) { return id < 0; }
+
 // --- GC State ---
 typedef enum {
     WAH_GC_PHASE_IDLE = 0,
