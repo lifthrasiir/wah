@@ -4431,6 +4431,10 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_validation_pop_type(vctx, &b_type));
             WAH_CHECK(wah_validation_pop_type(vctx, &a_type));
             WAH_ENSURE(a_type == b_type || a_type == WAH_TYPE_ANY || b_type == WAH_TYPE_ANY, WAH_ERROR_VALIDATION_FAILED);
+            wah_type_t resolved = (a_type != WAH_TYPE_ANY) ? a_type : b_type;
+            if (resolved != WAH_TYPE_ANY) {
+                WAH_ENSURE(resolved >= WAH_TYPE_V128 && resolved <= WAH_TYPE_I32, WAH_ERROR_VALIDATION_FAILED);
+            }
             if (a_type == WAH_TYPE_ANY || b_type == WAH_TYPE_ANY) {
                 return wah_validation_push_type(vctx, WAH_TYPE_ANY);
             } else {
