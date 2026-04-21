@@ -1000,6 +1000,13 @@ typedef enum {
     X(REF_NULL,, 0xD0) X(REF_IS_NULL,, 0xD1) X(REF_FUNC,, 0xD2) \
     \
     /* GC opcodes (0xFB prefix) */ \
+    X(STRUCT_NEW,, WAH_FB+0x00) X(STRUCT_NEW_DEFAULT,, WAH_FB+0x01) \
+    X(STRUCT_GET,, WAH_FB+0x02) X(STRUCT_GET_S,, WAH_FB+0x03) X(STRUCT_GET_U,, WAH_FB+0x04) \
+    X(STRUCT_SET,, WAH_FB+0x05) \
+    X(ARRAY_NEW,, WAH_FB+0x06) X(ARRAY_NEW_DEFAULT,, WAH_FB+0x07) \
+    X(ARRAY_NEW_FIXED,, WAH_FB+0x08) \
+    X(ARRAY_GET,, WAH_FB+0x0B) X(ARRAY_GET_S,, WAH_FB+0x0C) X(ARRAY_GET_U,, WAH_FB+0x0D) \
+    X(ARRAY_SET,, WAH_FB+0x0E) X(ARRAY_LEN,, WAH_FB+0x0F) \
     X(REF_TEST_NULL,, WAH_FB+0x14) X(REF_TEST,, WAH_FB+0x15) \
     X(REF_CAST_NULL,, WAH_FB+0x16) X(REF_CAST,, WAH_FB+0x17)
 
@@ -4593,6 +4600,97 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             break;
         }
 
+        case WAH_OP_STRUCT_NEW:
+        case WAH_OP_STRUCT_NEW_DEFAULT: {
+            uint32_t typeidx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &typeidx));
+            WAH_ENSURE(typeidx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(vctx->module->type_defs && vctx->module->type_defs[typeidx].kind == WAH_COMP_STRUCT,
+                       WAH_ERROR_VALIDATION_FAILED);
+            if (opcode_val == WAH_OP_STRUCT_NEW) {
+                for (uint32_t j = vctx->module->type_defs[typeidx].field_count; j > 0; --j) {
+                    wah_type_t pt; WAH_CHECK(wah_validation_pop_type(vctx, &pt));
+                }
+            }
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_STRUCTREF));
+            break;
+        }
+        case WAH_OP_STRUCT_GET: case WAH_OP_STRUCT_GET_S: case WAH_OP_STRUCT_GET_U: {
+            uint32_t typeidx, fieldidx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &typeidx));
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &fieldidx));
+            WAH_ENSURE(typeidx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(vctx->module->type_defs && vctx->module->type_defs[typeidx].kind == WAH_COMP_STRUCT,
+                       WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(fieldidx < vctx->module->type_defs[typeidx].field_count, WAH_ERROR_VALIDATION_FAILED);
+            wah_type_t pt; WAH_CHECK(wah_validation_pop_type(vctx, &pt));
+            wah_type_t ft = vctx->module->type_defs[typeidx].field_types[fieldidx];
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_IS_PACKED(ft) ? WAH_TYPE_I32 : ft));
+            break;
+        }
+        case WAH_OP_STRUCT_SET: {
+            uint32_t typeidx, fieldidx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &typeidx));
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &fieldidx));
+            WAH_ENSURE(typeidx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(vctx->module->type_defs && vctx->module->type_defs[typeidx].kind == WAH_COMP_STRUCT,
+                       WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(fieldidx < vctx->module->type_defs[typeidx].field_count, WAH_ERROR_VALIDATION_FAILED);
+            wah_type_t vt, rt; WAH_CHECK(wah_validation_pop_type(vctx, &vt)); WAH_CHECK(wah_validation_pop_type(vctx, &rt));
+            break;
+        }
+        case WAH_OP_ARRAY_NEW:
+        case WAH_OP_ARRAY_NEW_DEFAULT: {
+            uint32_t typeidx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &typeidx));
+            WAH_ENSURE(typeidx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(vctx->module->type_defs && vctx->module->type_defs[typeidx].kind == WAH_COMP_ARRAY,
+                       WAH_ERROR_VALIDATION_FAILED);
+            wah_type_t lt; WAH_CHECK(wah_validation_pop_type(vctx, &lt));
+            if (opcode_val == WAH_OP_ARRAY_NEW) { wah_type_t it; WAH_CHECK(wah_validation_pop_type(vctx, &it)); }
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_ARRAYREF));
+            break;
+        }
+        case WAH_OP_ARRAY_NEW_FIXED: {
+            uint32_t typeidx, length;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &typeidx));
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &length));
+            WAH_ENSURE(typeidx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(vctx->module->type_defs && vctx->module->type_defs[typeidx].kind == WAH_COMP_ARRAY,
+                       WAH_ERROR_VALIDATION_FAILED);
+            for (uint32_t j = 0; j < length; ++j) { wah_type_t pt; WAH_CHECK(wah_validation_pop_type(vctx, &pt)); }
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_ARRAYREF));
+            break;
+        }
+        case WAH_OP_ARRAY_GET: case WAH_OP_ARRAY_GET_S: case WAH_OP_ARRAY_GET_U: {
+            uint32_t typeidx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &typeidx));
+            WAH_ENSURE(typeidx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(vctx->module->type_defs && vctx->module->type_defs[typeidx].kind == WAH_COMP_ARRAY,
+                       WAH_ERROR_VALIDATION_FAILED);
+            wah_type_t it, rt; WAH_CHECK(wah_validation_pop_type(vctx, &it)); WAH_CHECK(wah_validation_pop_type(vctx, &rt));
+            wah_type_t et = vctx->module->type_defs[typeidx].field_types[0];
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_IS_PACKED(et) ? WAH_TYPE_I32 : et));
+            break;
+        }
+        case WAH_OP_ARRAY_SET: {
+            uint32_t typeidx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &typeidx));
+            WAH_ENSURE(typeidx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(vctx->module->type_defs && vctx->module->type_defs[typeidx].kind == WAH_COMP_ARRAY,
+                       WAH_ERROR_VALIDATION_FAILED);
+            wah_type_t vt, it, rt;
+            WAH_CHECK(wah_validation_pop_type(vctx, &vt));
+            WAH_CHECK(wah_validation_pop_type(vctx, &it));
+            WAH_CHECK(wah_validation_pop_type(vctx, &rt));
+            break;
+        }
+        case WAH_OP_ARRAY_LEN: {
+            wah_type_t rt; WAH_CHECK(wah_validation_pop_type(vctx, &rt));
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_I32));
+            break;
+        }
+
         case WAH_OP_REF_TEST_NULL:
         case WAH_OP_REF_TEST:
         case WAH_OP_REF_CAST_NULL:
@@ -5806,6 +5904,36 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     preparsed_instr_size += sizeof(int32_t);
                     break;
                 }
+                case WAH_OP_STRUCT_NEW: case WAH_OP_STRUCT_NEW_DEFAULT:
+                case WAH_OP_ARRAY_NEW: case WAH_OP_ARRAY_NEW_DEFAULT: {
+                    uint32_t typeidx;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &typeidx), cleanup);
+                    preparsed_instr_size += sizeof(uint32_t);
+                    break;
+                }
+                case WAH_OP_STRUCT_GET: case WAH_OP_STRUCT_GET_S: case WAH_OP_STRUCT_GET_U:
+                case WAH_OP_STRUCT_SET: {
+                    uint32_t typeidx, fieldidx;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &typeidx), cleanup);
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &fieldidx), cleanup);
+                    preparsed_instr_size += 2 * sizeof(uint32_t);
+                    break;
+                }
+                case WAH_OP_ARRAY_NEW_FIXED: {
+                    uint32_t typeidx, length;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &typeidx), cleanup);
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &length), cleanup);
+                    preparsed_instr_size += 2 * sizeof(uint32_t);
+                    break;
+                }
+                case WAH_OP_ARRAY_GET: case WAH_OP_ARRAY_GET_S: case WAH_OP_ARRAY_GET_U:
+                case WAH_OP_ARRAY_SET: {
+                    uint32_t typeidx;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &typeidx), cleanup);
+                    preparsed_instr_size += sizeof(uint32_t);
+                    break;
+                }
+                case WAH_OP_ARRAY_LEN: break;
             }
         }
         preparsed_size += preparsed_instr_size;
@@ -6129,6 +6257,34 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     write_ptr += sizeof(int32_t);
                     break;
                 }
+                case WAH_OP_STRUCT_NEW: case WAH_OP_STRUCT_NEW_DEFAULT:
+                case WAH_OP_ARRAY_NEW: case WAH_OP_ARRAY_NEW_DEFAULT:
+                case WAH_OP_ARRAY_GET: case WAH_OP_ARRAY_GET_S: case WAH_OP_ARRAY_GET_U:
+                case WAH_OP_ARRAY_SET: {
+                    uint32_t typeidx;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &typeidx), cleanup);
+                    wah_write_u32_le(write_ptr, typeidx);
+                    write_ptr += sizeof(uint32_t);
+                    break;
+                }
+                case WAH_OP_STRUCT_GET: case WAH_OP_STRUCT_GET_S: case WAH_OP_STRUCT_GET_U:
+                case WAH_OP_STRUCT_SET: {
+                    uint32_t typeidx, fieldidx;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &typeidx), cleanup);
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &fieldidx), cleanup);
+                    wah_write_u32_le(write_ptr, typeidx); write_ptr += sizeof(uint32_t);
+                    wah_write_u32_le(write_ptr, fieldidx); write_ptr += sizeof(uint32_t);
+                    break;
+                }
+                case WAH_OP_ARRAY_NEW_FIXED: {
+                    uint32_t typeidx, length;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &typeidx), cleanup);
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &length), cleanup);
+                    wah_write_u32_le(write_ptr, typeidx); write_ptr += sizeof(uint32_t);
+                    wah_write_u32_le(write_ptr, length); write_ptr += sizeof(uint32_t);
+                    break;
+                }
+                case WAH_OP_ARRAY_LEN: break;
             }
         }
 
@@ -7239,6 +7395,292 @@ WAH_RUN(REF_CAST) {
     wah_value_t ref_val = sp[-1];
     WAH_ENSURE_GOTO(ref_val.ref != NULL && wah_ref_test_heap_type(ctx, ref_val, heap_type),
                      WAH_ERROR_TRAP, cleanup);
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(STRUCT_NEW) {
+    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    wah_gc_object_t *obj = wah_gc_alloc_struct(ctx, repr_id, info);
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    uint8_t *payload = (uint8_t *)wah_gc_payload(obj);
+    const wah_type_def_t *td = &ctx->module->type_defs[typeidx];
+    for (uint32_t i = td->field_count; i > 0; --i) {
+        wah_value_t val = *--sp;
+        uint32_t off = info->fields[i - 1].offset;
+        switch (td->field_types[i - 1]) {
+            case WAH_TYPE_PACKED_I8:  *(uint8_t *)(payload + off) = (uint8_t)val.i32; break;
+            case WAH_TYPE_PACKED_I16: *(uint16_t *)(payload + off) = (uint16_t)val.i32; break;
+            case WAH_TYPE_I32: case WAH_TYPE_F32: *(uint32_t *)(payload + off) = val.i32; break;
+            case WAH_TYPE_I64: case WAH_TYPE_F64: *(uint64_t *)(payload + off) = val.i64; break;
+            default:
+                if (WAH_TYPE_IS_REF(td->field_types[i - 1])) { *(void **)(payload + off) = val.ref; }
+                break;
+        }
+    }
+    (*sp++).ref = obj;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(STRUCT_NEW_DEFAULT) {
+    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    wah_gc_object_t *obj = wah_gc_alloc_struct(ctx, repr_id, info);
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    (*sp++).ref = obj;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(STRUCT_GET) {
+    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t fieldidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    wah_gc_object_t *obj = (wah_gc_object_t *)(--sp)->ref;
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    uint8_t *payload = (uint8_t *)wah_gc_payload(obj);
+    uint32_t off = info->fields[fieldidx].offset;
+    wah_type_t ft = ctx->module->type_defs[typeidx].field_types[fieldidx];
+    wah_value_t val = {0};
+    switch (ft) {
+        case WAH_TYPE_PACKED_I8:  val.i32 = *(uint8_t *)(payload + off); break;
+        case WAH_TYPE_PACKED_I16: val.i32 = *(uint16_t *)(payload + off); break;
+        case WAH_TYPE_I32: case WAH_TYPE_F32: val.i32 = *(int32_t *)(payload + off); break;
+        case WAH_TYPE_I64: case WAH_TYPE_F64: val.i64 = *(int64_t *)(payload + off); break;
+        default:
+            if (WAH_TYPE_IS_REF(ft)) { val.ref = *(void **)(payload + off); }
+            break;
+    }
+    *sp++ = val;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(STRUCT_GET_S) {
+    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t fieldidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    wah_gc_object_t *obj = (wah_gc_object_t *)(--sp)->ref;
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    uint8_t *payload = (uint8_t *)wah_gc_payload(obj);
+    uint32_t off = info->fields[fieldidx].offset;
+    wah_type_t ft = ctx->module->type_defs[typeidx].field_types[fieldidx];
+    wah_value_t val = {0};
+    if (ft == WAH_TYPE_PACKED_I8)  val.i32 = (int32_t)(int8_t)*(uint8_t *)(payload + off);
+    else if (ft == WAH_TYPE_PACKED_I16) val.i32 = (int32_t)(int16_t)*(uint16_t *)(payload + off);
+    *sp++ = val;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(STRUCT_GET_U) {
+    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t fieldidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    wah_gc_object_t *obj = (wah_gc_object_t *)(--sp)->ref;
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    uint8_t *payload = (uint8_t *)wah_gc_payload(obj);
+    uint32_t off = info->fields[fieldidx].offset;
+    wah_type_t ft = ctx->module->type_defs[typeidx].field_types[fieldidx];
+    wah_value_t val = {0};
+    if (ft == WAH_TYPE_PACKED_I8)  val.i32 = (int32_t)*(uint8_t *)(payload + off);
+    else if (ft == WAH_TYPE_PACKED_I16) val.i32 = (int32_t)*(uint16_t *)(payload + off);
+    *sp++ = val;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(STRUCT_SET) {
+    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t fieldidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    wah_value_t val = *--sp;
+    wah_gc_object_t *obj = (wah_gc_object_t *)(--sp)->ref;
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    uint8_t *payload = (uint8_t *)wah_gc_payload(obj);
+    uint32_t off = info->fields[fieldidx].offset;
+    wah_type_t ft = ctx->module->type_defs[typeidx].field_types[fieldidx];
+    switch (ft) {
+        case WAH_TYPE_PACKED_I8:  *(uint8_t *)(payload + off) = (uint8_t)val.i32; break;
+        case WAH_TYPE_PACKED_I16: *(uint16_t *)(payload + off) = (uint16_t)val.i32; break;
+        case WAH_TYPE_I32: case WAH_TYPE_F32: *(uint32_t *)(payload + off) = val.i32; break;
+        case WAH_TYPE_I64: case WAH_TYPE_F64: *(uint64_t *)(payload + off) = val.i64; break;
+        default:
+            if (WAH_TYPE_IS_REF(ft)) { *(void **)(payload + off) = val.ref; }
+            break;
+    }
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(ARRAY_NEW) {
+    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t length = (uint32_t)(--sp)->i32;
+    wah_value_t init_val = *--sp;
+    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    wah_gc_object_t *obj = wah_gc_alloc_array(ctx, repr_id, info, length);
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    uint8_t *elems = (uint8_t *)wah_gc_payload(obj) + sizeof(wah_gc_array_body_t);
+    uint32_t esz = info->size;
+    wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
+    for (uint32_t i = 0; i < length; i++) {
+        switch (et) {
+            case WAH_TYPE_PACKED_I8:  elems[i] = (uint8_t)init_val.i32; break;
+            case WAH_TYPE_PACKED_I16: ((uint16_t *)elems)[i] = (uint16_t)init_val.i32; break;
+            case WAH_TYPE_I32: case WAH_TYPE_F32: ((uint32_t *)elems)[i] = init_val.i32; break;
+            case WAH_TYPE_I64: case WAH_TYPE_F64: ((uint64_t *)elems)[i] = init_val.i64; break;
+            default:
+                if (WAH_TYPE_IS_REF(et)) { ((void **)elems)[i] = init_val.ref; }
+                else memcpy(elems + i * esz, &init_val, esz);
+                break;
+        }
+    }
+    (*sp++).ref = obj;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(ARRAY_NEW_DEFAULT) {
+    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t length = (uint32_t)(--sp)->i32;
+    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    wah_gc_object_t *obj = wah_gc_alloc_array(ctx, repr_id, info, length);
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    (*sp++).ref = obj;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(ARRAY_NEW_FIXED) {
+    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t length = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    wah_gc_object_t *obj = wah_gc_alloc_array(ctx, repr_id, info, length);
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    uint8_t *elems = (uint8_t *)wah_gc_payload(obj) + sizeof(wah_gc_array_body_t);
+    wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
+    uint32_t esz = info->size;
+    for (uint32_t i = length; i > 0; --i) {
+        wah_value_t val = *--sp;
+        switch (et) {
+            case WAH_TYPE_PACKED_I8:  elems[i - 1] = (uint8_t)val.i32; break;
+            case WAH_TYPE_PACKED_I16: ((uint16_t *)elems)[i - 1] = (uint16_t)val.i32; break;
+            case WAH_TYPE_I32: case WAH_TYPE_F32: ((uint32_t *)elems)[i - 1] = val.i32; break;
+            case WAH_TYPE_I64: case WAH_TYPE_F64: ((uint64_t *)elems)[i - 1] = val.i64; break;
+            default:
+                if (WAH_TYPE_IS_REF(et)) { ((void **)elems)[i - 1] = val.ref; }
+                else memcpy(elems + (i - 1) * esz, &val, esz);
+                break;
+        }
+    }
+    (*sp++).ref = obj;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(ARRAY_GET) {
+    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t idx = (uint32_t)(--sp)->i32;
+    wah_gc_object_t *obj = (wah_gc_object_t *)(--sp)->ref;
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    wah_gc_array_body_t *body = (wah_gc_array_body_t *)wah_gc_payload(obj);
+    WAH_ENSURE_GOTO(idx < body->length, WAH_ERROR_TRAP, cleanup);
+    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
+    wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
+    wah_value_t val = {0};
+    switch (et) {
+        case WAH_TYPE_PACKED_I8:  val.i32 = *(uint8_t *)(elems + idx); break;
+        case WAH_TYPE_PACKED_I16: val.i32 = ((uint16_t *)elems)[idx]; break;
+        case WAH_TYPE_I32: case WAH_TYPE_F32: val.i32 = ((int32_t *)elems)[idx]; break;
+        case WAH_TYPE_I64: case WAH_TYPE_F64: val.i64 = ((int64_t *)elems)[idx]; break;
+        default:
+            if (WAH_TYPE_IS_REF(et)) { val.ref = ((void **)elems)[idx]; }
+            else memcpy(&val, elems + idx * info->size, info->size);
+            break;
+    }
+    *sp++ = val;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(ARRAY_GET_S) {
+    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t idx = (uint32_t)(--sp)->i32;
+    wah_gc_object_t *obj = (wah_gc_object_t *)(--sp)->ref;
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    wah_gc_array_body_t *body = (wah_gc_array_body_t *)wah_gc_payload(obj);
+    WAH_ENSURE_GOTO(idx < body->length, WAH_ERROR_TRAP, cleanup);
+    uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
+    wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
+    wah_value_t val = {0};
+    if (et == WAH_TYPE_PACKED_I8)  val.i32 = (int32_t)(int8_t)elems[idx];
+    else if (et == WAH_TYPE_PACKED_I16) val.i32 = (int32_t)(int16_t)((uint16_t *)elems)[idx];
+    *sp++ = val;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(ARRAY_GET_U) {
+    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t idx = (uint32_t)(--sp)->i32;
+    wah_gc_object_t *obj = (wah_gc_object_t *)(--sp)->ref;
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    wah_gc_array_body_t *body = (wah_gc_array_body_t *)wah_gc_payload(obj);
+    WAH_ENSURE_GOTO(idx < body->length, WAH_ERROR_TRAP, cleanup);
+    uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
+    wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
+    wah_value_t val = {0};
+    if (et == WAH_TYPE_PACKED_I8)  val.i32 = (int32_t)elems[idx];
+    else if (et == WAH_TYPE_PACKED_I16) val.i32 = (int32_t)((uint16_t *)elems)[idx];
+    *sp++ = val;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(ARRAY_SET) {
+    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    wah_value_t val = *--sp;
+    uint32_t idx = (uint32_t)(--sp)->i32;
+    wah_gc_object_t *obj = (wah_gc_object_t *)(--sp)->ref;
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    wah_gc_array_body_t *body = (wah_gc_array_body_t *)wah_gc_payload(obj);
+    WAH_ENSURE_GOTO(idx < body->length, WAH_ERROR_TRAP, cleanup);
+    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
+    wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
+    switch (et) {
+        case WAH_TYPE_PACKED_I8:  elems[idx] = (uint8_t)val.i32; break;
+        case WAH_TYPE_PACKED_I16: ((uint16_t *)elems)[idx] = (uint16_t)val.i32; break;
+        case WAH_TYPE_I32: case WAH_TYPE_F32: ((uint32_t *)elems)[idx] = val.i32; break;
+        case WAH_TYPE_I64: case WAH_TYPE_F64: ((uint64_t *)elems)[idx] = val.i64; break;
+        default:
+            if (WAH_TYPE_IS_REF(et)) { ((void **)elems)[idx] = val.ref; }
+            else memcpy(elems + idx * info->size, &val, info->size);
+            break;
+    }
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(ARRAY_LEN) {
+    wah_gc_object_t *obj = (wah_gc_object_t *)sp[-1].ref;
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    wah_gc_array_body_t *body = (wah_gc_array_body_t *)wah_gc_payload(obj);
+    sp[-1].i32 = (int32_t)body->length;
     WAH_NEXT();
     WAH_CLEANUP();
 }
