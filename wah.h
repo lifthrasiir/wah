@@ -224,8 +224,8 @@ typedef struct {
 
 typedef enum {
     WAH_COMP_FUNC   = 0x60,
-    WAH_COMP_STRUCT = 0x5E,
-    WAH_COMP_ARRAY  = 0x5F,
+    WAH_COMP_STRUCT = 0x5F,
+    WAH_COMP_ARRAY  = 0x5E,
 } wah_comp_type_kind_t;
 
 #define WAH_NO_SUPERTYPE UINT32_MAX
@@ -3579,10 +3579,10 @@ static wah_error_t wah_parse_composite_type(const uint8_t **ptr, const uint8_t *
         case 0x60:
             td->kind = WAH_COMP_FUNC;
             return wah_parse_func_type(ptr, end, ft);
-        case 0x5E:
+        case 0x5F:
             td->kind = WAH_COMP_STRUCT;
             return wah_parse_struct_type(ptr, end, td);
-        case 0x5F:
+        case 0x5E:
             td->kind = WAH_COMP_ARRAY;
             return wah_parse_array_type(ptr, end, td);
         default:
@@ -6353,11 +6353,19 @@ static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, 
         case 0x7D: *out_type = WAH_TYPE_F32; return WAH_OK;
         case 0x7C: *out_type = WAH_TYPE_F64; return WAH_OK;
         case 0x7B: *out_type = WAH_TYPE_V128; return WAH_OK;
-        case 0x70: *out_type = WAH_TYPE_FUNCREF; return WAH_OK;
-        case 0x6F: *out_type = WAH_TYPE_EXTERNREF; return WAH_OK;
-        case 0x63: case 0x64: case 0x65: case 0x66: case 0x67:
-        case 0x68: case 0x69: case 0x6A: case 0x6B: case 0x6C:
-        case 0x6D: case 0x6E:
+        case 0x70: *out_type = WAH_TYPE_FUNCREF;       return WAH_OK;
+        case 0x6F: *out_type = WAH_TYPE_EXTERNREF;     return WAH_OK;
+        case 0x6E: *out_type = WAH_TYPE_ANYREF;        return WAH_OK;
+        case 0x6D: *out_type = WAH_TYPE_EQREF;         return WAH_OK;
+        case 0x6C: *out_type = WAH_TYPE_I31REF;        return WAH_OK;
+        case 0x6B: *out_type = WAH_TYPE_STRUCTREF;     return WAH_OK;
+        case 0x6A: *out_type = WAH_TYPE_ARRAYREF;      return WAH_OK;
+        case 0x69: *out_type = WAH_TYPE_EXNREF;        return WAH_OK;
+        case 0x74: *out_type = WAH_TYPE_NULLEXNREF;    return WAH_OK;
+        case 0x73: *out_type = WAH_TYPE_NULLFUNCREF;   return WAH_OK;
+        case 0x72: *out_type = WAH_TYPE_NULLEXTERNREF;  return WAH_OK;
+        case 0x71: *out_type = WAH_TYPE_NULLREF;       return WAH_OK;
+        case 0x63: case 0x64:
             return WAH_ERROR_UNIMPLEMENTED;
         default: return WAH_ERROR_VALIDATION_FAILED;
     }
@@ -6368,11 +6376,19 @@ static wah_error_t wah_decode_ref_type(const uint8_t **ptr, const uint8_t *end, 
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t byte = *(*ptr)++;
     switch (byte) {
-        case 0x70: *out_type = WAH_TYPE_FUNCREF; return WAH_OK;
-        case 0x6F: *out_type = WAH_TYPE_EXTERNREF; return WAH_OK;
-        case 0x63: case 0x64: case 0x65: case 0x66: case 0x67:
-        case 0x68: case 0x69: case 0x6A: case 0x6B: case 0x6C:
-        case 0x6D: case 0x6E:
+        case 0x70: *out_type = WAH_TYPE_FUNCREF;       return WAH_OK;
+        case 0x6F: *out_type = WAH_TYPE_EXTERNREF;     return WAH_OK;
+        case 0x6E: *out_type = WAH_TYPE_ANYREF;        return WAH_OK;
+        case 0x6D: *out_type = WAH_TYPE_EQREF;         return WAH_OK;
+        case 0x6C: *out_type = WAH_TYPE_I31REF;        return WAH_OK;
+        case 0x6B: *out_type = WAH_TYPE_STRUCTREF;     return WAH_OK;
+        case 0x6A: *out_type = WAH_TYPE_ARRAYREF;      return WAH_OK;
+        case 0x69: *out_type = WAH_TYPE_EXNREF;        return WAH_OK;
+        case 0x74: *out_type = WAH_TYPE_NULLEXNREF;    return WAH_OK;
+        case 0x73: *out_type = WAH_TYPE_NULLFUNCREF;   return WAH_OK;
+        case 0x72: *out_type = WAH_TYPE_NULLEXTERNREF;  return WAH_OK;
+        case 0x71: *out_type = WAH_TYPE_NULLREF;       return WAH_OK;
+        case 0x63: case 0x64:
             return WAH_ERROR_UNIMPLEMENTED;
         default: return WAH_ERROR_VALIDATION_FAILED;
     }

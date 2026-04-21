@@ -270,6 +270,176 @@ static void test_ref_func_in_elem_with_import() {
     wah_free_module(&env_mod);
 }
 
+static void test_struct_new_get_set() {
+    printf("Running test_struct_new_get_set...\n");
+
+    const char *spec = "wasm \
+        types {[ struct [i32 mut, i32 mut], fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[] i32.const 0 end } ]}";
+
+    wah_module_t module;
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx;
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 0);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_struct_set_and_read() {
+    printf("Running test_struct_set_and_read...\n");
+
+    const char *spec = "wasm \
+        types {[ struct [i32 mut, i32 mut], fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[1 structref] \
+            struct.new_default 0 local.set 0 \
+            local.get 0 i32.const 42 struct.set 0 0 \
+            local.get 0 i32.const -7 struct.set 0 1 \
+            local.get 0 struct.get 0 0 \
+            local.get 0 struct.get 0 1 \
+            i32.add \
+            end } ]}";
+
+    wah_module_t module;
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx;
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 35); // 42 + (-7)
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_struct_new_with_values() {
+    printf("Running test_struct_new_with_values...\n");
+
+    // i32.const 10, i32.const 20, struct.new 0, struct.get 0 1
+    const char *spec = "wasm \
+        types {[ struct [i32 mut, i32 mut], fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[] \
+            i32.const 10 i32.const 20 struct.new 0 struct.get 0 1 \
+            end } ]}";
+
+    wah_module_t module;
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx;
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 20);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_array_new_get_set_len() {
+    printf("Running test_array_new_get_set_len...\n");
+
+    // array.new 0 with init=0, len=5, then set [2]=99, get [2], check len
+    const char *spec = "wasm \
+        types {[ array i32 mut, fn [] [i32], fn [] [i32] ]} \
+        funcs {[ 1, 2 ]} \
+        exports {[ {'get'} fn# 0, {'len'} fn# 1 ]} \
+        code {[ \
+            {[1 arrayref] \
+                i32.const 0 i32.const 5 array.new 0 local.set 0 \
+                local.get 0 i32.const 2 i32.const 99 array.set 0 \
+                local.get 0 i32.const 2 array.get 0 \
+                end }, \
+            {[] \
+                i32.const 0 i32.const 7 array.new 0 array.len \
+                end } \
+        ]}";
+
+    wah_module_t module;
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx;
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 99);
+
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 7);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_array_oob_trap() {
+    printf("Running test_array_oob_trap...\n");
+
+    const char *spec = "wasm \
+        types {[ array i32 mut, fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[] \
+            i32.const 0 i32.const 3 array.new 0 \
+            i32.const 5 array.get 0 \
+            end } ]}";
+
+    wah_module_t module;
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx;
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_TRAP);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_struct_null_trap() {
+    printf("Running test_struct_null_trap...\n");
+
+    const char *spec = "wasm \
+        types {[ struct [i32 mut], fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[] \
+            ref.null structref struct.get 0 0 \
+            end } ]}";
+
+    wah_module_t module;
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx;
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_TRAP);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 int main() {
     test_ref_null_funcref();
     test_ref_null_externref();
@@ -281,6 +451,13 @@ int main() {
     test_ref_func_zero_not_null();
     test_ref_func_global_callable();
     test_ref_func_in_elem_with_import();
+
+    test_struct_new_get_set();
+    test_struct_set_and_read();
+    test_struct_new_with_values();
+    test_array_new_get_set_len();
+    test_array_oob_trap();
+    test_struct_null_trap();
 
     printf("\nAll Reference Types tests passed!\n");
     return 0;
