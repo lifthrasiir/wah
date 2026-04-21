@@ -207,7 +207,7 @@ typedef struct {
 } wah_gc_array_body_t;
 
 static inline bool wah_repr_field_is_ref(const wah_repr_field_t *f) {
-    return f->repr_id != WAH_REPR_NONE;
+    return f->repr_id == WAH_REPR_REF || wah_repr_is_positive(f->repr_id);
 }
 
 typedef struct {
@@ -7071,15 +7071,13 @@ static void wah_gc_scan_object(wah_gc_object_t *obj, const wah_module_t *module)
     uint8_t *payload = (uint8_t *)wah_gc_payload(obj);
     if (info->type == WAH_REPR_STRUCT) {
         for (uint32_t i = 0; i < info->count; ++i) {
-            if (wah_repr_is_builtin(info->fields[i].repr_id) && info->fields[i].repr_id == WAH_REPR_NONE)
-                continue;
+            if (!wah_repr_field_is_ref(&info->fields[i])) continue;
             wah_gc_object_t **ref = (wah_gc_object_t **)(payload + info->fields[i].offset);
             if (*ref) wah_gc_mark_object(*ref, module);
         }
     } else if (info->type == WAH_REPR_ARRAY) {
         if (info->count == 0) return;
-        wah_repr_t elem_repr = info->fields[0].repr_id;
-        if (wah_repr_is_builtin(elem_repr) && elem_repr == WAH_REPR_NONE) return;
+        if (!wah_repr_field_is_ref(&info->fields[0])) return;
         uint32_t elem_size = info->size;
         uint32_t *length_ptr = (uint32_t *)payload;
         uint32_t length = *length_ptr;

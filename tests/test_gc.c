@@ -1098,6 +1098,47 @@ int main() {
         wah_free_module(&env_mod);
     }
 
+    printf("Testing GC scan: WAH_REPR_I31 field repr is not traced as pointer...\n");
+    {
+        // Manually create a repr with a field marked WAH_REPR_I31 (non-pointer).
+        // Store garbage in that field slot. GC scan must not dereference it.
+        wah_module_t mod = {0};
+        wah_exec_context_t ctx5 = {0};
+
+        const char *spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&mod, spec));
+        assert_ok(wah_exec_context_create(&ctx5, &mod));
+        assert_ok(wah_gc_start(&ctx5));
+
+        uint8_t info_buf[sizeof(wah_repr_info_t) + 2 * sizeof(wah_repr_field_t)];
+        wah_repr_info_t *info = (wah_repr_info_t *)info_buf;
+        info->type = WAH_REPR_STRUCT;
+        info->typeidx = 0;
+        info->size = 2 * sizeof(void *);
+        info->count = 2;
+        info->fields[0] = (wah_repr_field_t){.offset = 0, .repr_id = WAH_REPR_I31};
+        info->fields[1] = (wah_repr_field_t){.offset = sizeof(void *), .repr_id = WAH_REPR_NONE};
+
+        wah_repr_t repr_id;
+        assert_ok(wah_module_alloc_repr(&mod, 0, info, &repr_id));
+
+        wah_gc_object_t *obj = wah_gc_alloc_struct(&ctx5, repr_id, mod.repr_infos[repr_id]);
+        assert_not_null(obj);
+        void **payload = (void **)wah_gc_payload(obj);
+        payload[0] = (void *)(uintptr_t)0xDEADBEEF;
+        payload[1] = (void *)(uintptr_t)0xCAFEBABE;
+
+        // GC scan should not crash - neither field is a ref
+        wah_gc_step(&ctx5);
+        assert_eq_u32(ctx5.gc->object_count, 0);
+
+        wah_exec_context_destroy(&ctx5);
+        wah_free_module(&mod);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }
