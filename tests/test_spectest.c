@@ -220,8 +220,8 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/store0.bin.wast",
     "tests/spectest/store1.bin.wast",
     "tests/spectest/store2.bin.wast",
-    //"tests/spectest/struct.bin.wast",          // GC proposal
-    //"tests/spectest/switch.bin.wast",          // GC proposal
+    "tests/spectest/struct.bin.wast",
+    "tests/spectest/switch.bin.wast",
     "tests/spectest/table.bin.wast",
     "tests/spectest/table_copy.bin.wast",
     "tests/spectest/table_copy_mixed.bin.wast",
@@ -248,10 +248,10 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/traps0.bin.wast",
     //"tests/spectest/try_table.bin.wast",       // exception handling proposal
     "tests/spectest/type.bin.wast",
-    //"tests/spectest/type-canon.bin.wast",      // GC proposal
-    //"tests/spectest/type-equivalence.bin.wast", // GC proposal
-    //"tests/spectest/type-rec.bin.wast",        // GC proposal
-    //"tests/spectest/type-subtyping.bin.wast",  // GC proposal
+    "tests/spectest/type-canon.bin.wast",
+    "tests/spectest/type-equivalence.bin.wast",
+    "tests/spectest/type-rec.bin.wast",
+    "tests/spectest/type-subtyping.bin.wast",
     "tests/spectest/unreachable.bin.wast",
     //"tests/spectest/unreached-invalid.bin.wast",// needs extended ref types
     //"tests/spectest/unreached-valid.bin.wast",  // needs extended ref types
