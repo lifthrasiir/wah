@@ -4905,7 +4905,11 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         #define WAH_CAPTURE_REF_MAP() do { \
             uint32_t depth = vctx.is_unreachable ? 0 : vctx.type_stack.sp; \
             uint32_t _words = (depth + 15) / 16; \
-            uint32_t _entry_bytes = sizeof(uint16_t) * (1 + _words); \
+            uint32_t _ref_count = 0; \
+            for (uint32_t _j = 0; _j < depth; _j++) { \
+                if (WAH_TYPE_IS_REF(vctx.type_stack.data[_j])) _ref_count++; \
+            } \
+            uint32_t _entry_bytes = sizeof(uint16_t) * (1 + _words) + _ref_count * sizeof(wah_type_t); \
             uint32_t needed = ref_map_size + _entry_bytes; \
             if (needed > ref_map_capacity) { \
                 ref_map_capacity = needed < 64 ? 64 : needed * 2; \
@@ -4915,12 +4919,15 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
             } \
             wah_write_u16_le(ref_map + ref_map_size, (uint16_t)depth); \
             memset(ref_map + ref_map_size + sizeof(uint16_t), 0, _words * sizeof(uint16_t)); \
+            uint8_t *_type_ptr = ref_map + ref_map_size + sizeof(uint16_t) * (1 + _words); \
             for (uint32_t _j = 0; _j < depth; _j++) { \
                 if (WAH_TYPE_IS_REF(vctx.type_stack.data[_j])) { \
                     uint32_t _byte_off = ref_map_size + sizeof(uint16_t) + (_j / 16) * sizeof(uint16_t); \
                     uint16_t _bits = wah_read_u16_le(ref_map + _byte_off); \
                     _bits |= (uint16_t)(1u << (_j % 16)); \
                     wah_write_u16_le(ref_map + _byte_off, _bits); \
+                    wah_write_u32_le(_type_ptr, (uint32_t)vctx.type_stack.data[_j]); \
+                    _type_ptr += sizeof(wah_type_t); \
                 } \
             } \
             ref_map_size += _entry_bytes; \
@@ -6078,7 +6085,14 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
         wah_write_u32_le(write_ptr, poll_ref_cursor); write_ptr += sizeof(uint32_t); \
         if (parsed_code->operand_ref_map && poll_ref_cursor < parsed_code->operand_ref_map_size) { \
             uint16_t _cnt = wah_read_u16_le(parsed_code->operand_ref_map + poll_ref_cursor); \
-            poll_ref_cursor += sizeof(uint16_t) * (1 + (_cnt + 15) / 16); \
+            uint32_t _bmp_words = (_cnt + 15) / 16; \
+            const uint8_t *_bmp = parsed_code->operand_ref_map + poll_ref_cursor + sizeof(uint16_t); \
+            uint32_t _refs = 0; \
+            for (uint32_t _k = 0; _k < _bmp_words; _k++) { \
+                uint16_t _w = wah_read_u16_le(_bmp + _k * sizeof(uint16_t)); \
+                while (_w) { _refs++; _w &= _w - 1; } \
+            } \
+            poll_ref_cursor += sizeof(uint16_t) * (1 + _bmp_words) + _refs * sizeof(wah_type_t); \
         } \
     } while (0)
 
@@ -6992,11 +7006,15 @@ void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visito
                 ? next_frame_base - operand_base : 0;
             if (rm_count > actual_depth) rm_count = (uint16_t)actual_depth;
 
+            uint32_t bmp_words = (rm_count + 15) / 16;
             const uint8_t *bits = oref_map + rm_byte_offset + sizeof(uint16_t);
+            const uint8_t *type_ptr = bits + bmp_words * sizeof(uint16_t);
             for (uint16_t i = 0; i < rm_count; i++) {
                 uint16_t word = wah_read_u16_le(bits + (i / 16) * sizeof(uint16_t));
                 if (word & (1u << (i % 16))) {
-                    visitor(&ctx->value_stack[operand_base + i], WAH_TYPE_FUNCREF, userdata);
+                    wah_type_t ref_type = (wah_type_t)(int32_t)wah_read_u32_le(type_ptr);
+                    type_ptr += sizeof(wah_type_t);
+                    visitor(&ctx->value_stack[operand_base + i], ref_type, userdata);
                 }
             }
         }

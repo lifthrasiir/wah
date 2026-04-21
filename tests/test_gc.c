@@ -22,12 +22,25 @@ static void count_funcref_roots_visitor(wah_value_t *slot, wah_type_t type, void
 }
 
 static uint32_t g_root_count;
+static uint32_t g_structref_count;
 
 static void host_count_roots(wah_call_context_t *cc, void *ud) {
     (void)ud;
     g_root_count = 0;
     wah_gc_enumerate_roots(cc->exec, count_ref_roots_visitor, &g_root_count);
     wah_return_i32(cc, (int32_t)g_root_count);
+}
+
+static void count_structref_visitor(wah_value_t *slot, wah_type_t type, void *ud) {
+    (void)slot; (void)ud;
+    if (type == WAH_TYPE_STRUCTREF) g_structref_count++;
+}
+
+static void host_count_structref(wah_call_context_t *cc, void *ud) {
+    (void)ud;
+    g_structref_count = 0;
+    wah_gc_enumerate_roots(cc->exec, count_structref_visitor, &g_structref_count);
+    wah_return_i32(cc, (int32_t)g_structref_count);
 }
 
 static void host_trigger_gc(wah_call_context_t *cc, void *ud) {
@@ -1042,6 +1055,43 @@ int main() {
         assert_ok(wah_call(&ctx5, 1, NULL, 0, &result));
         assert_eq_i32(result.i32, 123);
         assert_true(ctx5.gc->object_count >= 2);
+
+        wah_exec_context_destroy(&ctx5);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
+    printf("Testing root enumeration: operand-stack structref reports correct type...\n");
+    {
+        // Allocate a struct, leave on operand stack, call host that counts structref roots
+        wah_module_t env_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t ctx5 = {0};
+
+        assert_ok(wah_new_module(&env_mod));
+        wah_type_t i32_result[] = { WAH_TYPE_I32 };
+        assert_ok(wah_module_export_funcv(&env_mod, "count_structref", 0, NULL, 1, i32_result, host_count_structref, NULL, NULL));
+
+        // struct.new_default leaves structref on operand stack, then call host
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32], fn [] [i32] ]} \
+            imports {[ {'env'} {'count_structref'} fn# 2 ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ {[1 structref] \
+                struct.new_default 0 local.set 0 \
+                local.get 0 \
+                call 0 \
+                end } ]}";
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        assert_ok(wah_exec_context_create(&ctx5, &wasm_mod));
+        assert_ok(wah_link_module(&ctx5, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx5));
+        assert_ok(wah_instantiate(&ctx5));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx5, 1, NULL, 0, &result));
+        // The operand stack has a structref; host should see at least 1 structref root
+        assert_true(result.i32 >= 1);
 
         wah_exec_context_destroy(&ctx5);
         wah_free_module(&wasm_mod);
