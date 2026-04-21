@@ -193,6 +193,7 @@ typedef struct {
 
 #define WAH_REPR_NONE ((wah_repr_t)-1)
 #define WAH_REPR_I31  ((wah_repr_t)-2)
+#define WAH_REPR_REF  ((wah_repr_t)-3)
 
 static inline bool wah_repr_is_positive(wah_repr_t id) { return id >= 0; }
 static inline bool wah_repr_is_builtin(wah_repr_t id) { return id < 0; }
@@ -204,13 +205,6 @@ typedef struct {
 typedef struct {
     uint32_t length;
 } wah_gc_array_body_t;
-
-static inline wah_repr_field_t wah_repr_field(uint32_t offset, wah_repr_t repr_id) {
-    wah_repr_field_t f;
-    f.offset = offset;
-    f.repr_id = repr_id;
-    return f;
-}
 
 static inline bool wah_repr_field_is_ref(const wah_repr_field_t *f) {
     return f->repr_id != WAH_REPR_NONE;
@@ -3749,7 +3743,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
                     default:
                         if (WAH_TYPE_IS_REF(ft_j)) {
                             field_size = sizeof(void *);
-                            field_repr = WAH_REPR_NONE;
+                            field_repr = WAH_REPR_REF;
                         } else {
                             free(fields);
                             return WAH_ERROR_VALIDATION_FAILED;
@@ -3758,7 +3752,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
                 }
                 uint32_t align = field_size < sizeof(void *) ? field_size : sizeof(void *);
                 offset = (offset + align - 1) & ~(align - 1);
-                fields[j] = wah_repr_field(offset, field_repr);
+                fields[j] = (wah_repr_field_t){.offset = offset, .repr_id = field_repr};
                 offset += field_size;
             }
 
@@ -3795,14 +3789,14 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
                 default:
                     if (WAH_TYPE_IS_REF(elem_t)) {
                         elem_size = sizeof(void *);
-                        elem_repr = WAH_REPR_NONE;
+                        elem_repr = WAH_REPR_REF;
                     } else {
                         return WAH_ERROR_VALIDATION_FAILED;
                     }
                     break;
             }
 
-            wah_repr_field_t elem_field = wah_repr_field(0, elem_repr);
+            wah_repr_field_t elem_field = {.offset = 0, .repr_id = elem_repr};
             size_t info_size = sizeof(wah_repr_info_t) + sizeof(wah_repr_field_t);
             wah_repr_info_t *info = (wah_repr_info_t *)malloc(info_size);
             if (!info) return WAH_ERROR_OUT_OF_MEMORY;
@@ -7080,10 +7074,16 @@ static void wah_gc_scan_object(wah_gc_object_t *obj, const wah_module_t *module)
 }
 
 static void wah_gc_mark_visitor(wah_value_t *slot, wah_type_t type, void *userdata) {
-    (void)type; (void)userdata; (void)slot;
-    // Future: when GC-managed reference values are introduced, extract
-    // the object pointer from the slot and call wah_gc_mark_object().
-    // Currently funcref/externref values are not GC-managed objects.
+    if (type == WAH_TYPE_EXTERNREF || type == WAH_TYPE_NULLEXTERNREF ||
+        type == WAH_TYPE_EXNREF || type == WAH_TYPE_NULLEXNREF) return;
+    void *ref = slot->ref;
+    if (!ref) return;
+    wah_gc_object_t *obj = (wah_gc_object_t *)ref;
+    wah_repr_t repr_id = obj->repr_id;
+    if (wah_repr_is_positive(repr_id) || repr_id == WAH_REPR_I31) {
+        const wah_module_t *module = (const wah_module_t *)userdata;
+        wah_gc_mark_object(obj, module);
+    }
 }
 
 static void wah_gc_step_mark(wah_exec_context_t *ctx) {
@@ -7095,7 +7095,7 @@ static void wah_gc_step_mark(wah_exec_context_t *ctx) {
     }
 
     // Mark from roots
-    wah_gc_enumerate_roots(ctx, wah_gc_mark_visitor, NULL);
+    wah_gc_enumerate_roots(ctx, wah_gc_mark_visitor, (void *)ctx->module);
 
     gc->phase = WAH_GC_PHASE_SWEEP;
     gc->sweep_cursor = NULL;

@@ -30,6 +30,18 @@ static void host_count_roots(wah_call_context_t *cc, void *ud) {
     wah_return_i32(cc, (int32_t)g_root_count);
 }
 
+static void host_trigger_gc(wah_call_context_t *cc, void *ud) {
+    (void)ud;
+    wah_gc_step(cc->exec);
+}
+
+static void host_gc_object_count(wah_call_context_t *cc, void *ud) {
+    (void)ud;
+    wah_gc_heap_stats_t stats;
+    wah_gc_heap_stats(cc->exec, &stats);
+    wah_return_i32(cc, (int32_t)stats.object_count);
+}
+
 int main() {
     wah_module_t module;
     wah_exec_context_t ctx;
@@ -646,8 +658,8 @@ int main() {
             info->typeidx = 0;
             info->size = 8;
             info->count = 2;
-            info->fields[0] = wah_repr_field(0, WAH_REPR_NONE);
-            info->fields[1] = wah_repr_field(4, WAH_REPR_NONE);
+            info->fields[0] = (wah_repr_field_t){.offset = 0, .repr_id = WAH_REPR_NONE};
+            info->fields[1] = (wah_repr_field_t){.offset = 4, .repr_id = WAH_REPR_NONE};
 
             wah_repr_t repr_id;
             assert_ok(wah_module_alloc_repr(&mod, 0, info, &repr_id));
@@ -673,7 +685,7 @@ int main() {
             info->typeidx = 1;
             info->size = 4;
             info->count = 1;
-            info->fields[0] = wah_repr_field(0, WAH_REPR_NONE);
+            info->fields[0] = (wah_repr_field_t){.offset = 0, .repr_id = WAH_REPR_NONE};
 
             wah_repr_t repr_id;
             assert_ok(wah_module_alloc_repr(&mod, 1, info, &repr_id));
@@ -847,6 +859,193 @@ int main() {
             wah_exec_context_destroy(&ctx5);
             wah_free_module(&mod2);
         }
+    }
+
+    // --- GC root marking tests: struct/array objects survive collection ---
+
+    printf("Testing GC mark: struct in local survives collection...\n");
+    {
+        // Module: type 0 = struct {i32 mut}, type 1 = fn [] -> [i32]
+        // func 0: allocate struct, store in local, call host_trigger_gc, read struct field
+        wah_module_t env_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t ctx5 = {0};
+
+        assert_ok(wah_new_module(&env_mod));
+        assert_ok(wah_module_export_funcv(&env_mod, "gc", 0, NULL, 0, NULL, host_trigger_gc, NULL, NULL));
+
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32], fn [] [] ]} \
+            imports {[ {'env'} {'gc'} fn# 2 ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ {[1 structref] \
+                i32.const 99 struct.new 0 local.set 0 \
+                call 0 \
+                local.get 0 struct.get 0 0 \
+                end } ]}";
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        assert_ok(wah_exec_context_create(&ctx5, &wasm_mod));
+        assert_ok(wah_link_module(&ctx5, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx5));
+        assert_ok(wah_instantiate(&ctx5));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx5, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 99);
+        assert_true(ctx5.gc->object_count >= 1);
+
+        wah_exec_context_destroy(&ctx5);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
+    printf("Testing GC mark: struct on operand stack survives collection...\n");
+    {
+        // func: allocate struct, leave on operand stack, call host_trigger_gc (via drop/re-get trick),
+        // then read struct field
+        wah_module_t env_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t ctx5 = {0};
+
+        assert_ok(wah_new_module(&env_mod));
+        assert_ok(wah_module_export_funcv(&env_mod, "gc", 0, NULL, 0, NULL, host_trigger_gc, NULL, NULL));
+
+        // struct.new leaves ref on operand stack, then we call gc, then struct.get reads it
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32], fn [] [] ]} \
+            imports {[ {'env'} {'gc'} fn# 2 ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ {[1 structref] \
+                i32.const 77 struct.new 0 local.set 0 \
+                local.get 0 \
+                call 0 \
+                local.get 0 struct.get 0 0 \
+                end } ]}";
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        assert_ok(wah_exec_context_create(&ctx5, &wasm_mod));
+        assert_ok(wah_link_module(&ctx5, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx5));
+        assert_ok(wah_instantiate(&ctx5));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx5, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 77);
+
+        wah_exec_context_destroy(&ctx5);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
+    printf("Testing GC mark: unreachable struct is collected...\n");
+    {
+        // Allocate a struct, then drop it. Trigger GC. Object count should be 0.
+        wah_module_t env_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t ctx5 = {0};
+
+        assert_ok(wah_new_module(&env_mod));
+        wah_type_t i32_result[] = { WAH_TYPE_I32 };
+        assert_ok(wah_module_export_funcv(&env_mod, "gc_count", 0, NULL, 1, i32_result, host_gc_object_count, NULL, NULL));
+
+        // Allocate struct, drop it, then call gc_count which triggers GC internally
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32], fn [] [i32] ]} \
+            imports {[ {'env'} {'gc_count'} fn# 2 ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ {[] \
+                i32.const 55 struct.new 0 drop \
+                call 0 \
+                end } ]}";
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        assert_ok(wah_exec_context_create(&ctx5, &wasm_mod));
+        assert_ok(wah_link_module(&ctx5, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx5));
+        assert_ok(wah_instantiate(&ctx5));
+
+        // Set low threshold so GC triggers at the POLL inside host call
+        ctx5.gc->allocation_threshold = 1;
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx5, 1, NULL, 0, &result));
+        // After GC, the dropped struct should be collected
+        assert_eq_u32(ctx5.gc->object_count, 0);
+
+        wah_exec_context_destroy(&ctx5);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
+    printf("Testing GC mark: array in local survives collection...\n");
+    {
+        wah_module_t env_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t ctx5 = {0};
+
+        assert_ok(wah_new_module(&env_mod));
+        assert_ok(wah_module_export_funcv(&env_mod, "gc", 0, NULL, 0, NULL, host_trigger_gc, NULL, NULL));
+
+        const char *spec = "wasm \
+            types {[ array i32 mut, fn [] [i32], fn [] [] ]} \
+            imports {[ {'env'} {'gc'} fn# 2 ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ {[1 arrayref] \
+                i32.const 42 i32.const 3 array.new 0 local.set 0 \
+                call 0 \
+                local.get 0 i32.const 1 array.get 0 \
+                end } ]}";
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        assert_ok(wah_exec_context_create(&ctx5, &wasm_mod));
+        assert_ok(wah_link_module(&ctx5, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx5));
+        assert_ok(wah_instantiate(&ctx5));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx5, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_exec_context_destroy(&ctx5);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
+    printf("Testing GC mark: struct with ref field traces children...\n");
+    {
+        // type 0 = struct {i32 mut}  (leaf)
+        // type 1 = struct {structref mut}  (parent with ref field pointing to leaf)
+        // Allocate leaf, allocate parent pointing to it, store parent in local,
+        // trigger GC, read leaf field through parent -> both must survive
+        wah_module_t env_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t ctx5 = {0};
+
+        assert_ok(wah_new_module(&env_mod));
+        assert_ok(wah_module_export_funcv(&env_mod, "gc", 0, NULL, 0, NULL, host_trigger_gc, NULL, NULL));
+
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], struct [structref mut], fn [] [i32], fn [] [] ]} \
+            imports {[ {'env'} {'gc'} fn# 3 ]} \
+            funcs {[ 2 ]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ {[1 structref] \
+                i32.const 123 struct.new 0 \
+                struct.new 1 \
+                local.set 0 \
+                call 0 \
+                local.get 0 struct.get 1 0 struct.get 0 0 \
+                end } ]}";
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        assert_ok(wah_exec_context_create(&ctx5, &wasm_mod));
+        assert_ok(wah_link_module(&ctx5, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx5));
+        assert_ok(wah_instantiate(&ctx5));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx5, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 123);
+        assert_true(ctx5.gc->object_count >= 2);
+
+        wah_exec_context_destroy(&ctx5);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
     }
 
     printf("All GC tests passed.\n");
