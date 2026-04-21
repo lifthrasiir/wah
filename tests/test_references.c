@@ -1241,6 +1241,139 @@ int main() {
         wah_free_module(&module);
     }
 
+    // --- Type flags threading through validation paths ---
+
+    printf("Running test_call_rejects_nullable_for_non_null_param...\n");
+    {
+        // func 0 takes (ref 0) [non-nullable], passing nullable ref should fail
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [type.ref 0] [i32], fn [] [i32] ]} \
+            funcs {[ 1, 2 ]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ \
+                {[] local.get 0 struct.get 0 0 end }, \
+                {[1 type.ref.null 0] struct.new_default 0 local.set 0 local.get 0 call 0 end } \
+            ]}";
+        wah_module_t module;
+        assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_call_accepts_non_null_for_non_null_param...\n");
+    {
+        // func 0 takes (ref 0) [non-nullable], passing non-null struct.new result should succeed
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [type.ref 0] [i32], fn [] [i32] ]} \
+            funcs {[ 1, 2 ]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ \
+                {[] local.get 0 struct.get 0 0 end }, \
+                {[] i32.const 42 struct.new 0 call 0 end } \
+            ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_block_rejects_nullable_for_non_null_param...\n");
+    {
+        // block expects non-nullable param, nullable on stack should fail
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [type.ref 0] [i32], fn [] [i32] ]} \
+            funcs {[ 2 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[1 type.ref.null 0] \
+                struct.new_default 0 local.set 0 \
+                local.get 0 \
+                block 1 struct.get 0 0 end \
+                end } ]}";
+        wah_module_t module;
+        assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_block_accepts_non_null_for_non_null_param...\n");
+    {
+        // block expects non-nullable param, non-null struct.new result should succeed
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [type.ref 0] [i32], fn [] [i32] ]} \
+            funcs {[ 2 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] \
+                i32.const 7 struct.new 0 \
+                block 1 struct.get 0 0 end \
+                end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 7);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_return_rejects_nullable_for_non_null_result...\n");
+    {
+        // function result is non-nullable (ref 0), returning nullable should fail
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [type.ref 0] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[1 type.ref.null 0] struct.new_default 0 local.set 0 local.get 0 end } ]}";
+        wah_module_t module;
+        assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_return_accepts_non_null_for_non_null_result...\n");
+    {
+        // function result is non-nullable (ref 0), returning struct.new should succeed
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [type.ref 0] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] i32.const 1 struct.new 0 end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_not_null(result.ref);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_br_rejects_nullable_for_non_null_block_result...\n");
+    {
+        // block result is non-nullable, br with nullable should fail
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [type.ref 0], fn [] [i32] ]} \
+            funcs {[ 2 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[1 type.ref.null 0] \
+                struct.new_default 0 local.set 0 \
+                block 1 local.get 0 br 0 end \
+                struct.get 0 0 end } ]}";
+        wah_module_t module;
+        assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&module);
+    }
+
     printf("\nAll Reference Types tests passed!\n");
     return 0;
 }
