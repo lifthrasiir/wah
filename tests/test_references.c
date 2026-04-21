@@ -459,6 +459,128 @@ int main() {
     test_array_oob_trap();
     test_struct_null_trap();
 
+    // --- Subtype matching tests ---
+
+    printf("Running test_subtype_structref_in_anyref_local...\n");
+    {
+        // structref value stored in anyref local (structref <: eqref <: anyref)
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[1 anyref] \
+                struct.new_default 0 local.set 0 \
+                local.get 0 i32.const 77 struct.set 0 0 \
+                local.get 0 struct.get 0 0 \
+                end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 77);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_subtype_structref_in_eqref_local...\n");
+    {
+        // structref value stored in eqref local (structref <: eqref)
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[1 eqref] \
+                struct.new_default 0 local.set 0 \
+                local.get 0 struct.get 0 0 \
+                end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 0);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_subtype_arrayref_in_anyref_local...\n");
+    {
+        // arrayref value stored in anyref local (arrayref <: eqref <: anyref)
+        const char *spec = "wasm \
+            types {[ array i32 mut, fn [] [i32] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[1 anyref] \
+                i32.const 0 i32.const 3 array.new 0 local.set 0 \
+                local.get 0 array.len \
+                end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 3);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_subtype_nullref_in_structref_local...\n");
+    {
+        // null ref stored in structref local (nullref <: structref)
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[1 structref] \
+                ref.null structref local.set 0 \
+                local.get 0 ref.is_null \
+                end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_subtype_nullfuncref_in_funcref_local...\n");
+    {
+        // null funcref stored in funcref local (nullfuncref <: funcref)
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[1 funcref] \
+                ref.null funcref local.set 0 \
+                local.get 0 ref.is_null \
+                end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
     printf("\nAll Reference Types tests passed!\n");
     return 0;
 }

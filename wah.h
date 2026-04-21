@@ -3461,8 +3461,39 @@ static inline wah_error_t wah_validation_pop_type(wah_validation_context_t *vctx
 }
 
 // Helper function to validate if an actual type matches an expected type, considering WAH_TYPE_ANY
+static inline bool wah_type_is_subtype(wah_type_t sub, wah_type_t sup) {
+    if (sub == sup || sub == WAH_TYPE_ANY) return true;
+    if (!WAH_TYPE_IS_REF(sub) || !WAH_TYPE_IS_REF(sup)) return false;
+
+    switch (sup) {
+        case WAH_TYPE_ANYREF:
+            return sub != WAH_TYPE_EXTERNREF && sub != WAH_TYPE_NULLEXTERNREF &&
+                   sub != WAH_TYPE_EXNREF && sub != WAH_TYPE_NULLEXNREF;
+        case WAH_TYPE_EQREF:
+            return sub == WAH_TYPE_I31REF || sub == WAH_TYPE_STRUCTREF ||
+                   sub == WAH_TYPE_ARRAYREF || sub == WAH_TYPE_NULLREF;
+        case WAH_TYPE_STRUCTREF:
+        case WAH_TYPE_ARRAYREF:
+        case WAH_TYPE_I31REF:
+            return sub == WAH_TYPE_NULLREF;
+        case WAH_TYPE_FUNCREF:
+            return sub == WAH_TYPE_NULLFUNCREF;
+        case WAH_TYPE_EXTERNREF:
+            return sub == WAH_TYPE_NULLEXTERNREF;
+        case WAH_TYPE_EXNREF:
+            return sub == WAH_TYPE_NULLEXNREF;
+        case WAH_TYPE_NULLREF:
+        case WAH_TYPE_NULLFUNCREF:
+        case WAH_TYPE_NULLEXTERNREF:
+        case WAH_TYPE_NULLEXNREF:
+            return false;
+        default:
+            return false;
+    }
+}
+
 static inline wah_error_t wah_validate_type_match(wah_type_t actual, wah_type_t expected) {
-    WAH_ENSURE(actual == expected || actual == WAH_TYPE_ANY, WAH_ERROR_VALIDATION_FAILED);
+    WAH_ENSURE(wah_type_is_subtype(actual, expected), WAH_ERROR_VALIDATION_FAILED);
     return WAH_OK;
 }
 
@@ -4586,7 +4617,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             // Pop reference, push i32 result
             wah_type_t ref_type;
             WAH_CHECK(wah_validation_pop_type(vctx, &ref_type));
-            WAH_ENSURE(ref_type == WAH_TYPE_FUNCREF || ref_type == WAH_TYPE_EXTERNREF, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_ANY, WAH_ERROR_VALIDATION_FAILED);
             WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_I32));
             break;
         }
