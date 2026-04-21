@@ -4744,7 +4744,13 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             uint32_t func_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &func_idx));
             WAH_ENSURE(func_idx < wah_total_func_count(vctx->module), WAH_ERROR_VALIDATION_FAILED);
-            WAH_CHECK(wah_validation_push_type_with_flags(vctx, WAH_TYPE_FUNCREF, 0));
+            uint32_t type_idx;
+            if (func_idx < vctx->module->import_function_count) {
+                type_idx = vctx->module->func_imports[func_idx].type_index;
+            } else {
+                type_idx = vctx->module->function_type_indices[func_idx - vctx->module->import_function_count];
+            }
+            WAH_CHECK(wah_validation_push_type_with_flags(vctx, (wah_type_t)type_idx, 0));
             break;
         }
 
