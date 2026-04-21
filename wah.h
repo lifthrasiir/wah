@@ -461,6 +461,11 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
 // Any `wah_link_*` calls are now invalid. Any `wah_call` call will implicitly call this function.
 wah_error_t wah_instantiate(wah_exec_context_t *ctx);
 
+// --- Repr Allocation ---
+// Allocates a fresh repr id for a concrete typeidx. Each typeidx gets its own
+// unique repr_id; layout-identical types are never merged.
+wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx, const wah_repr_info_t *info, wah_repr_t *out_repr_id);
+
 // --- GC Management ---
 // Enables GC on the execution context. Idempotent.
 wah_error_t wah_gc_start(wah_exec_context_t *ctx);
@@ -9567,6 +9572,31 @@ void wah_free_module(wah_module_t *module) {
 
     // Reset all fields to 0/NULL
     memset(module, 0, sizeof(wah_module_t));
+}
+
+// --- Repr Allocation ---
+
+wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx, const wah_repr_info_t *info, wah_repr_t *out_repr_id) {
+    WAH_ENSURE(module && info && out_repr_id, WAH_ERROR_MISUSE);
+    WAH_ENSURE(typeidx < module->type_count, WAH_ERROR_MISUSE);
+    WAH_ENSURE(module->typeidx_to_repr[typeidx] == WAH_REPR_NONE, WAH_ERROR_MISUSE);
+
+    uint32_t new_id = module->repr_count;
+    uint32_t new_count = new_id + 1;
+
+    WAH_CHECK(wah_realloc(new_count, sizeof(wah_repr_info_t *), (void **)&module->repr_infos));
+
+    size_t info_size = sizeof(wah_repr_info_t) + info->count * sizeof(wah_repr_field_t);
+    wah_repr_info_t *copy = (wah_repr_info_t *)malloc(info_size);
+    WAH_ENSURE(copy, WAH_ERROR_OUT_OF_MEMORY);
+    memcpy(copy, info, info_size);
+    copy->typeidx = typeidx;
+
+    module->repr_infos[new_id] = copy;
+    module->repr_count = new_count;
+    module->typeidx_to_repr[typeidx] = (wah_repr_t)new_id;
+    *out_repr_id = (wah_repr_t)new_id;
+    return WAH_OK;
 }
 
 // --- Programmatically created module API ---
