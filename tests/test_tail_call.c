@@ -1,0 +1,255 @@
+#define WAH_IMPLEMENTATION
+#include "common.c"
+#include <assert.h>
+
+// return_call: func 0 (entry) calls func 1 via return_call
+// func 0: [] -> [i32]   return_call 1
+// func 1: [] -> [i32]   i32.const 42
+static void test_return_call_basic(void) {
+    printf("Test: return_call basic\n");
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0, 0 ]} \
+        code {[ \
+            {[] return_call 1 end}, \
+            {[] i32.const 42 end} \
+        ]}";
+
+    wah_module_t module = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// return_call with parameters: func 0 takes (i32,i32), passes to func 1 via return_call
+// func 0: [i32,i32] -> [i32]  local.get 0  local.get 1  return_call 1
+// func 1: [i32,i32] -> [i32]  local.get 0  local.get 1  i32.add
+static void test_return_call_with_params(void) {
+    printf("Test: return_call with params\n");
+    const char *spec = "wasm \
+        types {[ fn [i32, i32] [i32], fn [i32, i32] [i32] ]} \
+        funcs {[ 0, 1 ]} \
+        code {[ \
+            {[] local.get 0 local.get 1 return_call 1 end}, \
+            {[] local.get 0 local.get 1 i32.add end} \
+        ]}";
+
+    wah_module_t module = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    wah_value_t result;
+    wah_value_t params[2] = {{.i32 = 10}, {.i32 = 32}};
+    assert_ok(wah_call(&ctx, 0, params, 2, &result));
+    assert_eq_i32(result.i32, 42);
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// return_call does not consume call stack: deep tail-call recursion
+// func 0: [i32] -> [i32]
+//   local.get 0  i32.eqz  if [i32]  i32.const 0
+//   else  local.get 0  i32.const 1  i32.sub  return_call 0  end
+static void test_return_call_deep_recursion(void) {
+    printf("Test: return_call deep recursion (no stack overflow)\n");
+    const char *spec = "wasm \
+        types {[ fn [i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ \
+            {[] \
+                local.get 0 i32.eqz \
+                if i32 \
+                    i32.const 0 \
+                else \
+                    local.get 0 i32.const 1 i32.sub return_call 0 \
+                end \
+            end} \
+        ]}";
+
+    wah_module_t module = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    wah_value_t result;
+    wah_value_t params[1] = {{.i32 = 100000}};
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i32(result.i32, 0);
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// return_call_indirect basic
+// Table with one function (func 1), func 0 calls it via return_call_indirect
+static void test_return_call_indirect_basic(void) {
+    printf("Test: return_call_indirect basic\n");
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0, 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        elements {[ elem.active.table#0 i32.const 0 end [ 1 ] ]} \
+        code {[ \
+            {[] i32.const 0 return_call_indirect 0 0 end}, \
+            {[] i32.const 99 end} \
+        ]}";
+
+    wah_module_t module = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 99);
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// return_call_indirect deep recursion
+// func 0: [i32] -> [i32], table[0] = func 0
+// if n == 0: return 0, else: return_call_indirect(n-1) through table[0]
+static void test_return_call_indirect_deep_recursion(void) {
+    printf("Test: return_call_indirect deep recursion (no stack overflow)\n");
+    const char *spec = "wasm \
+        types {[ fn [i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        elements {[ elem.active.table#0 i32.const 0 end [ 0 ] ]} \
+        code {[ \
+            {[] \
+                local.get 0 i32.eqz \
+                if i32 \
+                    i32.const 0 \
+                else \
+                    local.get 0 i32.const 1 i32.sub \
+                    i32.const 0 return_call_indirect 0 0 \
+                end \
+            end} \
+        ]}";
+
+    wah_module_t module = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t result;
+    wah_value_t params[1] = {{.i32 = 100000}};
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i32(result.i32, 0);
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// return_call_ref basic
+static void test_return_call_ref_basic(void) {
+    printf("Test: return_call_ref basic\n");
+    // type 0: [] -> [i32]
+    // func 0: ref.func 1, return_call_ref 0
+    // func 1: i32.const 77
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0, 0 ]} \
+        elements {[ elem.declarative elem.funcref [ 1 ] ]} \
+        code {[ \
+            {[] ref.func 1 return_call_ref 0 end}, \
+            {[] i32.const 77 end} \
+        ]}";
+
+    wah_module_t module = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 77);
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// return_call_ref null trap
+static void test_return_call_ref_null_trap(void) {
+    printf("Test: return_call_ref null trap\n");
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ \
+            {[] ref.null 0 return_call_ref 0 end} \
+        ]}";
+
+    wah_module_t module = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t result;
+    wah_error_t err = wah_call(&ctx, 0, NULL, 0, &result);
+    assert(err == WAH_ERROR_TRAP && "expected trap for null call_ref");
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// Mutual tail-call recursion: even/odd
+// func 0 (is_even): [i32] -> [i32]
+//   if n == 0: return 1, else: return_call 1 (n-1)
+// func 1 (is_odd): [i32] -> [i32]
+//   if n == 0: return 0, else: return_call 0 (n-1)
+static void test_mutual_tail_recursion(void) {
+    printf("Test: mutual tail recursion (even/odd)\n");
+    const char *spec = "wasm \
+        types {[ fn [i32] [i32] ]} \
+        funcs {[ 0, 0 ]} \
+        code {[ \
+            {[] \
+                local.get 0 i32.eqz \
+                if i32 \
+                    i32.const 1 \
+                else \
+                    local.get 0 i32.const 1 i32.sub return_call 1 \
+                end \
+            end}, \
+            {[] \
+                local.get 0 i32.eqz \
+                if i32 \
+                    i32.const 0 \
+                else \
+                    local.get 0 i32.const 1 i32.sub return_call 0 \
+                end \
+            end} \
+        ]}";
+
+    wah_module_t module = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    wah_value_t result;
+    wah_value_t params[1];
+
+    params[0].i32 = 100000;
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i32(result.i32, 1);  // 100000 is even
+
+    params[0].i32 = 100001;
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i32(result.i32, 0);  // 100001 is odd
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+int main(void) {
+    test_return_call_basic();
+    test_return_call_with_params();
+    test_return_call_deep_recursion();
+    test_return_call_indirect_basic();
+    test_return_call_indirect_deep_recursion();
+    test_return_call_ref_basic();
+    test_return_call_ref_null_trap();
+    test_mutual_tail_recursion();
+    printf("All tail-call tests passed.\n");
+    return 0;
+}

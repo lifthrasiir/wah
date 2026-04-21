@@ -813,7 +813,8 @@ typedef enum {
 #define WAH_OPCODES(X) \
     /* Control Flow Operators */ \
     X(UNREACHABLE,, 0x00) X(NOP,, 0x01) X(BLOCK,, 0x02) X(LOOP,, 0x03) X(IF,, 0x04) X(ELSE,, 0x05) X(END,, 0x0B) \
-    X(BR,, 0x0C) X(BR_IF,, 0x0D) X(BR_TABLE,, 0x0E) X(RETURN,, 0x0F) X(CALL,I, 0x10) X(CALL_INDIRECT,II, 0x11) X(CALL_REF,I, 0x14) \
+    X(BR,, 0x0C) X(BR_IF,, 0x0D) X(BR_TABLE,, 0x0E) X(RETURN,, 0x0F) X(CALL,I, 0x10) X(CALL_INDIRECT,II, 0x11) \
+    X(RETURN_CALL,I, 0x12) X(RETURN_CALL_INDIRECT,II, 0x13) X(CALL_REF,I, 0x14) X(RETURN_CALL_REF,I, 0x15) \
     \
     /* Parametric Operators */ \
     X(DROP,, 0x1A) X(SELECT,, 0x1B) X(SELECT_T,, 0x1C) \
@@ -1077,7 +1078,7 @@ typedef enum {
 #define WAH_I64_TABLE_OPCODES(X) \
     X(TABLE_GET,i64) X(TABLE_SET,i64) X(TABLE_SIZE,i64) \
     X(TABLE_GROW,i64) X(TABLE_FILL,i64) X(TABLE_COPY,i64) X(TABLE_INIT,i64) \
-    X(CALL_INDIRECT,i64)
+    X(CALL_INDIRECT,i64) X(RETURN_CALL_INDIRECT,i64)
 
 #ifdef WAH_X86_64
 
@@ -4281,6 +4282,69 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             }
             break;
         }
+        case WAH_OP_RETURN_CALL: {
+            uint32_t func_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &func_idx));
+            WAH_ENSURE(func_idx < wah_total_func_count(vctx->module), WAH_ERROR_VALIDATION_FAILED);
+            const wah_func_type_t *called_func_type;
+            if (func_idx < vctx->module->import_function_count) {
+                called_func_type = &vctx->module->types[vctx->module->func_imports[func_idx].type_index];
+            } else {
+                uint32_t local_idx = func_idx - vctx->module->import_function_count;
+                called_func_type = &vctx->module->types[vctx->module->function_type_indices[local_idx]];
+            }
+            WAH_ENSURE(called_func_type->result_count == vctx->func_type->result_count, WAH_ERROR_VALIDATION_FAILED);
+            for (uint32_t j = 0; j < called_func_type->result_count; ++j) {
+                WAH_ENSURE(wah_type_is_subtype(called_func_type->result_types[j],
+                    vctx->func_type->result_types[j], vctx->module), WAH_ERROR_VALIDATION_FAILED);
+            }
+            for (int32_t j = called_func_type->param_count - 1; j >= 0; --j) {
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, called_func_type->param_types[j], called_func_type->param_type_flags[j]));
+            }
+            vctx->is_unreachable = true;
+            return WAH_OK;
+        }
+        case WAH_OP_RETURN_CALL_INDIRECT: {
+            uint32_t type_idx, table_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &type_idx));
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &table_idx));
+            WAH_ENSURE(table_idx < wah_total_table_count(vctx->module), WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(wah_type_is_subtype(wah_table_type(vctx->module, table_idx)->elem_type,
+                                           WAH_TYPE_FUNCREF, vctx->module), WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(type_idx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, wah_table_type(vctx->module, table_idx)->addr_type, 0));
+            const wah_func_type_t *expected_func_type = &vctx->module->types[type_idx];
+            WAH_ENSURE(expected_func_type->result_count == vctx->func_type->result_count, WAH_ERROR_VALIDATION_FAILED);
+            for (uint32_t j = 0; j < expected_func_type->result_count; ++j) {
+                WAH_ENSURE(wah_type_is_subtype(expected_func_type->result_types[j],
+                    vctx->func_type->result_types[j], vctx->module), WAH_ERROR_VALIDATION_FAILED);
+            }
+            for (int32_t j = expected_func_type->param_count - 1; j >= 0; --j) {
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, expected_func_type->param_types[j],
+                    expected_func_type->param_type_flags[j]));
+            }
+            vctx->is_unreachable = true;
+            return WAH_OK;
+        }
+        case WAH_OP_RETURN_CALL_REF: {
+            uint32_t type_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &type_idx));
+            WAH_ENSURE(type_idx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(vctx->module->type_defs[type_idx].kind == WAH_COMP_FUNC, WAH_ERROR_VALIDATION_FAILED);
+            const wah_func_type_t *expected_func_type = &vctx->module->types[type_idx];
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, (wah_type_t)type_idx, WAH_TYPE_FLAG_NULLABLE));
+            WAH_ENSURE(expected_func_type->result_count == vctx->func_type->result_count, WAH_ERROR_VALIDATION_FAILED);
+            for (uint32_t j = 0; j < expected_func_type->result_count; ++j) {
+                WAH_ENSURE(wah_type_is_subtype(expected_func_type->result_types[j],
+                    vctx->func_type->result_types[j], vctx->module), WAH_ERROR_VALIDATION_FAILED);
+            }
+            for (int32_t j = expected_func_type->param_count - 1; j >= 0; --j) {
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, expected_func_type->param_types[j],
+                    expected_func_type->param_type_flags[j]));
+            }
+            vctx->is_unreachable = true;
+            return WAH_OK;
+        }
         case WAH_OP_LOCAL_GET:
         case WAH_OP_LOCAL_SET:
         case WAH_OP_LOCAL_TEE: {
@@ -5023,7 +5087,6 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
         default:
             if (opcode_val == 0x06 || opcode_val == 0x08 || opcode_val == 0x0A ||
-                opcode_val == 0x12 || opcode_val == 0x13 || opcode_val == 0x15 ||
                 (opcode_val >= WAH_FB && opcode_val < WAH_FC)) {
                 return WAH_ERROR_UNIMPLEMENTED;
             }
@@ -6168,7 +6231,8 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
             if (opcode == WAH_OP_LOOP) {
                 preparsed_size += WAH_POLL_SIZE;
             }
-            if (opcode == WAH_OP_CALL || opcode == WAH_OP_CALL_INDIRECT || opcode == WAH_OP_CALL_REF) {
+            if (opcode == WAH_OP_CALL || opcode == WAH_OP_CALL_INDIRECT || opcode == WAH_OP_CALL_REF ||
+                opcode == WAH_OP_RETURN_CALL || opcode == WAH_OP_RETURN_CALL_INDIRECT || opcode == WAH_OP_RETURN_CALL_REF) {
                 preparsed_size += WAH_POLL_SIZE;
             }
         }
@@ -6428,7 +6492,8 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
             if (control_sp > 0) { control_sp--; continue; }
         }
 
-        if (emit_poll && (opcode == WAH_OP_CALL || opcode == WAH_OP_CALL_INDIRECT || opcode == WAH_OP_CALL_REF)) {
+        if (emit_poll && (opcode == WAH_OP_CALL || opcode == WAH_OP_CALL_INDIRECT || opcode == WAH_OP_CALL_REF ||
+                         opcode == WAH_OP_RETURN_CALL || opcode == WAH_OP_RETURN_CALL_INDIRECT || opcode == WAH_OP_RETURN_CALL_REF)) {
             WAH_EMIT_POLL();
         }
 
@@ -6505,6 +6570,11 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 if (opcode == WAH_OP_CALL_INDIRECT) {
                     if (b < wah_total_table_count(module) && wah_table_type(module, b)->addr_type == WAH_TYPE_I64) {
                         wah_write_u16_le(write_ptr - sizeof(uint16_t), WAH_OP_CALL_INDIRECT_i64);
+                    }
+                }
+                if (opcode == WAH_OP_RETURN_CALL_INDIRECT) {
+                    if (b < wah_total_table_count(module) && wah_table_type(module, b)->addr_type == WAH_TYPE_I64) {
+                        wah_write_u16_le(write_ptr - sizeof(uint16_t), WAH_OP_RETURN_CALL_INDIRECT_i64);
                     }
                 }
                 wah_write_u32_le(write_ptr, a);
@@ -8687,86 +8757,11 @@ WAH_RUN(ELEM_DROP) {
     WAH_NEXT();
 }
 
-WAH_RUN(CALL) {
-    uint32_t called_func_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-
-    // Dispatch via the runtime function_table (global index space)
-    WAH_ASSERT(called_func_idx < ctx->function_table_count && "validation didn't catch out-of-bound function index");
-    const wah_function_t *called_fn = &ctx->function_table[called_func_idx];
-
-    if (called_fn->is_host) {
-        // Host function path
-        size_t nparams = called_fn->nparams;
-        size_t nresults = called_fn->nresults;
-
-        // Validate parameter count
-        WAH_ASSERT((size_t)(sp - ctx->value_stack) >= nparams && "validation bug; is this even possible?");
-
-        // Params are at [sp - nparams, sp). Place results ABOVE params so they don't overlap.
-        wah_value_t *param_vals = sp - nparams;
-        wah_value_t *result_vals = sp;
-
-        // Reserve space for results above params
-        WAH_ENSURE_GOTO((size_t)(result_vals + nresults - ctx->value_stack) <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup);
-        memset(result_vals, 0, sizeof(wah_value_t) * nresults);
-
-        // Sync frame state so host callbacks can inspect the call stack
-        frame->bytecode_ip = bytecode_ip;
-        ctx->sp = (uint32_t)(sp - ctx->value_stack);
-
-        // Call host function: params and results are in distinct, non-overlapping regions
-        WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, called_fn, param_vals, (uint32_t)nparams, result_vals), cleanup);
-
-        // Move results down to where params were (standard wasm calling convention)
-        if (nresults > 0) {
-            memmove(param_vals, result_vals, sizeof(wah_value_t) * nresults);
-        }
-        sp = param_vals + nresults;
-    } else {
-        // WASM function call
-        const wah_module_t *fn_module = called_fn->fn_module ? called_fn->fn_module : ctx->module;
-        uint32_t local_idx = called_fn->local_idx;
-        const wah_func_type_t *called_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
-        const wah_code_body_t *called_code = &fn_module->code_bodies[local_idx];
-
-        uint32_t new_locals_offset = (uint32_t)(sp - ctx->value_stack) - called_func_type->param_count;
-
-        frame->bytecode_ip = bytecode_ip;
-
-        WAH_CHECK_GOTO(wah_push_frame(ctx, fn_module, local_idx, new_locals_offset, called_func_type->result_count), cleanup);
-
-        uint32_t num_locals = called_code->local_count;
-        if (num_locals > 0) {
-            WAH_ENSURE_GOTO(sp + num_locals - ctx->value_stack <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup);
-            memset(sp, 0, sizeof(wah_value_t) * num_locals);
-            sp += num_locals;
-        }
-
-        RELOAD_FRAME();
-    }
-
-    WAH_NEXT();
-    WAH_CLEANUP();
-}
-
-// Common body for CALL_INDIRECT / CALL_INDIRECT_i64 after resolving func_table_idx
-#define WAH_CALL_INDIRECT_BODY(func_table_idx) \
-    WAH_ENSURE_GOTO(func_table_idx < ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup); \
-    const wah_function_t *actual_fn = (const wah_function_t *)ctx->tables[table_idx][func_table_idx].ref; \
-    WAH_ENSURE_GOTO(actual_fn != NULL, WAH_ERROR_TRAP, cleanup); \
-    WAH_ASSERT(actual_fn != wah_funcref_sentinel && "prefuncref stored in table without conversion to funcref"); \
-    if (actual_fn->is_host) { \
-        size_t nparams = actual_fn->nparams; \
-        size_t nresults = actual_fn->nresults; \
-        const wah_func_type_t *expected_func_type = &ctx->module->types[type_idx]; \
-        WAH_ASSERT(expected_func_type->param_count == nparams && expected_func_type->result_count == nresults && "type mismatch (param/result count)"); \
-        for (uint32_t i = 0; i < expected_func_type->param_count; ++i) { \
-            WAH_ASSERT(expected_func_type->param_types[i] == actual_fn->param_types[i] && "type mismatch (param type)"); \
-        } \
-        for (uint32_t i = 0; i < expected_func_type->result_count; ++i) { \
-            WAH_ASSERT(expected_func_type->result_types[i] == actual_fn->result_types[i] && "type mismatch (result type)"); \
-        } \
+// Inline host call: place results above params, call, move results down.
+#define WAH_CALL_HOST_INLINE(the_fn) \
+    do { \
+        size_t nparams = (the_fn)->nparams; \
+        size_t nresults = (the_fn)->nresults; \
         WAH_ASSERT((size_t)(sp - ctx->value_stack) >= nparams && "validation bug"); \
         wah_value_t *param_vals = sp - nparams; \
         wah_value_t *result_vals = sp; \
@@ -8774,37 +8769,114 @@ WAH_RUN(CALL) {
         memset(result_vals, 0, sizeof(wah_value_t) * nresults); \
         frame->bytecode_ip = bytecode_ip; \
         ctx->sp = (uint32_t)(sp - ctx->value_stack); \
-        WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, actual_fn, param_vals, (uint32_t)nparams, result_vals), cleanup); \
+        WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, (the_fn), param_vals, (uint32_t)nparams, result_vals), cleanup); \
         if (nresults > 0) { \
             memmove(param_vals, result_vals, sizeof(wah_value_t) * nresults); \
         } \
         sp = param_vals + nresults; \
-    } else { \
-        const wah_module_t *fn_module = actual_fn->fn_module ? actual_fn->fn_module : ctx->module; \
-        uint32_t local_idx = actual_fn->local_idx; \
-        const wah_func_type_t *expected_func_type = &ctx->module->types[type_idx]; \
-        const wah_func_type_t *actual_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]]; \
-        WAH_ENSURE_GOTO(expected_func_type->param_count == actual_func_type->param_count && \
-                        expected_func_type->result_count == actual_func_type->result_count, \
-                        WAH_ERROR_TRAP, cleanup); \
-        for (uint32_t i = 0; i < expected_func_type->param_count; ++i) { \
-            WAH_ENSURE_GOTO(expected_func_type->param_types[i] == actual_func_type->param_types[i], WAH_ERROR_TRAP, cleanup); \
-        } \
-        for (uint32_t i = 0; i < expected_func_type->result_count; ++i) { \
-            WAH_ENSURE_GOTO(expected_func_type->result_types[i] == actual_func_type->result_types[i], WAH_ERROR_TRAP, cleanup); \
-        } \
-        const wah_code_body_t *called_code = &fn_module->code_bodies[local_idx]; \
-        uint32_t new_locals_offset = (uint32_t)(sp - ctx->value_stack) - expected_func_type->param_count; \
+    } while (0)
+
+// Inline wasm call: push frame, init locals.
+#define WAH_CALL_WASM_INLINE(fn_module_, local_idx_, func_type_) \
+    do { \
+        const wah_code_body_t *called_code_ = &(fn_module_)->code_bodies[local_idx_]; \
+        uint32_t new_locals_offset_ = (uint32_t)(sp - ctx->value_stack) - (func_type_)->param_count; \
         frame->bytecode_ip = bytecode_ip; \
-        WAH_CHECK_GOTO(wah_push_frame(ctx, fn_module, local_idx, new_locals_offset, actual_func_type->result_count), cleanup); \
-        uint32_t num_locals = called_code->local_count; \
-        if (num_locals > 0) { \
-            WAH_ENSURE_GOTO(sp + num_locals - ctx->value_stack <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup); \
-            memset(sp, 0, sizeof(wah_value_t) * num_locals); \
-            sp += num_locals; \
+        WAH_CHECK_GOTO(wah_push_frame(ctx, (fn_module_), (local_idx_), new_locals_offset_, (func_type_)->result_count), cleanup); \
+        uint32_t num_locals_ = called_code_->local_count; \
+        if (num_locals_ > 0) { \
+            WAH_ENSURE_GOTO(sp + num_locals_ - ctx->value_stack <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup); \
+            memset(sp, 0, sizeof(wah_value_t) * num_locals_); \
+            sp += num_locals_; \
         } \
         RELOAD_FRAME(); \
+    } while (0)
+
+// Common type-check + dispatch for call_indirect family.
+// CALL_HOST / CALL_WASM are invoked with (actual_fn) / (fn_module, local_idx, actual_func_type) in scope.
+#define WAH_INDIRECT_BODY(func_table_idx, CALL_HOST, CALL_WASM) \
+    WAH_ENSURE_GOTO(func_table_idx < ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup); \
+    const wah_function_t *actual_fn = (const wah_function_t *)ctx->tables[table_idx][func_table_idx].ref; \
+    WAH_ENSURE_GOTO(actual_fn != NULL, WAH_ERROR_TRAP, cleanup); \
+    WAH_ASSERT(actual_fn != wah_funcref_sentinel && "prefuncref stored in table without conversion to funcref"); \
+    { \
+        const wah_func_type_t *expected_func_type = &ctx->module->types[type_idx]; \
+        if (actual_fn->is_host) { \
+            WAH_ASSERT(expected_func_type->param_count == actual_fn->nparams && expected_func_type->result_count == actual_fn->nresults && "type mismatch (param/result count)"); \
+            for (uint32_t i = 0; i < expected_func_type->param_count; ++i) { \
+                WAH_ASSERT(expected_func_type->param_types[i] == actual_fn->param_types[i] && "type mismatch (param type)"); \
+            } \
+            for (uint32_t i = 0; i < expected_func_type->result_count; ++i) { \
+                WAH_ASSERT(expected_func_type->result_types[i] == actual_fn->result_types[i] && "type mismatch (result type)"); \
+            } \
+            CALL_HOST; \
+        } else { \
+            const wah_module_t *fn_module = actual_fn->fn_module ? actual_fn->fn_module : ctx->module; \
+            uint32_t local_idx = actual_fn->local_idx; \
+            const wah_func_type_t *actual_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]]; \
+            WAH_ENSURE_GOTO(expected_func_type->param_count == actual_func_type->param_count && \
+                            expected_func_type->result_count == actual_func_type->result_count, \
+                            WAH_ERROR_TRAP, cleanup); \
+            for (uint32_t i = 0; i < expected_func_type->param_count; ++i) { \
+                WAH_ENSURE_GOTO(expected_func_type->param_types[i] == actual_func_type->param_types[i], WAH_ERROR_TRAP, cleanup); \
+            } \
+            for (uint32_t i = 0; i < expected_func_type->result_count; ++i) { \
+                WAH_ENSURE_GOTO(expected_func_type->result_types[i] == actual_func_type->result_types[i], WAH_ERROR_TRAP, cleanup); \
+            } \
+            CALL_WASM; \
+        } \
     }
+
+// Common type-check + dispatch for call_ref family.
+// Expects actual_fn, type_idx in scope. CALL_HOST / CALL_WASM same convention as WAH_INDIRECT_BODY.
+#define WAH_REF_BODY(actual_fn, CALL_HOST, CALL_WASM) \
+    { \
+        const wah_func_type_t *expected_func_type = &ctx->module->types[type_idx]; \
+        if ((actual_fn)->is_host) { \
+            WAH_ASSERT(expected_func_type->param_count == (actual_fn)->nparams && expected_func_type->result_count == (actual_fn)->nresults && "type mismatch (param/result count)"); \
+            for (uint32_t i = 0; i < expected_func_type->param_count; ++i) { \
+                WAH_ASSERT(expected_func_type->param_types[i] == (actual_fn)->param_types[i] && "type mismatch (param type)"); \
+            } \
+            for (uint32_t i = 0; i < expected_func_type->result_count; ++i) { \
+                WAH_ASSERT(expected_func_type->result_types[i] == (actual_fn)->result_types[i] && "type mismatch (result type)"); \
+            } \
+            CALL_HOST; \
+        } else { \
+            const wah_module_t *fn_module = (actual_fn)->fn_module ? (actual_fn)->fn_module : ctx->module; \
+            uint32_t local_idx = (actual_fn)->local_idx; \
+            const wah_func_type_t *actual_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]]; \
+            WAH_ENSURE_GOTO(expected_func_type->param_count == actual_func_type->param_count && \
+                            expected_func_type->result_count == actual_func_type->result_count, \
+                            WAH_ERROR_TRAP, cleanup); \
+            for (uint32_t i = 0; i < expected_func_type->param_count; ++i) { \
+                WAH_ENSURE_GOTO(expected_func_type->param_types[i] == actual_func_type->param_types[i], WAH_ERROR_TRAP, cleanup); \
+            } \
+            for (uint32_t i = 0; i < expected_func_type->result_count; ++i) { \
+                WAH_ENSURE_GOTO(expected_func_type->result_types[i] == actual_func_type->result_types[i], WAH_ERROR_TRAP, cleanup); \
+            } \
+            CALL_WASM; \
+        } \
+    }
+
+WAH_RUN(CALL) {
+    uint32_t called_func_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+
+    WAH_ASSERT(called_func_idx < ctx->function_table_count && "validation didn't catch out-of-bound function index");
+    const wah_function_t *called_fn = &ctx->function_table[called_func_idx];
+
+    if (called_fn->is_host) {
+        WAH_CALL_HOST_INLINE(called_fn);
+    } else {
+        const wah_module_t *fn_module = called_fn->fn_module ? called_fn->fn_module : ctx->module;
+        uint32_t local_idx = called_fn->local_idx;
+        const wah_func_type_t *called_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
+        WAH_CALL_WASM_INLINE(fn_module, local_idx, called_func_type);
+    }
+
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
 
 WAH_RUN(CALL_INDIRECT) {
     uint32_t type_idx = wah_read_u32_le(bytecode_ip);
@@ -8814,7 +8886,9 @@ WAH_RUN(CALL_INDIRECT) {
     uint32_t func_table_idx = (uint32_t)(*--sp).i32;
     WAH_ASSERT(type_idx < ctx->module->type_count);
     WAH_ASSERT(table_idx < ctx->table_count);
-    WAH_CALL_INDIRECT_BODY(func_table_idx)
+    WAH_INDIRECT_BODY(func_table_idx,
+        WAH_CALL_HOST_INLINE(actual_fn),
+        WAH_CALL_WASM_INLINE(fn_module, local_idx, actual_func_type))
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -8827,7 +8901,9 @@ WAH_RUN(CALL_INDIRECT_i64) {
     uint64_t func_table_idx = (uint64_t)(*--sp).i64;
     WAH_ASSERT(type_idx < ctx->module->type_count);
     WAH_ASSERT(table_idx < ctx->table_count);
-    WAH_CALL_INDIRECT_BODY(func_table_idx)
+    WAH_INDIRECT_BODY(func_table_idx,
+        WAH_CALL_HOST_INLINE(actual_fn),
+        WAH_CALL_WASM_INLINE(fn_module, local_idx, actual_func_type))
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -8838,55 +8914,144 @@ WAH_RUN(CALL_REF) {
     const wah_function_t *actual_fn = (const wah_function_t *)(*--sp).ref;
     WAH_ENSURE_GOTO(actual_fn != NULL, WAH_ERROR_TRAP, cleanup);
     WAH_ASSERT(actual_fn != wah_funcref_sentinel && "prefuncref stored without conversion to funcref");
-    if (actual_fn->is_host) {
-        size_t nparams = actual_fn->nparams;
-        size_t nresults = actual_fn->nresults;
-        const wah_func_type_t *expected_func_type = &ctx->module->types[type_idx];
-        WAH_ASSERT(expected_func_type->param_count == nparams && expected_func_type->result_count == nresults && "type mismatch (param/result count)");
-        for (uint32_t i = 0; i < expected_func_type->param_count; ++i) {
-            WAH_ASSERT(expected_func_type->param_types[i] == actual_fn->param_types[i] && "type mismatch (param type)");
-        }
-        for (uint32_t i = 0; i < expected_func_type->result_count; ++i) {
-            WAH_ASSERT(expected_func_type->result_types[i] == actual_fn->result_types[i] && "type mismatch (result type)");
-        }
-        WAH_ASSERT((size_t)(sp - ctx->value_stack) >= nparams && "validation bug");
-        wah_value_t *param_vals = sp - nparams;
-        wah_value_t *result_vals = sp;
-        WAH_ENSURE_GOTO((size_t)(result_vals + nresults - ctx->value_stack) <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup);
-        memset(result_vals, 0, sizeof(wah_value_t) * nresults);
-        frame->bytecode_ip = bytecode_ip;
-        ctx->sp = (uint32_t)(sp - ctx->value_stack);
-        WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, actual_fn, param_vals, (uint32_t)nparams, result_vals), cleanup);
-        if (nresults > 0) {
-            memmove(param_vals, result_vals, sizeof(wah_value_t) * nresults);
-        }
-        sp = param_vals + nresults;
+    WAH_REF_BODY(actual_fn,
+        WAH_CALL_HOST_INLINE(actual_fn),
+        WAH_CALL_WASM_INLINE(fn_module, local_idx, actual_func_type))
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+// Tail-call helper: reuse current frame for a wasm-to-wasm call.
+// Moves params to current frame's locals area, updates frame in-place.
+#define WAH_TAIL_CALL_WASM(fn_module_, local_idx_, param_count_, result_count_) \
+    do { \
+        const wah_module_t *tc_module = (fn_module_); \
+        uint32_t tc_local_idx = (local_idx_); \
+        uint32_t tc_param_count = (param_count_); \
+        const wah_code_body_t *tc_code = &tc_module->code_bodies[tc_local_idx]; \
+        wah_value_t *tc_params_src = sp - tc_param_count; \
+        wah_value_t *tc_locals_dst = ctx->value_stack + frame->locals_offset; \
+        if (tc_param_count > 0) { \
+            memmove(tc_locals_dst, tc_params_src, sizeof(wah_value_t) * tc_param_count); \
+        } \
+        sp = tc_locals_dst + tc_param_count; \
+        uint32_t tc_num_locals = tc_code->local_count; \
+        if (tc_num_locals > 0) { \
+            WAH_ENSURE_GOTO(sp + tc_num_locals - ctx->value_stack <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup); \
+            memset(sp, 0, sizeof(wah_value_t) * tc_num_locals); \
+            sp += tc_num_locals; \
+        } \
+        frame->code = tc_code; \
+        frame->bytecode_ip = tc_code->parsed_code.bytecode; \
+        frame->func_idx = tc_local_idx; \
+        frame->result_count = (result_count_); \
+        frame->module = tc_module; \
+        frame->ref_map_offset = 0; \
+        if (tc_module == ctx->module) { \
+            frame->globals_offset = 0; \
+        } else { \
+            uint32_t tc_offset = wah_total_global_count(ctx->module); \
+            bool tc_found = false; \
+            for (uint32_t tc_i = 0; tc_i < ctx->linked_module_count; tc_i++) { \
+                if (ctx->linked_modules[tc_i].module == tc_module) { \
+                    frame->globals_offset = tc_offset; \
+                    tc_found = true; \
+                    break; \
+                } \
+                tc_offset += ctx->linked_modules[tc_i].module->global_count; \
+            } \
+            if (!tc_found) frame->globals_offset = 0; \
+        } \
+        bytecode_ip = frame->bytecode_ip; \
+        bytecode_base = frame->code->parsed_code.bytecode; \
+    } while (0)
+
+// Tail-call helper for host functions: perform return, then call host function in caller context.
+#define WAH_TAIL_CALL_HOST(called_fn_) \
+    do { \
+        const wah_function_t *tc_fn = (called_fn_); \
+        size_t tc_nparams = tc_fn->nparams; \
+        size_t tc_nresults = tc_fn->nresults; \
+        wah_value_t *tc_params_src = sp - tc_nparams; \
+        wah_value_t *tc_locals_dst = ctx->value_stack + frame->locals_offset; \
+        if (tc_nparams > 0) { \
+            memmove(tc_locals_dst, tc_params_src, sizeof(wah_value_t) * tc_nparams); \
+        } \
+        sp = tc_locals_dst + tc_nparams; \
+        ctx->call_depth--; \
+        wah_value_t *tc_param_vals = sp - tc_nparams; \
+        wah_value_t *tc_result_vals = sp; \
+        WAH_ENSURE_GOTO((size_t)(tc_result_vals + tc_nresults - ctx->value_stack) <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup); \
+        memset(tc_result_vals, 0, sizeof(wah_value_t) * tc_nresults); \
+        RELOAD_FRAME(); \
+        frame->bytecode_ip = bytecode_ip; \
+        ctx->sp = (uint32_t)(sp - ctx->value_stack); \
+        WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, tc_fn, tc_param_vals, (uint32_t)tc_nparams, tc_result_vals), cleanup); \
+        if (tc_nresults > 0) { \
+            memmove(tc_param_vals, tc_result_vals, sizeof(wah_value_t) * tc_nresults); \
+        } \
+        sp = tc_param_vals + tc_nresults; \
+    } while (0)
+
+WAH_RUN(RETURN_CALL) {
+    uint32_t called_func_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+
+    WAH_ASSERT(called_func_idx < ctx->function_table_count && "validation didn't catch out-of-bound function index");
+    const wah_function_t *called_fn = &ctx->function_table[called_func_idx];
+
+    if (called_fn->is_host) {
+        WAH_TAIL_CALL_HOST(called_fn);
     } else {
-        const wah_module_t *fn_module = actual_fn->fn_module ? actual_fn->fn_module : ctx->module;
-        uint32_t local_idx = actual_fn->local_idx;
-        const wah_func_type_t *expected_func_type = &ctx->module->types[type_idx];
-        const wah_func_type_t *actual_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
-        WAH_ENSURE_GOTO(expected_func_type->param_count == actual_func_type->param_count &&
-                        expected_func_type->result_count == actual_func_type->result_count,
-                        WAH_ERROR_TRAP, cleanup);
-        for (uint32_t i = 0; i < expected_func_type->param_count; ++i) {
-            WAH_ENSURE_GOTO(expected_func_type->param_types[i] == actual_func_type->param_types[i], WAH_ERROR_TRAP, cleanup);
-        }
-        for (uint32_t i = 0; i < expected_func_type->result_count; ++i) {
-            WAH_ENSURE_GOTO(expected_func_type->result_types[i] == actual_func_type->result_types[i], WAH_ERROR_TRAP, cleanup);
-        }
-        const wah_code_body_t *called_code = &fn_module->code_bodies[local_idx];
-        uint32_t new_locals_offset = (uint32_t)(sp - ctx->value_stack) - expected_func_type->param_count;
-        frame->bytecode_ip = bytecode_ip;
-        WAH_CHECK_GOTO(wah_push_frame(ctx, fn_module, local_idx, new_locals_offset, actual_func_type->result_count), cleanup);
-        uint32_t num_locals = called_code->local_count;
-        if (num_locals > 0) {
-            WAH_ENSURE_GOTO(sp + num_locals - ctx->value_stack <= ctx->value_stack_capacity, WAH_ERROR_CALL_STACK_OVERFLOW, cleanup);
-            memset(sp, 0, sizeof(wah_value_t) * num_locals);
-            sp += num_locals;
-        }
-        RELOAD_FRAME();
+        const wah_module_t *fn_module = called_fn->fn_module ? called_fn->fn_module : ctx->module;
+        uint32_t local_idx = called_fn->local_idx;
+        const wah_func_type_t *called_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
+        WAH_TAIL_CALL_WASM(fn_module, local_idx, called_func_type->param_count, called_func_type->result_count);
     }
+
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(RETURN_CALL_INDIRECT) {
+    uint32_t type_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    uint32_t table_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    uint32_t func_table_idx = (uint32_t)(*--sp).i32;
+    WAH_ASSERT(type_idx < ctx->module->type_count);
+    WAH_ASSERT(table_idx < ctx->table_count);
+    WAH_INDIRECT_BODY(func_table_idx,
+        WAH_TAIL_CALL_HOST(actual_fn),
+        WAH_TAIL_CALL_WASM(fn_module, local_idx, actual_func_type->param_count, actual_func_type->result_count))
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(RETURN_CALL_INDIRECT_i64) {
+    uint32_t type_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    uint32_t table_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    uint64_t func_table_idx = (uint64_t)(*--sp).i64;
+    WAH_ASSERT(type_idx < ctx->module->type_count);
+    WAH_ASSERT(table_idx < ctx->table_count);
+    WAH_INDIRECT_BODY(func_table_idx,
+        WAH_TAIL_CALL_HOST(actual_fn),
+        WAH_TAIL_CALL_WASM(fn_module, local_idx, actual_func_type->param_count, actual_func_type->result_count))
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(RETURN_CALL_REF) {
+    uint32_t type_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    const wah_function_t *actual_fn = (const wah_function_t *)(*--sp).ref;
+    WAH_ENSURE_GOTO(actual_fn != NULL, WAH_ERROR_TRAP, cleanup);
+    WAH_ASSERT(actual_fn != wah_funcref_sentinel && "prefuncref stored without conversion to funcref");
+    WAH_REF_BODY(actual_fn,
+        WAH_TAIL_CALL_HOST(actual_fn),
+        WAH_TAIL_CALL_WASM(fn_module, local_idx, actual_func_type->param_count, actual_func_type->result_count))
     WAH_NEXT();
     WAH_CLEANUP();
 }

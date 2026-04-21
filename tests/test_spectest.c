@@ -149,9 +149,9 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/relaxed_madd_nmadd.bin.wast",
     "tests/spectest/relaxed_min_max.bin.wast",
     "tests/spectest/return.bin.wast",
-    //"tests/spectest/return_call.bin.wast",     // unimplemented
-    //"tests/spectest/return_call_indirect.bin.wast", // unimplemented
-    //"tests/spectest/return_call_ref.bin.wast", // GC proposal
+    "tests/spectest/return_call.bin.wast",
+    "tests/spectest/return_call_indirect.bin.wast",
+    "tests/spectest/return_call_ref.bin.wast",
     "tests/spectest/select.bin.wast",
     "tests/spectest/simd_address.bin.wast",
     "tests/spectest/simd_align.bin.wast",
