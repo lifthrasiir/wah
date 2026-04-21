@@ -748,6 +748,140 @@ int main() {
         wah_free_module(&module);
     }
 
+    // --- ref.eq, ref.as_non_null, br_on_null, br_on_non_null ---
+
+    printf("Running test_ref_eq_same...\n");
+    {
+        // two struct.new_default produce different objects -> ref.eq = 0
+        // same object -> ref.eq = 1
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32], fn [] [i32] ]} \
+            funcs {[ 1, 2 ]} \
+            exports {[ {'diff'} fn# 0, {'same'} fn# 1 ]} \
+            code {[ \
+                {[] struct.new_default 0 struct.new_default 0 ref.eq end }, \
+                {[1 eqref] struct.new_default 0 local.set 0 local.get 0 local.get 0 ref.eq end } \
+            ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 0);
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_ref_eq_null...\n");
+    {
+        // null == null -> 1
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] ref.null eqref ref.null eqref ref.eq end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_ref_as_non_null...\n");
+    {
+        // ref.as_non_null on non-null -> passes through
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] i32.const 42 struct.new 0 ref.as_non_null struct.get 0 0 end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_ref_as_non_null_trap...\n");
+    {
+        // ref.as_non_null on null -> trap
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] ref.null structref ref.as_non_null struct.get 0 0 end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_TRAP);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_br_on_null...\n");
+    {
+        // br_on_null: if null, branch to block end (return 1), else fall through (return 0)
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] \
+                block [] ref.null funcref br_on_null 0 drop i32.const 0 br 1 end i32.const 1 end \
+            } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_br_on_non_null...\n");
+    {
+        // br_on_non_null: if non-null, branch (return 1), else fall through (return 0)
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] \
+                block [] ref.func 0 br_on_non_null 0 i32.const 0 br 1 end drop i32.const 1 end \
+            } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
     printf("\nAll Reference Types tests passed!\n");
     return 0;
 }

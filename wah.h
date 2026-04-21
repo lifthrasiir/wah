@@ -998,6 +998,7 @@ typedef enum {
     \
     /* Reference Types */ \
     X(REF_NULL,, 0xD0) X(REF_IS_NULL,, 0xD1) X(REF_FUNC,, 0xD2) \
+    X(REF_EQ,, 0xD3) X(REF_AS_NON_NULL,, 0xD4) X(BR_ON_NULL,, 0xD5) X(BR_ON_NON_NULL,, 0xD6) \
     \
     /* GC opcodes (0xFB prefix) */ \
     X(STRUCT_NEW,, WAH_FB+0x00) X(STRUCT_NEW_DEFAULT,, WAH_FB+0x01) \
@@ -1008,7 +1009,8 @@ typedef enum {
     X(ARRAY_GET,, WAH_FB+0x0B) X(ARRAY_GET_S,, WAH_FB+0x0C) X(ARRAY_GET_U,, WAH_FB+0x0D) \
     X(ARRAY_SET,, WAH_FB+0x0E) X(ARRAY_LEN,, WAH_FB+0x0F) \
     X(REF_TEST,, WAH_FB+0x14) X(REF_TEST_NULL,, WAH_FB+0x15) \
-    X(REF_CAST,, WAH_FB+0x16) X(REF_CAST_NULL,, WAH_FB+0x17)
+    X(REF_CAST,, WAH_FB+0x16) X(REF_CAST_NULL,, WAH_FB+0x17) \
+    X(BR_ON_CAST,, WAH_FB+0x18) X(BR_ON_CAST_FAIL,, WAH_FB+0x19)
 
 #define WAH_I32_MEM0_OPCODES_M(X) \
     X(I32_LOAD,i32_mem0) X(I64_LOAD,i32_mem0) X(F32_LOAD,i32_mem0) X(F64_LOAD,i32_mem0) \
@@ -4757,6 +4759,35 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             break;
         }
 
+        case WAH_OP_REF_EQ: {
+            wah_type_t t1, t2;
+            WAH_CHECK(wah_validation_pop_type(vctx, &t2));
+            WAH_CHECK(wah_validation_pop_type(vctx, &t1));
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_I32));
+            break;
+        }
+        case WAH_OP_REF_AS_NON_NULL: {
+            wah_type_t ref_type;
+            WAH_CHECK(wah_validation_pop_type(vctx, &ref_type));
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_IS_REF(ref_type) ? ref_type : WAH_TYPE_ANYREF));
+            break;
+        }
+        case WAH_OP_BR_ON_NULL: {
+            uint32_t label_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
+            wah_type_t ref_type;
+            WAH_CHECK(wah_validation_pop_type(vctx, &ref_type));
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_IS_REF(ref_type) ? ref_type : WAH_TYPE_ANYREF));
+            break;
+        }
+        case WAH_OP_BR_ON_NON_NULL: {
+            uint32_t label_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
+            wah_type_t ref_type;
+            WAH_CHECK(wah_validation_pop_type(vctx, &ref_type));
+            break;
+        }
+
         case WAH_OP_REF_TEST_NULL:
         case WAH_OP_REF_TEST:
         case WAH_OP_REF_CAST_NULL:
@@ -4776,10 +4807,25 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             break;
         }
 
+        case WAH_OP_BR_ON_CAST:
+        case WAH_OP_BR_ON_CAST_FAIL: {
+            WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF);
+            uint8_t flags = *(*code_ptr)++;
+            (void)flags;
+            uint32_t label_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
+            wah_type_t ht1, ht2;
+            WAH_CHECK(wah_decode_heap_type(code_ptr, code_end, &ht1));
+            WAH_CHECK(wah_decode_heap_type(code_ptr, code_end, &ht2));
+            wah_type_t ref_type;
+            WAH_CHECK(wah_validation_pop_type(vctx, &ref_type));
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_IS_REF(ref_type) ? ref_type : WAH_TYPE_ANYREF));
+            break;
+        }
+
         default:
             if (opcode_val == 0x06 || opcode_val == 0x08 || opcode_val == 0x0A ||
                 (opcode_val >= 0x12 && opcode_val <= 0x15) ||
-                (opcode_val >= 0xD3 && opcode_val <= 0xD6) ||
                 (opcode_val >= WAH_FB && opcode_val < WAH_FC)) {
                 return WAH_ERROR_UNIMPLEMENTED;
             }
@@ -5910,10 +5956,22 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     }
                     break;
                 }
-                case WAH_OP_BR: case WAH_OP_BR_IF: {
+                case WAH_OP_BR: case WAH_OP_BR_IF:
+                case WAH_OP_BR_ON_NULL: case WAH_OP_BR_ON_NON_NULL: {
                     uint32_t d;
                     WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &d), cleanup);
                     preparsed_instr_size += sizeof(uint32_t);
+                    break;
+                }
+                case WAH_OP_BR_ON_CAST: case WAH_OP_BR_ON_CAST_FAIL: {
+                    WAH_ENSURE_GOTO(ptr < end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
+                    uint8_t flags = *ptr++; (void)flags;
+                    uint32_t d;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &d), cleanup);
+                    wah_type_t ht1, ht2;
+                    WAH_CHECK_GOTO(wah_decode_heap_type(&ptr, end, &ht1), cleanup);
+                    WAH_CHECK_GOTO(wah_decode_heap_type(&ptr, end, &ht2), cleanup);
+                    preparsed_instr_size += sizeof(uint32_t) + 2 * sizeof(int32_t);
                     break;
                 }
                 case WAH_OP_BR_TABLE: {
@@ -6239,7 +6297,8 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     write_ptr += sizeof(uint32_t);
                     break;
                 }
-                case WAH_OP_BR: case WAH_OP_BR_IF: {
+                case WAH_OP_BR: case WAH_OP_BR_IF:
+                case WAH_OP_BR_ON_NULL: case WAH_OP_BR_ON_NON_NULL: {
                     uint32_t relative_depth;
                     WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &relative_depth), cleanup);
                     if (relative_depth == control_sp) {
@@ -6250,6 +6309,26 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                         wah_write_u32_le(write_ptr, block_targets[frame->end_target_idx]);
                     }
                     write_ptr += sizeof(uint32_t);
+                    break;
+                }
+                case WAH_OP_BR_ON_CAST: case WAH_OP_BR_ON_CAST_FAIL: {
+                    WAH_ENSURE_GOTO(ptr < end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
+                    uint8_t flags = *ptr++; (void)flags;
+                    uint32_t relative_depth;
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &relative_depth), cleanup);
+                    wah_type_t ht1, ht2;
+                    WAH_CHECK_GOTO(wah_decode_heap_type(&ptr, end, &ht1), cleanup);
+                    WAH_CHECK_GOTO(wah_decode_heap_type(&ptr, end, &ht2), cleanup);
+                    if (relative_depth == control_sp) {
+                        wah_write_u32_le(write_ptr, preparsed_size - sizeof(uint16_t));
+                    } else {
+                        WAH_ASSERT(relative_depth < control_sp);
+                        wah_control_frame_t* frame = &control_stack[control_sp - 1 - relative_depth];
+                        wah_write_u32_le(write_ptr, block_targets[frame->end_target_idx]);
+                    }
+                    write_ptr += sizeof(uint32_t);
+                    wah_write_u32_le(write_ptr, (uint32_t)ht2); write_ptr += sizeof(int32_t);
+                    wah_write_u32_le(write_ptr, (uint32_t)ht1); write_ptr += sizeof(int32_t);
                     break;
                 }
                 case WAH_OP_BR_TABLE: {
@@ -7479,6 +7558,64 @@ WAH_RUN(REF_CAST_NULL) {
                      WAH_ERROR_TRAP, cleanup);
     WAH_NEXT();
     WAH_CLEANUP();
+}
+
+WAH_RUN(REF_EQ) {
+    wah_value_t b = *--sp;
+    wah_value_t a = *--sp;
+    (*sp++).i32 = (a.ref == b.ref) ? 1 : 0;
+    WAH_NEXT();
+}
+
+WAH_RUN(REF_AS_NON_NULL) {
+    WAH_ENSURE_GOTO(sp[-1].ref != NULL, WAH_ERROR_TRAP, cleanup);
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(BR_ON_NULL) {
+    uint32_t offset = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    if (sp[-1].ref == NULL) {
+        --sp;
+        bytecode_ip = bytecode_base + offset;
+    }
+    WAH_NEXT();
+}
+
+WAH_RUN(BR_ON_NON_NULL) {
+    uint32_t offset = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    if (sp[-1].ref != NULL) {
+        bytecode_ip = bytecode_base + offset;
+    } else {
+        --sp;
+    }
+    WAH_NEXT();
+}
+
+WAH_RUN(BR_ON_CAST) {
+    uint32_t offset = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    wah_type_t target_ht = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(int32_t);
+    bytecode_ip += sizeof(int32_t); // skip source ht
+    wah_value_t ref_val = sp[-1];
+    bool matches = (ref_val.ref == NULL) || wah_ref_test_heap_type(ctx, ref_val, target_ht);
+    if (matches) {
+        bytecode_ip = bytecode_base + offset;
+    }
+    WAH_NEXT();
+}
+
+WAH_RUN(BR_ON_CAST_FAIL) {
+    uint32_t offset = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    wah_type_t target_ht = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(int32_t);
+    bytecode_ip += sizeof(int32_t); // skip source ht
+    wah_value_t ref_val = sp[-1];
+    bool matches = (ref_val.ref == NULL) || wah_ref_test_heap_type(ctx, ref_val, target_ht);
+    if (!matches) {
+        bytecode_ip = bytecode_base + offset;
+    }
+    WAH_NEXT();
 }
 
 WAH_RUN(STRUCT_NEW) {
