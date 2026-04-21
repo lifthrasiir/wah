@@ -583,6 +583,21 @@ static spectest_module_def_t *add_module_def(spectest_env_t *env, const char *na
         for (size_t i = 0; i < env->instance_count; i++) {
             if (env->instances[i].def)
                 env->instances[i].def = (spectest_module_def_t *)((char *)env->instances[i].def + delta);
+            if (env->instances[i].live) {
+                wah_exec_context_t *ec = &env->instances[i].exec;
+                const char *mp = (const char *)ec->module;
+                if (mp >= (const char *)old_base &&
+                    mp < (const char *)old_base + env->def_count * sizeof(*env->defs)) {
+                    ec->module = (const wah_module_t *)(mp + delta);
+                }
+                for (uint32_t j = 0; j < ec->linked_module_count; j++) {
+                    const char *p = (const char *)ec->linked_modules[j].module;
+                    if (p >= (const char *)old_base &&
+                        p < (const char *)old_base + env->def_count * sizeof(*env->defs)) {
+                        ec->linked_modules[j].module = (const wah_module_t *)(p + delta);
+                    }
+                }
+            }
         }
         for (size_t i = 0; i < env->registered_count; i++) {
             if (env->registered[i].def)
@@ -616,6 +631,18 @@ static spectest_instance_t *add_instance(spectest_env_t *env, const char *name, 
         for (size_t ri = 0; ri < env->registered_count; ri++) {
             if (env->registered[ri].instance)
                 env->registered[ri].instance = (spectest_instance_t *)((char *)env->registered[ri].instance + delta);
+        }
+        for (size_t ii = 0; ii < env->instance_count; ii++) {
+            if (env->instances[ii].live) {
+                wah_exec_context_t *ec = &env->instances[ii].exec;
+                for (uint32_t j = 0; j < ec->linked_module_count; j++) {
+                    char *p = (char *)ec->linked_modules[j].ctx;
+                    if (p >= (char *)old_base &&
+                        p < (char *)old_base + env->instance_count * sizeof(*env->instances)) {
+                        ec->linked_modules[j].ctx = (wah_exec_context_t *)(p + delta);
+                    }
+                }
+            }
         }
     }
     instance = &env->instances[env->instance_count++];
