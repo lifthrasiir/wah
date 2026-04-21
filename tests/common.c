@@ -77,6 +77,11 @@ static const token_entry_t token_table[] = {
     TOKEN("void", 0x40),      // Void return
     TOKEN("funcref", 0x70),   // funcref type
     TOKEN("externref", 0x6f), // externref type
+    TOKEN("anyref", 0x6e),
+    TOKEN("eqref", 0x6d),
+    TOKEN("i31ref", 0x6c),
+    TOKEN("structref", 0x6b),
+    TOKEN("arrayref", 0x6a),
 
     // Indices
     TOKEN("fn#", 0x00),       // Function index space
@@ -266,6 +271,10 @@ static const token_entry_t token_table[] = {
     TOKEN("ref.null", 0xd0),
     TOKEN("ref.is_null", 0xd1),
     TOKEN("ref.func", 0xd2),
+    TOKEN("ref.test_null", 0xfb, 0x14),
+    TOKEN("ref.test", 0xfb, 0x15),
+    TOKEN("ref.cast_null", 0xfb, 0x16),
+    TOKEN("ref.cast", 0xfb, 0x17),
     TOKEN("i32.trunc_sat_f32_s", 0xfc, 0x00),
     TOKEN("i32.trunc_sat_f32_u", 0xfc, 0x01),
     TOKEN("i32.trunc_sat_f64_s", 0xfc, 0x02),

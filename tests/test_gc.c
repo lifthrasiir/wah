@@ -723,6 +723,132 @@ int main() {
         wah_free_module(&mod);
     }
 
+    // --- ref.test / ref.cast runtime tests ---
+    {
+        printf("Testing ref.test with funcref...\n");
+        wah_module_t mod = {0};
+        wah_exec_context_t ctx4 = {0};
+
+        // Module: type 0 = fn [] -> [i32]
+        //         func 0: ref.func 0, ref.test_null funcref -> should return 1
+        //         func 1: ref.null funcref, ref.test_null funcref -> should return 1 (null passes nullable test)
+        //         func 2: ref.null funcref, ref.test funcref -> should return 0 (null fails non-nullable test)
+        //         func 3: ref.func 0, ref.test_null anyref -> should return 1 (funcref <: anyref)
+        //         func 4: ref.func 0, ref.test_null eqref -> should return 0 (funcref not <: eqref)
+        wah_value_t result;
+
+        // ref.func 0, ref.test_null funcref -> 1
+        {
+            const char *s = "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+                exports {[ {'f'} fn# 0 ]} \
+                code {[ {[] ref.func 0 ref.test_null funcref end } ]}";
+            assert_ok(wah_parse_module_from_spec(&mod, s));
+            assert_ok(wah_exec_context_create(&ctx4, &mod));
+            assert_ok(wah_instantiate(&ctx4));
+            assert_ok(wah_call(&ctx4, 0, NULL, 0, &result));
+            assert_eq_i32(result.i32, 1);
+            wah_exec_context_destroy(&ctx4);
+            wah_free_module(&mod);
+        }
+
+        // ref.null funcref, ref.test_null funcref -> 1 (null passes nullable test)
+        {
+            memset(&mod, 0, sizeof(mod));
+            memset(&ctx4, 0, sizeof(ctx4));
+            const char *s = "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+                exports {[ {'f'} fn# 0 ]} \
+                code {[ {[] ref.null funcref ref.test_null funcref end } ]}";
+            assert_ok(wah_parse_module_from_spec(&mod, s));
+            assert_ok(wah_exec_context_create(&ctx4, &mod));
+            assert_ok(wah_instantiate(&ctx4));
+            assert_ok(wah_call(&ctx4, 0, NULL, 0, &result));
+            assert_eq_i32(result.i32, 1);
+            wah_exec_context_destroy(&ctx4);
+            wah_free_module(&mod);
+        }
+
+        // ref.null funcref, ref.test funcref -> 0 (null fails non-nullable test)
+        {
+            memset(&mod, 0, sizeof(mod));
+            memset(&ctx4, 0, sizeof(ctx4));
+            const char *s = "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+                exports {[ {'f'} fn# 0 ]} \
+                code {[ {[] ref.null funcref ref.test funcref end } ]}";
+            assert_ok(wah_parse_module_from_spec(&mod, s));
+            assert_ok(wah_exec_context_create(&ctx4, &mod));
+            assert_ok(wah_instantiate(&ctx4));
+            assert_ok(wah_call(&ctx4, 0, NULL, 0, &result));
+            assert_eq_i32(result.i32, 0);
+            wah_exec_context_destroy(&ctx4);
+            wah_free_module(&mod);
+        }
+
+        // ref.func 0, ref.test_null anyref -> 1 (funcref <: anyref)
+        {
+            memset(&mod, 0, sizeof(mod));
+            memset(&ctx4, 0, sizeof(ctx4));
+            const char *s = "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+                exports {[ {'f'} fn# 0 ]} \
+                code {[ {[] ref.func 0 ref.test_null anyref end } ]}";
+            assert_ok(wah_parse_module_from_spec(&mod, s));
+            assert_ok(wah_exec_context_create(&ctx4, &mod));
+            assert_ok(wah_instantiate(&ctx4));
+            assert_ok(wah_call(&ctx4, 0, NULL, 0, &result));
+            assert_eq_i32(result.i32, 1);
+            wah_exec_context_destroy(&ctx4);
+            wah_free_module(&mod);
+        }
+
+        // ref.func 0, ref.test_null eqref -> 0 (funcref not <: eqref)
+        {
+            memset(&mod, 0, sizeof(mod));
+            memset(&ctx4, 0, sizeof(ctx4));
+            const char *s = "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+                exports {[ {'f'} fn# 0 ]} \
+                code {[ {[] ref.func 0 ref.test_null eqref end } ]}";
+            assert_ok(wah_parse_module_from_spec(&mod, s));
+            assert_ok(wah_exec_context_create(&ctx4, &mod));
+            assert_ok(wah_instantiate(&ctx4));
+            assert_ok(wah_call(&ctx4, 0, NULL, 0, &result));
+            assert_eq_i32(result.i32, 0);
+            wah_exec_context_destroy(&ctx4);
+            wah_free_module(&mod);
+        }
+
+        printf("Testing ref.cast with funcref...\n");
+
+        // ref.cast_null funcref on null -> should succeed (no trap)
+        {
+            wah_module_t mod2 = {0};
+            wah_exec_context_t ctx5 = {0};
+            const char *s = "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+                exports {[ {'f'} fn# 0 ]} \
+                code {[ {[] ref.null funcref ref.cast_null funcref ref.is_null end } ]}";
+            assert_ok(wah_parse_module_from_spec(&mod2, s));
+            assert_ok(wah_exec_context_create(&ctx5, &mod2));
+            assert_ok(wah_instantiate(&ctx5));
+            assert_ok(wah_call(&ctx5, 0, NULL, 0, &result));
+            assert_eq_i32(result.i32, 1);
+            wah_exec_context_destroy(&ctx5);
+            wah_free_module(&mod2);
+        }
+
+        // ref.cast funcref on null -> should trap
+        {
+            wah_module_t mod2 = {0};
+            wah_exec_context_t ctx5 = {0};
+            const char *s = "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+                exports {[ {'f'} fn# 0 ]} \
+                code {[ {[] ref.null funcref ref.cast funcref ref.is_null end } ]}";
+            assert_ok(wah_parse_module_from_spec(&mod2, s));
+            assert_ok(wah_exec_context_create(&ctx5, &mod2));
+            assert_ok(wah_instantiate(&ctx5));
+            assert_err(wah_call(&ctx5, 0, NULL, 0, &result), WAH_ERROR_TRAP);
+            wah_exec_context_destroy(&ctx5);
+            wah_free_module(&mod2);
+        }
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }
