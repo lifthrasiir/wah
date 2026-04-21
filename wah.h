@@ -117,6 +117,9 @@ typedef int32_t wah_type_t;
 #define WAH_TYPE_IS_EXTERNREF(t) ((t) == WAH_TYPE_EXTERNREF)
 #define WAH_TYPE_IS_REF(t)      ((t) <= -12 && (t) >= -23)
 
+typedef uint8_t wah_type_flags_t;
+#define WAH_TYPE_FLAG_NULLABLE ((wah_type_flags_t)0x01)
+
 typedef uint64_t wah_entry_id_t;
 
 // Call context for host functions
@@ -156,11 +159,13 @@ typedef struct {
         } memory;
         struct { // For WAH_TYPE_IS_TABLE
             wah_type_t elem_type;
+            wah_type_flags_t elem_type_flags;
             uint64_t min_elements, max_elements;
         } table;
         struct { // For WAH_TYPE_IS_FUNCTION
             uint32_t param_count, result_count;
             const wah_type_t *param_types, *result_types;
+            const wah_type_flags_t *param_type_flags, *result_type_flags;
         } func;
     } u;
 } wah_entry_t;
@@ -1434,6 +1439,7 @@ typedef struct {
 // --- WebAssembly Table Structures ---
 typedef struct wah_table_type_s {
     wah_type_t elem_type;
+    wah_type_flags_t elem_type_flags;
     wah_type_t addr_type;     // WAH_TYPE_I32 or WAH_TYPE_I64
     uint64_t min_elements;
     uint64_t max_elements; // UINT64_MAX if no maximum
@@ -1514,6 +1520,8 @@ typedef struct wah_func_type_s {
     uint32_t result_count;
     wah_type_t *param_types;
     wah_type_t *result_types;
+    wah_type_flags_t *param_type_flags;
+    wah_type_flags_t *result_type_flags;
 } wah_func_type_t;
 
 // --- Imports ---
@@ -3439,6 +3447,8 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
         // Initialize pointer fields for safe cleanup on parsing failure
         module->types[i].param_types = NULL;
         module->types[i].result_types = NULL;
+        module->types[i].param_type_flags = NULL;
+        module->types[i].result_type_flags = NULL;
         ++module->type_count;
 
         WAH_ENSURE(**ptr == 0x60, WAH_ERROR_VALIDATION_FAILED);
@@ -3450,10 +3460,15 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
 
         module->types[i].param_count = param_count_type;
         WAH_MALLOC_ARRAY(module->types[i].param_types, param_count_type);
+        WAH_MALLOC_ARRAY(module->types[i].param_type_flags, param_count_type);
+        if (param_count_type) memset(module->types[i].param_type_flags, 0, param_count_type * sizeof(wah_type_flags_t));
         for (uint32_t j = 0; j < param_count_type; ++j) {
             wah_type_t type;
             WAH_CHECK(wah_decode_val_type(ptr, section_end, &type));
             module->types[i].param_types[j] = type;
+            if (WAH_TYPE_IS_REF(type)) {
+                module->types[i].param_type_flags[j] = WAH_TYPE_FLAG_NULLABLE;
+            }
         }
 
         // Parse result types
@@ -3462,11 +3477,16 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
 
         module->types[i].result_count = result_count_type;
         WAH_MALLOC_ARRAY(module->types[i].result_types, result_count_type);
+        WAH_MALLOC_ARRAY(module->types[i].result_type_flags, result_count_type);
+        if (result_count_type) memset(module->types[i].result_type_flags, 0, result_count_type * sizeof(wah_type_flags_t));
 
         for (uint32_t j = 0; j < result_count_type; ++j) {
             wah_type_t type;
             WAH_CHECK(wah_decode_val_type(ptr, section_end, &type));
             module->types[i].result_types[j] = type;
+            if (WAH_TYPE_IS_REF(type)) {
+                module->types[i].result_type_flags[j] = WAH_TYPE_FLAG_NULLABLE;
+            }
         }
     }
 
@@ -4732,6 +4752,7 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
             wah_type_t elem_type;
             WAH_CHECK(wah_decode_ref_type(ptr, section_end, &elem_type));
             module->tables[i].elem_type = elem_type;
+            module->tables[i].elem_type_flags = WAH_TYPE_IS_REF(elem_type) ? WAH_TYPE_FLAG_NULLABLE : 0;
 
             WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
             uint8_t flags = *(*ptr)++;
@@ -4860,6 +4881,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             ti->name = imp_name;
 
             WAH_CHECK_GOTO(wah_decode_ref_type(ptr, section_end, &ti->type.elem_type), cleanup);
+            ti->type.elem_type_flags = WAH_TYPE_IS_REF(ti->type.elem_type) ? WAH_TYPE_FLAG_NULLABLE : 0;
             WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
             uint8_t flags = *(*ptr)++;
             ti->type.addr_type = (flags & 0x04) ? WAH_TYPE_I64 : WAH_TYPE_I32;
@@ -9482,6 +9504,8 @@ void wah_free_module(wah_module_t *module) {
         for (uint32_t i = 0; i < module->type_count; ++i) {
             free(module->types[i].param_types);
             free(module->types[i].result_types);
+            free(module->types[i].param_type_flags);
+            free(module->types[i].result_type_flags);
         }
         free(module->types);
     }
@@ -10726,6 +10750,8 @@ wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_entry_
         out->u.func.param_types = fn->param_types;
         out->u.func.result_count = (uint32_t)fn->nresults;
         out->u.func.result_types = fn->result_types;
+        out->u.func.param_type_flags = NULL;
+        out->u.func.result_type_flags = NULL;
 
         return WAH_OK;
     }
@@ -10801,6 +10827,8 @@ wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id
                 out->u.func.param_types = ft->param_types;
                 out->u.func.result_count = ft->result_count;
                 out->u.func.result_types = ft->result_types;
+                out->u.func.param_type_flags = ft->param_type_flags;
+                out->u.func.result_type_flags = ft->result_type_flags;
             } else {
                 // Local/host range: index into functions[] is (index - import_count)
                 uint32_t local_fn_idx = index - import_count;
@@ -10812,6 +10840,8 @@ wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id
                     out->u.func.param_types = fn->param_types;
                     out->u.func.result_count = (uint32_t)fn->nresults;
                     out->u.func.result_types = fn->result_types;
+                    out->u.func.param_type_flags = NULL;
+                    out->u.func.result_type_flags = NULL;
                 } else {
                     WAH_ENSURE(local_fn_idx < module->function_count, WAH_ERROR_NOT_FOUND);
                     out->type = WAH_TYPE_FUNCTION;
@@ -10820,6 +10850,8 @@ wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id
                     out->u.func.param_types = func_type->param_types;
                     out->u.func.result_count = func_type->result_count;
                     out->u.func.result_types = func_type->result_types;
+                    out->u.func.param_type_flags = func_type->param_type_flags;
+                    out->u.func.result_type_flags = func_type->result_type_flags;
                 }
             }
             break;
@@ -10829,6 +10861,7 @@ wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id
             out->type = WAH_TYPE_TABLE;
             const wah_table_type_t *tt = wah_table_type(module, index);
             out->u.table.elem_type = tt->elem_type;
+            out->u.table.elem_type_flags = tt->elem_type_flags;
             out->u.table.min_elements = tt->min_elements;
             out->u.table.max_elements = tt->max_elements;
             break;
