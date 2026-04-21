@@ -3882,21 +3882,21 @@ static void wah_validation_resolve_br_target(const wah_validation_context_t *vct
                                               uint32_t *out_stack_height) {
     if (label_idx == vctx->control_sp) {
         *out_result_count = vctx->func_type->result_count;
-        *out_result_types = vctx->func_type->result_types;
+        if (out_result_types) *out_result_types = vctx->func_type->result_types;
         if (out_result_type_flags) *out_result_type_flags = vctx->func_type->result_type_flags;
-        *out_stack_height = 0;
+        if (out_stack_height) *out_stack_height = 0;
     } else {
         const wah_validation_control_frame_t *frame = &vctx->control_stack[vctx->control_sp - 1 - label_idx];
         if (frame->opcode == WAH_OP_LOOP) {
             *out_result_count = frame->block_type.param_count;
-            *out_result_types = frame->block_type.param_types;
+            if (out_result_types) *out_result_types = frame->block_type.param_types;
             if (out_result_type_flags) *out_result_type_flags = frame->block_type.param_type_flags;
         } else {
             *out_result_count = frame->block_type.result_count;
-            *out_result_types = frame->block_type.result_types;
+            if (out_result_types) *out_result_types = frame->block_type.result_types;
             if (out_result_type_flags) *out_result_type_flags = frame->block_type.result_type_flags;
         }
-        *out_stack_height = frame->stack_height;
+        if (out_stack_height) *out_stack_height = frame->stack_height;
     }
 }
 
@@ -4423,39 +4423,32 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 WAH_CHECK(wah_validate_type_match(cond_type, 0, WAH_TYPE_I32, 0, vctx->module));
             }
 
-            int32_t block_type_val;
-            WAH_CHECK(wah_decode_sleb128_32(code_ptr, code_end, &block_type_val));
+            WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF);
+            uint8_t block_type_peek = **code_ptr;
 
             WAH_ENSURE(vctx->control_sp < WAH_MAX_CONTROL_DEPTH, WAH_ERROR_TOO_LARGE);
             wah_validation_control_frame_t* frame = &vctx->control_stack[vctx->control_sp++];
             frame->opcode = (wah_opcode_t)opcode_val;
             frame->else_found = false;
-            frame->is_unreachable = vctx->is_unreachable; // Initialize with current reachability
+            frame->is_unreachable = vctx->is_unreachable;
             wah_func_type_t* bt = &frame->block_type;
             *bt = (wah_func_type_t){0};
 
-            if (block_type_val < 0) { // Value type
-                wah_type_t result_type = 0;
-                switch(block_type_val) {
-                    case -1: result_type = WAH_TYPE_I32; break;
-                    case -2: result_type = WAH_TYPE_I64; break;
-                    case -3: result_type = WAH_TYPE_F32; break;
-                    case -4: result_type = WAH_TYPE_F64; break;
-                    case -5: result_type = WAH_TYPE_V128; break;
-                    case -16: result_type = WAH_TYPE_FUNCREF; break;
-                    case -17: result_type = WAH_TYPE_EXTERNREF; break;
-                    case -0x40: break; // empty
-                    default: return WAH_ERROR_VALIDATION_FAILED;
-                }
-
-                if (result_type != 0) {
-                    bt->result_count = 1;
-                    WAH_MALLOC_ARRAY(bt->result_types, 1);
-                    bt->result_types[0] = result_type;
-                    WAH_MALLOC_ARRAY(bt->result_type_flags, 1);
-                    bt->result_type_flags[0] = WAH_TYPE_IS_REF(result_type) ? WAH_TYPE_FLAG_NULLABLE : 0;
-                }
+            if (block_type_peek == 0x40) {
+                (*code_ptr)++;
+            } else if (block_type_peek >= 0x63 && block_type_peek <= 0x7F) {
+                wah_type_t result_type;
+                wah_type_flags_t result_flags;
+                WAH_CHECK(wah_decode_val_type(code_ptr, code_end, &result_type, &result_flags));
+                bt->result_count = 1;
+                WAH_MALLOC_ARRAY(bt->result_types, 1);
+                bt->result_types[0] = result_type;
+                WAH_MALLOC_ARRAY(bt->result_type_flags, 1);
+                bt->result_type_flags[0] = result_flags;
             } else { // Function type index
+                int32_t block_type_val;
+                WAH_CHECK(wah_decode_sleb128_32(code_ptr, code_end, &block_type_val));
+                WAH_ENSURE(block_type_val >= 0, WAH_ERROR_VALIDATION_FAILED);
                 uint32_t type_idx = (uint32_t)block_type_val;
                 WAH_ENSURE(type_idx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
                 const wah_func_type_t* referenced_type = &vctx->module->types[type_idx];
@@ -4669,24 +4662,41 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             wah_validation_resolve_br_target(vctx, label_indices[num_targets],
                                               &default_result_count, &default_result_types, &default_result_type_flags, &default_stack_height);
 
-            for (uint32_t i = 0; i < num_targets + 1; ++i) {
+            for (uint32_t i = 0; i < num_targets; ++i) {
+                uint32_t cur_result_count;
+                wah_validation_resolve_br_target(vctx, label_indices[i],
+                                                  &cur_result_count, NULL, NULL, NULL);
+                WAH_ENSURE_GOTO(cur_result_count == default_result_count, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
+            }
+
+            wah_type_t *popped_types = NULL;
+            wah_type_flags_t *popped_flags = NULL;
+            if (default_result_count > 0) {
+                WAH_MALLOC_ARRAY_GOTO(popped_types, default_result_count, cleanup_br_table_popped);
+                WAH_MALLOC_ARRAY_GOTO(popped_flags, default_result_count, cleanup_br_table_popped);
+            }
+            for (int32_t i = default_result_count - 1; i >= 0; --i) {
+                WAH_CHECK_GOTO(wah_validation_pop_type_with_flags(vctx, &popped_types[i], &popped_flags[i]), cleanup_br_table_popped);
+                WAH_CHECK_GOTO(wah_validate_type_match(popped_types[i], popped_flags[i],
+                    default_result_types[i], default_result_type_flags[i], vctx->module), cleanup_br_table_popped);
+            }
+            for (uint32_t i = 0; i < num_targets; ++i) {
                 uint32_t cur_result_count;
                 const wah_type_t *cur_result_types;
-                uint32_t cur_stack_height;
+                const wah_type_flags_t *cur_result_type_flags;
                 wah_validation_resolve_br_target(vctx, label_indices[i],
-                                                  &cur_result_count, &cur_result_types, NULL, &cur_stack_height);
-                (void)cur_stack_height;
-
-                WAH_ENSURE_GOTO(cur_result_count == default_result_count, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
+                                                  &cur_result_count, &cur_result_types, &cur_result_type_flags, NULL);
                 for (uint32_t j = 0; j < default_result_count; ++j) {
-                    WAH_ENSURE_GOTO(cur_result_types[j] == default_result_types[j], WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
+                    WAH_CHECK_GOTO(wah_validate_type_match(popped_types[j], popped_flags[j],
+                        cur_result_types[j], wah_type_flags_at(cur_result_type_flags, cur_result_types, j),
+                        vctx->module), cleanup_br_table_popped);
                 }
             }
-
-            for (int32_t i = default_result_count - 1; i >= 0; --i) {
-                WAH_CHECK_GOTO(wah_validation_pop_and_match_type(vctx, default_result_types[i],
-                    default_result_type_flags[i]), cleanup_br_table);
-            }
+            err = WAH_OK;
+        cleanup_br_table_popped:
+            free(popped_types);
+            free(popped_flags);
+            if (err != WAH_OK) goto cleanup_br_table;
 
             while (vctx->current_stack_depth > default_stack_height) {
                 wah_type_t temp_type;
@@ -4715,7 +4725,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
         case WAH_OP_REF_NULL: {
             wah_type_t ref_type;
-            WAH_CHECK(wah_decode_ref_type(code_ptr, code_end, &ref_type, NULL));
+            WAH_CHECK(wah_decode_heap_type(code_ptr, code_end, &ref_type));
 
             WAH_CHECK(wah_validation_push_type_with_flags(vctx, ref_type, WAH_TYPE_FLAG_NULLABLE));
             break;
@@ -5215,7 +5225,7 @@ static wah_error_t wah_validate_const_expr(
             // Reference types
             case WAH_OP_REF_NULL: {
                 wah_type_t ref_type;
-                WAH_CHECK(wah_decode_ref_type(ptr, section_end, &ref_type, NULL));
+                WAH_CHECK(wah_decode_heap_type(ptr, section_end, &ref_type));
                 CONST_PUSH(ref_type);
                 break;
             }
@@ -5947,6 +5957,22 @@ static wah_error_t wah_parse_datacount_section(const uint8_t **ptr, const uint8_
     return WAH_OK;
 }
 
+static wah_error_t wah_skip_block_type(const uint8_t **ptr, const uint8_t *end) {
+    WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
+    uint8_t byte = **ptr;
+    if (byte == 0x40 || (byte >= 0x69 && byte <= 0x7F)) {
+        (*ptr)++;
+        return WAH_OK;
+    }
+    if (byte == 0x63 || byte == 0x64) {
+        (*ptr)++;
+        int32_t heap_idx;
+        return wah_decode_sleb128_32(ptr, end, &heap_idx);
+    }
+    int32_t idx;
+    return wah_decode_sleb128_32(ptr, end, &idx);
+}
+
 // Pre-parsing function to convert bytecode to optimized structure
 static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_idx, const uint8_t *code, uint32_t code_size, wah_parsed_code_t *parsed_code, bool emit_poll) {
     (void)module; (void)func_idx; // Suppress unused parameter warnings
@@ -6037,8 +6063,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
             }
             default: switch (opcode) {
                 case WAH_OP_BLOCK: case WAH_OP_LOOP: case WAH_OP_IF: {
-                    int32_t block_type;
-                    WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &block_type), cleanup);
+                    WAH_CHECK_GOTO(wah_skip_block_type(&ptr, end), cleanup);
                     GROW_BLOCK_TARGETS();
                     WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
                     uint32_t target_idx = block_target_count++;
@@ -6133,7 +6158,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 }
                 case WAH_OP_REF_NULL: {
                     wah_type_t ref_type;
-                    WAH_CHECK_GOTO(wah_decode_ref_type(&ptr, end, &ref_type, NULL), cleanup);
+                    WAH_CHECK_GOTO(wah_decode_heap_type(&ptr, end, &ref_type), cleanup);
                     preparsed_instr_size += sizeof(uint32_t); // For type (converted to uint32_t)
                     break;
                 }
@@ -6229,7 +6254,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
         }
 
         if (opcode == WAH_OP_BLOCK || opcode == WAH_OP_LOOP) {
-            int32_t block_type; WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &block_type), cleanup);
+            WAH_CHECK_GOTO(wah_skip_block_type(&ptr, end), cleanup);
             WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
             uint32_t idx = current_block_idx++;
             control_stack[control_sp++] = (wah_control_frame_t){.opcode=(wah_opcode_t)opcode, .target_idx=idx, .end_target_idx=idx};
@@ -6407,8 +6432,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
             }
             default: switch (opcode) {
                 case WAH_OP_IF: {
-                    int32_t block_type;
-                    WAH_CHECK_GOTO(wah_decode_sleb128_32(&ptr, end, &block_type), cleanup);
+                    WAH_CHECK_GOTO(wah_skip_block_type(&ptr, end), cleanup);
                     WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
                     uint32_t if_false_idx = current_block_idx++;
                     uint32_t if_end_idx = current_block_idx++;
@@ -6510,7 +6534,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 }
                 case WAH_OP_REF_NULL: {
                     wah_type_t ref_type;
-                    WAH_CHECK_GOTO(wah_decode_ref_type(&ptr, end, &ref_type, NULL), cleanup);
+                    WAH_CHECK_GOTO(wah_decode_heap_type(&ptr, end, &ref_type), cleanup);
                     wah_write_u32_le(write_ptr, (uint32_t)ref_type);
                     write_ptr += sizeof(uint32_t);
                     break;

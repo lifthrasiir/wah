@@ -423,7 +423,7 @@ static void test_struct_null_trap() {
         funcs {[ 1 ]} \
         exports {[ {'f'} fn# 0 ]} \
         code {[ {[] \
-            ref.null type.ref.null 0 struct.get 0 0 \
+            ref.null 0 struct.get 0 0 \
             end } ]}";
 
     wah_module_t module;
@@ -934,7 +934,7 @@ int main() {
             types {[ struct [i32 mut], fn [] [i32] ]} \
             funcs {[ 1 ]} \
             exports {[ {'f'} fn# 0 ]} \
-            code {[ {[] ref.null type.ref.null 0 ref.as_non_null struct.get 0 0 end } ]}";
+            code {[ {[] ref.null 0 ref.as_non_null struct.get 0 0 end } ]}";
         wah_module_t module;
         assert_ok(wah_parse_module_from_spec(&module, spec));
         wah_exec_context_t ctx;

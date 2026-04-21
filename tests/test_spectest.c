@@ -26,12 +26,12 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/binary-leb128.bin.wast",
     "tests/spectest/block.bin.wast",
     "tests/spectest/br.bin.wast",
-    //"tests/spectest/br_if.bin.wast",           // needs extended ref types
+    "tests/spectest/br_if.bin.wast",
     //"tests/spectest/br_on_cast.bin.wast",      // GC proposal
     //"tests/spectest/br_on_cast_fail.bin.wast", // GC proposal
     //"tests/spectest/br_on_non_null.bin.wast",  // needs extended ref types
     //"tests/spectest/br_on_null.bin.wast",      // needs extended ref types
-    //"tests/spectest/br_table.bin.wast",        // needs extended ref types
+    "tests/spectest/br_table.bin.wast",
     "tests/spectest/bulk.bin.wast",
     "tests/spectest/bulk64.bin.wast",
     "tests/spectest/call.bin.wast",
@@ -67,7 +67,7 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/float_memory64.bin.wast",
     "tests/spectest/float_misc.bin.wast",
     "tests/spectest/forward.bin.wast",
-    //"tests/spectest/func.bin.wast",            // needs extended ref types
+    "tests/spectest/func.bin.wast",
     "tests/spectest/func_ptrs.bin.wast",
     "tests/spectest/global.bin.wast",
     "tests/spectest/i16x8_relaxed_q15mulr_s.bin.wast",
@@ -101,9 +101,9 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/load2.bin.wast",
     "tests/spectest/load64.bin.wast",
     "tests/spectest/local_get.bin.wast",
-    //"tests/spectest/local_init.bin.wast",      // needs extended ref types
+    "tests/spectest/local_init.bin.wast",
     "tests/spectest/local_set.bin.wast",
-    //"tests/spectest/local_tee.bin.wast",       // needs extended ref types
+    "tests/spectest/local_tee.bin.wast",
     "tests/spectest/loop.bin.wast",
     "tests/spectest/memory.bin.wast",
     "tests/spectest/memory_copy.bin.wast",
@@ -136,13 +136,13 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/names.bin.wast",
     "tests/spectest/nop.bin.wast",
     //"tests/spectest/obsolete-keywords.bin.wast", // obsolete keywords
-    //"tests/spectest/ref.bin.wast",             // needs extended ref types
+    "tests/spectest/ref.bin.wast",
     //"tests/spectest/ref_as_non_null.bin.wast", // needs extended ref types
     //"tests/spectest/ref_cast.bin.wast",        // GC proposal
     //"tests/spectest/ref_eq.bin.wast",          // GC proposal
     "tests/spectest/ref_func.bin.wast",
-    //"tests/spectest/ref_is_null.bin.wast",     // needs extended ref types
-    //"tests/spectest/ref_null.bin.wast",        // needs extended ref types
+    "tests/spectest/ref_is_null.bin.wast",
+    "tests/spectest/ref_null.bin.wast",
     //"tests/spectest/ref_test.bin.wast",        // GC proposal
     "tests/spectest/relaxed_dot_product.bin.wast",
     "tests/spectest/relaxed_laneselect.bin.wast",
@@ -152,7 +152,7 @@ static const char *SPECTEST_FILES[] = {
     //"tests/spectest/return_call.bin.wast",     // unimplemented
     //"tests/spectest/return_call_indirect.bin.wast", // unimplemented
     //"tests/spectest/return_call_ref.bin.wast", // GC proposal
-    //"tests/spectest/select.bin.wast",          // needs extended ref types
+    "tests/spectest/select.bin.wast",
     "tests/spectest/simd_address.bin.wast",
     "tests/spectest/simd_align.bin.wast",
     "tests/spectest/simd_bit_shift.bin.wast",
@@ -222,7 +222,7 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/store2.bin.wast",
     //"tests/spectest/struct.bin.wast",          // GC proposal
     //"tests/spectest/switch.bin.wast",          // GC proposal
-    //"tests/spectest/table.bin.wast",           // needs extended ref types
+    "tests/spectest/table.bin.wast",
     "tests/spectest/table_copy.bin.wast",
     "tests/spectest/table_copy_mixed.bin.wast",
     "tests/spectest/table_copy64.bin.wast",
@@ -239,7 +239,7 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/table_size.bin.wast",
     "tests/spectest/table_size64.bin.wast",
     "tests/spectest/table64.bin.wast",
-    //"tests/spectest/table-sub.bin.wast",       // needs extended ref types
+    "tests/spectest/table-sub.bin.wast",
     //"tests/spectest/tag.bin.wast",             // exception handling proposal
     //"tests/spectest/throw.bin.wast",           // exception handling proposal
     //"tests/spectest/throw_ref.bin.wast",       // exception handling proposal
