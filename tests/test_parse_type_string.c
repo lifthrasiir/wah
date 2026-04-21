@@ -1,4 +1,4 @@
-// Test for wah_parse_func_type
+// Test for wah_parse_func_spec
 
 #define WAH_IMPLEMENTATION
 #include "../wah.h"
@@ -20,7 +20,7 @@ int main() {
         const char *types = "i32 -> i32";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_ok(wah_parse_func_spec(types, &nparams, &param_types, &nresults, &result_types));
         assert_eq_u64(nparams, 1);
         assert_eq_u64(nresults, 1);
         assert_eq_i32(param_types[0], WAH_TYPE_I32);
@@ -35,7 +35,7 @@ int main() {
         const char *types = "i32, i64 -> f32, f64";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_ok(wah_parse_func_spec(types, &nparams, &param_types, &nresults, &result_types));
         assert_eq_u64(nparams, 2);
         assert_eq_u64(nresults, 2);
         assert_eq_i32(param_types[0], WAH_TYPE_I32);
@@ -52,7 +52,7 @@ int main() {
         const char *types = "-> i32";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_ok(wah_parse_func_spec(types, &nparams, &param_types, &nresults, &result_types));
         assert_eq_u64(nparams, 0);
         assert_eq_u64(nresults, 1);
         assert_eq_i32(result_types[0], WAH_TYPE_I32);
@@ -66,7 +66,7 @@ int main() {
         const char *types = "i32 ->";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_ok(wah_parse_func_spec(types, &nparams, &param_types, &nresults, &result_types));
         assert_eq_u64(nparams, 1);
         assert_eq_u64(nresults, 0);
         assert_eq_i32(param_types[0], WAH_TYPE_I32);
@@ -80,7 +80,7 @@ int main() {
         const char *types = "->";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_ok(wah_parse_func_spec(types, &nparams, &param_types, &nresults, &result_types));
         assert_eq_u64(nparams, 0);
         assert_eq_u64(nresults, 0);
         free(param_types);
@@ -121,7 +121,7 @@ int main() {
             size_t nparams, nresults;
             wah_type_t *param_types = NULL, *result_types = NULL;
             printf("  %s\n", types);
-            assert_err(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types), WAH_ERROR_BAD_SPEC);
+            assert_err(wah_parse_func_spec(types, &nparams, &param_types, &nresults, &result_types), WAH_ERROR_BAD_SPEC);
             free(param_types);
             free(result_types);
         }
@@ -133,7 +133,7 @@ int main() {
         const char *types = "v128 -> v128";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_ok(wah_parse_func_spec(types, &nparams, &param_types, &nresults, &result_types));
         assert_eq_u64(nparams, 1);
         assert_eq_u64(nresults, 1);
         assert_eq_i32(param_types[0], WAH_TYPE_V128);
@@ -148,7 +148,7 @@ int main() {
         const char *types = "i32, v128, f64 -> v128, i32";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_ok(wah_parse_func_spec(types, &nparams, &param_types, &nresults, &result_types));
         assert_eq_u64(nparams, 3);
         assert_eq_u64(nresults, 2);
         assert_eq_i32(param_types[0], WAH_TYPE_I32);
@@ -166,7 +166,7 @@ int main() {
         const char *types = "v128, v128 -> v128";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_ok(wah_parse_func_spec(types, &nparams, &param_types, &nresults, &result_types));
         assert_eq_u64(nparams, 2);
         assert_eq_u64(nresults, 1);
         assert_eq_i32(param_types[0], WAH_TYPE_V128);
@@ -182,7 +182,7 @@ int main() {
         const char *types = "-> v128";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_ok(wah_parse_func_spec(types, &nparams, &param_types, &nresults, &result_types));
         assert_eq_u64(nparams, 0);
         assert_eq_u64(nresults, 1);
         assert_eq_i32(result_types[0], WAH_TYPE_V128);
@@ -196,7 +196,7 @@ int main() {
         const char *types = "v128 ->";
         size_t nparams, nresults;
         wah_type_t *param_types, *result_types;
-        assert_ok(wah_parse_func_type(types, &nparams, &param_types, &nresults, &result_types));
+        assert_ok(wah_parse_func_spec(types, &nparams, &param_types, &nresults, &result_types));
         assert_eq_u64(nparams, 1);
         assert_eq_u64(nresults, 0);
         assert_eq_i32(param_types[0], WAH_TYPE_V128);
