@@ -314,11 +314,11 @@ int main() {
         assert_ok(wah_exec_context_create(&ctx, &module));
         assert_ok(wah_gc_start(&ctx));
 
-        wah_gc_object_t *obj = wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 16);
+        wah_gc_object_t *obj = wah_gc_alloc(&ctx, WAH_REPR_NONE, 16);
         assert_not_null(obj);
-        assert_true(obj->kind == WAH_GC_KIND_NONE);
-        assert_true(obj->size == 16);
-        assert_false(obj->mark);
+        assert_true(obj->repr_id == WAH_REPR_NONE);
+        assert_true(obj->size_bytes == sizeof(wah_gc_object_t) + 16);
+        assert_false(wah_gc_marked(obj));
         assert_eq_u32(ctx.gc->object_count, 1);
         assert_true(ctx.gc->allocated_bytes == sizeof(wah_gc_object_t) + 16);
         assert_eq_ptr(ctx.gc->all_objects, obj);
@@ -326,11 +326,11 @@ int main() {
         void *payload = wah_gc_payload(obj);
         assert_eq_ptr(wah_gc_header(payload), obj);
 
-        wah_gc_object_t *obj2 = wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 32);
+        wah_gc_object_t *obj2 = wah_gc_alloc(&ctx, WAH_REPR_NONE, 32);
         assert_not_null(obj2);
         assert_eq_u32(ctx.gc->object_count, 2);
         assert_eq_ptr(ctx.gc->all_objects, obj2);
-        assert_eq_ptr(obj2->next, obj);
+        assert_eq_ptr(wah_gc_next(obj2), obj);
 
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
@@ -344,7 +344,7 @@ int main() {
             code {[ {[] end } ]}";
         assert_ok(wah_parse_module_from_spec(&module, spec));
         assert_ok(wah_exec_context_create(&ctx, &module));
-        wah_gc_object_t *obj = wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 8);
+        wah_gc_object_t *obj = wah_gc_alloc(&ctx, WAH_REPR_NONE, 8);
         assert_null(obj);
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
@@ -361,7 +361,7 @@ int main() {
         assert_ok(wah_gc_start(&ctx));
         ctx.gc->allocation_threshold = sizeof(wah_gc_object_t) + 8;
         assert_false(ctx.gc->gc_pending);
-        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 8);
+        wah_gc_alloc(&ctx, WAH_REPR_NONE, 8);
         assert_true(ctx.gc->gc_pending);
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
@@ -376,8 +376,8 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&module, spec));
         assert_ok(wah_exec_context_create(&ctx, &module));
         assert_ok(wah_gc_start(&ctx));
-        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 16);
-        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 32);
+        wah_gc_alloc(&ctx, WAH_REPR_NONE, 16);
+        wah_gc_alloc(&ctx, WAH_REPR_NONE, 32);
         assert_eq_u32(ctx.gc->object_count, 2);
         wah_gc_reset(&ctx);
         assert_eq_u32(ctx.gc->object_count, 0);
@@ -397,9 +397,9 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&module, spec));
         assert_ok(wah_exec_context_create(&ctx, &module));
         assert_ok(wah_gc_start(&ctx));
-        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 16);
-        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 32);
-        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 64);
+        wah_gc_alloc(&ctx, WAH_REPR_NONE, 16);
+        wah_gc_alloc(&ctx, WAH_REPR_NONE, 32);
+        wah_gc_alloc(&ctx, WAH_REPR_NONE, 64);
         assert_eq_u32(ctx.gc->object_count, 3);
         wah_gc_step(&ctx);
         assert_eq_u32(ctx.gc->object_count, 0);
@@ -447,8 +447,8 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&module, spec));
         assert_ok(wah_exec_context_create(&ctx, &module));
         assert_ok(wah_gc_start(&ctx));
-        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 16);
-        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 32);
+        wah_gc_alloc(&ctx, WAH_REPR_NONE, 16);
+        wah_gc_alloc(&ctx, WAH_REPR_NONE, 32);
         ctx.gc->gc_pending = true;
         wah_value_t r;
         assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
@@ -469,8 +469,8 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&module, spec));
         assert_ok(wah_exec_context_create(&ctx, &module));
         assert_ok(wah_gc_start(&ctx));
-        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 16);
-        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 32);
+        wah_gc_alloc(&ctx, WAH_REPR_NONE, 16);
+        wah_gc_alloc(&ctx, WAH_REPR_NONE, 32);
         wah_gc_heap_stats_t stats;
         wah_gc_heap_stats(&ctx, &stats);
         assert_eq_u32(stats.object_count, 2);
@@ -506,8 +506,8 @@ int main() {
         assert_ok(wah_exec_context_create(&ctx, &module));
         assert_ok(wah_gc_start(&ctx));
         assert_true(wah_gc_verify_heap(&ctx));
-        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 16);
-        wah_gc_alloc(&ctx, WAH_GC_KIND_NONE, 32);
+        wah_gc_alloc(&ctx, WAH_REPR_NONE, 16);
+        wah_gc_alloc(&ctx, WAH_REPR_NONE, 32);
         assert_true(wah_gc_verify_heap(&ctx));
         wah_gc_step(&ctx);
         assert_true(wah_gc_verify_heap(&ctx));

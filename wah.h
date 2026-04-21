@@ -207,6 +207,30 @@ typedef struct wah_module_s {
     bool has_unimplemented;
 } wah_module_t;
 
+// --- Repr Metadata ---
+typedef int32_t wah_repr_t;
+
+typedef enum {
+    WAH_REPR_STRUCT = 1,
+    WAH_REPR_ARRAY,
+} wah_repr_type_t;
+
+typedef struct {
+    uint32_t offset;
+    wah_repr_t repr_id;
+} wah_repr_field_t;
+
+typedef struct {
+    wah_repr_type_t type;
+    uint32_t typeidx;
+    uint32_t size;
+    uint32_t count;
+    wah_repr_field_t fields[];
+} wah_repr_info_t;
+
+#define WAH_REPR_NONE ((wah_repr_t)-1)
+#define WAH_REPR_I31  ((wah_repr_t)-2)
+
 // --- GC State ---
 typedef enum {
     WAH_GC_PHASE_IDLE = 0,
@@ -214,16 +238,34 @@ typedef enum {
     WAH_GC_PHASE_SWEEP,
 } wah_gc_phase_t;
 
-typedef enum {
-    WAH_GC_KIND_NONE = 0,
-} wah_gc_object_kind_t;
+#define WAH_GC_TAG_MARK ((uintptr_t)0x1)
+#define WAH_GC_TAG_AUX  ((uintptr_t)0x2)
+#define WAH_GC_TAG_MASK ((uintptr_t)0x3)
 
 typedef struct wah_gc_object_s {
-    struct wah_gc_object_s *next;
-    uint32_t mark    : 1;
-    uint32_t kind    : 7;
-    uint32_t size    : 24;
+    struct wah_gc_object_s *next_tagged;
+    wah_repr_t repr_id;
+    uint32_t size_bytes;
 } wah_gc_object_t;
+
+static inline wah_gc_object_t *wah_gc_next(const wah_gc_object_t *obj) {
+    return (wah_gc_object_t *)((uintptr_t)obj->next_tagged & ~WAH_GC_TAG_MASK);
+}
+
+static inline void wah_gc_set_next(wah_gc_object_t *obj, wah_gc_object_t *next) {
+    obj->next_tagged = (struct wah_gc_object_s *)((uintptr_t)next | ((uintptr_t)obj->next_tagged & WAH_GC_TAG_MASK));
+}
+
+static inline bool wah_gc_marked(const wah_gc_object_t *obj) {
+    return ((uintptr_t)obj->next_tagged & WAH_GC_TAG_MARK) != 0;
+}
+
+static inline void wah_gc_set_mark(wah_gc_object_t *obj, bool marked) {
+    if (marked)
+        obj->next_tagged = (struct wah_gc_object_s *)((uintptr_t)obj->next_tagged | WAH_GC_TAG_MARK);
+    else
+        obj->next_tagged = (struct wah_gc_object_s *)((uintptr_t)obj->next_tagged & ~WAH_GC_TAG_MARK);
+}
 
 typedef struct wah_gc_state_s {
     wah_gc_object_t *all_objects;
@@ -399,7 +441,7 @@ void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats
 // Verifies GC heap consistency. Returns true if valid. Logs errors via WAH_LOG in debug builds.
 bool wah_gc_verify_heap(const wah_exec_context_t *ctx);
 // Allocates a GC-managed object. Returns pointer to the payload (after the header).
-wah_gc_object_t *wah_gc_alloc(wah_exec_context_t *ctx, wah_gc_object_kind_t kind, uint32_t payload_size);
+wah_gc_object_t *wah_gc_alloc(wah_exec_context_t *ctx, wah_repr_t repr_id, uint32_t payload_size);
 // Returns the object header from a payload pointer.
 static inline wah_gc_object_t *wah_gc_header(void *payload) {
     return (wah_gc_object_t *)((uint8_t *)payload - sizeof(wah_gc_object_t));
@@ -6026,7 +6068,7 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
 static void wah_gc_free_all_objects(wah_gc_state_t *gc) {
     wah_gc_object_t *obj = gc->all_objects;
     while (obj) {
-        wah_gc_object_t *next = obj->next;
+        wah_gc_object_t *next = wah_gc_next(obj);
         free(obj);
         obj = next;
     }
@@ -6061,19 +6103,18 @@ void wah_gc_destroy(wah_exec_context_t *ctx) {
     ctx->gc = NULL;
 }
 
-wah_gc_object_t *wah_gc_alloc(wah_exec_context_t *ctx, wah_gc_object_kind_t kind, uint32_t payload_size) {
+wah_gc_object_t *wah_gc_alloc(wah_exec_context_t *ctx, wah_repr_t repr_id, uint32_t payload_size) {
     wah_gc_state_t *gc = ctx->gc;
     if (!gc) return NULL;
 
-    size_t total = sizeof(wah_gc_object_t) + payload_size;
+    uint32_t total = (uint32_t)(sizeof(wah_gc_object_t) + payload_size);
     wah_gc_object_t *obj = (wah_gc_object_t *)malloc(total);
     if (!obj) return NULL;
     memset(obj, 0, total);
 
-    obj->kind = (uint32_t)kind;
-    obj->size = payload_size;
-    obj->mark = 0;
-    obj->next = gc->all_objects;
+    obj->repr_id = repr_id;
+    obj->size_bytes = total;
+    wah_gc_set_next(obj, gc->all_objects);
     gc->all_objects = obj;
     gc->object_count++;
     gc->allocated_bytes += total;
@@ -6197,8 +6238,8 @@ static void wah_gc_step_mark(wah_exec_context_t *ctx) {
     wah_gc_state_t *gc = ctx->gc;
 
     // Clear all marks
-    for (wah_gc_object_t *obj = gc->all_objects; obj; obj = obj->next) {
-        obj->mark = 0;
+    for (wah_gc_object_t *obj = gc->all_objects; obj; obj = wah_gc_next(obj)) {
+        wah_gc_set_mark(obj, false);
     }
 
     // Mark from roots
@@ -6209,24 +6250,25 @@ static void wah_gc_step_mark(wah_exec_context_t *ctx) {
 }
 
 static void wah_gc_step_sweep(wah_gc_state_t *gc) {
-    wah_gc_object_t **prev = &gc->all_objects;
-    wah_gc_object_t *obj = *prev;
+    wah_gc_object_t *prev_obj = NULL;
+    wah_gc_object_t *obj = gc->all_objects;
     while (obj) {
-        if (!obj->mark) {
-            *prev = obj->next;
-            size_t total = sizeof(wah_gc_object_t) + obj->size;
-            gc->allocated_bytes -= total;
+        wah_gc_object_t *next = wah_gc_next(obj);
+        if (!wah_gc_marked(obj)) {
+            if (prev_obj)
+                wah_gc_set_next(prev_obj, next);
+            else
+                gc->all_objects = next;
+            gc->allocated_bytes -= obj->size_bytes;
             gc->object_count--;
 #ifdef WAH_DEBUG
             gc->total_frees++;
 #endif
-            wah_gc_object_t *dead = obj;
-            obj = obj->next;
-            free(dead);
+            free(obj);
         } else {
-            prev = &obj->next;
-            obj = obj->next;
+            prev_obj = obj;
         }
+        obj = next;
     }
 
     gc->phase = WAH_GC_PHASE_IDLE;
@@ -6280,9 +6322,9 @@ bool wah_gc_verify_heap(const wah_exec_context_t *ctx) {
 
     uint32_t counted = 0;
     size_t counted_bytes = 0;
-    for (wah_gc_object_t *obj = gc->all_objects; obj; obj = obj->next) {
+    for (wah_gc_object_t *obj = gc->all_objects; obj; obj = wah_gc_next(obj)) {
         counted++;
-        counted_bytes += sizeof(wah_gc_object_t) + obj->size;
+        counted_bytes += obj->size_bytes;
         if (counted > gc->object_count + 1) {
             WAH_LOG("GC verify: object list longer than object_count (%u)", gc->object_count);
             return false;
