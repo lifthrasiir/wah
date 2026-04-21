@@ -37,7 +37,7 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/call.bin.wast",
     "tests/spectest/call_indirect.bin.wast",
     "tests/spectest/call_indirect64.bin.wast",
-    //"tests/spectest/call_ref.bin.wast",        // GC proposal
+    "tests/spectest/call_ref.bin.wast",
     "tests/spectest/const.bin.wast",
     "tests/spectest/conversions.bin.wast",
     //"tests/spectest/custom.bin.wast",          // needs extended ref types
