@@ -1620,6 +1620,8 @@ typedef struct wah_element_segment_s {
     uint32_t table_idx;       // For active modes
     uint32_t num_elems;
     bool is_expr_elem;        // true if elem* are expressions, false if func indices
+    wah_type_t elem_type;     // declared element reference type (funcref, externref, or concrete type)
+    wah_type_flags_t elem_type_flags; // nullable / non-null flags for elem_type
 
     // offset expression (for active modes) - preparsed for evaluation
     wah_parsed_code_t offset_expr;
@@ -4189,9 +4191,10 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &type_idx));
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &table_idx));
 
-            // Validate table index
+            // Validate table index and that table holds function references
             WAH_ENSURE(table_idx < wah_total_table_count(vctx->module), WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(wah_table_type(vctx->module, table_idx)->elem_type == WAH_TYPE_FUNCREF, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(wah_type_is_subtype(wah_table_type(vctx->module, table_idx)->elem_type,
+                                           WAH_TYPE_FUNCREF, vctx->module), WAH_ERROR_VALIDATION_FAILED);
 
             // Validate type index
             WAH_ENSURE(type_idx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
@@ -4314,7 +4317,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             wah_type_t src_elem_type = wah_table_type(vctx->module, src_table_idx)->elem_type;
             wah_type_t dst_addr_type = wah_table_type(vctx->module, dst_table_idx)->addr_type;
             wah_type_t src_addr_type = wah_table_type(vctx->module, src_table_idx)->addr_type;
-            WAH_ENSURE(dst_elem_type == src_elem_type, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(wah_type_is_subtype(src_elem_type, dst_elem_type, vctx->module), WAH_ERROR_VALIDATION_FAILED);
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, dst_addr_type, 0));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, src_addr_type, 0));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, dst_addr_type, 0));
@@ -4326,6 +4329,11 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &table_idx));
             WAH_ENSURE(elem_idx < vctx->module->element_segment_count, WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(table_idx < wah_total_table_count(vctx->module), WAH_ERROR_VALIDATION_FAILED);
+            {
+                wah_type_t elem_type = vctx->module->element_segments[elem_idx].elem_type;
+                wah_type_t table_elem = wah_table_type(vctx->module, table_idx)->elem_type;
+                WAH_ENSURE(wah_type_is_subtype(elem_type, table_elem, vctx->module), WAH_ERROR_VALIDATION_FAILED);
+            }
             wah_type_t taddr = wah_table_type(vctx->module, table_idx)->addr_type;
             POP(I32); POP(I32); WAH_CHECK(wah_validation_pop_and_match_type(vctx, taddr, 0));
             break;
@@ -5150,7 +5158,7 @@ static wah_error_t wah_validate_const_expr(
         if (opcode_val == WAH_OP_END) {
             // End of const expression - check type matches expected
             WAH_ENSURE(stack_depth == 1, WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(type_stack[0] == expected_type || type_stack[0] == WAH_TYPE_ANY, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(type_stack[0] == WAH_TYPE_ANY || wah_type_is_subtype(type_stack[0], expected_type, module), WAH_ERROR_VALIDATION_FAILED);
             return WAH_OK;
         }
 
@@ -5211,7 +5219,16 @@ static wah_error_t wah_validate_const_expr(
                 WAH_CHECK(wah_decode_uleb128(ptr, section_end, &func_idx));
                 WAH_ENSURE(func_idx < wah_total_func_count(module),
                           WAH_ERROR_VALIDATION_FAILED);
-                CONST_PUSH(WAH_TYPE_FUNCREF);
+                wah_type_t ref_func_type = WAH_TYPE_FUNCREF;
+                if (func_idx < module->import_function_count) {
+                    ref_func_type = (wah_type_t)module->func_imports[func_idx].type_index;
+                } else {
+                    uint32_t local_idx = func_idx - module->import_function_count;
+                    if (local_idx < module->function_count && module->function_type_indices) {
+                        ref_func_type = (wah_type_t)module->function_type_indices[local_idx];
+                    }
+                }
+                CONST_PUSH(ref_func_type);
                 break;
             }
 
@@ -5785,16 +5802,23 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
             // Parse elemkind/reftype
             // In mode 0, elemkind/reftype is implicitly funcref (not present in binary)
             // In modes 1,2,3, we need to read the elemkind/reftype byte
+            segment->elem_type = WAH_TYPE_FUNCREF;
+            segment->elem_type_flags = WAH_TYPE_FLAG_NULLABLE;
             if (mode > 0) {
                 if (is_expr_elem) {
-                    wah_type_t ref_type;
-                    WAH_CHECK(wah_decode_ref_type(ptr, section_end, &ref_type, NULL));
-                    WAH_ENSURE(ref_type == WAH_TYPE_FUNCREF, WAH_ERROR_VALIDATION_FAILED); // TODO: externref should be possible
+                    WAH_CHECK(wah_decode_ref_type(ptr, section_end, &segment->elem_type, &segment->elem_type_flags));
+                    WAH_ENSURE(WAH_TYPE_IS_REF(segment->elem_type), WAH_ERROR_VALIDATION_FAILED);
                 } else {
                     WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
                     uint8_t elemkind = *(*ptr)++;
-                    WAH_ENSURE(elemkind == 0x00, WAH_ERROR_VALIDATION_FAILED); // Only funcref supported
+                    WAH_ENSURE(elemkind == 0x00, WAH_ERROR_VALIDATION_FAILED);
                 }
+            }
+
+            // For active segments, validate element type is subtype of table element type
+            if (segment->is_active) {
+                wah_type_t table_elem_type = wah_table_type(module, segment->table_idx)->elem_type;
+                WAH_ENSURE(wah_type_is_subtype(segment->elem_type, table_elem_type, module), WAH_ERROR_VALIDATION_FAILED);
             }
 
             // Parse num_elems
@@ -5805,9 +5829,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
             if (segment->is_dropped) {
                 for (uint32_t j = 0; j < num_elems; ++j) {
                     if (is_expr_elem) {
-                        // Validate expression (must return funcref)
-                        // TODO: When imported globals are supported, use module->global_count + module->import_global_count
-                        WAH_CHECK(wah_validate_const_expr(ptr, section_end, WAH_TYPE_FUNCREF, module, wah_total_global_count(module)));
+                        WAH_CHECK(wah_validate_const_expr(ptr, section_end, segment->elem_type, module, wah_total_global_count(module)));
                     } else {
                         // Skip funcidx
                         uint32_t funcidx;
@@ -5830,8 +5852,6 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
                         WAH_ENSURE(segment->u.func_indices[j] < wah_total_func_count(module), WAH_ERROR_VALIDATION_FAILED);
                     }
                 } else {
-                    // elem* are constant expressions (must return funcref)
-                    // Allocate arrays for each expression
                     WAH_MALLOC_ARRAY(segment->u.expr.bytecodes, num_elems);
                     WAH_MALLOC_ARRAY(segment->u.expr.bytecode_sizes, num_elems);
 
@@ -5840,9 +5860,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
                         ++segment->num_elems;
 
                         const uint8_t *expr_start = *ptr;
-                        // Validate expression (must return funcref)
-                        // TODO: When imported globals are supported, use module->global_count + module->import_global_count
-                        WAH_CHECK(wah_validate_const_expr(ptr, section_end, WAH_TYPE_FUNCREF, module, wah_total_global_count(module)));
+                        WAH_CHECK(wah_validate_const_expr(ptr, section_end, segment->elem_type, module, wah_total_global_count(module)));
 
                         uint32_t raw_expr_size = (uint32_t)(*ptr - expr_start);
 
@@ -8189,12 +8207,12 @@ WAH_RUN(TABLE_FILL) {
                                                    segment->u.expr.bytecodes[(src_offset) + _i], \
                                                    segment->u.expr.bytecode_sizes[(src_offset) + _i], \
                                                    &elem_val), cleanup); \
-                if (elem_val.ref == NULL) { \
-                    _store_val.ref = NULL; \
-                } else { \
+                if (elem_val.ref == wah_funcref_sentinel) { \
                     uint32_t global_func_idx = elem_val.prefuncref.func_idx; \
                     WAH_ASSERT(global_func_idx < ctx->function_table_count); \
                     _store_val.ref = &ctx->function_table[global_func_idx]; \
+                } else { \
+                    _store_val = elem_val; \
                 } \
             } \
             wah_ref_store_table(ctx, table_idx, (dst_offset) + _i, _store_val); \
@@ -11689,7 +11707,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                                            module->globals[i].init_expr.bytecode,
                                            module->globals[i].init_expr.bytecode_size,
                                            &ctx->globals[slot]), cleanup);
-        if (module->globals[i].type == WAH_TYPE_FUNCREF && ctx->globals[slot].ref != NULL) {
+        if (ctx->globals[slot].ref == wah_funcref_sentinel) {
             uint32_t fidx = ctx->globals[slot].prefuncref.func_idx;
             WAH_ENSURE_GOTO(fidx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
             ctx->globals[slot].ref = &ctx->function_table[fidx];
@@ -11838,8 +11856,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
             const wah_module_t *linked = ctx->linked_modules[j].module;
             for (uint32_t k = 0; k < linked->global_count; k++) {
-                if (linked->globals[k].type == WAH_TYPE_FUNCREF &&
-                    ctx->globals[lg_offset + k].ref != NULL) {
+                if (ctx->globals[lg_offset + k].ref == wah_funcref_sentinel) {
                     uint32_t fidx = ctx->globals[lg_offset + k].prefuncref.func_idx;
                     uint32_t linked_import_count = linked->import_function_count;
                     if (fidx >= linked_import_count) {
@@ -11935,12 +11952,12 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                                                    segment->u.expr.bytecodes[j],
                                                    segment->u.expr.bytecode_sizes[j],
                                                    &elem_val), cleanup);
-                if (elem_val.ref == NULL) {
-                    ctx->tables[segment->table_idx][offset + j].ref = NULL;
-                } else {
+                if (elem_val.ref == wah_funcref_sentinel) {
                     uint32_t global_func_idx = elem_val.prefuncref.func_idx;
                     WAH_ENSURE_GOTO(global_func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
                     ctx->tables[segment->table_idx][offset + j].ref = &ctx->function_table[global_func_idx];
+                } else {
+                    ctx->tables[segment->table_idx][offset + j] = elem_val;
                 }
             }
         }

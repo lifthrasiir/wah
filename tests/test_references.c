@@ -1374,6 +1374,223 @@ int main() {
         wah_free_module(&module);
     }
 
+    // --- Typed-reference semantics: element/table/call_indirect ---
+
+    printf("Running test_elem_segment_externref...\n");
+    {
+        // Element segment with externref type (mode 5 = passive expr)
+        // Should parse successfully since we no longer restrict to funcref only
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            tables {[ externref limits.i32/1 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            elements {[ elem.passive.expr externref [ref.null externref end] ]} \
+            code {[ {[] i32.const 1 end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_eq_i32(module.element_segments[0].elem_type, WAH_TYPE_EXTERNREF);
+        assert_true(module.element_segments[0].elem_type_flags & WAH_TYPE_FLAG_NULLABLE);
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_elem_segment_type_mismatch_rejected...\n");
+    {
+        // Active element with externref into a funcref table should fail validation
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            elements {[ elem.active.expr.table# 0 i32.const 0 end externref [ref.null externref end] ]} \
+            code {[ {[] i32.const 1 end } ]}";
+        wah_module_t module;
+        assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_elem_funcref_into_funcref_table...\n");
+    {
+        // Active element with funcref into funcref table (same type) should succeed
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            elements {[ elem.active.expr.table# 0 i32.const 0 end funcref [ref.func 0 end] ]} \
+            code {[ {[] i32.const 42 end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_table_init_elem_type_subtype...\n");
+    {
+        // table.init: element segment with nullfuncref (subtype of funcref) into funcref table
+        // nullfuncref <: funcref, so this should be accepted
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            elements {[ elem.passive.expr nullfuncref [ref.null nullfuncref end] ]} \
+            code {[ {[] \
+                i32.const 0 i32.const 0 i32.const 1 table.init 0 0 \
+                i32.const 1 end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_table_init_type_mismatch_rejected...\n");
+    {
+        // table.init: externref element into funcref table should fail validation
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            elements {[ elem.passive.expr externref [ref.null externref end] ]} \
+            code {[ {[] \
+                i32.const 0 i32.const 0 i32.const 1 table.init 0 0 \
+                i32.const 1 end } ]}";
+        wah_module_t module;
+        assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_table_copy_subtype...\n");
+    {
+        // table.copy from a nullfuncref table to a funcref table
+        // nullfuncref <: funcref, so validation should accept
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/1 1, nullfuncref limits.i32/1 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] \
+                i32.const 0 i32.const 0 i32.const 1 table.copy 0 1 \
+                i32.const 1 end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_table_copy_type_mismatch_rejected...\n");
+    {
+        // table.copy from externref table to funcref table should fail
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/1 1, externref limits.i32/1 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] \
+                i32.const 0 i32.const 0 i32.const 1 table.copy 0 1 \
+                i32.const 1 end } ]}";
+        wah_module_t module;
+        assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_call_indirect_concrete_functype_table...\n");
+    {
+        // Table with concrete function type (ref null $0), call_indirect through it
+        // type 0: fn [i32] -> [i32]  (concrete type for the table)
+        // Element segment uses (ref null $0) to match the table's element type
+        const char *spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            funcs {[ 0, 0 ]} \
+            tables {[ type.ref.null 0 limits.i32/1 1 ]} \
+            exports {[ {'run'} fn# 1 ]} \
+            elements {[ elem.active.expr.table# 0 i32.const 0 end type.ref.null 0 [ref.func 0 end] ]} \
+            code {[ \
+                {[] local.get 0 i32.const 1 i32.add end}, \
+                {[] local.get 0 i32.const 0 call_indirect 0 0 end} \
+            ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t param = {.i32 = 10};
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 1, &param, 1, &result));
+        assert_eq_i32(result.i32, 11);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_global_concrete_funcref_type...\n");
+    {
+        // Global with concrete function type (ref null $0) initialized via ref.func
+        // This tests that prefuncref conversion works for non-funcref function reference types
+        const char *spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            funcs {[ 0, 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            globals {[ type.ref.null 0 mut ref.func 0 end ]} \
+            exports {[ {'run'} fn# 1 ]} \
+            code {[ \
+                {[] local.get 0 i32.const 5 i32.add end}, \
+                {[] i32.const 0 global.get 0 table.set 0 \
+                    local.get 0 i32.const 0 call_indirect 0 0 end} \
+            ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t param = {.i32 = 7};
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 1, &param, 1, &result));
+        assert_eq_i32(result.i32, 12);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_declarative_elem_externref...\n");
+    {
+        // Declarative element with externref (mode 7 = declarative expr)
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            elements {[ elem.declarative.expr externref [ref.null externref end] ]} \
+            code {[ {[] i32.const 1 end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
     printf("\nAll Reference Types tests passed!\n");
     return 0;
 }
