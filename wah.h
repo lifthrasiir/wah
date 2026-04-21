@@ -6279,10 +6279,48 @@ void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visito
     }
 }
 
+static void wah_gc_scan_object(wah_gc_object_t *obj, const wah_module_t *module);
+
+static void wah_gc_mark_object(wah_gc_object_t *obj, const wah_module_t *module) {
+    if (!obj || wah_gc_marked(obj)) return;
+    wah_gc_set_mark(obj, true);
+    wah_gc_scan_object(obj, module);
+}
+
+static void wah_gc_scan_object(wah_gc_object_t *obj, const wah_module_t *module) {
+    wah_repr_t repr_id = obj->repr_id;
+    if (wah_repr_is_builtin(repr_id)) return;
+    const wah_repr_info_t *info = wah_repr_info_get(module, repr_id);
+    if (!info) return;
+
+    uint8_t *payload = (uint8_t *)wah_gc_payload(obj);
+    if (info->type == WAH_REPR_STRUCT) {
+        for (uint32_t i = 0; i < info->count; ++i) {
+            if (wah_repr_is_builtin(info->fields[i].repr_id) && info->fields[i].repr_id == WAH_REPR_NONE)
+                continue;
+            wah_gc_object_t **ref = (wah_gc_object_t **)(payload + info->fields[i].offset);
+            if (*ref) wah_gc_mark_object(*ref, module);
+        }
+    } else if (info->type == WAH_REPR_ARRAY) {
+        if (info->count == 0) return;
+        wah_repr_t elem_repr = info->fields[0].repr_id;
+        if (wah_repr_is_builtin(elem_repr) && elem_repr == WAH_REPR_NONE) return;
+        uint32_t elem_size = info->size;
+        uint32_t *length_ptr = (uint32_t *)payload;
+        uint32_t length = *length_ptr;
+        uint8_t *elems = payload + sizeof(uint32_t);
+        for (uint32_t i = 0; i < length; ++i) {
+            wah_gc_object_t **ref = (wah_gc_object_t **)(elems + i * elem_size + info->fields[0].offset);
+            if (*ref) wah_gc_mark_object(*ref, module);
+        }
+    }
+}
+
 static void wah_gc_mark_visitor(wah_value_t *slot, wah_type_t type, void *userdata) {
     (void)type; (void)userdata; (void)slot;
-    // Future: if slot->ref points to a GC-managed object, mark it.
-    // Currently no GC-managed types exist, so this is a no-op.
+    // Future: when GC-managed reference values are introduced, extract
+    // the object pointer from the slot and call wah_gc_mark_object().
+    // Currently funcref/externref values are not GC-managed objects.
 }
 
 static void wah_gc_step_mark(wah_exec_context_t *ctx) {
