@@ -91,16 +91,31 @@ typedef int32_t wah_type_t;
 #define WAH_TYPE_F32 -3
 #define WAH_TYPE_F64 -4
 #define WAH_TYPE_V128 -5
+
+#define WAH_TYPE_PACKED_I8 -8
+#define WAH_TYPE_PACKED_I16 -9
+
+#define WAH_TYPE_NULLEXNREF -12
+#define WAH_TYPE_NULLFUNCREF -13
+#define WAH_TYPE_NULLEXTERNREF -14
+#define WAH_TYPE_NULLREF -15
 #define WAH_TYPE_FUNCREF -16
 #define WAH_TYPE_EXTERNREF -17
+#define WAH_TYPE_ANYREF -18
+#define WAH_TYPE_EQREF -19
+#define WAH_TYPE_I31REF -20
+#define WAH_TYPE_STRUCTREF -21
+#define WAH_TYPE_ARRAYREF -22
+#define WAH_TYPE_EXNREF -23
 
 #define WAH_TYPE_IS_FUNCTION(t) ((t) / 100 == -1)
 #define WAH_TYPE_IS_MEMORY(t)   ((t) == -200)
 #define WAH_TYPE_IS_TABLE(t)    ((t) == -300)
 #define WAH_TYPE_IS_GLOBAL(t)   ((t) >= -5)
+#define WAH_TYPE_IS_PACKED(t)   ((t) == WAH_TYPE_PACKED_I8 || (t) == WAH_TYPE_PACKED_I16)
 #define WAH_TYPE_IS_FUNCREF(t)  ((t) == WAH_TYPE_FUNCREF)
 #define WAH_TYPE_IS_EXTERNREF(t) ((t) == WAH_TYPE_EXTERNREF)
-#define WAH_TYPE_IS_REF(t) (WAH_TYPE_IS_FUNCREF(t) || WAH_TYPE_IS_EXTERNREF(t))
+#define WAH_TYPE_IS_REF(t)      ((t) <= -12 && (t) >= -23)
 
 typedef uint64_t wah_entry_id_t;
 
