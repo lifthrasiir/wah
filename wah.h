@@ -185,6 +185,17 @@ typedef struct {
     uint32_t length;
 } wah_gc_array_body_t;
 
+static inline wah_repr_field_t wah_repr_field(uint32_t offset, wah_repr_t repr_id) {
+    wah_repr_field_t f;
+    f.offset = offset;
+    f.repr_id = repr_id;
+    return f;
+}
+
+static inline bool wah_repr_field_is_ref(const wah_repr_field_t *f) {
+    return f->repr_id != WAH_REPR_NONE;
+}
+
 typedef struct {
     uint32_t count;
     wah_repr_t *ids;
