@@ -177,6 +177,12 @@ typedef struct {
 static inline bool wah_repr_is_positive(wah_repr_t id) { return id >= 0; }
 static inline bool wah_repr_is_builtin(wah_repr_t id) { return id < 0; }
 
+typedef struct {
+    uint32_t count;
+    wah_repr_t *ids;
+    bool accepts_i31;
+} wah_repr_set_t;
+
 typedef struct wah_module_s {
     uint32_t type_count;
     uint32_t function_count;
@@ -235,6 +241,7 @@ typedef struct wah_module_s {
     uint32_t repr_count;
     wah_repr_info_t **repr_infos;
     wah_repr_t *typeidx_to_repr;
+    wah_repr_set_t *type_cast_sets;
 
     bool has_unimplemented;
 } wah_module_t;
@@ -478,6 +485,21 @@ static inline const wah_repr_info_t *wah_repr_info_get(const wah_module_t *modul
 static inline uint32_t wah_repr_info_typeidx(const wah_module_t *module, wah_repr_t repr_id) {
     const wah_repr_info_t *info = wah_repr_info_get(module, repr_id);
     return info ? info->typeidx : (uint32_t)-1;
+}
+
+static inline bool wah_repr_set_contains(const wah_repr_set_t *set, wah_repr_t repr_id) {
+    if (!set) return false;
+    if (repr_id == WAH_REPR_I31) return set->accepts_i31;
+    if (!wah_repr_is_positive(repr_id)) return false;
+    for (uint32_t i = 0; i < set->count; ++i) {
+        if (set->ids[i] == repr_id) return true;
+    }
+    return false;
+}
+
+static inline bool wah_type_accepts_repr(const wah_module_t *module, uint32_t typeidx, wah_repr_t repr_id) {
+    if (!module->type_cast_sets || typeidx >= module->type_count) return false;
+    return wah_repr_set_contains(&module->type_cast_sets[typeidx], repr_id);
 }
 
 wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id, wah_entry_t *out);
@@ -9470,6 +9492,12 @@ void wah_free_module(wah_module_t *module) {
         free(module->repr_infos);
     }
     free(module->typeidx_to_repr);
+    if (module->type_cast_sets) {
+        for (uint32_t i = 0; i < module->type_count; ++i) {
+            free(module->type_cast_sets[i].ids);
+        }
+        free(module->type_cast_sets);
+    }
 
     // Reset all fields to 0/NULL
     memset(module, 0, sizeof(wah_module_t));
