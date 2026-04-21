@@ -430,6 +430,12 @@ void wah_free_module(wah_module_t *module);
 
 // --- Programmatically create modules ---
 wah_error_t wah_new_module(wah_module_t *mod);
+
+// Legacy host function export APIs.
+// These accept only MVP value types and ref shorthands (funcref, externref)
+// via wah_type_t. Typed references with concrete typeidx or non-default
+// nullability are not expressible through these interfaces; use wah_entry_t
+// introspection for inspecting such signatures from parsed modules.
 wah_error_t wah_module_export_funcv(wah_module_t *mod, const char *name, size_t nparams, const wah_type_t *param_types, size_t nresults, const wah_type_t *result_types, wah_func_t func, void *userdata, wah_finalize_t finalize);
 wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const char *types, wah_func_t func, void *userdata, wah_finalize_t finalize);
 wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages);
