@@ -625,6 +625,104 @@ int main() {
         wah_free_module(&linked_mod);
     }
 
+    // --- Concrete repr-backed allocation tests ---
+    {
+        wah_module_t mod = {0};
+        wah_exec_context_t ctx3 = {0};
+
+        const char *spec = "wasm \
+            types {[ fn [] [], fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+        assert_ok(wah_parse_module_from_spec(&mod, spec));
+        assert_ok(wah_exec_context_create(&ctx3, &mod));
+        assert_ok(wah_gc_start(&ctx3));
+
+        printf("Testing wah_gc_alloc_struct...\n");
+        {
+            uint8_t info_buf[sizeof(wah_repr_info_t) + 2 * sizeof(wah_repr_field_t)];
+            wah_repr_info_t *info = (wah_repr_info_t *)info_buf;
+            info->type = WAH_REPR_STRUCT;
+            info->typeidx = 0;
+            info->size = 8;
+            info->count = 2;
+            info->fields[0] = wah_repr_field(0, WAH_REPR_NONE);
+            info->fields[1] = wah_repr_field(4, WAH_REPR_NONE);
+
+            wah_repr_t repr_id;
+            assert_ok(wah_module_alloc_repr(&mod, 0, info, &repr_id));
+            assert(repr_id >= 0);
+
+            wah_gc_object_t *obj = wah_gc_alloc_struct(&ctx3, repr_id, mod.repr_infos[repr_id]);
+            assert_not_null(obj);
+            assert_eq_u32(obj->repr_id, (uint32_t)repr_id);
+            assert_eq_u32(obj->size_bytes, wah_gc_struct_alloc_size(mod.repr_infos[repr_id]));
+
+            uint8_t *payload = (uint8_t *)wah_gc_payload(obj);
+            *(int32_t *)(payload + 0) = 42;
+            *(int32_t *)(payload + 4) = -7;
+            assert(*(int32_t *)(payload + 0) == 42);
+            assert(*(int32_t *)(payload + 4) == -7);
+        }
+
+        printf("Testing wah_gc_alloc_array...\n");
+        {
+            uint8_t info_buf[sizeof(wah_repr_info_t) + sizeof(wah_repr_field_t)];
+            wah_repr_info_t *info = (wah_repr_info_t *)info_buf;
+            info->type = WAH_REPR_ARRAY;
+            info->typeidx = 1;
+            info->size = 4;
+            info->count = 1;
+            info->fields[0] = wah_repr_field(0, WAH_REPR_NONE);
+
+            wah_repr_t repr_id;
+            assert_ok(wah_module_alloc_repr(&mod, 1, info, &repr_id));
+
+            uint32_t length = 5;
+            wah_gc_object_t *obj = wah_gc_alloc_array(&ctx3, repr_id, mod.repr_infos[repr_id], length);
+            assert_not_null(obj);
+            assert_eq_u32(obj->repr_id, (uint32_t)repr_id);
+            assert_eq_u32(obj->size_bytes, wah_gc_array_alloc_size(mod.repr_infos[repr_id], length));
+
+            wah_gc_array_body_t *body = (wah_gc_array_body_t *)wah_gc_payload(obj);
+            assert_eq_u32(body->length, 5);
+
+            // Write and read back elements
+            int32_t *elems = (int32_t *)((uint8_t *)body + sizeof(wah_gc_array_body_t));
+            for (uint32_t i = 0; i < length; i++) elems[i] = (int32_t)(i * 10);
+            for (uint32_t i = 0; i < length; i++) assert(elems[i] == (int32_t)(i * 10));
+        }
+
+        printf("Testing wah_gc_alloc_i31...\n");
+        {
+            wah_gc_object_t *obj = wah_gc_alloc_i31(&ctx3, 12345);
+            assert_not_null(obj);
+            assert_eq_u32((uint32_t)obj->repr_id, (uint32_t)WAH_REPR_I31);
+            assert_eq_u32(obj->size_bytes, wah_gc_i31_alloc_size());
+
+            wah_gc_i31_body_t *body = (wah_gc_i31_body_t *)wah_gc_payload(obj);
+            assert(body->value == 12345);
+
+            // Negative value
+            wah_gc_object_t *obj2 = wah_gc_alloc_i31(&ctx3, -42);
+            assert_not_null(obj2);
+            wah_gc_i31_body_t *body2 = (wah_gc_i31_body_t *)wah_gc_payload(obj2);
+            assert(body2->value == -42);
+        }
+
+        printf("Testing wah_gc_alloc_array overflow protection...\n");
+        {
+            // Allocation with huge length should return NULL (overflow)
+            wah_gc_object_t *obj = wah_gc_alloc_array(&ctx3, mod.typeidx_to_repr[1],
+                                                       mod.repr_infos[mod.typeidx_to_repr[1]],
+                                                       UINT32_MAX);
+            assert_null(obj);
+        }
+
+        wah_exec_context_destroy(&ctx3);
+        wah_free_module(&mod);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }

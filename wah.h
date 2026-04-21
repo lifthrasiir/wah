@@ -544,6 +544,10 @@ static inline uint32_t wah_gc_array_alloc_size(const wah_repr_info_t *info, uint
 static inline uint32_t wah_gc_i31_alloc_size(void) {
     return (uint32_t)(sizeof(wah_gc_object_t) + sizeof(wah_gc_i31_body_t));
 }
+wah_gc_object_t *wah_gc_alloc_struct(wah_exec_context_t *ctx, wah_repr_t repr_id, const wah_repr_info_t *info);
+wah_gc_object_t *wah_gc_alloc_array(wah_exec_context_t *ctx, wah_repr_t repr_id, const wah_repr_info_t *info, uint32_t length);
+wah_gc_object_t *wah_gc_alloc_i31(wah_exec_context_t *ctx, int32_t value);
+
 // Visitor callback for root enumeration. Called once per live reference slot.
 // slot points to the wah_value_t containing the reference; type is its declared type.
 typedef void (*wah_gc_ref_visitor_t)(wah_value_t *slot, wah_type_t type, void *userdata);
@@ -6519,6 +6523,34 @@ wah_gc_object_t *wah_gc_alloc(wah_exec_context_t *ctx, wah_repr_t repr_id, uint3
         gc->gc_pending = true;
     }
 
+    return obj;
+}
+
+wah_gc_object_t *wah_gc_alloc_struct(wah_exec_context_t *ctx, wah_repr_t repr_id, const wah_repr_info_t *info) {
+    WAH_ASSERT(info && info->type == WAH_REPR_STRUCT);
+    wah_gc_object_t *obj = wah_gc_alloc(ctx, repr_id, info->size);
+    return obj;
+}
+
+wah_gc_object_t *wah_gc_alloc_array(wah_exec_context_t *ctx, wah_repr_t repr_id, const wah_repr_info_t *info, uint32_t length) {
+    WAH_ASSERT(info && info->type == WAH_REPR_ARRAY);
+    uint32_t elem_size = info->size;
+    uint64_t payload64 = (uint64_t)sizeof(wah_gc_array_body_t) + (uint64_t)elem_size * length;
+    if (payload64 > UINT32_MAX) return NULL;
+    wah_gc_object_t *obj = wah_gc_alloc(ctx, repr_id, (uint32_t)payload64);
+    if (obj) {
+        wah_gc_array_body_t *body = (wah_gc_array_body_t *)wah_gc_payload(obj);
+        body->length = length;
+    }
+    return obj;
+}
+
+wah_gc_object_t *wah_gc_alloc_i31(wah_exec_context_t *ctx, int32_t value) {
+    wah_gc_object_t *obj = wah_gc_alloc(ctx, WAH_REPR_I31, (uint32_t)sizeof(wah_gc_i31_body_t));
+    if (obj) {
+        wah_gc_i31_body_t *body = (wah_gc_i31_body_t *)wah_gc_payload(obj);
+        body->value = value;
+    }
     return obj;
 }
 
