@@ -612,6 +612,163 @@ void wah_test_table_no_max_is_unbounded() {
     wah_free_module(&module);
 }
 
+void wah_test_table_set_nonnull_rejects_null() {
+    printf("Running wah_test_table_set_nonnull_rejects_null...\n");
+
+    wah_module_t module;
+    const char *spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ type.ref.func limits.i32/1 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[] i32.const 0 ref.null funcref table.set 0 end} ]}";
+    assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+}
+
+void wah_test_table_set_nonnull_accepts_ref_func() {
+    printf("Running wah_test_table_set_nonnull_accepts_ref_func...\n");
+
+    wah_module_t module;
+    const char *spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ type.ref.func limits.i32/1 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        elements {[ elem.declarative elem.funcref [0] ]} \
+        code {[ {[] i32.const 0 ref.func 0 table.set 0 end} ]}";
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_free_module(&module);
+}
+
+void wah_test_table_grow_nonnull_rejects_null() {
+    printf("Running wah_test_table_grow_nonnull_rejects_null...\n");
+
+    wah_module_t module;
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        tables {[ type.ref.func limits.i32/1 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[] ref.null funcref i32.const 1 table.grow 0 end} ]}";
+    assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+}
+
+void wah_test_table_fill_nonnull_rejects_null() {
+    printf("Running wah_test_table_fill_nonnull_rejects_null...\n");
+
+    wah_module_t module;
+    const char *spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ type.ref.func limits.i32/1 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[] i32.const 0 ref.null funcref i32.const 1 table.fill 0 end} ]}";
+    assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+}
+
+void wah_test_table_nullable_accepts_nonnull() {
+    printf("Running wah_test_table_nullable_accepts_nonnull...\n");
+
+    wah_module_t module;
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        elements {[ elem.declarative elem.funcref [0] ]} \
+        code {[ {[] \
+            i32.const 0 ref.func 0 table.set 0 \
+            ref.func 0 i32.const 1 table.grow 0 \
+        end} ]}";
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_free_module(&module);
+}
+
+void wah_test_table_copy_nullable_to_nonnull_rejected() {
+    printf("Running wah_test_table_copy_nullable_to_nonnull_rejected...\n");
+
+    wah_module_t module;
+    const char *spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ type.ref.func limits.i32/1 1, funcref limits.i32/1 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[] i32.const 0 i32.const 0 i32.const 1 table.copy 0 1 end} ]}";
+    assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+}
+
+void wah_test_table_copy_nonnull_to_nullable_accepted() {
+    printf("Running wah_test_table_copy_nonnull_to_nullable_accepted...\n");
+
+    wah_module_t module;
+    const char *spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1, type.ref.func limits.i32/1 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[] i32.const 0 i32.const 0 i32.const 1 table.copy 0 1 end} ]}";
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_free_module(&module);
+}
+
+void wah_test_table_init_nullable_elem_to_nonnull_table_rejected() {
+    printf("Running wah_test_table_init_nullable_elem_to_nonnull_table_rejected...\n");
+
+    wah_module_t module;
+    const char *spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ type.ref.func limits.i32/1 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        elements {[ elem.passive.expr funcref [ref.func 0 end] ]} \
+        code {[ {[] i32.const 0 i32.const 0 i32.const 1 table.init 0 0 end} ]}";
+    assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+}
+
+void wah_test_table_init_nonnull_elem_to_nullable_table_accepted() {
+    printf("Running wah_test_table_init_nonnull_elem_to_nullable_table_accepted...\n");
+
+    wah_module_t module;
+    const char *spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        elements {[ elem.passive.expr type.ref.func [ref.func 0 end] ]} \
+        code {[ {[] i32.const 0 i32.const 0 i32.const 1 table.init 0 0 end} ]}";
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_free_module(&module);
+}
+
+void wah_test_active_elem_nullable_into_nonnull_table_rejected() {
+    printf("Running wah_test_active_elem_nullable_into_nonnull_table_rejected...\n");
+
+    wah_module_t module;
+    const char *spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ type.ref.func limits.i32/1 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        elements {[ elem.active.expr.table# 0 i32.const 0 end funcref [ref.func 0 end] ]} \
+        code {[ {[] end} ]}";
+    assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+}
+
+void wah_test_active_elem_nonnull_into_nonnull_table_accepted() {
+    printf("Running wah_test_active_elem_nonnull_into_nonnull_table_accepted...\n");
+
+    wah_module_t module;
+    const char *spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ type.ref.func limits.i32/1 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        elements {[ elem.active.expr.table# 0 i32.const 0 end type.ref.func [ref.func 0 end] ]} \
+        code {[ {[] end} ]}";
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_free_module(&module);
+}
+
 int main() {
     wah_test_table_indirect_call();
     wah_test_table_size();
@@ -628,5 +785,16 @@ int main() {
     wah_test_elem_passive_with_imports();
     wah_test_table_grow_isolated();
     wah_test_table_no_max_is_unbounded();
+    wah_test_table_set_nonnull_rejects_null();
+    wah_test_table_set_nonnull_accepts_ref_func();
+    wah_test_table_grow_nonnull_rejects_null();
+    wah_test_table_fill_nonnull_rejects_null();
+    wah_test_table_nullable_accepts_nonnull();
+    wah_test_table_copy_nullable_to_nonnull_rejected();
+    wah_test_table_copy_nonnull_to_nullable_accepted();
+    wah_test_table_init_nullable_elem_to_nonnull_table_rejected();
+    wah_test_table_init_nonnull_elem_to_nullable_table_accepted();
+    wah_test_active_elem_nullable_into_nonnull_table_rejected();
+    wah_test_active_elem_nonnull_into_nonnull_table_accepted();
     return 0;
 }

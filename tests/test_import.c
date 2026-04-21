@@ -381,6 +381,7 @@ static void test_table_import(void) {
     assert_true(new_tables != NULL);
     provider.tables = new_tables;
     provider.tables[0].elem_type = WAH_TYPE_FUNCREF;
+    provider.tables[0].elem_type_flags = WAH_TYPE_FLAG_NULLABLE;
     provider.tables[0].addr_type = WAH_TYPE_I32;
     provider.tables[0].min_elements = 1;
     provider.tables[0].max_elements = 10;

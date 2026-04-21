@@ -4269,17 +4269,18 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             uint32_t table_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &table_idx));
             WAH_ENSURE(table_idx < wah_total_table_count(vctx->module), WAH_ERROR_VALIDATION_FAILED);
-            WAH_CHECK(wah_validation_pop_and_match_type(vctx, wah_table_type(vctx->module, table_idx)->addr_type, 0));
-            WAH_CHECK(wah_validation_push_type_with_flags(vctx, wah_table_type(vctx->module, table_idx)->elem_type,
-                wah_table_type(vctx->module, table_idx)->elem_type_flags));
+            const wah_table_type_t *tt = wah_table_type(vctx->module, table_idx);
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, tt->addr_type, 0));
+            WAH_CHECK(wah_validation_push_type_with_flags(vctx, tt->elem_type, tt->elem_type_flags));
             break;
         }
         case WAH_OP_TABLE_SET: {
             uint32_t table_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &table_idx));
             WAH_ENSURE(table_idx < wah_total_table_count(vctx->module), WAH_ERROR_VALIDATION_FAILED);
-            WAH_CHECK(wah_validation_pop_and_match_type(vctx, wah_table_type(vctx->module, table_idx)->elem_type, WAH_TYPE_FLAG_NULLABLE));
-            WAH_CHECK(wah_validation_pop_and_match_type(vctx, wah_table_type(vctx->module, table_idx)->addr_type, 0));
+            const wah_table_type_t *tt = wah_table_type(vctx->module, table_idx);
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, tt->elem_type, tt->elem_type_flags));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, tt->addr_type, 0));
             break;
         }
         case WAH_OP_TABLE_SIZE: {
@@ -4295,7 +4296,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(table_idx < wah_total_table_count(vctx->module), WAH_ERROR_VALIDATION_FAILED);
             const wah_table_type_t *tt = wah_table_type(vctx->module, table_idx);
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, tt->addr_type, 0));
-            WAH_CHECK(wah_validation_pop_and_match_type(vctx, tt->elem_type, WAH_TYPE_FLAG_NULLABLE));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, tt->elem_type, tt->elem_type_flags));
             WAH_CHECK(wah_validation_push_type(vctx, tt->addr_type));
             break;
         }
@@ -4305,7 +4306,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(table_idx < wah_total_table_count(vctx->module), WAH_ERROR_VALIDATION_FAILED);
             const wah_table_type_t *tt = wah_table_type(vctx->module, table_idx);
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, tt->addr_type, 0));
-            WAH_CHECK(wah_validation_pop_and_match_type(vctx, tt->elem_type, WAH_TYPE_FLAG_NULLABLE));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, tt->elem_type, tt->elem_type_flags));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, tt->addr_type, 0));
             break;
         }
@@ -4315,11 +4316,12 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &src_table_idx));
             WAH_ENSURE(dst_table_idx < wah_total_table_count(vctx->module), WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(src_table_idx < wah_total_table_count(vctx->module), WAH_ERROR_VALIDATION_FAILED);
-            wah_type_t dst_elem_type = wah_table_type(vctx->module, dst_table_idx)->elem_type;
-            wah_type_t src_elem_type = wah_table_type(vctx->module, src_table_idx)->elem_type;
-            wah_type_t dst_addr_type = wah_table_type(vctx->module, dst_table_idx)->addr_type;
-            wah_type_t src_addr_type = wah_table_type(vctx->module, src_table_idx)->addr_type;
-            WAH_ENSURE(wah_type_is_subtype(src_elem_type, dst_elem_type, vctx->module), WAH_ERROR_VALIDATION_FAILED);
+            const wah_table_type_t *dst_tt = wah_table_type(vctx->module, dst_table_idx);
+            const wah_table_type_t *src_tt = wah_table_type(vctx->module, src_table_idx);
+            wah_type_t dst_addr_type = dst_tt->addr_type;
+            wah_type_t src_addr_type = src_tt->addr_type;
+            WAH_CHECK(wah_validate_type_match(src_tt->elem_type, src_tt->elem_type_flags,
+                dst_tt->elem_type, dst_tt->elem_type_flags, vctx->module));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, dst_addr_type, 0));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, src_addr_type, 0));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, dst_addr_type, 0));
@@ -4332,9 +4334,10 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(elem_idx < vctx->module->element_segment_count, WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(table_idx < wah_total_table_count(vctx->module), WAH_ERROR_VALIDATION_FAILED);
             {
-                wah_type_t elem_type = vctx->module->element_segments[elem_idx].elem_type;
-                wah_type_t table_elem = wah_table_type(vctx->module, table_idx)->elem_type;
-                WAH_ENSURE(wah_type_is_subtype(elem_type, table_elem, vctx->module), WAH_ERROR_VALIDATION_FAILED);
+                const wah_element_segment_t *seg = &vctx->module->element_segments[elem_idx];
+                const wah_table_type_t *tt = wah_table_type(vctx->module, table_idx);
+                WAH_CHECK(wah_validate_type_match(seg->elem_type, seg->elem_type_flags,
+                    tt->elem_type, tt->elem_type_flags, vctx->module));
             }
             wah_type_t taddr = wah_table_type(vctx->module, table_idx)->addr_type;
             POP(I32); POP(I32); WAH_CHECK(wah_validation_pop_and_match_type(vctx, taddr, 0));
@@ -5819,8 +5822,9 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
 
             // For active segments, validate element type is subtype of table element type
             if (segment->is_active) {
-                wah_type_t table_elem_type = wah_table_type(module, segment->table_idx)->elem_type;
-                WAH_ENSURE(wah_type_is_subtype(segment->elem_type, table_elem_type, module), WAH_ERROR_VALIDATION_FAILED);
+                const wah_table_type_t *tt = wah_table_type(module, segment->table_idx);
+                WAH_CHECK(wah_validate_type_match(segment->elem_type, segment->elem_type_flags,
+                    tt->elem_type, tt->elem_type_flags, module));
             }
 
             // Parse num_elems
@@ -11773,6 +11777,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             uint32_t local_table_idx = linked_table_idx - linked->import_table_count;
             wah_table_type_t *exp_tt = &linked->tables[local_table_idx];
             WAH_ENSURE_GOTO(exp_tt->elem_type == ti->type.elem_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            WAH_ENSURE_GOTO(exp_tt->elem_type_flags == ti->type.elem_type_flags, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             WAH_ENSURE_GOTO(exp_tt->addr_type == ti->type.addr_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             WAH_ENSURE_GOTO(exp_tt->min_elements >= ti->type.min_elements, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             if (ti->type.max_elements != UINT64_MAX) {
