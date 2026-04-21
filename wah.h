@@ -5534,6 +5534,8 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
                     module->tables[i].max_elements = UINT64_MAX;
                 }
             }
+            WAH_ENSURE(module->tables[i].min_elements <= module->tables[i].max_elements,
+                       WAH_ERROR_VALIDATION_FAILED);
         }
     }
     return WAH_OK;
@@ -5655,6 +5657,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
                     ti->type.max_elements = UINT64_MAX;
                 }
             }
+            WAH_ENSURE_GOTO(ti->type.min_elements <= ti->type.max_elements, WAH_ERROR_VALIDATION_FAILED, cleanup);
             import_table_count++;
         } else if (kind == 2) {
             // Memory import

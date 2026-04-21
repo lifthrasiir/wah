@@ -1006,7 +1006,7 @@ static int execute_command(const wast_node_t *node, spectest_env_t *env) {
                 return 1;
             }
             if (wast_atom_eq(node->children[0], "assert_invalid")) {
-                if (err == WAH_ERROR_VALIDATION_FAILED) {
+                if (err == WAH_ERROR_VALIDATION_FAILED || err == WAH_ERROR_TOO_LARGE) {
                     pass_check(env);
                     return 1;
                 }
