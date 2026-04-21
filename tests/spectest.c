@@ -31,6 +31,7 @@ typedef struct {
 typedef struct {
     char *name;
     spectest_module_def_t *def;
+    spectest_instance_t *instance;
 } registered_module_t;
 
 typedef struct {
@@ -612,6 +613,10 @@ static spectest_instance_t *add_instance(spectest_env_t *env, const char *name, 
         ptrdiff_t delta = (char *)env->instances - (char *)old_base;
         if (env->current_instance)
             env->current_instance = (spectest_instance_t *)((char *)env->current_instance + delta);
+        for (size_t ri = 0; ri < env->registered_count; ri++) {
+            if (env->registered[ri].instance)
+                env->registered[ri].instance = (spectest_instance_t *)((char *)env->registered[ri].instance + delta);
+        }
     }
     instance = &env->instances[env->instance_count++];
     memset(instance, 0, sizeof(*instance));
@@ -639,6 +644,7 @@ static int register_instance_import_name(spectest_env_t *env, spectest_instance_
         return 0;
     }
     item->def = instance->def;
+    item->instance = instance;
     return 1;
 }
 
@@ -660,7 +666,11 @@ static wah_error_t instantiate_def_into_instance(spectest_env_t *env, spectest_m
         if (!env->registered[i].def || env->registered[i].def == def) {
             continue;
         }
-        err = wah_link_module(&instance->exec, env->registered[i].name, &env->registered[i].def->module);
+        if (env->registered[i].instance && env->registered[i].instance->live) {
+            err = wah_link_context(&instance->exec, env->registered[i].name, &env->registered[i].instance->exec);
+        } else {
+            err = wah_link_module(&instance->exec, env->registered[i].name, &env->registered[i].def->module);
+        }
         if (err != WAH_OK) {
             return err;
         }
