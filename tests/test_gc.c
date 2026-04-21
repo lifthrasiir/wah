@@ -891,7 +891,7 @@ int main() {
             imports {[ {'env'} {'gc'} fn# 2 ]} \
             funcs {[ 1 ]} \
             exports {[ {'f'} fn# 1 ]} \
-            code {[ {[1 structref] \
+            code {[ {[1 type.ref.null 0] \
                 i32.const 99 struct.new 0 local.set 0 \
                 call 0 \
                 local.get 0 struct.get 0 0 \
@@ -928,7 +928,7 @@ int main() {
             imports {[ {'env'} {'gc'} fn# 2 ]} \
             funcs {[ 1 ]} \
             exports {[ {'f'} fn# 1 ]} \
-            code {[ {[1 structref] \
+            code {[ {[1 type.ref.null 0] \
                 i32.const 77 struct.new 0 local.set 0 \
                 local.get 0 \
                 call 0 \
@@ -1001,7 +1001,7 @@ int main() {
             imports {[ {'env'} {'gc'} fn# 2 ]} \
             funcs {[ 1 ]} \
             exports {[ {'f'} fn# 1 ]} \
-            code {[ {[1 arrayref] \
+            code {[ {[1 type.ref.null 0] \
                 i32.const 42 i32.const 3 array.new 0 local.set 0 \
                 call 0 \
                 local.get 0 i32.const 1 array.get 0 \
@@ -1034,11 +1034,11 @@ int main() {
         assert_ok(wah_module_export_funcv(&env_mod, "gc", 0, NULL, 0, NULL, host_trigger_gc, NULL, NULL));
 
         const char *spec = "wasm \
-            types {[ struct [i32 mut], struct [structref mut], fn [] [i32], fn [] [] ]} \
+            types {[ struct [i32 mut], struct [type.ref.null 0 mut], fn [] [i32], fn [] [] ]} \
             imports {[ {'env'} {'gc'} fn# 3 ]} \
             funcs {[ 2 ]} \
             exports {[ {'f'} fn# 1 ]} \
-            code {[ {[1 structref] \
+            code {[ {[1 type.ref.null 1] \
                 i32.const 123 struct.new 0 \
                 struct.new 1 \
                 local.set 0 \

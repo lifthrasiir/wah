@@ -301,7 +301,7 @@ static void test_struct_set_and_read() {
         types {[ struct [i32 mut, i32 mut], fn [] [i32] ]} \
         funcs {[ 1 ]} \
         exports {[ {'f'} fn# 0 ]} \
-        code {[ {[1 structref] \
+        code {[ {[1 type.ref.null 0] \
             struct.new_default 0 local.set 0 \
             local.get 0 i32.const 42 struct.set 0 0 \
             local.get 0 i32.const -7 struct.set 0 1 \
@@ -361,7 +361,7 @@ static void test_array_new_get_set_len() {
         funcs {[ 1, 2 ]} \
         exports {[ {'get'} fn# 0, {'len'} fn# 1 ]} \
         code {[ \
-            {[1 arrayref] \
+            {[1 type.ref.null 0] \
                 i32.const 0 i32.const 5 array.new 0 local.set 0 \
                 local.get 0 i32.const 2 i32.const 99 array.set 0 \
                 local.get 0 i32.const 2 array.get 0 \
@@ -423,7 +423,7 @@ static void test_struct_null_trap() {
         funcs {[ 1 ]} \
         exports {[ {'f'} fn# 0 ]} \
         code {[ {[] \
-            ref.null structref struct.get 0 0 \
+            ref.null type.ref.null 0 struct.get 0 0 \
             end } ]}";
 
     wah_module_t module;
@@ -569,14 +569,15 @@ int main() {
     printf("Running test_subtype_structref_in_anyref_local...\n");
     {
         // structref value stored in anyref local (structref <: eqref <: anyref)
+        // requires ref.cast to recover concrete type before struct.get/set
         const char *spec = "wasm \
             types {[ struct [i32 mut], fn [] [i32] ]} \
             funcs {[ 1 ]} \
             exports {[ {'f'} fn# 0 ]} \
             code {[ {[1 anyref] \
                 struct.new_default 0 local.set 0 \
-                local.get 0 i32.const 77 struct.set 0 0 \
-                local.get 0 struct.get 0 0 \
+                local.get 0 ref.cast.null 0 i32.const 77 struct.set 0 0 \
+                local.get 0 ref.cast.null 0 struct.get 0 0 \
                 end } ]}";
         wah_module_t module;
         assert_ok(wah_parse_module_from_spec(&module, spec));
@@ -594,13 +595,14 @@ int main() {
     printf("Running test_subtype_structref_in_eqref_local...\n");
     {
         // structref value stored in eqref local (structref <: eqref)
+        // requires ref.cast to recover concrete type before struct.get
         const char *spec = "wasm \
             types {[ struct [i32 mut], fn [] [i32] ]} \
             funcs {[ 1 ]} \
             exports {[ {'f'} fn# 0 ]} \
             code {[ {[1 eqref] \
                 struct.new_default 0 local.set 0 \
-                local.get 0 struct.get 0 0 \
+                local.get 0 ref.cast.null 0 struct.get 0 0 \
                 end } ]}";
         wah_module_t module;
         assert_ok(wah_parse_module_from_spec(&module, spec));
@@ -689,12 +691,12 @@ int main() {
     printf("Running test_subtype_concrete_struct_in_structref_local...\n");
     {
         // type 0: struct { mut i32 }  (concrete struct)
-        // concrete struct ref stored in structref local
+        // concrete struct ref stored in concrete-typed local, accessed via struct.get
         const char *spec = "wasm \
             types {[ struct [i32 mut], fn [] [i32] ]} \
             funcs {[ 1 ]} \
             exports {[ {'f'} fn# 0 ]} \
-            code {[ {[1 structref] \
+            code {[ {[1 type.ref.null 0] \
                 i32.const 55 struct.new 0 local.set 0 \
                 local.get 0 struct.get 0 0 \
                 end } ]}";
@@ -714,13 +716,14 @@ int main() {
     printf("Running test_subtype_concrete_struct_in_eqref_local...\n");
     {
         // concrete struct ref stored in eqref local (struct <: structref <: eqref)
+        // requires ref.cast to recover concrete type before struct.get
         const char *spec = "wasm \
             types {[ struct [i32 mut], fn [] [i32] ]} \
             funcs {[ 1 ]} \
             exports {[ {'f'} fn# 0 ]} \
             code {[ {[1 eqref] \
                 i32.const 88 struct.new 0 local.set 0 \
-                local.get 0 struct.get 0 0 \
+                local.get 0 ref.cast.null 0 struct.get 0 0 \
                 end } ]}";
         wah_module_t module;
         assert_ok(wah_parse_module_from_spec(&module, spec));
@@ -738,13 +741,14 @@ int main() {
     printf("Running test_subtype_concrete_struct_in_anyref_local...\n");
     {
         // concrete struct ref stored in anyref local
+        // requires ref.cast to recover concrete type before struct.get
         const char *spec = "wasm \
             types {[ struct [i32 mut], fn [] [i32] ]} \
             funcs {[ 1 ]} \
             exports {[ {'f'} fn# 0 ]} \
             code {[ {[1 anyref] \
                 i32.const 33 struct.new 0 local.set 0 \
-                local.get 0 struct.get 0 0 \
+                local.get 0 ref.cast.null 0 struct.get 0 0 \
                 end } ]}";
         wah_module_t module;
         assert_ok(wah_parse_module_from_spec(&module, spec));
@@ -770,7 +774,7 @@ int main() {
             types {[ struct [i32 mut], sub.final [0] struct [i32 mut, i32 mut], fn [] [i32] ]} \
             funcs {[ 2 ]} \
             exports {[ {'f'} fn# 0 ]} \
-            code {[ {[1 structref] \
+            code {[ {[1 type.ref.null 1] \
                 i32.const 10 i32.const 20 struct.new 1 local.set 0 \
                 local.get 0 struct.get 1 0 \
                 local.get 0 struct.get 1 1 \
@@ -930,7 +934,7 @@ int main() {
             types {[ struct [i32 mut], fn [] [i32] ]} \
             funcs {[ 1 ]} \
             exports {[ {'f'} fn# 0 ]} \
-            code {[ {[] ref.null structref ref.as_non_null struct.get 0 0 end } ]}";
+            code {[ {[] ref.null type.ref.null 0 ref.as_non_null struct.get 0 0 end } ]}";
         wah_module_t module;
         assert_ok(wah_parse_module_from_spec(&module, spec));
         wah_exec_context_t ctx;
@@ -1098,6 +1102,141 @@ int main() {
         wah_value_t result;
         assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
         assert_eq_i32(result.i32, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    // --- Typed-reference semantics: concrete types flow end-to-end ---
+
+    printf("Running test_struct_new_pushes_concrete_type...\n");
+    {
+        // struct.new pushes concrete typeidx which struct.get accepts directly
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] i32.const 42 struct.new 0 struct.get 0 0 end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_array_new_pushes_concrete_type...\n");
+    {
+        // array.new pushes concrete typeidx which array.get accepts directly
+        const char *spec = "wasm \
+            types {[ array i32 mut, fn [] [i32] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] i32.const 7 i32.const 3 array.new 0 i32.const 1 array.get 0 end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 7);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_call_result_carries_flags...\n");
+    {
+        // func 0 returns (ref 0) [non-nullable]; struct.get should accept it
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [type.ref 0], fn [] [i32] ]} \
+            funcs {[ 1, 2 ]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ \
+                {[] i32.const 55 struct.new 0 end }, \
+                {[] call 0 struct.get 0 0 end } \
+            ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 55);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_ref_cast_produces_concrete_type...\n");
+    {
+        // ref.cast from eqref to concrete type 0, then struct.get
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[1 eqref] \
+                i32.const 33 struct.new 0 local.set 0 \
+                local.get 0 ref.cast.null 0 struct.get 0 0 \
+                end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 33);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_struct_get_rejects_abstract_structref...\n");
+    {
+        // struct.get should reject abstract structref (must have concrete type)
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[1 structref] \
+                struct.new_default 0 local.set 0 \
+                local.get 0 struct.get 0 0 \
+                end } ]}";
+        wah_module_t module;
+        assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_br_on_null_refines_to_non_nullable...\n");
+    {
+        // br_on_null refines nullable ref to non-nullable; ref.as_non_null should accept it
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [type.ref.null 0] [i32] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] \
+                local.get 0 \
+                br_on_null 0 \
+                struct.get 0 0 \
+                end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t args[1] = {{.i32 = 0}};
+        wah_value_t result;
+        // null input: br_on_null takes the branch, returns default i32 0
+        assert_ok(wah_call(&ctx, 0, args, 1, &result));
+        assert_eq_i32(result.i32, 0);
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
     }
