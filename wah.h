@@ -3461,8 +3461,49 @@ static inline wah_error_t wah_validation_pop_type(wah_validation_context_t *vctx
 }
 
 // Helper function to validate if an actual type matches an expected type, considering WAH_TYPE_ANY
-static inline bool wah_type_is_subtype(wah_type_t sub, wah_type_t sup) {
+static inline wah_comp_type_kind_t wah_type_def_kind(const wah_module_t *m, wah_type_t t) {
+    if (!m || !m->type_defs || t < 0 || (uint32_t)t >= m->type_count) return (wah_comp_type_kind_t)0;
+    return m->type_defs[t].kind;
+}
+
+static inline bool wah_type_is_subtype(wah_type_t sub, wah_type_t sup, const wah_module_t *module) {
     if (sub == sup || sub == WAH_TYPE_ANY) return true;
+
+    // concrete sub → concrete sup: walk supertype chain
+    if (sub >= 0 && sup >= 0) {
+        if (!module || !module->type_defs) return false;
+        uint32_t t = (uint32_t)sub;
+        while (t != WAH_NO_SUPERTYPE) {
+            if (module->type_defs[t].supertype == (uint32_t)sup) return true;
+            t = module->type_defs[t].supertype;
+        }
+        return false;
+    }
+
+    // concrete sub → abstract sup
+    if (sub >= 0) {
+        wah_comp_type_kind_t kind = wah_type_def_kind(module, sub);
+        switch (sup) {
+            case WAH_TYPE_ANYREF:   return kind == WAH_COMP_STRUCT || kind == WAH_COMP_ARRAY || kind == WAH_COMP_FUNC;
+            case WAH_TYPE_EQREF:    return kind == WAH_COMP_STRUCT || kind == WAH_COMP_ARRAY;
+            case WAH_TYPE_STRUCTREF: return kind == WAH_COMP_STRUCT;
+            case WAH_TYPE_ARRAYREF:  return kind == WAH_COMP_ARRAY;
+            case WAH_TYPE_FUNCREF:   return kind == WAH_COMP_FUNC;
+            default: return false;
+        }
+    }
+
+    // abstract sub → concrete sup (only null bottom types)
+    if (sup >= 0) {
+        wah_comp_type_kind_t kind = wah_type_def_kind(module, sup);
+        switch (sub) {
+            case WAH_TYPE_NULLREF:     return kind == WAH_COMP_STRUCT || kind == WAH_COMP_ARRAY;
+            case WAH_TYPE_NULLFUNCREF: return kind == WAH_COMP_FUNC;
+            default: return false;
+        }
+    }
+
+    // abstract sub → abstract sup
     if (!WAH_TYPE_IS_REF(sub) || !WAH_TYPE_IS_REF(sup)) return false;
 
     switch (sup) {
@@ -3482,26 +3523,20 @@ static inline bool wah_type_is_subtype(wah_type_t sub, wah_type_t sup) {
             return sub == WAH_TYPE_NULLEXTERNREF;
         case WAH_TYPE_EXNREF:
             return sub == WAH_TYPE_NULLEXNREF;
-        case WAH_TYPE_NULLREF:
-        case WAH_TYPE_NULLFUNCREF:
-        case WAH_TYPE_NULLEXTERNREF:
-        case WAH_TYPE_NULLEXNREF:
-            return false;
         default:
             return false;
     }
 }
 
-static inline wah_error_t wah_validate_type_match(wah_type_t actual, wah_type_t expected) {
-    WAH_ENSURE(wah_type_is_subtype(actual, expected), WAH_ERROR_VALIDATION_FAILED);
+static inline wah_error_t wah_validate_type_match(wah_type_t actual, wah_type_t expected, const wah_module_t *module) {
+    WAH_ENSURE(wah_type_is_subtype(actual, expected, module), WAH_ERROR_VALIDATION_FAILED);
     return WAH_OK;
 }
 
-// Helper function to pop a type from the stack and validate it against an expected type
 static inline wah_error_t wah_validation_pop_and_match_type(wah_validation_context_t *vctx, wah_type_t expected_type) {
     wah_type_t actual_type;
     WAH_CHECK(wah_validation_pop_type(vctx, &actual_type));
-    return wah_validate_type_match(actual_type, expected_type);
+    return wah_validate_type_match(actual_type, expected_type, vctx->module);
 }
 
 // Helper to read a section header
@@ -4334,7 +4369,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             wah_type_t cond_type;
             if (opcode_val == WAH_OP_IF) {
                 WAH_CHECK(wah_validation_pop_type(vctx, &cond_type));
-                WAH_CHECK(wah_validate_type_match(cond_type, WAH_TYPE_I32));
+                WAH_CHECK(wah_validate_type_match(cond_type, WAH_TYPE_I32, vctx->module));
             }
 
             int32_t block_type_val;
@@ -4388,7 +4423,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(vctx->current_stack_depth >= bt->param_count, WAH_ERROR_VALIDATION_FAILED);
             for (uint32_t i = 0; i < bt->param_count; ++i) {
                 wah_type_t actual_type = vctx->type_stack.data[vctx->type_stack.sp - bt->param_count + i];
-                WAH_CHECK(wah_validate_type_match(actual_type, bt->param_types[i]));
+                WAH_CHECK(wah_validate_type_match(actual_type, bt->param_types[i], vctx->module));
             }
 
             frame->stack_height = vctx->current_stack_depth - bt->param_count;
@@ -4531,7 +4566,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
             for (uint32_t i = 0; i < br_result_count; ++i) {
                 wah_type_t actual_type = vctx->type_stack.data[vctx->type_stack.sp - br_result_count + i];
-                WAH_CHECK(wah_validate_type_match(actual_type, br_result_types[i]));
+                WAH_CHECK(wah_validate_type_match(actual_type, br_result_types[i], vctx->module));
             }
 
             return WAH_OK;
