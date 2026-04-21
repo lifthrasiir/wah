@@ -3744,6 +3744,23 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
         }
     }
 
+    #define WAH_VALIDATE_HEAP_TYPE_IDX(t) do { \
+        if ((t) >= 0 && (uint32_t)(t) >= module->type_count) return WAH_ERROR_VALIDATION_FAILED; \
+    } while (0)
+    for (uint32_t i = 0; i < module->type_count; ++i) {
+        wah_func_type_t *ft = &module->types[i];
+        for (uint32_t j = 0; j < ft->param_count; ++j) WAH_VALIDATE_HEAP_TYPE_IDX(ft->param_types[j]);
+        for (uint32_t j = 0; j < ft->result_count; ++j) WAH_VALIDATE_HEAP_TYPE_IDX(ft->result_types[j]);
+        wah_type_def_t *td = &module->type_defs[i];
+        if (td->supertype != WAH_NO_SUPERTYPE) {
+            WAH_ENSURE(td->supertype < module->type_count, WAH_ERROR_VALIDATION_FAILED);
+        }
+        if (td->kind == WAH_COMP_STRUCT || td->kind == WAH_COMP_ARRAY) {
+            for (uint32_t j = 0; j < td->field_count; ++j) WAH_VALIDATE_HEAP_TYPE_IDX(td->field_types[j]);
+        }
+    }
+    #undef WAH_VALIDATE_HEAP_TYPE_IDX
+
     WAH_MALLOC_ARRAY(module->typeidx_to_repr, module->type_count);
     for (uint32_t i = 0; i < module->type_count; ++i) {
         module->typeidx_to_repr[i] = WAH_REPR_NONE;
@@ -4421,6 +4438,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             wah_type_t sel_type;
             wah_type_flags_t sel_flags;
             WAH_CHECK(wah_decode_val_type(code_ptr, code_end, &sel_type, &sel_flags));
+            WAH_ENSURE(sel_type < 0 || (uint32_t)sel_type < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_I32, 0));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, sel_type, sel_flags));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, sel_type, sel_flags));
@@ -4457,6 +4475,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 wah_type_t result_type;
                 wah_type_flags_t result_flags;
                 WAH_CHECK(wah_decode_val_type(code_ptr, code_end, &result_type, &result_flags));
+                WAH_ENSURE(result_type < 0 || (uint32_t)result_type < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
                 bt->result_count = 1;
                 WAH_MALLOC_ARRAY(bt->result_types, 1);
                 bt->result_types[0] = result_type;
@@ -5041,6 +5060,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
             wah_type_t type;
             wah_type_flags_t type_flags;
             WAH_CHECK_GOTO(wah_decode_val_type(ptr, code_body_end, &type, &type_flags), cleanup);
+            WAH_ENSURE_GOTO(type < 0 || (uint32_t)type < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
             for (uint32_t k = 0; k < local_type_count; ++k) {
                 module->code_bodies[i].local_types[local_idx] = type;
                 module->code_bodies[i].local_type_flags[local_idx] = type_flags;
@@ -6899,6 +6919,27 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
     if (module->has_data_count_section && module->data_segment_count > 0) {
         WAH_ENSURE_GOTO(module->data_segments != NULL, WAH_ERROR_VALIDATION_FAILED, cleanup_parse);
     }
+
+    // Validate heap type indices across all sections
+    #define WAH_CHECK_TYPEIDX(t) do { \
+        if ((t) >= 0 && (uint32_t)(t) >= module->type_count) { err = WAH_ERROR_VALIDATION_FAILED; goto cleanup_parse; } \
+    } while (0)
+    for (uint32_t i = 0; i < module->global_count; ++i) {
+        WAH_CHECK_TYPEIDX(module->globals[i].type);
+    }
+    for (uint32_t i = 0; i < module->table_count; ++i) {
+        WAH_CHECK_TYPEIDX(module->tables[i].elem_type);
+    }
+    for (uint32_t i = 0; i < module->import_global_count; ++i) {
+        WAH_CHECK_TYPEIDX(module->global_imports[i].type);
+    }
+    for (uint32_t i = 0; i < module->import_table_count; ++i) {
+        WAH_CHECK_TYPEIDX(module->table_imports[i].type.elem_type);
+    }
+    for (uint32_t i = 0; i < module->element_segment_count; ++i) {
+        WAH_CHECK_TYPEIDX(module->element_segments[i].elem_type);
+    }
+    #undef WAH_CHECK_TYPEIDX
 
     // Build the unified functions[] array for the WASM functions.
     // Host functions may be appended later via wah_module_export_funcv.
