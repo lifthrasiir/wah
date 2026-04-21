@@ -130,6 +130,7 @@ typedef struct wah_call_context_s {
     const wah_value_t *params;
     wah_value_t *results;
     const wah_type_t *param_types, *result_types;
+    const wah_type_flags_t *param_type_flags, *result_type_flags;
 
     wah_error_t trap_reason;
 } wah_call_context_t;
@@ -1507,6 +1508,7 @@ typedef struct wah_function_s {
     wah_finalize_t finalize;
     size_t nparams, nresults;
     wah_type_t *param_types, *result_types; // owned
+    wah_type_flags_t *param_type_flags, *result_type_flags; // owned
 
     // WASM function fields (only valid when is_host == false)
     uint32_t local_idx;                    // local index within fn_module->code_bodies[]
@@ -10846,7 +10848,9 @@ void wah_free_module(wah_module_t *module) {
                 }
                 free(fn->name);
                 free(fn->param_types);
+                free(fn->param_type_flags);
                 free(fn->result_types);
+                free(fn->result_type_flags);
             }
         }
         free(module->functions);
@@ -10920,6 +10924,8 @@ wah_error_t wah_module_export_funcv(wah_module_t *mod, const char *name, size_t 
     char *name_copy = NULL;
     wah_type_t *param_types_copy = NULL;
     wah_type_t *result_types_copy = NULL;
+    wah_type_flags_t *param_flags_copy = NULL;
+    wah_type_flags_t *result_flags_copy = NULL;
 
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
@@ -10955,11 +10961,17 @@ wah_error_t wah_module_export_funcv(wah_module_t *mod, const char *name, size_t 
     if (nparams > 0) {
         WAH_MALLOC_ARRAY_GOTO(param_types_copy, nparams, cleanup);
         memcpy(param_types_copy, param_types, nparams * sizeof(wah_type_t));
+        WAH_MALLOC_ARRAY_GOTO(param_flags_copy, nparams, cleanup);
+        for (size_t i = 0; i < nparams; i++)
+            param_flags_copy[i] = WAH_TYPE_IS_REF(param_types[i]) ? WAH_TYPE_FLAG_NULLABLE : 0;
     }
 
     if (nresults > 0) {
         WAH_MALLOC_ARRAY_GOTO(result_types_copy, nresults, cleanup);
         memcpy(result_types_copy, result_types, nresults * sizeof(wah_type_t));
+        WAH_MALLOC_ARRAY_GOTO(result_flags_copy, nresults, cleanup);
+        for (size_t i = 0; i < nresults; i++)
+            result_flags_copy[i] = WAH_TYPE_IS_REF(result_types[i]) ? WAH_TYPE_FLAG_NULLABLE : 0;
     }
 
     // Fill in the unified function entry
@@ -10974,8 +10986,10 @@ wah_error_t wah_module_export_funcv(wah_module_t *mod, const char *name, size_t 
     fn->finalize = finalize;
     fn->nparams = nparams;
     fn->param_types = param_types_copy;
+    fn->param_type_flags = param_flags_copy;
     fn->nresults = nresults;
     fn->result_types = result_types_copy;
+    fn->result_type_flags = result_flags_copy;
     mod->total_function_count++;
 
     // Fill in export entry
@@ -10989,6 +11003,8 @@ wah_error_t wah_module_export_funcv(wah_module_t *mod, const char *name, size_t 
     return WAH_OK;
 
 cleanup:
+    free(param_flags_copy);
+    free(result_flags_copy);
     free(param_types_copy);
     free(result_types_copy);
     free(name_copy);
@@ -11392,6 +11408,8 @@ static wah_error_t wah_call_host_function_internal(
     call_ctx.results = results;
     call_ctx.param_types = fn->param_types;
     call_ctx.result_types = fn->result_types;
+    call_ctx.param_type_flags = fn->param_type_flags;
+    call_ctx.result_type_flags = fn->result_type_flags;
     call_ctx.trap_reason = WAH_OK;
 
     WAH_ASSERT(!exec_ctx->gc || exec_ctx->gc->phase == WAH_GC_PHASE_IDLE);
@@ -12008,8 +12026,8 @@ wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_entry_
         out->u.func.param_types = fn->param_types;
         out->u.func.result_count = (uint32_t)fn->nresults;
         out->u.func.result_types = fn->result_types;
-        out->u.func.param_type_flags = NULL;
-        out->u.func.result_type_flags = NULL;
+        out->u.func.param_type_flags = fn->param_type_flags;
+        out->u.func.result_type_flags = fn->result_type_flags;
 
         return WAH_OK;
     }
@@ -12098,8 +12116,8 @@ wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id
                     out->u.func.param_types = fn->param_types;
                     out->u.func.result_count = (uint32_t)fn->nresults;
                     out->u.func.result_types = fn->result_types;
-                    out->u.func.param_type_flags = NULL;
-                    out->u.func.result_type_flags = NULL;
+                    out->u.func.param_type_flags = fn->param_type_flags;
+                    out->u.func.result_type_flags = fn->result_type_flags;
                 } else {
                     WAH_ENSURE(local_fn_idx < module->function_count, WAH_ERROR_NOT_FOUND);
                     out->type = WAH_TYPE_FUNCTION;

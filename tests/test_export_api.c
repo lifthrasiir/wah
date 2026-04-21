@@ -6,6 +6,18 @@
 #include <stdio.h>
 #include <string.h>
 
+static bool flags_checked = false;
+static void check_flags_host(wah_call_context_t *ctx, void *userdata) {
+    (void)userdata;
+    assert_not_null(ctx->param_type_flags);
+    assert_not_null(ctx->result_type_flags);
+    assert_true(ctx->param_type_flags[0] & WAH_TYPE_FLAG_NULLABLE);
+    assert_true(ctx->param_type_flags[1] == 0);
+    assert_true(ctx->result_type_flags[0] == 0);
+    flags_checked = true;
+    wah_return_i32(ctx, 1);
+}
+
 int main(void) {
     // Test 1: Export memory
     printf("Testing wah_module_export_memory...\n");
@@ -157,6 +169,50 @@ int main(void) {
         assert_err(wah_module_export_global_i32(&mod, "dup", false, 2), WAH_ERROR_VALIDATION_FAILED);
 
         wah_free_module(&mod);
+    }
+
+    // Test: Host function type flags are exposed through wah_entry_t and wah_call_context_t
+    printf("Testing host function type flags exposure...\n");
+    {
+        wah_module_t host_mod = {0};
+        assert_ok(wah_new_module(&host_mod));
+        wah_type_t ptypes[2] = { WAH_TYPE_FUNCREF, WAH_TYPE_I32 };
+        wah_type_t rtypes[1] = { WAH_TYPE_I32 };
+        assert_ok(wah_module_export_funcv(&host_mod, "check", 2, ptypes, 1, rtypes,
+                                          check_flags_host, NULL, NULL));
+
+        // Verify flags through wah_entry_t
+        wah_entry_t entry;
+        assert_ok(wah_module_export_by_name(&host_mod, "check", &entry));
+        assert_not_null(entry.u.func.param_type_flags);
+        assert_not_null(entry.u.func.result_type_flags);
+        assert_true(entry.u.func.param_type_flags[0] & WAH_TYPE_FLAG_NULLABLE);
+        assert_true(entry.u.func.param_type_flags[1] == 0);
+        assert_true(entry.u.func.result_type_flags[0] == 0);
+
+        // Call host function to verify flags in wah_call_context_t
+        const char *spec = "wasm \
+            types {[ fn [funcref, i32] [i32], fn [] [i32] ]} \
+            imports {[ {'env'} {'check'} fn# 0 ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ {[] ref.null funcref i32.const 0 call 0 end } ]}";
+        wah_module_t wasm_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+        assert_ok(wah_link_module(&ctx, "env", &host_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+        assert_true(flags_checked);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&host_mod);
     }
 
     printf("\n--- ALL TESTS PASSED ---\n");
