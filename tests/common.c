@@ -74,14 +74,56 @@ static const token_entry_t token_table[] = {
     TOKEN("f32", 0x7d),       // f32 type
     TOKEN("f64", 0x7c),       // f64 type
     TOKEN("v128", 0x7b),      // v128 type
+    TOKEN("i8", 0x78),        // Packed i8 type
+    TOKEN("i16", 0x77),       // Packed i16 type
     TOKEN("void", 0x40),      // Void return
-    TOKEN("funcref", 0x70),   // funcref type
-    TOKEN("externref", 0x6f), // externref type
-    TOKEN("anyref", 0x6e),
-    TOKEN("eqref", 0x6d),
-    TOKEN("i31ref", 0x6c),
-    TOKEN("structref", 0x6b),
-    TOKEN("arrayref", 0x6a),
+    TOKEN("nullexnref", 0x74), // (ref null noexn)
+    TOKEN("nullfuncref", 0x73), // (ref null nofunc)
+    TOKEN("nullexternref", 0x72), // (ref null noextern)
+    TOKEN("nullref", 0x71),   // (ref null none)
+    TOKEN("funcref", 0x70),   // (ref null func) = funcref type
+    TOKEN("externref", 0x6f), // (ref null extern) = externref type
+    TOKEN("anyref", 0x6e),    // (ref null any)
+    TOKEN("eqref", 0x6d),     // (ref null eq)
+    TOKEN("i31ref", 0x6c),    // (ref null i31)
+    TOKEN("structref", 0x6b), // (ref null struct)
+    TOKEN("arrayref", 0x6a),  // (ref null array)
+    TOKEN("exnref", 0x69),    // (ref null exn)
+    TOKEN("type.ref.noexn", 0x64, 0x74),    // (ref noexn)
+    TOKEN("type.ref.nofunc", 0x64, 0x73),   // (ref nofunc)
+    TOKEN("type.ref.noextern", 0x64, 0x72), // (ref noextern)
+    TOKEN("type.ref.none", 0x64, 0x71),     // (ref none)
+    TOKEN("type.ref.func", 0x64, 0x70),     // (ref func)
+    TOKEN("type.ref.extern", 0x64, 0x6f),   // (ref extern)
+    TOKEN("type.ref.any", 0x64, 0x6e),      // (ref any)
+    TOKEN("type.ref.eq", 0x64, 0x6d),       // (ref eq)
+    TOKEN("type.ref.i31", 0x64, 0x6c),      // (ref i31)
+    TOKEN("type.ref.struct", 0x64, 0x6b),   // (ref struct)
+    TOKEN("type.ref.array", 0x64, 0x6a),    // (ref array)
+    TOKEN("type.ref.exn", 0x64, 0x69),      // (ref exn)
+    TOKEN("type.ref.null.noexn", 0x65, 0x74), // Alternative encodings of (ref null ...)
+    TOKEN("type.ref.null.nofunc", 0x65, 0x73),
+    TOKEN("type.ref.null.noextern", 0x65, 0x72),
+    TOKEN("type.ref.null.none", 0x65, 0x71),
+    TOKEN("type.ref.null.func", 0x65, 0x70),
+    TOKEN("type.ref.null.extern", 0x65, 0x6f),
+    TOKEN("type.ref.null.any", 0x65, 0x6e),
+    TOKEN("type.ref.null.eq", 0x65, 0x6d),
+    TOKEN("type.ref.null.i31", 0x65, 0x6c),
+    TOKEN("type.ref.null.struct", 0x65, 0x6b),
+    TOKEN("type.ref.null.array", 0x65, 0x6a),
+    TOKEN("type.ref.null.exn", 0x65, 0x69),
+
+    // Type parts
+    TOKEN("type.ref.null", 0x65), // (ref null ...);  type.ref.null <type>
+    TOKEN("type.ref", 0x64),      // (ref ...);       type.ref <type>
+    TOKEN("array", 0x5e),         // (array ...);     array <type> {mut|immut}
+    TOKEN("struct", 0x5f),        // (struct ...);    struct [<type> {mut|immut}, ...]
+    TOKEN("rec", 0x4e),           // (rec ...);       rec [<type>, ...]
+    TOKEN("sub.final", 0x4f),     // (sub final ...); sub.final [<supertype idx>, ...] <type>
+    TOKEN("sub", 0x50),           // (sub ...);       sub [<supertype idx>, ...] <type>
+    TOKEN("immut", 0x00),         // Immutable flag
+    TOKEN("mut", 0x01),           // Mutable flag
 
     // Indices
     TOKEN("fn#", 0x00),       // Function index space
@@ -271,10 +313,37 @@ static const token_entry_t token_table[] = {
     TOKEN("ref.null", 0xd0),
     TOKEN("ref.is_null", 0xd1),
     TOKEN("ref.func", 0xd2),
-    TOKEN("ref.test_null", 0xfb, 0x14),
-    TOKEN("ref.test", 0xfb, 0x15),
-    TOKEN("ref.cast_null", 0xfb, 0x16),
-    TOKEN("ref.cast", 0xfb, 0x17),
+    TOKEN("struct.new", 0xfb, 0x00),
+    TOKEN("struct.new_default", 0xfb, 0x01),
+    TOKEN("struct.get", 0xfb, 0x02),
+    TOKEN("struct.get_s", 0xfb, 0x03),
+    TOKEN("struct.get_u", 0xfb, 0x04),
+    TOKEN("struct.set", 0xfb, 0x05),
+    TOKEN("array.new", 0xfb, 0x06),
+    TOKEN("array.new_default", 0xfb, 0x07),
+    TOKEN("array.new_fixed", 0xfb, 0x08),
+    TOKEN("array.new_data", 0xfb, 0x09),
+    TOKEN("array.new_elem", 0xfb, 0x0a),
+    TOKEN("array.get", 0xfb, 0x0b),
+    TOKEN("array.get_s", 0xfb, 0x0c),
+    TOKEN("array.get_u", 0xfb, 0x0d),
+    TOKEN("array.set", 0xfb, 0x0e),
+    TOKEN("array.len", 0xfb, 0x0f),
+    TOKEN("array.fill", 0xfb, 0x10),
+    TOKEN("array.copy", 0xfb, 0x11),
+    TOKEN("array.init_data", 0xfb, 0x12),
+    TOKEN("array.init_elem", 0xfb, 0x13),
+    TOKEN("ref.test", 0xfb, 0x14),
+    TOKEN("ref.test.null", 0xfb, 0x15),
+    TOKEN("ref.cast", 0xfb, 0x16),
+    TOKEN("ref.cast.null", 0xfb, 0x17),
+    TOKEN("br_on_cast", 0xfb, 0x18),
+    TOKEN("br_on_cast_fail", 0xfb, 0x19),
+    TOKEN("any.convert_extern", 0xfb, 0x1a),
+    TOKEN("extern.convert_any", 0xfb, 0x1b),
+    TOKEN("ref.i31", 0xfb, 0x1c),
+    TOKEN("i31.get_s", 0xfb, 0x1d),
+    TOKEN("i31.get_u", 0xfb, 0x1e),
     TOKEN("i32.trunc_sat_f32_s", 0xfc, 0x00),
     TOKEN("i32.trunc_sat_f32_u", 0xfc, 0x01),
     TOKEN("i32.trunc_sat_f64_s", 0xfc, 0x02),
@@ -439,8 +508,6 @@ static const token_entry_t token_table[] = {
     TOKEN("align=8.mem#", 0x43),
 
     // Miscellaneous
-    TOKEN("immut", 0x00),         // Immutable flag for globals
-    TOKEN("mut", 0x01),           // Mutable flag for globals
     TOKEN("limits.i32/1", 0x00),  // limits.i32/1 <min> (max is infinite)
     TOKEN("limits.i32/2", 0x01),  // limits.i32/2 <min> <max>
     TOKEN("limits.i64/1", 0x04),  // limits.i64/1 <min> (max is infinite)

@@ -1007,8 +1007,8 @@ typedef enum {
     X(ARRAY_NEW_FIXED,, WAH_FB+0x08) \
     X(ARRAY_GET,, WAH_FB+0x0B) X(ARRAY_GET_S,, WAH_FB+0x0C) X(ARRAY_GET_U,, WAH_FB+0x0D) \
     X(ARRAY_SET,, WAH_FB+0x0E) X(ARRAY_LEN,, WAH_FB+0x0F) \
-    X(REF_TEST_NULL,, WAH_FB+0x14) X(REF_TEST,, WAH_FB+0x15) \
-    X(REF_CAST_NULL,, WAH_FB+0x16) X(REF_CAST,, WAH_FB+0x17)
+    X(REF_TEST,, WAH_FB+0x14) X(REF_TEST_NULL,, WAH_FB+0x15) \
+    X(REF_CAST,, WAH_FB+0x16) X(REF_CAST_NULL,, WAH_FB+0x17)
 
 #define WAH_I32_MEM0_OPCODES_M(X) \
     X(I32_LOAD,i32_mem0) X(I64_LOAD,i32_mem0) X(F32_LOAD,i32_mem0) X(F64_LOAD,i32_mem0) \
@@ -7361,15 +7361,6 @@ WAH_RUN(REF_FUNC) {
     WAH_NEXT();
 }
 
-WAH_RUN(REF_TEST_NULL) {
-    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(int32_t);
-    wah_value_t ref_val = *--sp;
-    bool result = (ref_val.ref == NULL) || wah_ref_test_heap_type(ctx, ref_val, heap_type);
-    (*sp++).i32 = result ? 1 : 0;
-    WAH_NEXT();
-}
-
 WAH_RUN(REF_TEST) {
     wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(int32_t);
@@ -7379,14 +7370,13 @@ WAH_RUN(REF_TEST) {
     WAH_NEXT();
 }
 
-WAH_RUN(REF_CAST_NULL) {
+WAH_RUN(REF_TEST_NULL) {
     wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(int32_t);
-    wah_value_t ref_val = sp[-1];
-    WAH_ENSURE_GOTO(ref_val.ref == NULL || wah_ref_test_heap_type(ctx, ref_val, heap_type),
-                     WAH_ERROR_TRAP, cleanup);
+    wah_value_t ref_val = *--sp;
+    bool result = (ref_val.ref == NULL) || wah_ref_test_heap_type(ctx, ref_val, heap_type);
+    (*sp++).i32 = result ? 1 : 0;
     WAH_NEXT();
-    WAH_CLEANUP();
 }
 
 WAH_RUN(REF_CAST) {
@@ -7394,6 +7384,16 @@ WAH_RUN(REF_CAST) {
     bytecode_ip += sizeof(int32_t);
     wah_value_t ref_val = sp[-1];
     WAH_ENSURE_GOTO(ref_val.ref != NULL && wah_ref_test_heap_type(ctx, ref_val, heap_type),
+                     WAH_ERROR_TRAP, cleanup);
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(REF_CAST_NULL) {
+    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(int32_t);
+    wah_value_t ref_val = sp[-1];
+    WAH_ENSURE_GOTO(ref_val.ref == NULL || wah_ref_test_heap_type(ctx, ref_val, heap_type),
                      WAH_ERROR_TRAP, cleanup);
     WAH_NEXT();
     WAH_CLEANUP();
