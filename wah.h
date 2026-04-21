@@ -997,7 +997,11 @@ typedef enum {
     X(I64_TRUNC_SAT_F64_S,_D_L, WAH_FC+0x06) X(I64_TRUNC_SAT_F64_U,_D_L, WAH_FC+0x07) \
     \
     /* Reference Types */ \
-    X(REF_NULL,, 0xD0) X(REF_IS_NULL,, 0xD1) X(REF_FUNC,, 0xD2)
+    X(REF_NULL,, 0xD0) X(REF_IS_NULL,, 0xD1) X(REF_FUNC,, 0xD2) \
+    \
+    /* GC opcodes (0xFB prefix) */ \
+    X(REF_TEST_NULL,, WAH_FB+0x14) X(REF_TEST,, WAH_FB+0x15) \
+    X(REF_CAST_NULL,, WAH_FB+0x16) X(REF_CAST,, WAH_FB+0x17)
 
 #define WAH_I32_MEM0_OPCODES_M(X) \
     X(I32_LOAD,i32_mem0) X(I64_LOAD,i32_mem0) X(F32_LOAD,i32_mem0) X(F64_LOAD,i32_mem0) \
@@ -1487,6 +1491,7 @@ typedef struct wah_data_segment_s {
 // For WASM functions only kind is meaningful; the rest is zero.
 // For host functions all fields are valid.
 typedef struct wah_function_s {
+    wah_gc_object_t fake_header;
     bool is_host;
 
     // Global function index (for reference types)
@@ -1659,10 +1664,12 @@ typedef struct {
 
 static wah_error_t wah_call_module(wah_exec_context_t *exec_ctx, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
 
+#define WAH_FUNCREF_FAKE_HEADER {.next_tagged = NULL, .repr_id = WAH_TYPE_FUNCTION, .size_bytes = 0}
+
 // Sentinel used by wah_value_t.prefuncref to distinguish ref.func 0 from ref.null.
 // A prefuncref with .sentinel == wah_funcref_sentinel is a valid function reference;
 // .ref == NULL means null. This sentinel is never executed.
-static wah_function_t wah_funcref_sentinel[1];
+static wah_function_t wah_funcref_sentinel[1] = {{.fake_header = WAH_FUNCREF_FAKE_HEADER}};
 
 // --- Helper Macros ---
 #define WAH_CHECK(expr) do { \
@@ -2089,6 +2096,7 @@ static wah_error_t wah_decode_opcode(const uint8_t **ptr, const uint8_t *end, ui
 static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type);
 static wah_error_t wah_decode_ref_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type);
 static wah_error_t wah_decode_storage_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type, wah_type_flags_t *out_flags);
+static wah_error_t wah_decode_heap_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type);
 
 // The core interpreter loop (internal).
 static wah_error_t wah_run_interpreter(wah_exec_context_t *exec_ctx);
@@ -4585,6 +4593,25 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             break;
         }
 
+        case WAH_OP_REF_TEST_NULL:
+        case WAH_OP_REF_TEST:
+        case WAH_OP_REF_CAST_NULL:
+        case WAH_OP_REF_CAST: {
+            wah_type_t heap_type;
+            WAH_CHECK(wah_decode_heap_type(code_ptr, code_end, &heap_type));
+            if (heap_type >= 0) {
+                WAH_ENSURE((uint32_t)heap_type < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            }
+            wah_type_t ref_type;
+            WAH_CHECK(wah_validation_pop_type(vctx, &ref_type));
+            if (opcode_val == WAH_OP_REF_TEST_NULL || opcode_val == WAH_OP_REF_TEST) {
+                WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_I32));
+            } else {
+                WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_IS_REF(ref_type) ? ref_type : WAH_TYPE_ANYREF));
+            }
+            break;
+        }
+
         default:
             if (opcode_val == 0x06 || opcode_val == 0x08 || opcode_val == 0x0A ||
                 (opcode_val >= 0x12 && opcode_val <= 0x15) ||
@@ -5769,7 +5796,14 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 case WAH_OP_REF_FUNC: {
                     uint32_t ref_func_idx;
                     WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &ref_func_idx), cleanup);
-                    preparsed_instr_size += sizeof(uint32_t); // For function index
+                    preparsed_instr_size += sizeof(uint32_t);
+                    break;
+                }
+                case WAH_OP_REF_TEST_NULL: case WAH_OP_REF_TEST:
+                case WAH_OP_REF_CAST_NULL: case WAH_OP_REF_CAST: {
+                    wah_type_t heap_type;
+                    WAH_CHECK_GOTO(wah_decode_heap_type(&ptr, end, &heap_type), cleanup);
+                    preparsed_instr_size += sizeof(int32_t);
                     break;
                 }
             }
@@ -6087,6 +6121,14 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     write_ptr += sizeof(uint32_t);
                     break;
                 }
+                case WAH_OP_REF_TEST_NULL: case WAH_OP_REF_TEST:
+                case WAH_OP_REF_CAST_NULL: case WAH_OP_REF_CAST: {
+                    wah_type_t heap_type;
+                    WAH_CHECK_GOTO(wah_decode_heap_type(&ptr, end, &heap_type), cleanup);
+                    wah_write_u32_le(write_ptr, (uint32_t)heap_type);
+                    write_ptr += sizeof(int32_t);
+                    break;
+                }
             }
         }
 
@@ -6198,6 +6240,33 @@ static wah_error_t wah_decode_storage_type(const uint8_t **ptr, const uint8_t *e
     }
 }
 
+static wah_error_t wah_decode_heap_type(const uint8_t **ptr, const uint8_t *end,
+                                        wah_type_t *out_type) {
+    WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
+    uint8_t byte = **ptr;
+    switch (byte) {
+        case 0x70: *out_type = WAH_TYPE_FUNCREF;       (*ptr)++; return WAH_OK;
+        case 0x6F: *out_type = WAH_TYPE_EXTERNREF;     (*ptr)++; return WAH_OK;
+        case 0x6E: *out_type = WAH_TYPE_ANYREF;        (*ptr)++; return WAH_OK;
+        case 0x6D: *out_type = WAH_TYPE_EQREF;         (*ptr)++; return WAH_OK;
+        case 0x6C: *out_type = WAH_TYPE_I31REF;        (*ptr)++; return WAH_OK;
+        case 0x6B: *out_type = WAH_TYPE_STRUCTREF;     (*ptr)++; return WAH_OK;
+        case 0x6A: *out_type = WAH_TYPE_ARRAYREF;      (*ptr)++; return WAH_OK;
+        case 0x69: *out_type = WAH_TYPE_EXNREF;        (*ptr)++; return WAH_OK;
+        case 0x74: *out_type = WAH_TYPE_NULLEXNREF;    (*ptr)++; return WAH_OK;
+        case 0x73: *out_type = WAH_TYPE_NULLFUNCREF;   (*ptr)++; return WAH_OK;
+        case 0x72: *out_type = WAH_TYPE_NULLEXTERNREF;  (*ptr)++; return WAH_OK;
+        case 0x71: *out_type = WAH_TYPE_NULLREF;       (*ptr)++; return WAH_OK;
+        default: {
+            int32_t idx;
+            WAH_CHECK(wah_decode_sleb128_32(ptr, end, &idx));
+            WAH_ENSURE(idx >= 0, WAH_ERROR_VALIDATION_FAILED);
+            *out_type = (wah_type_t)idx;
+            return WAH_OK;
+        }
+    }
+}
+
 // Global array of section handlers, indexed by the section ID
 static const struct wah_section_handler_s {
     int8_t order; // Expected order of the section (0 for custom, 1 for Type, etc.)
@@ -6284,7 +6353,9 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
     if (module->function_count > 0) {
         WAH_MALLOC_ARRAY_GOTO(module->functions, module->function_count, cleanup_parse);
         memset(module->functions, 0, module->function_count * sizeof(wah_function_t));
-        // All entries have is_host == false (already set by memset).
+        for (uint32_t i = 0; i < module->function_count; i++) {
+            module->functions[i].fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER;
+        }
         module->function_capacity = module->function_count;
     }
     module->total_function_count = module->function_count;
@@ -6396,9 +6467,10 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
         exec_ctx->function_table_count = table_size;
         if (table_size > 0) {
             WAH_MALLOC_ARRAY_GOTO(exec_ctx->function_table, table_size, cleanup);
-            // Initialize import slots to NULL (host functions will be filled in later)
-            if (import_count > 0) {
-                memset(exec_ctx->function_table, 0, import_count * sizeof(wah_function_t));
+            // Initialize import slots (will be filled during import resolution)
+            for (uint32_t i = 0; i < import_count; i++) {
+                memset(&exec_ctx->function_table[i], 0, sizeof(wah_function_t));
+                exec_ctx->function_table[i].fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER;
             }
             // Copy local/host functions at offset import_count
             for (uint32_t i = 0; i < module->total_function_count; i++) {
@@ -7066,6 +7138,39 @@ WAH_RUN(V128_CONST) {
     WAH_NEXT();
 }
 
+static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t ref_val, wah_type_t target) {
+    void *ref = ref_val.ref;
+    if (ref == NULL) return false;
+
+    wah_gc_object_t *hdr = (wah_gc_object_t *)ref;
+    wah_repr_t repr_id = hdr->repr_id;
+
+    if (target >= 0) {
+        return wah_type_accepts_repr(ctx->module, (uint32_t)target, repr_id);
+    }
+
+    switch (target) {
+        case WAH_TYPE_ANYREF:
+            return true;
+        case WAH_TYPE_EQREF:
+            return repr_id != WAH_TYPE_FUNCTION;
+        case WAH_TYPE_I31REF:
+            return repr_id == WAH_REPR_I31;
+        case WAH_TYPE_STRUCTREF:
+            return wah_repr_is_positive(repr_id) &&
+                   ctx->module->repr_infos[repr_id]->type == WAH_REPR_STRUCT;
+        case WAH_TYPE_ARRAYREF:
+            return wah_repr_is_positive(repr_id) &&
+                   ctx->module->repr_infos[repr_id]->type == WAH_REPR_ARRAY;
+        case WAH_TYPE_FUNCREF:
+            return repr_id == WAH_TYPE_FUNCTION;
+        case WAH_TYPE_EXTERNREF:
+            return false;
+        default:
+            return false;
+    }
+}
+
 WAH_RUN(REF_NULL) {
     // Read type from bytecode (already parsed as uint32_t)
     uint32_t type = wah_read_u32_le(bytecode_ip);
@@ -7098,6 +7203,44 @@ WAH_RUN(REF_FUNC) {
     WAH_ASSERT(func_idx < ctx->module->function_count && "validation should have verified function index");
     (*sp++).ref = &ctx->module->functions[func_idx];
     WAH_NEXT();
+}
+
+WAH_RUN(REF_TEST_NULL) {
+    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(int32_t);
+    wah_value_t ref_val = *--sp;
+    bool result = (ref_val.ref == NULL) || wah_ref_test_heap_type(ctx, ref_val, heap_type);
+    (*sp++).i32 = result ? 1 : 0;
+    WAH_NEXT();
+}
+
+WAH_RUN(REF_TEST) {
+    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(int32_t);
+    wah_value_t ref_val = *--sp;
+    bool result = wah_ref_test_heap_type(ctx, ref_val, heap_type);
+    (*sp++).i32 = result ? 1 : 0;
+    WAH_NEXT();
+}
+
+WAH_RUN(REF_CAST_NULL) {
+    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(int32_t);
+    wah_value_t ref_val = sp[-1];
+    WAH_ENSURE_GOTO(ref_val.ref == NULL || wah_ref_test_heap_type(ctx, ref_val, heap_type),
+                     WAH_ERROR_TRAP, cleanup);
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(REF_CAST) {
+    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(int32_t);
+    wah_value_t ref_val = sp[-1];
+    WAH_ENSURE_GOTO(ref_val.ref != NULL && wah_ref_test_heap_type(ctx, ref_val, heap_type),
+                     WAH_ERROR_TRAP, cleanup);
+    WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(LOCAL_GET) {
@@ -10020,6 +10163,8 @@ wah_error_t wah_module_export_funcv(wah_module_t *mod, const char *name, size_t 
     // Fill in the unified function entry
     uint32_t new_func_idx = mod->total_function_count;
     wah_function_t *fn = &mod->functions[new_func_idx];
+    memset(fn, 0, sizeof(wah_function_t));
+    fn->fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER;
     fn->is_host = true;
     fn->name = name_copy;
     fn->func = func;
