@@ -101,21 +101,21 @@ static const token_entry_t token_table[] = {
     TOKEN("type.ref.struct", 0x64, 0x6b),   // (ref struct)
     TOKEN("type.ref.array", 0x64, 0x6a),    // (ref array)
     TOKEN("type.ref.exn", 0x64, 0x69),      // (ref exn)
-    TOKEN("type.ref.null.noexn", 0x65, 0x74), // Alternative encodings of (ref null ...)
-    TOKEN("type.ref.null.nofunc", 0x65, 0x73),
-    TOKEN("type.ref.null.noextern", 0x65, 0x72),
-    TOKEN("type.ref.null.none", 0x65, 0x71),
-    TOKEN("type.ref.null.func", 0x65, 0x70),
-    TOKEN("type.ref.null.extern", 0x65, 0x6f),
-    TOKEN("type.ref.null.any", 0x65, 0x6e),
-    TOKEN("type.ref.null.eq", 0x65, 0x6d),
-    TOKEN("type.ref.null.i31", 0x65, 0x6c),
-    TOKEN("type.ref.null.struct", 0x65, 0x6b),
-    TOKEN("type.ref.null.array", 0x65, 0x6a),
-    TOKEN("type.ref.null.exn", 0x65, 0x69),
+    TOKEN("type.ref.null.noexn", 0x63, 0x74), // Alternative encodings of (ref null ...)
+    TOKEN("type.ref.null.nofunc", 0x63, 0x73),
+    TOKEN("type.ref.null.noextern", 0x63, 0x72),
+    TOKEN("type.ref.null.none", 0x63, 0x71),
+    TOKEN("type.ref.null.func", 0x63, 0x70),
+    TOKEN("type.ref.null.extern", 0x63, 0x6f),
+    TOKEN("type.ref.null.any", 0x63, 0x6e),
+    TOKEN("type.ref.null.eq", 0x63, 0x6d),
+    TOKEN("type.ref.null.i31", 0x63, 0x6c),
+    TOKEN("type.ref.null.struct", 0x63, 0x6b),
+    TOKEN("type.ref.null.array", 0x63, 0x6a),
+    TOKEN("type.ref.null.exn", 0x63, 0x69),
 
     // Type parts
-    TOKEN("type.ref.null", 0x65), // (ref null ...);  type.ref.null <type>
+    TOKEN("type.ref.null", 0x63), // (ref null ...);  type.ref.null <type>
     TOKEN("type.ref", 0x64),      // (ref ...);       type.ref <type>
     TOKEN("array", 0x5e),         // (array ...);     array <type> {mut|immut}
     TOKEN("struct", 0x5f),        // (struct ...);    struct [<type> {mut|immut}, ...]

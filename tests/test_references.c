@@ -440,7 +440,112 @@ static void test_struct_null_trap() {
     wah_free_module(&module);
 }
 
+static void test_typed_ref_decoding() {
+    printf("Running test_typed_ref_decoding (non-null ref func param)...\n");
+    {
+        // Function type: (ref func) -> i32
+        // type.ref encodes as 0x64 followed by heap type
+        const char *spec = "wasm \
+            types {[ fn [type.ref.func] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] local.get 0 ref.is_null end } ]}";
+        wah_module_t module;
+        // Should parse and validate: param is (ref func) non-nullable
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        // Verify the parsed type has non-nullable flag
+        assert(module.type_count == 1);
+        assert(module.types[0].param_count == 1);
+        assert(module.types[0].param_types[0] == WAH_TYPE_FUNCREF);
+        assert(!(module.types[0].param_type_flags[0] & WAH_TYPE_FLAG_NULLABLE));
+        // Result is i32 (no flags)
+        assert(module.types[0].result_count == 1);
+        assert(module.types[0].result_types[0] == WAH_TYPE_I32);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_typed_ref_decoding (ref null func param)...\n");
+    {
+        // Function type: (ref null func) -> i32
+        // type.ref.null (0x63) followed by heap type byte for func (0x70)
+        const char *spec = "wasm \
+            types {[ fn [type.ref.null.func] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] local.get 0 ref.is_null end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert(module.type_count == 1);
+        assert(module.types[0].param_count == 1);
+        assert(module.types[0].param_types[0] == WAH_TYPE_FUNCREF);
+        assert(module.types[0].param_type_flags[0] & WAH_TYPE_FLAG_NULLABLE);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_typed_ref_decoding (ref null anyref result)...\n");
+    {
+        // Function type: () -> (ref null any) -- same as anyref shorthand
+        const char *spec = "wasm \
+            types {[ fn [] [type.ref.null.any] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] ref.null anyref end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert(module.types[0].result_count == 1);
+        assert(module.types[0].result_types[0] == WAH_TYPE_ANYREF);
+        assert(module.types[0].result_type_flags[0] & WAH_TYPE_FLAG_NULLABLE);
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_null(result.ref);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_typed_ref_decoding (non-null ref in local)...\n");
+    {
+        // Local declared as (ref null extern) via full encoding
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[type.ref.null.extern] ref.null externref local.set 0 local.get 0 ref.is_null end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_typed_ref_decoding (concrete typeidx ref)...\n");
+    {
+        // Function type with (ref null $0) where $0 is a function type
+        // type.ref.null followed by type index 0 (LEB128)
+        const char *spec = "wasm \
+            types {[ fn [] [type.ref.null 0] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] ref.null nullfuncref end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert(module.types[0].result_count == 1);
+        // Concrete typeidx 0 as type
+        assert(module.types[0].result_types[0] == 0);
+        assert(module.types[0].result_type_flags[0] & WAH_TYPE_FLAG_NULLABLE);
+        wah_free_module(&module);
+    }
+}
+
 int main() {
+    test_typed_ref_decoding();
     test_ref_null_funcref();
     test_ref_null_externref();
     test_ref_func();

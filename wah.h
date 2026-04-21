@@ -2100,8 +2100,8 @@ static inline void wah_write_f64_le(uint8_t *ptr, double val) {
 // --- Parser Functions ---
 static wah_error_t wah_decode_memarg(const uint8_t **ptr, const uint8_t *end, uint32_t *align, uint32_t *memidx, uint64_t *offset);
 static wah_error_t wah_decode_opcode(const uint8_t **ptr, const uint8_t *end, uint16_t *opcode_val);
-static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type);
-static wah_error_t wah_decode_ref_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type);
+static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type, wah_type_flags_t *out_flags);
+static wah_error_t wah_decode_ref_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type, wah_type_flags_t *out_flags);
 static wah_error_t wah_decode_storage_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type, wah_type_flags_t *out_flags);
 static wah_error_t wah_decode_heap_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type);
 
@@ -3610,10 +3610,7 @@ static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end,
     WAH_MALLOC_ARRAY(ft->param_type_flags, param_count);
     if (param_count) memset(ft->param_type_flags, 0, param_count * sizeof(wah_type_flags_t));
     for (uint32_t j = 0; j < param_count; ++j) {
-        WAH_CHECK(wah_decode_val_type(ptr, end, &ft->param_types[j]));
-        if (WAH_TYPE_IS_REF(ft->param_types[j])) {
-            ft->param_type_flags[j] = WAH_TYPE_FLAG_NULLABLE;
-        }
+        WAH_CHECK(wah_decode_val_type(ptr, end, &ft->param_types[j], &ft->param_type_flags[j]));
     }
 
     uint32_t result_count;
@@ -3623,10 +3620,7 @@ static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end,
     WAH_MALLOC_ARRAY(ft->result_type_flags, result_count);
     if (result_count) memset(ft->result_type_flags, 0, result_count * sizeof(wah_type_flags_t));
     for (uint32_t j = 0; j < result_count; ++j) {
-        WAH_CHECK(wah_decode_val_type(ptr, end, &ft->result_types[j]));
-        if (WAH_TYPE_IS_REF(ft->result_types[j])) {
-            ft->result_type_flags[j] = WAH_TYPE_FLAG_NULLABLE;
-        }
+        WAH_CHECK(wah_decode_val_type(ptr, end, &ft->result_types[j], &ft->result_type_flags[j]));
     }
     return WAH_OK;
 }
@@ -4394,11 +4388,12 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &vec_len));
             WAH_ENSURE(vec_len == 1, WAH_ERROR_VALIDATION_FAILED);
             wah_type_t sel_type;
-            WAH_CHECK(wah_decode_val_type(code_ptr, code_end, &sel_type));
+            wah_type_flags_t sel_flags;
+            WAH_CHECK(wah_decode_val_type(code_ptr, code_end, &sel_type, &sel_flags));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_I32));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, sel_type));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, sel_type));
-            return wah_validation_push_type(vctx, sel_type);
+            return wah_validation_push_type_with_flags(vctx, sel_type, sel_flags);
         }
 
         // Control flow operations
@@ -4694,7 +4689,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
         case WAH_OP_REF_NULL: {
             wah_type_t ref_type;
-            WAH_CHECK(wah_decode_ref_type(code_ptr, code_end, &ref_type));
+            WAH_CHECK(wah_decode_ref_type(code_ptr, code_end, &ref_type, NULL));
 
             WAH_CHECK(wah_validation_push_type_with_flags(vctx, ref_type, WAH_TYPE_FLAG_NULLABLE));
             break;
@@ -4952,10 +4947,11 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
             uint32_t local_type_count;
             WAH_CHECK_GOTO(wah_decode_uleb128(ptr, code_body_end, &local_type_count), cleanup);
             wah_type_t type;
-            WAH_CHECK_GOTO(wah_decode_val_type(ptr, code_body_end, &type), cleanup);
+            wah_type_flags_t type_flags;
+            WAH_CHECK_GOTO(wah_decode_val_type(ptr, code_body_end, &type, &type_flags), cleanup);
             for (uint32_t k = 0; k < local_type_count; ++k) {
                 module->code_bodies[i].local_types[local_idx] = type;
-                module->code_bodies[i].local_type_flags[local_idx] = WAH_TYPE_IS_REF(type) ? WAH_TYPE_FLAG_NULLABLE : 0;
+                module->code_bodies[i].local_type_flags[local_idx] = type_flags;
                 local_idx++;
             }
         }
@@ -5184,7 +5180,7 @@ static wah_error_t wah_validate_const_expr(
             // Reference types
             case WAH_OP_REF_NULL: {
                 wah_type_t ref_type;
-                WAH_CHECK(wah_decode_ref_type(ptr, section_end, &ref_type));
+                WAH_CHECK(wah_decode_ref_type(ptr, section_end, &ref_type, NULL));
                 CONST_PUSH(ref_type);
                 break;
             }
@@ -5237,9 +5233,10 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
         ++module->global_count;
 
         wah_type_t global_declared_type;
-        WAH_CHECK(wah_decode_val_type(ptr, section_end, &global_declared_type));
+        wah_type_flags_t global_declared_flags;
+        WAH_CHECK(wah_decode_val_type(ptr, section_end, &global_declared_type, &global_declared_flags));
         module->globals[i].type = global_declared_type;
-        module->globals[i].type_flags = WAH_TYPE_IS_REF(global_declared_type) ? WAH_TYPE_FLAG_NULLABLE : 0;
+        module->globals[i].type_flags = global_declared_flags;
 
         // Mutability
         WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
@@ -5324,9 +5321,10 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
 
         for (uint32_t i = 0; i < count; ++i) {
             wah_type_t elem_type;
-            WAH_CHECK(wah_decode_ref_type(ptr, section_end, &elem_type));
+            wah_type_flags_t elem_type_flags;
+            WAH_CHECK(wah_decode_ref_type(ptr, section_end, &elem_type, &elem_type_flags));
             module->tables[i].elem_type = elem_type;
-            module->tables[i].elem_type_flags = WAH_TYPE_IS_REF(elem_type) ? WAH_TYPE_FLAG_NULLABLE : 0;
+            module->tables[i].elem_type_flags = elem_type_flags;
 
             WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
             uint8_t flags = *(*ptr)++;
@@ -5454,8 +5452,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             wah_table_import_t *ti = &module->table_imports[import_table_count];
             ti->name = imp_name;
 
-            WAH_CHECK_GOTO(wah_decode_ref_type(ptr, section_end, &ti->type.elem_type), cleanup);
-            ti->type.elem_type_flags = WAH_TYPE_IS_REF(ti->type.elem_type) ? WAH_TYPE_FLAG_NULLABLE : 0;
+            WAH_CHECK_GOTO(wah_decode_ref_type(ptr, section_end, &ti->type.elem_type, &ti->type.elem_type_flags), cleanup);
             WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
             uint8_t flags = *(*ptr)++;
             ti->type.addr_type = (flags & 0x04) ? WAH_TYPE_I64 : WAH_TYPE_I32;
@@ -5525,8 +5522,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             wah_global_import_t *gi = &module->global_imports[import_global_count];
             gi->name = imp_name;
 
-            WAH_CHECK_GOTO(wah_decode_val_type(ptr, section_end, &gi->type), cleanup);
-            gi->type_flags = WAH_TYPE_IS_REF(gi->type) ? WAH_TYPE_FLAG_NULLABLE : 0;
+            WAH_CHECK_GOTO(wah_decode_val_type(ptr, section_end, &gi->type, &gi->type_flags), cleanup);
             WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
             uint8_t mut_byte = *(*ptr)++;
             WAH_ENSURE_GOTO(mut_byte <= 1, WAH_ERROR_MALFORMED, cleanup);
@@ -5770,7 +5766,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
             if (mode > 0) {
                 if (is_expr_elem) {
                     wah_type_t ref_type;
-                    WAH_CHECK(wah_decode_ref_type(ptr, section_end, &ref_type));
+                    WAH_CHECK(wah_decode_ref_type(ptr, section_end, &ref_type, NULL));
                     WAH_ENSURE(ref_type == WAH_TYPE_FUNCREF, WAH_ERROR_VALIDATION_FAILED); // TODO: externref should be possible
                 } else {
                     WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
@@ -6084,14 +6080,14 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &vec_len), cleanup);
                     for (uint32_t j = 0; j < vec_len; j++) {
                         wah_type_t sel_type;
-                        WAH_CHECK_GOTO(wah_decode_val_type(&ptr, end, &sel_type), cleanup);
+                        WAH_CHECK_GOTO(wah_decode_val_type(&ptr, end, &sel_type, NULL), cleanup);
                     }
                     preparsed_instr_size = 0;
                     break;
                 }
                 case WAH_OP_REF_NULL: {
                     wah_type_t ref_type;
-                    WAH_CHECK_GOTO(wah_decode_ref_type(&ptr, end, &ref_type), cleanup);
+                    WAH_CHECK_GOTO(wah_decode_ref_type(&ptr, end, &ref_type, NULL), cleanup);
                     preparsed_instr_size += sizeof(uint32_t); // For type (converted to uint32_t)
                     break;
                 }
@@ -6459,7 +6455,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &vec_len), cleanup);
                     for (uint32_t j = 0; j < vec_len; j++) {
                         wah_type_t sel_type;
-                        WAH_CHECK_GOTO(wah_decode_val_type(&ptr, end, &sel_type), cleanup);
+                        WAH_CHECK_GOTO(wah_decode_val_type(&ptr, end, &sel_type, NULL), cleanup);
                     }
                     write_ptr -= sizeof(uint16_t);
                     wah_write_u16_le(write_ptr, WAH_OP_SELECT);
@@ -6468,8 +6464,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 }
                 case WAH_OP_REF_NULL: {
                     wah_type_t ref_type;
-                    WAH_CHECK_GOTO(wah_decode_ref_type(&ptr, end, &ref_type), cleanup);
-                    // ref_type is already converted to WAH_TYPE_FUNCREF (-16) or WAH_TYPE_EXTERNREF (-17)
+                    WAH_CHECK_GOTO(wah_decode_ref_type(&ptr, end, &ref_type, NULL), cleanup);
                     wah_write_u32_le(write_ptr, (uint32_t)ref_type);
                     write_ptr += sizeof(uint32_t);
                     break;
@@ -6576,52 +6571,67 @@ static wah_error_t wah_decode_opcode(const uint8_t **ptr, const uint8_t *end, ui
 }
 
 // Helper function to decode a raw byte representing a value type into a wah_type_t
-static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type) {
+static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type, wah_type_flags_t *out_flags) {
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t byte = *(*ptr)++;
     switch (byte) {
-        case 0x7F: *out_type = WAH_TYPE_I32; return WAH_OK;
-        case 0x7E: *out_type = WAH_TYPE_I64; return WAH_OK;
-        case 0x7D: *out_type = WAH_TYPE_F32; return WAH_OK;
-        case 0x7C: *out_type = WAH_TYPE_F64; return WAH_OK;
-        case 0x7B: *out_type = WAH_TYPE_V128; return WAH_OK;
-        case 0x70: *out_type = WAH_TYPE_FUNCREF;       return WAH_OK;
-        case 0x6F: *out_type = WAH_TYPE_EXTERNREF;     return WAH_OK;
-        case 0x6E: *out_type = WAH_TYPE_ANYREF;        return WAH_OK;
-        case 0x6D: *out_type = WAH_TYPE_EQREF;         return WAH_OK;
-        case 0x6C: *out_type = WAH_TYPE_I31REF;        return WAH_OK;
-        case 0x6B: *out_type = WAH_TYPE_STRUCTREF;     return WAH_OK;
-        case 0x6A: *out_type = WAH_TYPE_ARRAYREF;      return WAH_OK;
-        case 0x69: *out_type = WAH_TYPE_EXNREF;        return WAH_OK;
-        case 0x74: *out_type = WAH_TYPE_NULLEXNREF;    return WAH_OK;
-        case 0x73: *out_type = WAH_TYPE_NULLFUNCREF;   return WAH_OK;
-        case 0x72: *out_type = WAH_TYPE_NULLEXTERNREF;  return WAH_OK;
-        case 0x71: *out_type = WAH_TYPE_NULLREF;       return WAH_OK;
-        case 0x63: case 0x64:
-            return WAH_ERROR_UNIMPLEMENTED;
+        case 0x7F: *out_type = WAH_TYPE_I32; if (out_flags) *out_flags = 0; return WAH_OK;
+        case 0x7E: *out_type = WAH_TYPE_I64; if (out_flags) *out_flags = 0; return WAH_OK;
+        case 0x7D: *out_type = WAH_TYPE_F32; if (out_flags) *out_flags = 0; return WAH_OK;
+        case 0x7C: *out_type = WAH_TYPE_F64; if (out_flags) *out_flags = 0; return WAH_OK;
+        case 0x7B: *out_type = WAH_TYPE_V128; if (out_flags) *out_flags = 0; return WAH_OK;
+        case 0x70: *out_type = WAH_TYPE_FUNCREF;       if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x6F: *out_type = WAH_TYPE_EXTERNREF;     if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x6E: *out_type = WAH_TYPE_ANYREF;        if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x6D: *out_type = WAH_TYPE_EQREF;         if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x6C: *out_type = WAH_TYPE_I31REF;        if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x6B: *out_type = WAH_TYPE_STRUCTREF;     if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x6A: *out_type = WAH_TYPE_ARRAYREF;      if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x69: *out_type = WAH_TYPE_EXNREF;        if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x74: *out_type = WAH_TYPE_NULLEXNREF;    if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x73: *out_type = WAH_TYPE_NULLFUNCREF;   if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x72: *out_type = WAH_TYPE_NULLEXTERNREF;  if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x71: *out_type = WAH_TYPE_NULLREF;       if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x63: {
+            WAH_CHECK(wah_decode_heap_type(ptr, end, out_type));
+            if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE;
+            return WAH_OK;
+        }
+        case 0x64: {
+            WAH_CHECK(wah_decode_heap_type(ptr, end, out_type));
+            if (out_flags) *out_flags = 0;
+            return WAH_OK;
+        }
         default: return WAH_ERROR_VALIDATION_FAILED;
     }
 }
 
-// Helper function to decode a raw byte representing a reference type into a wah_type_t
-static wah_error_t wah_decode_ref_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type) {
+static wah_error_t wah_decode_ref_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type, wah_type_flags_t *out_flags) {
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t byte = *(*ptr)++;
     switch (byte) {
-        case 0x70: *out_type = WAH_TYPE_FUNCREF;       return WAH_OK;
-        case 0x6F: *out_type = WAH_TYPE_EXTERNREF;     return WAH_OK;
-        case 0x6E: *out_type = WAH_TYPE_ANYREF;        return WAH_OK;
-        case 0x6D: *out_type = WAH_TYPE_EQREF;         return WAH_OK;
-        case 0x6C: *out_type = WAH_TYPE_I31REF;        return WAH_OK;
-        case 0x6B: *out_type = WAH_TYPE_STRUCTREF;     return WAH_OK;
-        case 0x6A: *out_type = WAH_TYPE_ARRAYREF;      return WAH_OK;
-        case 0x69: *out_type = WAH_TYPE_EXNREF;        return WAH_OK;
-        case 0x74: *out_type = WAH_TYPE_NULLEXNREF;    return WAH_OK;
-        case 0x73: *out_type = WAH_TYPE_NULLFUNCREF;   return WAH_OK;
-        case 0x72: *out_type = WAH_TYPE_NULLEXTERNREF;  return WAH_OK;
-        case 0x71: *out_type = WAH_TYPE_NULLREF;       return WAH_OK;
-        case 0x63: case 0x64:
-            return WAH_ERROR_UNIMPLEMENTED;
+        case 0x70: *out_type = WAH_TYPE_FUNCREF;       if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x6F: *out_type = WAH_TYPE_EXTERNREF;     if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x6E: *out_type = WAH_TYPE_ANYREF;        if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x6D: *out_type = WAH_TYPE_EQREF;         if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x6C: *out_type = WAH_TYPE_I31REF;        if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x6B: *out_type = WAH_TYPE_STRUCTREF;     if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x6A: *out_type = WAH_TYPE_ARRAYREF;      if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x69: *out_type = WAH_TYPE_EXNREF;        if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x74: *out_type = WAH_TYPE_NULLEXNREF;    if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x73: *out_type = WAH_TYPE_NULLFUNCREF;   if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x72: *out_type = WAH_TYPE_NULLEXTERNREF;  if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x71: *out_type = WAH_TYPE_NULLREF;       if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
+        case 0x63: {
+            WAH_CHECK(wah_decode_heap_type(ptr, end, out_type));
+            if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE;
+            return WAH_OK;
+        }
+        case 0x64: {
+            WAH_CHECK(wah_decode_heap_type(ptr, end, out_type));
+            if (out_flags) *out_flags = 0;
+            return WAH_OK;
+        }
         default: return WAH_ERROR_VALIDATION_FAILED;
     }
 }
@@ -6635,11 +6645,7 @@ static wah_error_t wah_decode_storage_type(const uint8_t **ptr, const uint8_t *e
         case 0x78: *out_type = WAH_TYPE_PACKED_I8; (*ptr)++; return WAH_OK;
         case 0x77: *out_type = WAH_TYPE_PACKED_I16; (*ptr)++; return WAH_OK;
         default: {
-            wah_error_t err = wah_decode_val_type(ptr, end, out_type);
-            if (err == WAH_OK && WAH_TYPE_IS_REF(*out_type)) {
-                *out_flags = WAH_TYPE_FLAG_NULLABLE;
-            }
-            return err;
+            return wah_decode_val_type(ptr, end, out_type, out_flags);
         }
     }
 }
