@@ -150,6 +150,33 @@ typedef struct {
     } u;
 } wah_entry_t;
 
+// --- Repr Metadata ---
+typedef int32_t wah_repr_t;
+
+typedef enum {
+    WAH_REPR_STRUCT = 1,
+    WAH_REPR_ARRAY,
+} wah_repr_type_t;
+
+typedef struct {
+    uint32_t offset;
+    wah_repr_t repr_id;
+} wah_repr_field_t;
+
+typedef struct {
+    wah_repr_type_t type;
+    uint32_t typeidx;
+    uint32_t size;
+    uint32_t count;
+    wah_repr_field_t fields[];
+} wah_repr_info_t;
+
+#define WAH_REPR_NONE ((wah_repr_t)-1)
+#define WAH_REPR_I31  ((wah_repr_t)-2)
+
+static inline bool wah_repr_is_positive(wah_repr_t id) { return id >= 0; }
+static inline bool wah_repr_is_builtin(wah_repr_t id) { return id < 0; }
+
 typedef struct wah_module_s {
     uint32_t type_count;
     uint32_t function_count;
@@ -204,35 +231,13 @@ typedef struct wah_module_s {
     // Dynamic export array growth
     uint32_t capacity_exports;  // Capacity for dynamic export array growth
 
+    // Repr metadata for GC types
+    uint32_t repr_count;
+    wah_repr_info_t **repr_infos;
+    wah_repr_t *typeidx_to_repr;
+
     bool has_unimplemented;
 } wah_module_t;
-
-// --- Repr Metadata ---
-typedef int32_t wah_repr_t;
-
-typedef enum {
-    WAH_REPR_STRUCT = 1,
-    WAH_REPR_ARRAY,
-} wah_repr_type_t;
-
-typedef struct {
-    uint32_t offset;
-    wah_repr_t repr_id;
-} wah_repr_field_t;
-
-typedef struct {
-    wah_repr_type_t type;
-    uint32_t typeidx;
-    uint32_t size;
-    uint32_t count;
-    wah_repr_field_t fields[];
-} wah_repr_info_t;
-
-#define WAH_REPR_NONE ((wah_repr_t)-1)
-#define WAH_REPR_I31  ((wah_repr_t)-2)
-
-static inline bool wah_repr_is_positive(wah_repr_t id) { return id >= 0; }
-static inline bool wah_repr_is_builtin(wah_repr_t id) { return id < 0; }
 
 // --- GC State ---
 typedef enum {
@@ -458,6 +463,22 @@ static inline void *wah_gc_payload(wah_gc_object_t *obj) {
 typedef void (*wah_gc_ref_visitor_t)(wah_value_t *slot, wah_type_t type, void *userdata);
 // Enumerates all live GC root slots reachable from the execution context.
 void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visitor, void *userdata);
+
+// --- Repr Lookup ---
+static inline wah_repr_t wah_module_typeidx_to_repr(const wah_module_t *module, uint32_t typeidx) {
+    if (!module->typeidx_to_repr || typeidx >= module->type_count) return WAH_REPR_NONE;
+    return module->typeidx_to_repr[typeidx];
+}
+
+static inline const wah_repr_info_t *wah_repr_info_get(const wah_module_t *module, wah_repr_t repr_id) {
+    if (!wah_repr_is_positive(repr_id) || (uint32_t)repr_id >= module->repr_count) return NULL;
+    return module->repr_infos[repr_id];
+}
+
+static inline uint32_t wah_repr_info_typeidx(const wah_module_t *module, wah_repr_t repr_id) {
+    const wah_repr_info_t *info = wah_repr_info_get(module, repr_id);
+    return info ? info->typeidx : (uint32_t)-1;
+}
 
 wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id, wah_entry_t *out);
 
@@ -3377,6 +3398,11 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
             WAH_CHECK(wah_decode_val_type(ptr, section_end, &type));
             module->types[i].result_types[j] = type;
         }
+    }
+
+    WAH_MALLOC_ARRAY(module->typeidx_to_repr, module->type_count);
+    for (uint32_t i = 0; i < module->type_count; ++i) {
+        module->typeidx_to_repr[i] = WAH_REPR_NONE;
     }
 
     return WAH_OK;
@@ -9436,6 +9462,14 @@ void wah_free_module(wah_module_t *module) {
         }
         free(module->functions);
     }
+
+    if (module->repr_infos) {
+        for (uint32_t i = 0; i < module->repr_count; ++i) {
+            free(module->repr_infos[i]);
+        }
+        free(module->repr_infos);
+    }
+    free(module->typeidx_to_repr);
 
     // Reset all fields to 0/NULL
     memset(module, 0, sizeof(wah_module_t));
