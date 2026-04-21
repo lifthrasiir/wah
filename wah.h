@@ -5334,6 +5334,57 @@ static wah_error_t wah_validate_const_expr(
                 break;
             }
 
+            case WAH_OP_STRUCT_NEW: {
+                uint32_t typeidx;
+                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &typeidx));
+                WAH_ENSURE(typeidx < module->type_count, WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(module->type_defs && module->type_defs[typeidx].kind == WAH_COMP_STRUCT, WAH_ERROR_VALIDATION_FAILED);
+                for (uint32_t j = module->type_defs[typeidx].field_count; j > 0; --j) {
+                    WAH_ENSURE(stack_depth > 0, WAH_ERROR_VALIDATION_FAILED);
+                    --stack_depth;
+                }
+                CONST_PUSH((wah_type_t)typeidx);
+                break;
+            }
+            case WAH_OP_STRUCT_NEW_DEFAULT: {
+                uint32_t typeidx;
+                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &typeidx));
+                WAH_ENSURE(typeidx < module->type_count, WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(module->type_defs && module->type_defs[typeidx].kind == WAH_COMP_STRUCT, WAH_ERROR_VALIDATION_FAILED);
+                CONST_PUSH((wah_type_t)typeidx);
+                break;
+            }
+            case WAH_OP_ARRAY_NEW: {
+                uint32_t typeidx;
+                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &typeidx));
+                WAH_ENSURE(typeidx < module->type_count, WAH_ERROR_VALIDATION_FAILED);
+                CONST_POP(WAH_TYPE_I32);
+                WAH_ENSURE(stack_depth > 0, WAH_ERROR_VALIDATION_FAILED);
+                --stack_depth;
+                CONST_PUSH((wah_type_t)typeidx);
+                break;
+            }
+            case WAH_OP_ARRAY_NEW_DEFAULT: {
+                uint32_t typeidx;
+                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &typeidx));
+                WAH_ENSURE(typeidx < module->type_count, WAH_ERROR_VALIDATION_FAILED);
+                CONST_POP(WAH_TYPE_I32);
+                CONST_PUSH((wah_type_t)typeidx);
+                break;
+            }
+            case WAH_OP_ARRAY_NEW_FIXED: {
+                uint32_t typeidx, len;
+                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &typeidx));
+                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &len));
+                WAH_ENSURE(typeidx < module->type_count, WAH_ERROR_VALIDATION_FAILED);
+                for (uint32_t j = 0; j < len; ++j) {
+                    WAH_ENSURE(stack_depth > 0, WAH_ERROR_VALIDATION_FAILED);
+                    --stack_depth;
+                }
+                CONST_PUSH((wah_type_t)typeidx);
+                break;
+            }
+
             default:
                 return WAH_ERROR_VALIDATION_FAILED;
         }
@@ -11747,6 +11798,40 @@ static wah_error_t wah_eval_const_expr(
                 break;
             }
 
+            case WAH_OP_STRUCT_NEW: {
+                uint32_t typeidx = wah_read_u32_le(ip); ip += sizeof(uint32_t);
+                wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
+                const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+                wah_gc_object_t *obj = wah_gc_alloc_struct(ctx, repr_id, info);
+                WAH_ENSURE(obj != NULL, WAH_ERROR_OUT_OF_MEMORY);
+                uint8_t *payload = (uint8_t *)wah_gc_payload(obj);
+                const wah_type_def_t *td = &ctx->module->type_defs[typeidx];
+                for (uint32_t fi = td->field_count; fi > 0; --fi) {
+                    wah_value_t val = ctx->value_stack[--ctx->sp];
+                    uint32_t off = info->fields[fi - 1].offset;
+                    switch (td->field_types[fi - 1]) {
+                        case WAH_TYPE_PACKED_I8:  *(uint8_t *)(payload + off) = (uint8_t)val.i32; break;
+                        case WAH_TYPE_PACKED_I16: *(uint16_t *)(payload + off) = (uint16_t)val.i32; break;
+                        case WAH_TYPE_I32: case WAH_TYPE_F32: *(uint32_t *)(payload + off) = val.i32; break;
+                        case WAH_TYPE_I64: case WAH_TYPE_F64: *(uint64_t *)(payload + off) = val.i64; break;
+                        default:
+                            if (WAH_TYPE_IS_REF(td->field_types[fi - 1])) { *(void **)(payload + off) = val.ref; }
+                            break;
+                    }
+                }
+                ctx->value_stack[ctx->sp++].ref = obj;
+                break;
+            }
+            case WAH_OP_STRUCT_NEW_DEFAULT: {
+                uint32_t typeidx = wah_read_u32_le(ip); ip += sizeof(uint32_t);
+                wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
+                const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+                wah_gc_object_t *obj = wah_gc_alloc_struct(ctx, repr_id, info);
+                WAH_ENSURE(obj != NULL, WAH_ERROR_OUT_OF_MEMORY);
+                ctx->value_stack[ctx->sp++].ref = obj;
+                break;
+            }
+
             default:
                 return WAH_ERROR_VALIDATION_FAILED;
         }
@@ -11895,6 +11980,10 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         WAH_ENSURE_GOTO(linked_global_idx >= linked->import_global_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
         uint32_t linked_local_global_idx = linked_global_idx - linked->import_global_count;
         ctx->globals[i] = ctx->globals[linked_globals_offset + linked_local_global_idx];
+    }
+
+    if (!ctx->gc && module->repr_count > 0) {
+        WAH_CHECK_GOTO(wah_gc_start(ctx), cleanup);
     }
 
     // Initialize primary module's local globals (at offset import_global_count)
