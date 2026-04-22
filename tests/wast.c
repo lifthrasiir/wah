@@ -502,9 +502,12 @@ static int wast_parse_u64(const wast_node_t *node, uint64_t *out) {
     errno = 0;
     value = strtoull(clean, &endptr, 0);
     free(text);
-    free(clean);
-    if (errno != 0 || !endptr || *endptr != '\0') {
-        return 0;
+    {
+        int ok = (errno == 0 && endptr && *endptr == '\0');
+        free(clean);
+        if (!ok) {
+            return 0;
+        }
     }
     *out = (uint64_t)value;
     return 1;

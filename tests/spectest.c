@@ -118,9 +118,14 @@ static int ensure_capacity(void **items, size_t *capacity, size_t elem_size, siz
     return 1;
 }
 
+typedef struct {
+    wah_gc_object_t header;
+    uint32_t id;
+} host_ref_obj_t;
+
 static void *host_ref_for_id(spectest_env_t *env, uint32_t id) {
     size_t i;
-    uint32_t *storage;
+    host_ref_obj_t *storage;
     for (i = 0; i < env->host_ref_count; ++i) {
         if (env->host_refs[i].id == id) {
             return env->host_refs[i].ptr;
@@ -130,11 +135,12 @@ static void *host_ref_for_id(spectest_env_t *env, uint32_t id) {
                          sizeof(*env->host_refs), env->host_ref_count + 1)) {
         return NULL;
     }
-    storage = (uint32_t *)malloc(sizeof(*storage));
+    storage = (host_ref_obj_t *)malloc(sizeof(*storage));
     if (!storage) {
         return NULL;
     }
-    *storage = id;
+    storage->header = (wah_gc_object_t){.next_tagged = NULL, .repr_id = WAH_REPR_NONE, .size_bytes = 0};
+    storage->id = id;
     env->host_refs[env->host_ref_count].id = id;
     env->host_refs[env->host_ref_count].ptr = storage;
     env->host_ref_count++;
