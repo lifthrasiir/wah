@@ -2042,6 +2042,7 @@ static inline wah_error_t wah_decode_uleb128_u64(const uint8_t **ptr, const uint
         byte = *(*ptr)++;
         val |= (uint64_t)(byte & 0x7F) << shift;
         if ((byte & 0x80) == 0) {
+            if (i == 9 && byte > 1) return WAH_ERROR_TOO_LARGE;
             *result = val;
             return WAH_OK;
         }
@@ -2092,6 +2093,7 @@ static inline wah_error_t wah_decode_uleb128_64(const uint8_t **ptr, const uint8
         shift += 7;
     } while (byte & 0x80);
 
+    if (shift == 70 && byte > 1) return WAH_ERROR_TOO_LARGE;
     return WAH_OK;
 }
 
@@ -2101,6 +2103,7 @@ static inline wah_error_t wah_decode_uleb128_64(const uint8_t **ptr, const uint8
 // If align is 64..127, memidx is present and align is adjusted by subtracting 64
 static inline wah_error_t wah_decode_memarg(const uint8_t **ptr, const uint8_t *end, uint32_t *align, uint32_t *memidx, uint64_t *offset) {
     WAH_CHECK(wah_decode_uleb128(ptr, end, align));
+    WAH_ENSURE(*align < 128, WAH_ERROR_MALFORMED);
     *memidx = 0;
     // WebAssembly 3.0: if align >= 64, memidx is present
     if (*align >= 64) {
@@ -2150,7 +2153,7 @@ static inline wah_error_t wah_decode_and_validate_count(const uint8_t **ptr, con
     // This prevents excessively large allocations and potential hangs/OOM.
     // We use min_bytes_per_item to make a more accurate check.
     if ((uint64_t)*count * min_bytes_per_item > (uint64_t)(section_end - *ptr)) {
-        return WAH_ERROR_VALIDATION_FAILED;
+        return WAH_ERROR_MALFORMED;
     }
     return WAH_OK;
 }
@@ -3890,7 +3893,7 @@ static wah_error_t wah_parse_composite_type(const uint8_t **ptr, const uint8_t *
             td->kind = WAH_COMP_ARRAY;
             return wah_parse_array_type(ptr, end, td);
         default:
-            return WAH_ERROR_VALIDATION_FAILED;
+            return WAH_ERROR_MALFORMED;
     }
 }
 

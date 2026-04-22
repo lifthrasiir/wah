@@ -672,17 +672,12 @@ static void test_all_hang_wasm_parsing_errors() {
 
         wah_error_t err = wah_parse_module(hang_tests[i].binary, hang_tests[i].len, &module);
 
-        if (err == WAH_ERROR_VALIDATION_FAILED) {
-            printf("  - PASSED: %s correctly returned WAH_ERROR_VALIDATION_FAILED.\n", hang_tests[i].name);
-            wah_free_module(&module);
-        } else if (err == WAH_ERROR_TOO_LARGE) {
-            printf("  - PASSED: %s correctly returned WAH_ERROR_TOO_LARGE.\n", hang_tests[i].name);
-            wah_free_module(&module);
-        } else if (err == WAH_ERROR_UNEXPECTED_EOF) {
-            printf("  - PASSED: %s correctly returned WAH_ERROR_UNEXPECTED_EOF.\n", hang_tests[i].name);
+        if (err == WAH_ERROR_VALIDATION_FAILED || err == WAH_ERROR_TOO_LARGE ||
+            err == WAH_ERROR_UNEXPECTED_EOF || err == WAH_ERROR_MALFORMED) {
+            printf("  - PASSED: %s correctly returned %s.\n", hang_tests[i].name, wah_strerror(err));
             wah_free_module(&module);
         } else {
-            fprintf(stderr, "Assertion failed: Expected WAH_ERROR_VALIDATION_FAILED, WAH_ERROR_TOO_LARGE, or WAH_ERROR_UNEXPECTED_EOF for %s, but got %s\n", hang_tests[i].name, wah_strerror(err));
+            fprintf(stderr, "Assertion failed: Expected a parse error for %s, but got %s\n", hang_tests[i].name, wah_strerror(err));
             exit(1);
         }
     }
