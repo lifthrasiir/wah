@@ -9049,10 +9049,10 @@ WAH_RUN(ARRAY_INIT_ELEM) {
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     WAH_ASSERT(elemidx < ctx->module->element_segment_count);
     const wah_element_segment_t *seg = &ctx->module->element_segments[elemidx];
-    WAH_ENSURE_GOTO(!seg->is_dropped, WAH_ERROR_TRAP, cleanup);
+    uint32_t seg_len = seg->is_dropped ? 0 : seg->num_elems;
     wah_gc_array_body_t *body = (wah_gc_array_body_t *)wah_gc_payload(obj);
     WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= body->length, WAH_ERROR_TRAP, cleanup);
-    WAH_ENSURE_GOTO((uint64_t)src_offset + size <= seg->num_elems, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)src_offset + size <= seg_len, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
     for (uint32_t i = 0; i < size; i++) {
         if (!seg->is_expr_elem) {
