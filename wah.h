@@ -9642,8 +9642,8 @@ WAH_RUN(END) { // End of function
     uint64_t effective_addr; \
     \
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, ctx->memory_sizes[memidx], &effective_addr), cleanup); \
-    (*sp++).value_field = cast wah_read_##T##_le(ctx->memories[memidx] + effective_addr); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_sizes[memidx], &effective_addr), cleanup); \
+    (*sp++).value_field = cast wah_read_##T##_le(fctx->memories[memidx] + effective_addr); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -9654,8 +9654,8 @@ WAH_RUN(END) { // End of function
     uint32_t addr = (uint32_t)(*--sp).i32; \
     uint64_t effective_addr; \
     \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, ctx->memory_size, &effective_addr), cleanup); \
-    (*sp++).value_field = cast wah_read_##T##_le(ctx->memory_base + effective_addr); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_size, &effective_addr), cleanup); \
+    (*sp++).value_field = cast wah_read_##T##_le(fctx->memory_base + effective_addr); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -9670,8 +9670,8 @@ WAH_RUN(END) { // End of function
     uint64_t effective_addr; \
     \
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, ctx->memory_sizes[memidx], &effective_addr), cleanup); \
-    wah_write_##T##_le(ctx->memories[memidx] + effective_addr, cast (val)); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_sizes[memidx], &effective_addr), cleanup); \
+    wah_write_##T##_le(fctx->memories[memidx] + effective_addr, cast (val)); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -9683,8 +9683,8 @@ WAH_RUN(END) { // End of function
     uint32_t addr = (uint32_t)(*--sp).i32; \
     uint64_t effective_addr; \
     \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, ctx->memory_size, &effective_addr), cleanup); \
-    wah_write_##T##_le(ctx->memory_base + effective_addr, cast (val)); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_size, &effective_addr), cleanup); \
+    wah_write_##T##_le(fctx->memory_base + effective_addr, cast (val)); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -9699,8 +9699,8 @@ WAH_RUN(END) { // End of function
     uint64_t effective_addr; \
     \
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, ctx->memory_sizes[memidx], &effective_addr), cleanup); \
-    (*sp++).value_field = cast wah_read_##T##_le(ctx->memories[memidx] + effective_addr); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_sizes[memidx], &effective_addr), cleanup); \
+    (*sp++).value_field = cast wah_read_##T##_le(fctx->memories[memidx] + effective_addr); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -9715,8 +9715,8 @@ WAH_RUN(END) { // End of function
     uint64_t effective_addr; \
     \
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, ctx->memory_sizes[memidx], &effective_addr), cleanup); \
-    wah_write_##T##_le(ctx->memories[memidx] + effective_addr, cast (val)); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_sizes[memidx], &effective_addr), cleanup); \
+    wah_write_##T##_le(fctx->memories[memidx] + effective_addr, cast (val)); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -9728,8 +9728,8 @@ WAH_RUN(END) { // End of function
     uint64_t addr = (uint64_t)(*--sp).i64; \
     uint64_t effective_addr; \
     \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, ctx->memory_size, &effective_addr), cleanup); \
-    (*sp++).value_field = cast wah_read_##T##_le(ctx->memory_base + effective_addr); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_size, &effective_addr), cleanup); \
+    (*sp++).value_field = cast wah_read_##T##_le(fctx->memory_base + effective_addr); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -9741,8 +9741,8 @@ WAH_RUN(END) { // End of function
     uint64_t addr = (uint64_t)(*--sp).i64; \
     uint64_t effective_addr; \
     \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, ctx->memory_size, &effective_addr), cleanup); \
-    wah_write_##T##_le(ctx->memory_base + effective_addr, cast (val)); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_size, &effective_addr), cleanup); \
+    wah_write_##T##_le(fctx->memory_base + effective_addr, cast (val)); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -9939,7 +9939,7 @@ WAH_RUN(MEMORY_SIZE) {
     uint32_t mem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     WAH_ASSERT(mem_idx < ctx->memory_count && "validation didn't catch out-of-bound memory index");
-    (*sp++).i32 = (int32_t)(ctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE);
+    (*sp++).i32 = (int32_t)(fctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE);
     WAH_NEXT();
 }
 
@@ -9954,7 +9954,7 @@ WAH_RUN(MEMORY_GROW) {
         WAH_NEXT();
     }
 
-    uint32_t old_pages = ctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE;
+    uint32_t old_pages = fctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE;
     uint64_t new_pages = (uint64_t)old_pages + pages_to_grow;
 
     if (new_pages > ctx->memory_max_pages[mem_idx] || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
@@ -9963,21 +9963,21 @@ WAH_RUN(MEMORY_GROW) {
     }
 
     size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
-    WAH_REALLOC_ARRAY_GOTO(ctx->memories[mem_idx], new_memory_size, grow_oom);
+    WAH_REALLOC_ARRAY_GOTO(fctx->memories[mem_idx], new_memory_size, grow_oom);
 
-    if (new_memory_size > ctx->memory_sizes[mem_idx]) {
-        memset(ctx->memories[mem_idx] + ctx->memory_sizes[mem_idx], 0, new_memory_size - ctx->memory_sizes[mem_idx]);
+    if (new_memory_size > fctx->memory_sizes[mem_idx]) {
+        memset(fctx->memories[mem_idx] + fctx->memory_sizes[mem_idx], 0, new_memory_size - fctx->memory_sizes[mem_idx]);
     }
 
-    ctx->memory_sizes[mem_idx] = (uint64_t)new_memory_size;
+    fctx->memory_sizes[mem_idx] = (uint64_t)new_memory_size;
     if (ctx->memory_import_ctx && ctx->memory_import_ctx[mem_idx]) {
         wah_exec_context_t *src = ctx->memory_import_ctx[mem_idx];
         uint32_t src_idx = ctx->memory_import_idx[mem_idx];
         if (ctx->memory_is_imported && ctx->memory_is_imported[mem_idx]) {
             src->memory_is_imported[src_idx] = true;
         }
-        src->memories[src_idx] = ctx->memories[mem_idx];
-        src->memory_sizes[src_idx] = ctx->memory_sizes[mem_idx];
+        src->memories[src_idx] = fctx->memories[mem_idx];
+        src->memory_sizes[src_idx] = fctx->memory_sizes[mem_idx];
         if (src_idx == 0) {
             src->memory_base = src->memories[0];
             src->memory_size = src->memory_sizes[0];
@@ -9985,8 +9985,8 @@ WAH_RUN(MEMORY_GROW) {
     }
     if (ctx->memory_is_imported) ctx->memory_is_imported[mem_idx] = false;
     if (mem_idx == 0) {
-        ctx->memory_base = ctx->memories[0];
-        ctx->memory_size = ctx->memory_sizes[0];
+        fctx->memory_base = fctx->memories[0];
+        fctx->memory_size = fctx->memory_sizes[0];
     }
     (*sp++).i32 = (int32_t)old_pages;
     WAH_NEXT();
@@ -10002,8 +10002,8 @@ WAH_RUN(MEMORY_FILL) {
     uint8_t val = (uint8_t)(*--sp).i32;
     uint32_t dst = (uint32_t)(*--sp).i32;
 
-    WAH_ENSURE_GOTO((uint64_t)dst + size <= ctx->memory_sizes[mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-    memset(ctx->memories[mem_idx] + dst, val, size);
+    WAH_ENSURE_GOTO((uint64_t)dst + size <= fctx->memory_sizes[mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    memset(fctx->memories[mem_idx] + dst, val, size);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10023,11 +10023,11 @@ WAH_RUN(MEMORY_INIT) {
 
     const wah_data_segment_t *segment = &ctx->module->data_segments[data_idx];
 
-    WAH_ENSURE_GOTO((uint64_t)dest_offset + size <= ctx->memory_sizes[mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)dest_offset + size <= fctx->memory_sizes[mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->data_len, WAH_ERROR_TRAP, cleanup); // Ensure source data is within segment bounds
     WAH_ENSURE_GOTO(size <= segment->data_len, WAH_ERROR_TRAP, cleanup); // Cannot initialize more than available data
 
-    memcpy(ctx->memories[mem_idx] + dest_offset, segment->data + src_offset, size);
+    memcpy(fctx->memories[mem_idx] + dest_offset, segment->data + src_offset, size);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10056,10 +10056,10 @@ WAH_RUN(MEMORY_COPY) {
     uint32_t src = (uint32_t)(*--sp).i32;
     uint32_t dest = (uint32_t)(*--sp).i32;
 
-    WAH_ENSURE_GOTO((uint64_t)dest + size <= ctx->memory_sizes[dest_mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-    WAH_ENSURE_GOTO((uint64_t)src + size <= ctx->memory_sizes[src_mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)dest + size <= fctx->memory_sizes[dest_mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)src + size <= fctx->memory_sizes[src_mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
 
-    memmove(ctx->memories[dest_mem_idx] + dest, ctx->memories[src_mem_idx] + src, size);
+    memmove(fctx->memories[dest_mem_idx] + dest, fctx->memories[src_mem_idx] + src, size);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10069,7 +10069,7 @@ WAH_RUN(MEMORY_SIZE_i64) {
     uint32_t mem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     WAH_ASSERT(mem_idx < ctx->memory_count && "validation didn't catch out-of-bound memory index");
-    (*sp++).i64 = (int64_t)(ctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE);
+    (*sp++).i64 = (int64_t)(fctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE);
     WAH_NEXT();
 }
 
@@ -10084,7 +10084,7 @@ WAH_RUN(MEMORY_GROW_i64) {
         WAH_NEXT();
     }
 
-    uint64_t old_pages = ctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE;
+    uint64_t old_pages = fctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE;
     uint64_t new_pages = old_pages + (uint64_t)pages_to_grow;
 
     if (new_pages > ctx->memory_max_pages[mem_idx] || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
@@ -10093,21 +10093,21 @@ WAH_RUN(MEMORY_GROW_i64) {
     }
 
     size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
-    WAH_REALLOC_ARRAY_GOTO(ctx->memories[mem_idx], new_memory_size, grow_i64_oom);
+    WAH_REALLOC_ARRAY_GOTO(fctx->memories[mem_idx], new_memory_size, grow_i64_oom);
 
-    if (new_memory_size > ctx->memory_sizes[mem_idx]) {
-        memset(ctx->memories[mem_idx] + ctx->memory_sizes[mem_idx], 0, new_memory_size - ctx->memory_sizes[mem_idx]);
+    if (new_memory_size > fctx->memory_sizes[mem_idx]) {
+        memset(fctx->memories[mem_idx] + fctx->memory_sizes[mem_idx], 0, new_memory_size - fctx->memory_sizes[mem_idx]);
     }
 
-    ctx->memory_sizes[mem_idx] = (uint64_t)new_memory_size;
+    fctx->memory_sizes[mem_idx] = (uint64_t)new_memory_size;
     if (ctx->memory_import_ctx && ctx->memory_import_ctx[mem_idx]) {
         wah_exec_context_t *src = ctx->memory_import_ctx[mem_idx];
         uint32_t src_idx = ctx->memory_import_idx[mem_idx];
         if (ctx->memory_is_imported && ctx->memory_is_imported[mem_idx]) {
             src->memory_is_imported[src_idx] = true;
         }
-        src->memories[src_idx] = ctx->memories[mem_idx];
-        src->memory_sizes[src_idx] = ctx->memory_sizes[mem_idx];
+        src->memories[src_idx] = fctx->memories[mem_idx];
+        src->memory_sizes[src_idx] = fctx->memory_sizes[mem_idx];
         if (src_idx == 0) {
             src->memory_base = src->memories[0];
             src->memory_size = src->memory_sizes[0];
@@ -10115,8 +10115,8 @@ WAH_RUN(MEMORY_GROW_i64) {
     }
     if (ctx->memory_is_imported) ctx->memory_is_imported[mem_idx] = false;
     if (mem_idx == 0) {
-        ctx->memory_base = ctx->memories[0];
-        ctx->memory_size = ctx->memory_sizes[0];
+        fctx->memory_base = fctx->memories[0];
+        fctx->memory_size = fctx->memory_sizes[0];
     }
     (*sp++).i64 = (int64_t)old_pages;
     WAH_NEXT();
@@ -10134,8 +10134,8 @@ WAH_RUN(MEMORY_FILL_i64) {
     uint8_t val = (uint8_t)(*--sp).i32;
     uint64_t dst = (uint64_t)(*--sp).i64;
 
-    WAH_ENSURE_GOTO(dst + size <= ctx->memory_sizes[mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-    memset(ctx->memories[mem_idx] + dst, val, size);
+    WAH_ENSURE_GOTO(dst + size <= fctx->memory_sizes[mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    memset(fctx->memories[mem_idx] + dst, val, size);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10155,11 +10155,11 @@ WAH_RUN(MEMORY_INIT_i64) {
 
     const wah_data_segment_t *segment = &ctx->module->data_segments[data_idx];
 
-    WAH_ENSURE_GOTO(dest_offset + size <= ctx->memory_sizes[mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO(dest_offset + size <= fctx->memory_sizes[mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->data_len, WAH_ERROR_TRAP, cleanup);
     WAH_ENSURE_GOTO(size <= segment->data_len, WAH_ERROR_TRAP, cleanup);
 
-    memcpy(ctx->memories[mem_idx] + dest_offset, segment->data + src_offset, size);
+    memcpy(fctx->memories[mem_idx] + dest_offset, segment->data + src_offset, size);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10179,10 +10179,10 @@ WAH_RUN(MEMORY_COPY_i64) {
     uint64_t src = src_i64 ? (uint64_t)(*--sp).i64 : (uint32_t)(*--sp).i32;
     uint64_t dest = dest_i64 ? (uint64_t)(*--sp).i64 : (uint32_t)(*--sp).i32;
 
-    WAH_ENSURE_GOTO(dest + size <= ctx->memory_sizes[dest_mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-    WAH_ENSURE_GOTO(src + size <= ctx->memory_sizes[src_mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO(dest + size <= fctx->memory_sizes[dest_mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO(src + size <= fctx->memory_sizes[src_mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
 
-    memmove(ctx->memories[dest_mem_idx] + dest, ctx->memories[src_mem_idx] + src, size);
+    memmove(fctx->memories[dest_mem_idx] + dest, fctx->memories[src_mem_idx] + src, size);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10270,13 +10270,13 @@ WAH_RUN(UNREACHABLE) {
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK(wah_check_effective_addr(addr, offset, (read_size), ctx->memory_sizes[memidx], &effective_addr))
+    WAH_CHECK(wah_check_effective_addr(addr, offset, (read_size), fctx->memory_sizes[memidx], &effective_addr))
 
 #define V128_LOAD_HALF_OP(addr_expr, N, elem_ty, cast) { \
     V128_LOAD_COMMON(0, 8, addr_expr); \
     wah_v128_t *v = &(*sp++).v128; \
     for (int i = 0; i < 64/N; ++i) { \
-        v->elem_ty[i] = cast(wah_read_u##N##_le(ctx->memories[memidx] + effective_addr + i * (N/8))); \
+        v->elem_ty[i] = cast(wah_read_u##N##_le(fctx->memories[memidx] + effective_addr + i * (N/8))); \
     } \
     WAH_NEXT(); \
 }
@@ -10285,7 +10285,7 @@ WAH_RUN(UNREACHABLE) {
     V128_LOAD_COMMON(1, 8, addr_expr); \
     wah_v128_t *v = &(*sp++).v128; \
     for (int i = 0; i < 64/N; ++i) { \
-        v->elem_ty[i] = cast(wah_read_u##N##_le(ctx->memory_base + effective_addr + i * (N/8))); \
+        v->elem_ty[i] = cast(wah_read_u##N##_le(fctx->memory_base + effective_addr + i * (N/8))); \
     } \
     WAH_NEXT(); \
 }
@@ -10293,7 +10293,7 @@ WAH_RUN(UNREACHABLE) {
 #define V128_LOAD_SPLAT_OP(addr_expr, N) { \
     V128_LOAD_COMMON(0, N/8, addr_expr); \
     wah_v128_t *v = &(*sp++).v128; \
-    uint##N##_t val = wah_read_u##N##_le(ctx->memories[memidx] + effective_addr); \
+    uint##N##_t val = wah_read_u##N##_le(fctx->memories[memidx] + effective_addr); \
     for (int i = 0; i < 128/N; ++i) v->u##N[i] = val; \
     WAH_NEXT(); \
 }
@@ -10301,7 +10301,7 @@ WAH_RUN(UNREACHABLE) {
 #define V128_LOAD_SPLAT_OP_MEM0(addr_expr, N) { \
     V128_LOAD_COMMON(1, N/8, addr_expr); \
     wah_v128_t *v = &(*sp++).v128; \
-    uint##N##_t val = wah_read_u##N##_le(ctx->memory_base + effective_addr); \
+    uint##N##_t val = wah_read_u##N##_le(fctx->memory_base + effective_addr); \
     for (int i = 0; i < 128/N; ++i) v->u##N[i] = val; \
     WAH_NEXT(); \
 }
@@ -10317,9 +10317,9 @@ WAH_RUN(UNREACHABLE) {
     uint64_t effective_addr; \
     \
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, ctx->memory_sizes[memidx], &effective_addr), cleanup); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_sizes[memidx], &effective_addr), cleanup); \
     WAH_ASSERT(lane_idx < 128/N && "validation didn't catch out-of-bound lane index"); \
-    val.u##N[lane_idx] = wah_read_u##N##_le(ctx->memories[memidx] + effective_addr); \
+    val.u##N[lane_idx] = wah_read_u##N##_le(fctx->memories[memidx] + effective_addr); \
     (*sp++).v128 = val; \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
@@ -10333,9 +10333,9 @@ WAH_RUN(UNREACHABLE) {
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
     \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, ctx->memory_size, &effective_addr), cleanup); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_size, &effective_addr), cleanup); \
     WAH_ASSERT(lane_idx < 128/N && "validation didn't catch out-of-bound lane index"); \
-    val.u##N[lane_idx] = wah_read_u##N##_le(ctx->memory_base + effective_addr); \
+    val.u##N[lane_idx] = wah_read_u##N##_le(fctx->memory_base + effective_addr); \
     (*sp++).v128 = val; \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
@@ -10343,13 +10343,13 @@ WAH_RUN(UNREACHABLE) {
 
 WAH_RUN(V128_LOAD) {
     V128_LOAD_COMMON(0, sizeof(wah_v128_t), WAH_SP_ADDR_I32);
-    memcpy(&(*sp++).v128, ctx->memories[memidx] + effective_addr, sizeof(wah_v128_t));
+    memcpy(&(*sp++).v128, fctx->memories[memidx] + effective_addr, sizeof(wah_v128_t));
     WAH_NEXT();
 }
 
 WAH_RUN(V128_LOAD_i32_mem0) {
     V128_LOAD_COMMON(1, sizeof(wah_v128_t), WAH_SP_ADDR_I32);
-    memcpy(&(*sp++).v128, ctx->memory_base + effective_addr, sizeof(wah_v128_t));
+    memcpy(&(*sp++).v128, fctx->memory_base + effective_addr, sizeof(wah_v128_t));
     WAH_NEXT();
 }
 
@@ -10380,26 +10380,26 @@ WAH_RUN(V128_LOAD64_SPLAT_i32_mem0) V128_LOAD_SPLAT_OP_MEM0(WAH_SP_ADDR_I32, 64)
 WAH_RUN(V128_LOAD32_ZERO) {
     V128_LOAD_COMMON(0, 4, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u32_le(ctx->memories[memidx] + effective_addr), 0}};
+    *v = (wah_v128_t){.u64 = {wah_read_u32_le(fctx->memories[memidx] + effective_addr), 0}};
     WAH_NEXT();
 }
 WAH_RUN(V128_LOAD64_ZERO) {
     V128_LOAD_COMMON(0, 8, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u64_le(ctx->memories[memidx] + effective_addr), 0}};
+    *v = (wah_v128_t){.u64 = {wah_read_u64_le(fctx->memories[memidx] + effective_addr), 0}};
     WAH_NEXT();
 }
 
 WAH_RUN(V128_LOAD32_ZERO_i32_mem0) {
     V128_LOAD_COMMON(1, 4, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u32_le(ctx->memory_base + effective_addr), 0}};
+    *v = (wah_v128_t){.u64 = {wah_read_u32_le(fctx->memory_base + effective_addr), 0}};
     WAH_NEXT();
 }
 WAH_RUN(V128_LOAD64_ZERO_i32_mem0) {
     V128_LOAD_COMMON(1, 8, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u64_le(ctx->memory_base + effective_addr), 0}};
+    *v = (wah_v128_t){.u64 = {wah_read_u64_le(fctx->memory_base + effective_addr), 0}};
     WAH_NEXT();
 }
 
@@ -10424,9 +10424,9 @@ WAH_RUN(V128_LOAD64_LANE_i32_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I32, 64)
     uint64_t effective_addr; \
     \
     WAH_ASSERT(memidx < ctx->memory_count); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, ctx->memory_sizes[memidx], &effective_addr), cleanup); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_sizes[memidx], &effective_addr), cleanup); \
     WAH_ASSERT(lane_idx < 128/N); \
-    wah_write_u##N##_le(ctx->memories[memidx] + effective_addr, val.u##N[lane_idx]); \
+    wah_write_u##N##_le(fctx->memories[memidx] + effective_addr, val.u##N[lane_idx]); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -10439,9 +10439,9 @@ WAH_RUN(V128_LOAD64_LANE_i32_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I32, 64)
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
     \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, ctx->memory_size, &effective_addr), cleanup); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_size, &effective_addr), cleanup); \
     WAH_ASSERT(lane_idx < 128/N); \
-    wah_write_u##N##_le(ctx->memory_base + effective_addr, val.u##N[lane_idx]); \
+    wah_write_u##N##_le(fctx->memory_base + effective_addr, val.u##N[lane_idx]); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -10465,8 +10465,8 @@ WAH_RUN(V128_STORE) {
     uint32_t addr = (uint32_t)(*--sp).i32;
     uint64_t effective_addr;
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index");
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), ctx->memory_sizes[memidx], &effective_addr), cleanup);
-    memcpy(ctx->memories[memidx] + effective_addr, &val, sizeof(wah_v128_t));
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memory_sizes[memidx], &effective_addr), cleanup);
+    memcpy(fctx->memories[memidx] + effective_addr, &val, sizeof(wah_v128_t));
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10477,8 +10477,8 @@ WAH_RUN(V128_STORE_i32_mem0) {
     wah_v128_t val = (*--sp).v128;
     uint32_t addr = (uint32_t)(*--sp).i32;
     uint64_t effective_addr;
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), ctx->memory_size, &effective_addr), cleanup);
-    memcpy(ctx->memory_base + effective_addr, &val, sizeof(wah_v128_t));
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memory_size, &effective_addr), cleanup);
+    memcpy(fctx->memory_base + effective_addr, &val, sizeof(wah_v128_t));
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10487,13 +10487,13 @@ WAH_RUN(V128_STORE_i32_mem0) {
 
 WAH_RUN(V128_LOAD_i64) {
     V128_LOAD_COMMON(0, sizeof(wah_v128_t), WAH_SP_ADDR_I64);
-    memcpy(&(*sp++).v128, ctx->memories[memidx] + effective_addr, sizeof(wah_v128_t));
+    memcpy(&(*sp++).v128, fctx->memories[memidx] + effective_addr, sizeof(wah_v128_t));
     WAH_NEXT();
 }
 
 WAH_RUN(V128_LOAD_i64_mem0) {
     V128_LOAD_COMMON(1, sizeof(wah_v128_t), WAH_SP_ADDR_I64);
-    memcpy(&(*sp++).v128, ctx->memory_base + effective_addr, sizeof(wah_v128_t));
+    memcpy(&(*sp++).v128, fctx->memory_base + effective_addr, sizeof(wah_v128_t));
     WAH_NEXT();
 }
 
@@ -10524,26 +10524,26 @@ WAH_RUN(V128_LOAD64_SPLAT_i64_mem0) V128_LOAD_SPLAT_OP_MEM0(WAH_SP_ADDR_I64, 64)
 WAH_RUN(V128_LOAD32_ZERO_i64) {
     V128_LOAD_COMMON(0, 4, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u32_le(ctx->memories[memidx] + effective_addr), 0}};
+    *v = (wah_v128_t){.u64 = {wah_read_u32_le(fctx->memories[memidx] + effective_addr), 0}};
     WAH_NEXT();
 }
 WAH_RUN(V128_LOAD64_ZERO_i64) {
     V128_LOAD_COMMON(0, 8, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u64_le(ctx->memories[memidx] + effective_addr), 0}};
+    *v = (wah_v128_t){.u64 = {wah_read_u64_le(fctx->memories[memidx] + effective_addr), 0}};
     WAH_NEXT();
 }
 
 WAH_RUN(V128_LOAD32_ZERO_i64_mem0) {
     V128_LOAD_COMMON(1, 4, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u32_le(ctx->memory_base + effective_addr), 0}};
+    *v = (wah_v128_t){.u64 = {wah_read_u32_le(fctx->memory_base + effective_addr), 0}};
     WAH_NEXT();
 }
 WAH_RUN(V128_LOAD64_ZERO_i64_mem0) {
     V128_LOAD_COMMON(1, 8, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u64_le(ctx->memory_base + effective_addr), 0}};
+    *v = (wah_v128_t){.u64 = {wah_read_u64_le(fctx->memory_base + effective_addr), 0}};
     WAH_NEXT();
 }
 
@@ -10576,8 +10576,8 @@ WAH_RUN(V128_STORE_i64) {
     uint64_t addr = (uint64_t)(*--sp).i64;
     uint64_t effective_addr;
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index");
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), ctx->memory_sizes[memidx], &effective_addr), cleanup);
-    memcpy(ctx->memories[memidx] + effective_addr, &val, sizeof(wah_v128_t));
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memory_sizes[memidx], &effective_addr), cleanup);
+    memcpy(fctx->memories[memidx] + effective_addr, &val, sizeof(wah_v128_t));
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10588,8 +10588,8 @@ WAH_RUN(V128_STORE_i64_mem0) {
     wah_v128_t val = (*--sp).v128;
     uint64_t addr = (uint64_t)(*--sp).i64;
     uint64_t effective_addr;
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), ctx->memory_size, &effective_addr), cleanup);
-    memcpy(ctx->memory_base + effective_addr, &val, sizeof(wah_v128_t));
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memory_size, &effective_addr), cleanup);
+    memcpy(fctx->memory_base + effective_addr, &val, sizeof(wah_v128_t));
     WAH_NEXT();
     WAH_CLEANUP();
 }
