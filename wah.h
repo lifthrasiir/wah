@@ -1582,6 +1582,8 @@ typedef struct wah_call_frame_s {
     const struct wah_module_s *module; // The module this function belongs to (for cross-module calls)
     uint32_t globals_offset;     // Offset into ctx->globals for this module's globals (for cross-module calls)
     uint32_t ref_map_offset;     // Byte offset into parsed_code.operand_ref_map for current POLL point
+    struct wah_function_s *frame_function_table; // Function table for this frame (NULL = use ctx->function_table)
+    uint32_t frame_function_table_count; // Number of entries in frame_function_table
 } wah_call_frame_t;
 
 // The main context for the entire WebAssembly interpretation.
@@ -8022,9 +8024,11 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, const wah_module_t *f
     frame->module = fn_module;
     frame->ref_map_offset = 0;
 
-    // Calculate globals_offset for cross-module calls
+    // Calculate globals_offset and function_table for cross-module calls
     if (fn_module == ctx->module) {
         frame->globals_offset = 0;  // Primary module (imports at [0..import_global_count), locals after)
+        frame->frame_function_table = NULL;
+        frame->frame_function_table_count = 0;
     } else {
         // Find the module in linked_modules and calculate offset
         uint32_t offset = wah_total_global_count(ctx->module);
@@ -8032,6 +8036,13 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, const wah_module_t *f
         for (uint32_t i = 0; i < ctx->linked_module_count; i++) {
             if (ctx->linked_modules[i].module == fn_module) {
                 frame->globals_offset = offset;
+                if (ctx->linked_modules[i].ctx) {
+                    frame->frame_function_table = ctx->linked_modules[i].ctx->function_table;
+                    frame->frame_function_table_count = ctx->linked_modules[i].ctx->function_table_count;
+                } else {
+                    frame->frame_function_table = NULL;
+                    frame->frame_function_table_count = 0;
+                }
                 found = true;
                 break;
             }
@@ -8039,6 +8050,8 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, const wah_module_t *f
         }
         if (!found) {
             frame->globals_offset = 0;  // Fallback (shouldn't happen)
+            frame->frame_function_table = NULL;
+            frame->frame_function_table_count = 0;
         }
     }
 
@@ -9391,13 +9404,17 @@ WAH_RUN(CALL) {
     uint32_t called_func_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
 
-    WAH_ASSERT(called_func_idx < ctx->function_table_count && "validation didn't catch out-of-bound function index");
-    const wah_function_t *called_fn = &ctx->function_table[called_func_idx];
+    wah_function_t *call_ftable = frame->frame_function_table ? frame->frame_function_table : ctx->function_table;
+    uint32_t call_ftable_count = frame->frame_function_table ? frame->frame_function_table_count : ctx->function_table_count;
+    WAH_ASSERT(called_func_idx < call_ftable_count && "validation didn't catch out-of-bound function index");
+    (void)call_ftable_count;
+    const wah_function_t *called_fn = &call_ftable[called_func_idx];
 
     if (called_fn->is_host) {
         WAH_CALL_HOST_INLINE(called_fn);
     } else {
-        const wah_module_t *fn_module = called_fn->fn_module ? called_fn->fn_module : ctx->module;
+        const wah_module_t *fn_module = called_fn->fn_module;
+        if (!fn_module) fn_module = frame->frame_function_table ? frame->module : ctx->module;
         uint32_t local_idx = called_fn->local_idx;
         const wah_func_type_t *called_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
         WAH_CALL_WASM_INLINE(fn_module, local_idx, called_func_type);
@@ -9531,13 +9548,15 @@ WAH_RUN(RETURN_CALL) {
         ctx->exception_handler_depth--;
     }
 
-    WAH_ASSERT(called_func_idx < ctx->function_table_count && "validation didn't catch out-of-bound function index");
-    const wah_function_t *called_fn = &ctx->function_table[called_func_idx];
+    wah_function_t *rc_ftable = frame->frame_function_table ? frame->frame_function_table : ctx->function_table;
+    WAH_ASSERT(called_func_idx < (frame->frame_function_table ? frame->frame_function_table_count : ctx->function_table_count) && "validation didn't catch out-of-bound function index");
+    const wah_function_t *called_fn = &rc_ftable[called_func_idx];
 
     if (called_fn->is_host) {
         WAH_TAIL_CALL_HOST(called_fn);
     } else {
-        const wah_module_t *fn_module = called_fn->fn_module ? called_fn->fn_module : ctx->module;
+        const wah_module_t *fn_module = called_fn->fn_module;
+        if (!fn_module) fn_module = frame->frame_function_table ? frame->module : ctx->module;
         uint32_t local_idx = called_fn->local_idx;
         const wah_func_type_t *called_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
         WAH_TAIL_CALL_WASM(fn_module, local_idx, called_func_type->param_count, called_func_type->result_count);
