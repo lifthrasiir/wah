@@ -732,7 +732,7 @@ int main() {
             wah_gc_object_t *obj2 = wah_gc_alloc_i31(&ctx3, -42);
             assert_not_null(obj2);
             wah_gc_i31_body_t *body2 = (wah_gc_i31_body_t *)wah_gc_payload(obj2);
-            assert(body2->value == -42);
+            assert(body2->value == (-42 & 0x7FFFFFFF));
         }
 
         printf("Testing wah_gc_alloc_array overflow protection...\n");
@@ -930,7 +930,6 @@ int main() {
             exports {[ {'f'} fn# 1 ]} \
             code {[ {[1 type.ref.null 0] \
                 i32.const 77 struct.new 0 local.set 0 \
-                local.get 0 \
                 call 0 \
                 local.get 0 struct.get 0 0 \
                 end } ]}";
@@ -1077,10 +1076,12 @@ int main() {
             imports {[ {'env'} {'count_structref'} fn# 2 ]} \
             funcs {[ 1 ]} \
             exports {[ {'f'} fn# 1 ]} \
-            code {[ {[1 structref] \
+            code {[ {[1 structref, 1 i32] \
                 struct.new_default 0 local.set 0 \
                 local.get 0 \
-                call 0 \
+                call 0 local.set 1 \
+                drop \
+                local.get 1 \
                 end } ]}";
         assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
         assert_ok(wah_exec_context_create(&ctx5, &wasm_mod));

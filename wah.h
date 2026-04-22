@@ -5336,8 +5336,10 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         const uint8_t* ptr_count = *ptr;
         for (uint32_t j = 0; j < num_local_entries; ++j) {
             uint32_t local_type_count;
+            wah_type_t skip_type;
+            wah_type_flags_t skip_flags;
             WAH_CHECK_GOTO(wah_decode_uleb128(&ptr_count, code_body_end, &local_type_count), cleanup);
-            ptr_count++; // Skip the actual type byte
+            WAH_CHECK_GOTO(wah_decode_val_type(&ptr_count, code_body_end, &skip_type, &skip_flags), cleanup);
             WAH_ENSURE_GOTO(UINT32_MAX - current_local_count >= local_type_count, WAH_ERROR_TOO_LARGE, cleanup);
             current_local_count += local_type_count;
         }

@@ -379,6 +379,7 @@ static void test_table_import(void) {
     wah_table_type_t *new_tables = (wah_table_type_t *)realloc(
         provider.tables, sizeof(wah_table_type_t));
     assert_true(new_tables != NULL);
+    memset(&new_tables[0], 0, sizeof(wah_table_type_t));
     provider.tables = new_tables;
     provider.tables[0].elem_type = WAH_TYPE_FUNCREF;
     provider.tables[0].elem_type_flags = WAH_TYPE_FLAG_NULLABLE;
