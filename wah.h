@@ -13035,24 +13035,6 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         }
     }
 
-    // Initialize active data segments
-    for (uint32_t i = 0; i < module->data_segment_count; ++i) {
-        const wah_data_segment_t *segment = &module->data_segments[i];
-        if (segment->flags == 0x00 || segment->flags == 0x02) { // Active segments
-            WAH_ENSURE_GOTO(segment->memory_idx < ctx->memory_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-            wah_value_t offset_val;
-            WAH_CHECK_GOTO(wah_eval_const_expr(ctx, segment->offset_expr.bytecode, segment->offset_expr.bytecode_size, &offset_val), cleanup);
-            uint64_t offset;
-            if (wah_memory_type(module, segment->memory_idx)->addr_type == WAH_TYPE_I64) {
-                offset = (uint64_t)offset_val.i64;
-            } else {
-                offset = (uint32_t)offset_val.i32;
-            }
-            WAH_ENSURE_GOTO(offset + segment->data_len <= ctx->memory_sizes[segment->memory_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-            memcpy(ctx->memories[segment->memory_idx] + offset, segment->data, segment->data_len);
-        }
-    }
-
     // Evaluate table init expressions (for tables declared with 0x40 encoding)
     for (uint32_t i = 0; i < module->table_count; ++i) {
         if (module->tables[i].init_expr.bytecode) {
@@ -13073,7 +13055,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         }
     }
 
-    // Initialize active element segments
+    // Initialize active element segments (before data segments per spec)
     for (uint32_t i = 0; i < module->element_segment_count; ++i) {
         const wah_element_segment_t *segment = &module->element_segments[i];
 
@@ -13124,6 +13106,24 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
 
         // Active element segments are dropped after instantiation per spec
         module->element_segments[i].is_dropped = true;
+    }
+
+    // Initialize active data segments (after element segments per spec)
+    for (uint32_t i = 0; i < module->data_segment_count; ++i) {
+        const wah_data_segment_t *segment = &module->data_segments[i];
+        if (segment->flags == 0x00 || segment->flags == 0x02) { // Active segments
+            WAH_ENSURE_GOTO(segment->memory_idx < ctx->memory_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            wah_value_t offset_val;
+            WAH_CHECK_GOTO(wah_eval_const_expr(ctx, segment->offset_expr.bytecode, segment->offset_expr.bytecode_size, &offset_val), cleanup);
+            uint64_t offset;
+            if (wah_memory_type(module, segment->memory_idx)->addr_type == WAH_TYPE_I64) {
+                offset = (uint64_t)offset_val.i64;
+            } else {
+                offset = (uint32_t)offset_val.i32;
+            }
+            WAH_ENSURE_GOTO(offset + segment->data_len <= ctx->memory_sizes[segment->memory_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+            memcpy(ctx->memories[segment->memory_idx] + offset, segment->data, segment->data_len);
+        }
     }
 
     // If a start function is defined, call it after all imports/globals/elements are ready.
