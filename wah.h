@@ -48,6 +48,7 @@ typedef enum {
     WAH_ERROR_IMPORT_NOT_FOUND = -14,
     WAH_ERROR_MALFORMED_UTF8 = -15,
     WAH_ERROR_MALFORMED = -16,
+    WAH_ERROR_EXCEPTION = -17,
     WAH_OK_BUT_MULTI_RETURN = 1,
 } wah_error_t;
 
@@ -297,7 +298,6 @@ typedef struct wah_module_s {
     wah_repr_t *typeidx_to_repr;
     wah_repr_set_t *type_cast_sets;
 
-    bool has_unimplemented;
 } wah_module_t;
 
 // --- GC State ---
@@ -366,6 +366,16 @@ typedef struct wah_gc_heap_stats_s {
 #endif
 } wah_gc_heap_stats_t;
 
+#define WAH_MAX_EXCEPTION_HANDLER_DEPTH 64
+
+typedef struct wah_exception_handler_s {
+    uint32_t call_depth;
+    uint32_t sp_base;
+    const uint8_t *catch_table;
+    uint32_t catch_count;
+    const uint8_t *bytecode_base;
+} wah_exception_handler_t;
+
 typedef struct wah_exec_context_s {
     wah_value_t *value_stack;       // A single, large stack for operands and locals
     uint32_t sp;                    // Stack pointer for the value_stack (points to next free slot)
@@ -413,6 +423,17 @@ typedef struct wah_exec_context_s {
     // Runtime dispatch table (global function index space: imports + locals + hosts)
     struct wah_function_s *function_table;
     uint32_t function_table_count;
+
+    // Tag instances (global tag index space: import tags + local tags)
+    struct wah_tag_instance_s *tag_instances;
+    uint32_t tag_instance_count;
+
+    // Pending exception (set by throw, consumed by try_table catch or propagated)
+    struct wah_exception_s *pending_exception;
+
+    // Exception handler stack (try_table frames)
+    struct wah_exception_handler_s exception_handlers[WAH_MAX_EXCEPTION_HANDLER_DEPTH];
+    uint32_t exception_handler_depth;
 
     // GC heap state (NULL when GC is not enabled)
     wah_gc_state_t *gc;
@@ -814,7 +835,9 @@ typedef enum {
     /* Control Flow Operators */ \
     X(UNREACHABLE,, 0x00) X(NOP,, 0x01) X(BLOCK,, 0x02) X(LOOP,, 0x03) X(IF,, 0x04) X(ELSE,, 0x05) X(END,, 0x0B) \
     X(BR,, 0x0C) X(BR_IF,, 0x0D) X(BR_TABLE,, 0x0E) X(RETURN,, 0x0F) X(CALL,I, 0x10) X(CALL_INDIRECT,II, 0x11) \
+    X(THROW,I, 0x08) X(THROW_REF,, 0x0A) \
     X(RETURN_CALL,I, 0x12) X(RETURN_CALL_INDIRECT,II, 0x13) X(CALL_REF,I, 0x14) X(RETURN_CALL_REF,I, 0x15) \
+    X(TRY_TABLE,, 0x1F) \
     \
     /* Parametric Operators */ \
     X(DROP,, 0x1A) X(SELECT,, 0x1B) X(SELECT_T,, 0x1C) \
@@ -1130,7 +1153,8 @@ typedef enum {
     WAH_IF_X86_64(WAH_X86_64_EXTRA_OPCODES_SINGLE(X) WAH_X86_64_EXTRA_OPCODES_MULTI(X))
 
 #define WAH_INTERNAL_OPCODES(X) \
-    X(POLL)
+    X(POLL) \
+    X(END_TRY_TABLE)
 
 typedef enum {
 #define WAH_OPCODE_INIT(name, cls, val) WAH_OP_##name = val,
@@ -1610,6 +1634,23 @@ typedef struct wah_tag_s {
     uint32_t type_index;
 } wah_tag_t;
 
+typedef struct wah_tag_instance_s {
+    uint32_t type_index;
+    uint32_t unique_id;
+} wah_tag_instance_t;
+
+typedef struct wah_exception_s {
+    uint32_t tag_unique_id;
+    uint32_t tag_index;
+    uint32_t value_count;
+    wah_value_t *values;
+} wah_exception_t;
+
+#define WAH_CATCH_KIND_CATCH     0
+#define WAH_CATCH_KIND_CATCH_REF 1
+#define WAH_CATCH_KIND_CATCH_ALL 2
+#define WAH_CATCH_KIND_CATCH_ALL_REF 3
+
 // --- Code Body Structure ---
 typedef struct wah_code_body_s {
     uint32_t local_count;
@@ -1690,6 +1731,8 @@ static wah_error_t wah_call_module(wah_exec_context_t *exec_ctx, uint32_t func_i
 // A prefuncref with .sentinel == wah_funcref_sentinel is a valid function reference;
 // .ref == NULL means null. This sentinel is never executed.
 static wah_function_t wah_funcref_sentinel[1] = {{.fake_header = WAH_FUNCREF_FAKE_HEADER}};
+
+static uint32_t wah_next_tag_unique_id = 1;
 
 // --- Helper Macros ---
 #define WAH_CHECK(expr) do { \
@@ -1807,6 +1850,7 @@ const char *wah_strerror(wah_error_t err) {
         case WAH_ERROR_MALFORMED_UTF8: return "Malformed UTF-8 encoding";
         case WAH_ERROR_IMPORT_NOT_FOUND: return "Import not found (or incompatible)";
         case WAH_ERROR_MALFORMED: return "Malformed binary encoding";
+        case WAH_ERROR_EXCEPTION: return "Uncaught exception";
         case WAH_OK_BUT_MULTI_RETURN: return "Function succeeded but returned multiple values (only first value available)";
         default: return "Unknown error";
     }
@@ -5085,8 +5129,115 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             break;
         }
 
+        case WAH_OP_THROW: {
+            uint32_t tag_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &tag_idx));
+            uint32_t total_tags = vctx->module->import_tag_count + vctx->module->tag_count;
+            WAH_ENSURE(tag_idx < total_tags, WAH_ERROR_VALIDATION_FAILED);
+            uint32_t type_idx = tag_idx < vctx->module->import_tag_count
+                ? vctx->module->tag_imports[tag_idx].type_index
+                : vctx->module->tags[tag_idx - vctx->module->import_tag_count].type_index;
+            const wah_func_type_t *tag_type = &vctx->module->types[type_idx];
+            for (int32_t i = tag_type->param_count - 1; i >= 0; --i) {
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, tag_type->param_types[i],
+                    tag_type->param_type_flags[i]));
+            }
+            vctx->is_unreachable = true;
+            break;
+        }
+
+        case WAH_OP_THROW_REF: {
+            wah_type_t ref_type;
+            WAH_CHECK(wah_validation_pop_type(vctx, &ref_type));
+            if (!vctx->is_unreachable) {
+                WAH_ENSURE(ref_type == WAH_TYPE_EXNREF || ref_type == WAH_TYPE_NULLEXNREF,
+                           WAH_ERROR_VALIDATION_FAILED);
+            }
+            vctx->is_unreachable = true;
+            break;
+        }
+
+        case WAH_OP_TRY_TABLE: {
+            WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF);
+            uint8_t block_type_peek = **code_ptr;
+
+            WAH_ENSURE(vctx->control_sp < WAH_MAX_CONTROL_DEPTH, WAH_ERROR_TOO_LARGE);
+            wah_validation_control_frame_t* frame = &vctx->control_stack[vctx->control_sp];
+            frame->opcode = (wah_opcode_t)opcode_val;
+            frame->else_found = false;
+            frame->is_unreachable = vctx->is_unreachable;
+            wah_func_type_t* bt = &frame->block_type;
+            *bt = (wah_func_type_t){0};
+
+            if (block_type_peek == 0x40) {
+                (*code_ptr)++;
+            } else if (block_type_peek >= 0x63 && block_type_peek <= 0x7F) {
+                wah_type_t result_type;
+                wah_type_flags_t result_flags;
+                WAH_CHECK(wah_decode_val_type(code_ptr, code_end, &result_type, &result_flags));
+                WAH_ENSURE(result_type < 0 || (uint32_t)result_type < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+                bt->result_count = 1;
+                WAH_MALLOC_ARRAY(bt->result_types, 1);
+                bt->result_types[0] = result_type;
+                WAH_MALLOC_ARRAY(bt->result_type_flags, 1);
+                bt->result_type_flags[0] = result_flags;
+            } else {
+                int32_t block_type_val;
+                WAH_CHECK(wah_decode_sleb128_32(code_ptr, code_end, &block_type_val));
+                WAH_ENSURE(block_type_val >= 0, WAH_ERROR_VALIDATION_FAILED);
+                uint32_t type_idx = (uint32_t)block_type_val;
+                WAH_ENSURE(type_idx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+                const wah_func_type_t* referenced_type = &vctx->module->types[type_idx];
+                bt->param_count = referenced_type->param_count;
+                if (bt->param_count > 0) {
+                    WAH_MALLOC_ARRAY(bt->param_types, bt->param_count);
+                    memcpy(bt->param_types, referenced_type->param_types, sizeof(wah_type_t) * bt->param_count);
+                    WAH_MALLOC_ARRAY(bt->param_type_flags, bt->param_count);
+                    memcpy(bt->param_type_flags, referenced_type->param_type_flags, sizeof(wah_type_flags_t) * bt->param_count);
+                }
+                bt->result_count = referenced_type->result_count;
+                if (bt->result_count > 0) {
+                    WAH_MALLOC_ARRAY(bt->result_types, bt->result_count);
+                    memcpy(bt->result_types, referenced_type->result_types, sizeof(wah_type_t) * bt->result_count);
+                    WAH_MALLOC_ARRAY(bt->result_type_flags, bt->result_count);
+                    memcpy(bt->result_type_flags, referenced_type->result_type_flags, sizeof(wah_type_flags_t) * bt->result_count);
+                }
+            }
+
+            uint32_t catch_count;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &catch_count));
+            for (uint32_t ci = 0; ci < catch_count; ci++) {
+                WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF);
+                uint8_t catch_kind = *(*code_ptr)++;
+                WAH_ENSURE(catch_kind <= 3, WAH_ERROR_VALIDATION_FAILED);
+                if (catch_kind == 0 || catch_kind == 1) {
+                    uint32_t tag_idx;
+                    WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &tag_idx));
+                    uint32_t total_tags = vctx->module->import_tag_count + vctx->module->tag_count;
+                    WAH_ENSURE(tag_idx < total_tags, WAH_ERROR_VALIDATION_FAILED);
+                }
+                uint32_t label_idx;
+                WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
+                WAH_ENSURE(label_idx <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
+            }
+
+            vctx->control_sp++;
+
+            WAH_ENSURE(vctx->current_stack_depth >= bt->param_count, WAH_ERROR_VALIDATION_FAILED);
+            for (uint32_t i = 0; i < bt->param_count; ++i) {
+                wah_type_t actual_type = vctx->type_stack.data[vctx->type_stack.sp - bt->param_count + i];
+                wah_type_flags_t actual_flags = vctx->type_stack.flags[vctx->type_stack.sp - bt->param_count + i];
+                WAH_CHECK(wah_validate_type_match(actual_type, actual_flags, bt->param_types[i],
+                    bt->param_type_flags[i], vctx->module));
+            }
+
+            frame->stack_height = vctx->current_stack_depth - bt->param_count;
+            frame->type_stack_sp = vctx->type_stack.sp - bt->param_count;
+            return WAH_OK;
+        }
+
         default:
-            if (opcode_val == 0x06 || opcode_val == 0x08 || opcode_val == 0x0A ||
+            if (opcode_val == 0x06 ||
                 (opcode_val >= WAH_FB && opcode_val < WAH_FC)) {
                 return WAH_ERROR_UNIMPLEMENTED;
             }
@@ -5101,8 +5252,6 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 }
 
 static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
-    if (module->has_unimplemented) return WAH_ERROR_UNIMPLEMENTED;
-
     wah_error_t err = WAH_OK;
     wah_validation_context_t vctx = {0};
     uint8_t *ref_map = NULL;
@@ -5643,8 +5792,8 @@ static wah_error_t wah_parse_tag_section(const uint8_t **ptr, const uint8_t *sec
         WAH_ENSURE_GOTO(attribute == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
         WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &module->tags[i].type_index), cleanup);
         WAH_ENSURE_GOTO(module->tags[i].type_index < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+        WAH_ENSURE_GOTO(module->types[module->tags[i].type_index].result_count == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
     }
-    module->has_unimplemented = true;
     return WAH_OK;
 cleanup:
     free(module->tags);
@@ -5811,8 +5960,8 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             WAH_ENSURE_GOTO(attribute == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
             WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &tgi->type_index), cleanup);
             WAH_ENSURE_GOTO(tgi->type_index < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            WAH_ENSURE_GOTO(module->types[tgi->type_index].result_count == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
             import_tag_count++;
-            module->has_unimplemented = true;
         } else {
             free(imp_name.module);
             free(imp_name.field);
@@ -5935,7 +6084,6 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
                 break;
             case 4: // Tag
                 WAH_ENSURE_GOTO(export_entry->index < module->import_tag_count + module->tag_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                module->has_unimplemented = true;
                 break;
             default:
                 err = WAH_ERROR_VALIDATION_FAILED; // Unknown export kind
@@ -6283,8 +6431,23 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 break;
             }
             default: switch (opcode) {
-                case WAH_OP_BLOCK: case WAH_OP_LOOP: case WAH_OP_IF: {
+                case WAH_OP_BLOCK: case WAH_OP_LOOP: case WAH_OP_IF:
+                case WAH_OP_TRY_TABLE: {
                     WAH_CHECK_GOTO(wah_skip_block_type(&ptr, end), cleanup);
+                    uint32_t try_catch_count = 0;
+                    if (opcode == WAH_OP_TRY_TABLE) {
+                        WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &try_catch_count), cleanup);
+                        for (uint32_t ci = 0; ci < try_catch_count; ci++) {
+                            WAH_ENSURE_GOTO(ptr < end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
+                            uint8_t ck = *ptr++;
+                            if (ck == 0 || ck == 1) {
+                                uint32_t dummy;
+                                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &dummy), cleanup);
+                            }
+                            uint32_t dummy;
+                            WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &dummy), cleanup);
+                        }
+                    }
                     GROW_BLOCK_TARGETS();
                     WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
                     uint32_t target_idx = block_target_count++;
@@ -6296,7 +6459,16 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                         block_targets[end_target_idx] = preparsed_size;
                     }
                     control_stack[control_sp++] = (wah_control_frame_t){.opcode=(wah_opcode_t)opcode, .target_idx=target_idx, .end_target_idx=end_target_idx};
-                    preparsed_instr_size = (opcode == WAH_OP_IF) ? sizeof(uint16_t) + sizeof(uint32_t) : 0;
+                    if (opcode == WAH_OP_IF) {
+                        preparsed_instr_size = sizeof(uint16_t) + sizeof(uint32_t);
+                    } else if (opcode == WAH_OP_TRY_TABLE) {
+                        preparsed_instr_size = sizeof(uint16_t) + sizeof(uint32_t);
+                        for (uint32_t ci = 0; ci < try_catch_count; ci++) {
+                            preparsed_instr_size += 1 + sizeof(uint32_t) + sizeof(uint32_t); // kind + tag_idx + offset
+                        }
+                    } else {
+                        preparsed_instr_size = 0;
+                    }
                     break;
                 }
                 case WAH_OP_ELSE: {
@@ -6312,13 +6484,17 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 case WAH_OP_END: {
                     if (control_sp > 0) {
                         wah_control_frame_t frame = control_stack[--control_sp];
-                        if (frame.opcode != WAH_OP_LOOP) { // BLOCK, IF, ELSE
-                            block_targets[frame.target_idx] = preparsed_size;
+                        if (frame.opcode == WAH_OP_TRY_TABLE) {
+                            preparsed_instr_size = sizeof(uint16_t); // END_TRY_TABLE
+                        } else {
+                            preparsed_instr_size = 0;
+                        }
+                        if (frame.opcode != WAH_OP_LOOP) { // BLOCK, IF, ELSE, TRY_TABLE
+                            block_targets[frame.target_idx] = preparsed_size + preparsed_instr_size;
                             if (frame.end_target_idx != frame.target_idx) {
-                                block_targets[frame.end_target_idx] = preparsed_size;
+                                block_targets[frame.end_target_idx] = preparsed_size + preparsed_instr_size;
                             }
                         }
-                        preparsed_instr_size = 0;
                     } else { // Final END
                         preparsed_instr_size = sizeof(uint16_t);
                     }
@@ -6488,8 +6664,56 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
             }
             continue;
         }
+        if (opcode == WAH_OP_TRY_TABLE) {
+            WAH_CHECK_GOTO(wah_skip_block_type(&ptr, end), cleanup);
+            uint32_t try_catch_count = 0;
+            WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &try_catch_count), cleanup);
+
+            wah_write_u16_le(write_ptr, WAH_OP_TRY_TABLE);
+            write_ptr += sizeof(uint16_t);
+            wah_write_u32_le(write_ptr, try_catch_count);
+            write_ptr += sizeof(uint32_t);
+
+            for (uint32_t ci = 0; ci < try_catch_count; ci++) {
+                uint8_t catch_kind = *ptr++;
+                *write_ptr++ = catch_kind;
+                uint32_t tag_idx = 0;
+                if (catch_kind == 0 || catch_kind == 1) {
+                    WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &tag_idx), cleanup);
+                }
+                wah_write_u32_le(write_ptr, tag_idx);
+                write_ptr += sizeof(uint32_t);
+                uint32_t label_depth;
+                WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &label_depth), cleanup);
+                WAH_ASSERT(label_depth <= control_sp);
+                uint32_t branch_offset;
+                if (label_depth == control_sp) {
+                    branch_offset = preparsed_size; // function body (will resolve at final END)
+                } else {
+                    wah_control_frame_t target_frame = control_stack[control_sp - 1 - label_depth];
+                    branch_offset = block_targets[target_frame.target_idx];
+                    if (target_frame.opcode != WAH_OP_LOOP) {
+                        branch_offset = block_targets[target_frame.end_target_idx];
+                    }
+                }
+                wah_write_u32_le(write_ptr, branch_offset);
+                write_ptr += sizeof(uint32_t);
+            }
+
+            WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH);
+            uint32_t idx = current_block_idx++;
+            control_stack[control_sp++] = (wah_control_frame_t){.opcode=(wah_opcode_t)opcode, .target_idx=idx, .end_target_idx=idx};
+            continue;
+        }
         if (opcode == WAH_OP_END) {
-            if (control_sp > 0) { control_sp--; continue; }
+            if (control_sp > 0) {
+                wah_control_frame_t cf = control_stack[--control_sp];
+                if (cf.opcode == WAH_OP_TRY_TABLE) {
+                    wah_write_u16_le(write_ptr, WAH_OP_END_TRY_TABLE);
+                    write_ptr += sizeof(uint16_t);
+                }
+                continue;
+            }
         }
 
         if (emit_poll && (opcode == WAH_OP_CALL || opcode == WAH_OP_CALL_INDIRECT || opcode == WAH_OP_CALL_REF ||
@@ -7217,6 +7441,25 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
         }
     }
 
+    // Build the runtime tag_instances (global tag index space: imports + locals).
+    {
+        uint32_t total_tags = module->import_tag_count + module->tag_count;
+        exec_ctx->tag_instance_count = total_tags;
+        if (total_tags > 0) {
+            WAH_MALLOC_ARRAY_GOTO(exec_ctx->tag_instances, total_tags, cleanup);
+            memset(exec_ctx->tag_instances, 0, sizeof(wah_tag_instance_t) * total_tags);
+            for (uint32_t i = 0; i < module->import_tag_count; i++) {
+                exec_ctx->tag_instances[i].type_index = module->tag_imports[i].type_index;
+                // unique_id filled during instantiation from linked module
+            }
+            for (uint32_t i = 0; i < module->tag_count; i++) {
+                uint32_t slot = module->import_tag_count + i;
+                exec_ctx->tag_instances[slot].type_index = module->tags[i].type_index;
+                exec_ctx->tag_instances[slot].unique_id = wah_next_tag_unique_id++;
+            }
+        }
+    }
+
     // Build the runtime function_table (global index space: imports + locals + hosts).
     // Import slots are zero-initialized here; wah_instantiate() fills them in.
     {
@@ -7282,6 +7525,12 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
     free(exec_ctx->table_is_imported);
     free(exec_ctx->table_import_ctx);
     free(exec_ctx->table_import_idx);
+
+    free(exec_ctx->tag_instances);
+    if (exec_ctx->pending_exception) {
+        free(exec_ctx->pending_exception->values);
+        free(exec_ctx->pending_exception);
+    }
 
     // Free linked modules
     if (exec_ctx->linked_modules) {
@@ -7717,6 +7966,69 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, const wah_module_t *f
         bytecode_base = frame->code->parsed_code.bytecode; \
     } while (0)
 
+static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t *exc) {
+    if (ctx->pending_exception) {
+        free(ctx->pending_exception->values);
+        free(ctx->pending_exception);
+    }
+    ctx->pending_exception = exc;
+
+    while (ctx->exception_handler_depth > 0) {
+        wah_exception_handler_t *handler = &ctx->exception_handlers[ctx->exception_handler_depth - 1];
+
+        while (ctx->call_depth > handler->call_depth) {
+            ctx->call_depth--;
+        }
+
+        const uint8_t *catch_ptr = handler->catch_table;
+        for (uint32_t ci = 0; ci < handler->catch_count; ci++) {
+            uint8_t catch_kind = *catch_ptr++;
+            uint32_t catch_tag_idx = wah_read_u32_le(catch_ptr); catch_ptr += sizeof(uint32_t);
+            uint32_t catch_offset = wah_read_u32_le(catch_ptr); catch_ptr += sizeof(uint32_t);
+
+            bool match = false;
+            if (catch_kind == WAH_CATCH_KIND_CATCH || catch_kind == WAH_CATCH_KIND_CATCH_REF) {
+                if (catch_tag_idx < ctx->tag_instance_count &&
+                    ctx->tag_instances[catch_tag_idx].unique_id == exc->tag_unique_id) {
+                    match = true;
+                }
+            } else {
+                match = true;
+            }
+
+            if (match) {
+                ctx->sp = handler->sp_base;
+                ctx->exception_handler_depth--;
+
+                if (catch_kind == WAH_CATCH_KIND_CATCH || catch_kind == WAH_CATCH_KIND_CATCH_REF) {
+                    for (uint32_t i = 0; i < exc->value_count; i++) {
+                        ctx->value_stack[ctx->sp++] = exc->values[i];
+                    }
+                }
+                if (catch_kind == WAH_CATCH_KIND_CATCH_REF || catch_kind == WAH_CATCH_KIND_CATCH_ALL_REF) {
+                    ctx->value_stack[ctx->sp++].ref = exc;
+                    ctx->pending_exception = NULL;
+                } else {
+                    free(exc->values);
+                    free(exc);
+                    ctx->pending_exception = NULL;
+                }
+
+                if (ctx->call_depth > 0) {
+                    wah_call_frame_t *f = &ctx->call_stack[ctx->call_depth - 1];
+                    f->bytecode_ip = handler->bytecode_base + catch_offset;
+                }
+                return WAH_OK;
+            }
+        }
+
+        ctx->exception_handler_depth--;
+    }
+
+    return WAH_ERROR_EXCEPTION;
+}
+
+
 #ifdef WAH_FORCE_MUSTTAIL
     #define WAH_USE_MUSTTAIL
 #elif WAH_HAS_ATTRIBUTE(musttail)
@@ -7918,6 +8230,90 @@ WAH_RUN(BR_TABLE) {
     }
     bytecode_ip = bytecode_base + target_offset;
     WAH_NEXT();
+}
+
+WAH_RUN(TRY_TABLE) {
+    uint32_t catch_count_val = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    WAH_ASSERT(ctx->exception_handler_depth < WAH_MAX_EXCEPTION_HANDLER_DEPTH);
+    wah_exception_handler_t *handler = &ctx->exception_handlers[ctx->exception_handler_depth++];
+    handler->call_depth = ctx->call_depth;
+    handler->sp_base = (uint32_t)(sp - ctx->value_stack);
+    handler->catch_table = bytecode_ip;
+    handler->catch_count = catch_count_val;
+    handler->bytecode_base = bytecode_base;
+    for (uint32_t ci = 0; ci < catch_count_val; ci++) {
+        bytecode_ip += 1; // catch_kind
+        bytecode_ip += sizeof(uint32_t); // tag_idx
+        bytecode_ip += sizeof(uint32_t); // offset
+    }
+    WAH_NEXT();
+}
+
+WAH_RUN(END_TRY_TABLE) {
+    WAH_ASSERT(ctx->exception_handler_depth > 0);
+    ctx->exception_handler_depth--;
+    WAH_NEXT();
+}
+
+WAH_RUN(THROW) {
+    uint32_t tag_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    WAH_ASSERT(tag_idx < ctx->tag_instance_count);
+
+    const wah_tag_instance_t *tag_inst = &ctx->tag_instances[tag_idx];
+    const wah_module_t *cur_module = frame->module ? frame->module : ctx->module;
+    uint32_t type_idx = tag_inst->type_index;
+    const wah_func_type_t *tag_type = &cur_module->types[type_idx];
+    uint32_t value_count = tag_type->param_count;
+
+    wah_exception_t *exc = malloc(sizeof(wah_exception_t));
+    WAH_ENSURE_GOTO(exc != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+    exc->tag_unique_id = tag_inst->unique_id;
+    exc->tag_index = tag_idx;
+    exc->value_count = value_count;
+    exc->values = NULL;
+    if (value_count > 0) {
+        exc->values = malloc(sizeof(wah_value_t) * value_count);
+        if (!exc->values) { free(exc); err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
+        for (uint32_t i = 0; i < value_count; i++) {
+            exc->values[i] = sp[-(int32_t)value_count + (int32_t)i];
+        }
+        sp -= value_count;
+    }
+
+    frame->bytecode_ip = bytecode_ip;
+    ctx->sp = (uint32_t)(sp - ctx->value_stack);
+    err = wah_throw_exception(ctx, exc);
+    if (err != WAH_OK) goto cleanup;
+    sp = ctx->value_stack + ctx->sp;
+    RELOAD_FRAME();
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(THROW_REF) {
+    wah_value_t exnref_val = *--sp;
+    WAH_ENSURE_GOTO(exnref_val.ref != NULL, WAH_ERROR_TRAP, cleanup);
+
+    wah_exception_t *exc = (wah_exception_t *)exnref_val.ref;
+    wah_exception_t *copy = malloc(sizeof(wah_exception_t));
+    WAH_ENSURE_GOTO(copy != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+    *copy = *exc;
+    if (exc->value_count > 0) {
+        copy->values = malloc(sizeof(wah_value_t) * exc->value_count);
+        if (!copy->values) { free(copy); err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
+        memcpy(copy->values, exc->values, sizeof(wah_value_t) * exc->value_count);
+    }
+
+    frame->bytecode_ip = bytecode_ip;
+    ctx->sp = (uint32_t)(sp - ctx->value_stack);
+    err = wah_throw_exception(ctx, copy);
+    if (err != WAH_OK) goto cleanup;
+    sp = ctx->value_stack + ctx->sp;
+    RELOAD_FRAME();
+    WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(I32_CONST) { (*sp++).i32 = (int32_t)wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); WAH_NEXT(); }
@@ -8997,6 +9393,11 @@ WAH_RUN(RETURN_CALL) {
     uint32_t called_func_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
 
+    while (ctx->exception_handler_depth > 0 &&
+           ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) {
+        ctx->exception_handler_depth--;
+    }
+
     WAH_ASSERT(called_func_idx < ctx->function_table_count && "validation didn't catch out-of-bound function index");
     const wah_function_t *called_fn = &ctx->function_table[called_func_idx];
 
@@ -9021,6 +9422,10 @@ WAH_RUN(RETURN_CALL_INDIRECT) {
     uint32_t func_table_idx = (uint32_t)(*--sp).i32;
     WAH_ASSERT(type_idx < ctx->module->type_count);
     WAH_ASSERT(table_idx < ctx->table_count);
+    while (ctx->exception_handler_depth > 0 &&
+           ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) {
+        ctx->exception_handler_depth--;
+    }
     WAH_INDIRECT_BODY(func_table_idx,
         WAH_TAIL_CALL_HOST(actual_fn),
         WAH_TAIL_CALL_WASM(fn_module, local_idx, actual_func_type->param_count, actual_func_type->result_count))
@@ -9036,6 +9441,10 @@ WAH_RUN(RETURN_CALL_INDIRECT_i64) {
     uint64_t func_table_idx = (uint64_t)(*--sp).i64;
     WAH_ASSERT(type_idx < ctx->module->type_count);
     WAH_ASSERT(table_idx < ctx->table_count);
+    while (ctx->exception_handler_depth > 0 &&
+           ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) {
+        ctx->exception_handler_depth--;
+    }
     WAH_INDIRECT_BODY(func_table_idx,
         WAH_TAIL_CALL_HOST(actual_fn),
         WAH_TAIL_CALL_WASM(fn_module, local_idx, actual_func_type->param_count, actual_func_type->result_count))
@@ -9049,6 +9458,10 @@ WAH_RUN(RETURN_CALL_REF) {
     const wah_function_t *actual_fn = (const wah_function_t *)(*--sp).ref;
     WAH_ENSURE_GOTO(actual_fn != NULL, WAH_ERROR_TRAP, cleanup);
     WAH_ASSERT(actual_fn != wah_funcref_sentinel && "prefuncref stored without conversion to funcref");
+    while (ctx->exception_handler_depth > 0 &&
+           ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) {
+        ctx->exception_handler_depth--;
+    }
     WAH_REF_BODY(actual_fn,
         WAH_TAIL_CALL_HOST(actual_fn),
         WAH_TAIL_CALL_WASM(fn_module, local_idx, actual_func_type->param_count, actual_func_type->result_count))
@@ -9057,6 +9470,11 @@ WAH_RUN(RETURN_CALL_REF) {
 }
 
 WAH_RUN(RETURN) {
+    while (ctx->exception_handler_depth > 0 &&
+           ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) {
+        ctx->exception_handler_depth--;
+    }
+
     uint32_t results_to_keep = frame->result_count;
     wah_value_t *results_src = sp - results_to_keep;
 
@@ -9074,6 +9492,11 @@ WAH_RUN(RETURN) {
 }
 
 WAH_RUN(END) { // End of function
+    while (ctx->exception_handler_depth > 0 &&
+           ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) {
+        ctx->exception_handler_depth--;
+    }
+
     uint32_t results_to_keep = frame->result_count;
     wah_value_t *results_src = sp - results_to_keep;
 
@@ -11209,6 +11632,7 @@ static wah_error_t wah_call_module_multi(wah_exec_context_t *exec_ctx, uint32_t 
 
     uint32_t saved_sp = exec_ctx->sp;
     uint32_t saved_call_depth = exec_ctx->call_depth;
+    uint32_t saved_handler_depth = exec_ctx->exception_handler_depth;
 
     // Push initial params onto the value stack
     for (uint32_t i = 0; i < param_count; ++i) {
@@ -11233,6 +11657,7 @@ static wah_error_t wah_call_module_multi(wah_exec_context_t *exec_ctx, uint32_t 
         if (run_err != WAH_OK) {
             exec_ctx->sp = saved_sp;
             exec_ctx->call_depth = saved_call_depth;
+            exec_ctx->exception_handler_depth = saved_handler_depth;
             return run_err;
         }
     }
@@ -12348,6 +12773,53 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         WAH_ENSURE_GOTO(linked_global_idx >= linked->import_global_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
         uint32_t linked_local_global_idx = linked_global_idx - linked->import_global_count;
         ctx->globals[i] = ctx->globals[linked_globals_offset + linked_local_global_idx];
+    }
+
+    // Resolve tag imports from linked modules
+    for (uint32_t i = 0; i < module->import_tag_count; i++) {
+        wah_tag_import_t *tgi = &module->tag_imports[i];
+
+        const wah_module_t *linked = NULL;
+        wah_exec_context_t *linked_ctx = NULL;
+        for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+            const char *linked_name = ctx->linked_modules[j].name;
+            if (strncmp(linked_name, tgi->name.module, tgi->name.module_len) == 0 &&
+                linked_name[tgi->name.module_len] == '\0') {
+                linked = ctx->linked_modules[j].module;
+                linked_ctx = ctx->linked_modules[j].ctx;
+                break;
+            }
+        }
+        WAH_ENSURE_GOTO(linked != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+
+        const wah_export_t *exp = NULL;
+        for (uint32_t k = 0; k < linked->export_count; k++) {
+            if (linked->exports[k].kind == 4 &&
+                linked->exports[k].name_len == tgi->name.field_len &&
+                memcmp(linked->exports[k].name, tgi->name.field, tgi->name.field_len) == 0) {
+                exp = &linked->exports[k];
+                break;
+            }
+        }
+        WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+
+        uint32_t linked_tag_idx = exp->index;
+        WAH_ENSURE_GOTO(linked_tag_idx < linked->import_tag_count + linked->tag_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+
+        // Verify type compatibility
+        uint32_t linked_type_idx = linked_tag_idx < linked->import_tag_count
+            ? linked->tag_imports[linked_tag_idx].type_index
+            : linked->tags[linked_tag_idx - linked->import_tag_count].type_index;
+        const wah_func_type_t *linked_tag_type = &linked->types[linked_type_idx];
+        const wah_func_type_t *import_tag_type = &module->types[tgi->type_index];
+        WAH_ENSURE_GOTO(linked_tag_type->param_count == import_tag_type->param_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        for (uint32_t p = 0; p < linked_tag_type->param_count; p++) {
+            WAH_ENSURE_GOTO(linked_tag_type->param_types[p] == import_tag_type->param_types[p], WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        }
+
+        WAH_ENSURE_GOTO(linked_ctx != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(linked_tag_idx < linked_ctx->tag_instance_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        ctx->tag_instances[i] = linked_ctx->tag_instances[linked_tag_idx];
     }
 
     if (!ctx->gc && module->repr_count > 0) {

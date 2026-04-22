@@ -66,6 +66,7 @@ static const token_entry_t token_table[] = {
     TOKEN("code", 0x0a),      // Code section
     TOKEN("data", 0x0b),      // Data section
     TOKEN("datacount", 0x0c), // Data count section
+    TOKEN("tags", 0x0d),      // Tag section
 
     // Types
     TOKEN("fn", 0x60),        // Function type
@@ -130,12 +131,14 @@ static const token_entry_t token_table[] = {
     TOKEN("table#", 0x01),    // Table index space
     TOKEN("mem#", 0x02),      // Memory index space
     TOKEN("global#", 0x03),   // Global index space
+    TOKEN("tag#", 0x04),      // Tag index space
 
     // Exports
     TOKEN("export.type#", 0x00), // Or use `fn#`
     TOKEN("export.table", 0x01),
     TOKEN("export.memory", 0x02),
     TOKEN("export.global", 0x03),
+    TOKEN("export.tag", 0x04),
 
     // Element kinds (for elemkind field)
     TOKEN("elem.funcref", 0x00),  // funcref as element kind
@@ -162,6 +165,8 @@ static const token_entry_t token_table[] = {
     TOKEN("loop", 0x03),
     TOKEN("if", 0x04),
     TOKEN("else", 0x05),
+    TOKEN("throw", 0x08),
+    TOKEN("throw_ref", 0x0a),
     TOKEN("end", 0x0b),
     TOKEN("br", 0x0c),
     TOKEN("br_if", 0x0d),
@@ -173,6 +178,7 @@ static const token_entry_t token_table[] = {
     TOKEN("return_call_indirect", 0x13),
     TOKEN("call_ref", 0x14),
     TOKEN("return_call_ref", 0x15),
+    TOKEN("try_table", 0x1f),
     TOKEN("drop", 0x1a),
     TOKEN("select", 0x1b),
     TOKEN("local.get", 0x20),

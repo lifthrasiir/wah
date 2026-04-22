@@ -240,13 +240,13 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/table_size64.bin.wast",
     "tests/spectest/table64.bin.wast",
     "tests/spectest/table-sub.bin.wast",
-    //"tests/spectest/tag.bin.wast",             // exception handling proposal
-    //"tests/spectest/throw.bin.wast",           // exception handling proposal
-    //"tests/spectest/throw_ref.bin.wast",       // exception handling proposal
+    "tests/spectest/tag.bin.wast",
+    "tests/spectest/throw.bin.wast",
+    "tests/spectest/throw_ref.bin.wast",
     //"tests/spectest/token.bin.wast",           // token/text format tests
     "tests/spectest/traps.bin.wast",
     "tests/spectest/traps0.bin.wast",
-    //"tests/spectest/try_table.bin.wast",       // exception handling proposal
+    "tests/spectest/try_table.bin.wast",
     "tests/spectest/type.bin.wast",
     "tests/spectest/type-canon.bin.wast",
     "tests/spectest/type-equivalence.bin.wast",

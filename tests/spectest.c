@@ -855,7 +855,22 @@ static int handle_assert_trap_like(const wast_node_t *node, spectest_env_t *env,
 }
 
 static int handle_assert_exception(const wast_node_t *node, spectest_env_t *env) {
-    return handle_assert_trap_like(node, env, 0);
+    wast_const_result_t actual;
+    spectest_instance_t *instance = NULL;
+    char error_buf[256] = {0};
+    wah_error_t err = WAH_OK;
+    (void)actual;
+    (void)instance;
+    if (!execute_action(node->children[1], env, &actual, &err, &instance, error_buf, sizeof(error_buf))) {
+        fail_check(env, "%s", error_buf);
+        return 0;
+    }
+    if (err == WAH_ERROR_EXCEPTION) {
+        pass_check(env);
+        return 1;
+    }
+    fail_check(env, "exception expected, got %s", wah_strerror(err));
+    return 0;
 }
 
 static int handle_module_instance(const wast_node_t *node, spectest_env_t *env, int expect_failure_kind) {
