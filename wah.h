@@ -1034,7 +1034,9 @@ typedef enum {
     X(ARRAY_SET,, WAH_FB+0x0E) X(ARRAY_LEN,, WAH_FB+0x0F) \
     X(REF_TEST,, WAH_FB+0x14) X(REF_TEST_NULL,, WAH_FB+0x15) \
     X(REF_CAST,, WAH_FB+0x16) X(REF_CAST_NULL,, WAH_FB+0x17) \
-    X(BR_ON_CAST,, WAH_FB+0x18) X(BR_ON_CAST_FAIL,, WAH_FB+0x19)
+    X(BR_ON_CAST,, WAH_FB+0x18) X(BR_ON_CAST_FAIL,, WAH_FB+0x19) \
+    X(ANY_CONVERT_EXTERN,, WAH_FB+0x1A) X(EXTERN_CONVERT_ANY,, WAH_FB+0x1B) \
+    X(REF_I31,, WAH_FB+0x1C) X(I31_GET_S,, WAH_FB+0x1D) X(I31_GET_U,, WAH_FB+0x1E)
 
 #define WAH_I32_MEM0_OPCODES_M(X) \
     X(I32_LOAD,i32_mem0) X(I64_LOAD,i32_mem0) X(F32_LOAD,i32_mem0) X(F64_LOAD,i32_mem0) \
@@ -5129,6 +5131,33 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             break;
         }
 
+        case WAH_OP_ANY_CONVERT_EXTERN: {
+            wah_type_t ref_type;
+            wah_type_flags_t ref_flags;
+            WAH_CHECK(wah_validation_pop_type_with_flags(vctx, &ref_type, &ref_flags));
+            WAH_CHECK(wah_validation_push_type_with_flags(vctx, WAH_TYPE_ANYREF, ref_flags));
+            break;
+        }
+        case WAH_OP_EXTERN_CONVERT_ANY: {
+            wah_type_t ref_type;
+            wah_type_flags_t ref_flags;
+            WAH_CHECK(wah_validation_pop_type_with_flags(vctx, &ref_type, &ref_flags));
+            WAH_CHECK(wah_validation_push_type_with_flags(vctx, WAH_TYPE_EXTERNREF, ref_flags));
+            break;
+        }
+        case WAH_OP_REF_I31: {
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_I32, 0));
+            WAH_CHECK(wah_validation_push_type_with_flags(vctx, WAH_TYPE_I31REF, 0));
+            break;
+        }
+        case WAH_OP_I31_GET_S:
+        case WAH_OP_I31_GET_U: {
+            wah_type_t ref_type;
+            WAH_CHECK(wah_validation_pop_type(vctx, &ref_type));
+            WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_I32));
+            break;
+        }
+
         case WAH_OP_THROW: {
             uint32_t tag_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &tag_idx));
@@ -5627,6 +5656,23 @@ static wah_error_t wah_validate_const_expr(
                     --stack_depth;
                 }
                 CONST_PUSH((wah_type_t)typeidx);
+                break;
+            }
+
+            case WAH_OP_REF_I31:
+                CONST_POP(WAH_TYPE_I32);
+                CONST_PUSH(WAH_TYPE_I31REF);
+                break;
+            case WAH_OP_ANY_CONVERT_EXTERN: {
+                WAH_ENSURE(stack_depth > 0, WAH_ERROR_VALIDATION_FAILED);
+                --stack_depth;
+                CONST_PUSH(WAH_TYPE_ANYREF);
+                break;
+            }
+            case WAH_OP_EXTERN_CONVERT_ANY: {
+                WAH_ENSURE(stack_depth > 0, WAH_ERROR_VALIDATION_FAILED);
+                --stack_depth;
+                CONST_PUSH(WAH_TYPE_EXTERNREF);
                 break;
             }
 
@@ -6605,6 +6651,11 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     break;
                 }
                 case WAH_OP_ARRAY_LEN: break;
+                case WAH_OP_ANY_CONVERT_EXTERN: break;
+                case WAH_OP_EXTERN_CONVERT_ANY: break;
+                case WAH_OP_REF_I31: break;
+                case WAH_OP_I31_GET_S: break;
+                case WAH_OP_I31_GET_U: break;
             }
         }
         preparsed_size += preparsed_instr_size;
@@ -7055,6 +7106,11 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     break;
                 }
                 case WAH_OP_ARRAY_LEN: break;
+                case WAH_OP_ANY_CONVERT_EXTERN: break;
+                case WAH_OP_EXTERN_CONVERT_ANY: break;
+                case WAH_OP_REF_I31: break;
+                case WAH_OP_I31_GET_S: break;
+                case WAH_OP_I31_GET_U: break;
             }
         }
 
@@ -7634,7 +7690,7 @@ wah_gc_object_t *wah_gc_alloc_i31(wah_exec_context_t *ctx, int32_t value) {
     wah_gc_object_t *obj = wah_gc_alloc(ctx, WAH_REPR_I31, (uint32_t)sizeof(wah_gc_i31_body_t));
     if (obj) {
         wah_gc_i31_body_t *body = (wah_gc_i31_body_t *)wah_gc_payload(obj);
-        body->value = value;
+        body->value = value & 0x7FFFFFFF;
     }
     return obj;
 }
@@ -8789,6 +8845,41 @@ WAH_RUN(ARRAY_LEN) {
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     wah_gc_array_body_t *body = (wah_gc_array_body_t *)wah_gc_payload(obj);
     sp[-1].i32 = (int32_t)body->length;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(ANY_CONVERT_EXTERN) {
+    WAH_NEXT();
+}
+
+WAH_RUN(EXTERN_CONVERT_ANY) {
+    WAH_NEXT();
+}
+
+WAH_RUN(REF_I31) {
+    int32_t val = sp[-1].i32;
+    wah_gc_object_t *obj = wah_gc_alloc_i31(ctx, val);
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+    sp[-1].ref = obj;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(I31_GET_S) {
+    wah_gc_object_t *obj = (wah_gc_object_t *)sp[-1].ref;
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    wah_gc_i31_body_t *body = (wah_gc_i31_body_t *)wah_gc_payload(obj);
+    sp[-1].i32 = (body->value & 0x40000000) ? (int32_t)(body->value | 0x80000000u) : body->value;
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(I31_GET_U) {
+    wah_gc_object_t *obj = (wah_gc_object_t *)sp[-1].ref;
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    wah_gc_i31_body_t *body = (wah_gc_i31_body_t *)wah_gc_payload(obj);
+    sp[-1].i32 = body->value;
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -12618,6 +12709,17 @@ static wah_error_t wah_eval_const_expr(
                 break;
             }
 
+            case WAH_OP_REF_I31: {
+                int32_t val = ctx->value_stack[--ctx->sp].i32;
+                wah_gc_object_t *obj = wah_gc_alloc_i31(ctx, val);
+                WAH_ENSURE(obj != NULL, WAH_ERROR_OUT_OF_MEMORY);
+                ctx->value_stack[ctx->sp++].ref = obj;
+                break;
+            }
+            case WAH_OP_ANY_CONVERT_EXTERN:
+            case WAH_OP_EXTERN_CONVERT_ANY:
+                break;
+
             default:
                 return WAH_ERROR_VALIDATION_FAILED;
         }
@@ -12822,7 +12924,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         ctx->tag_instances[i] = linked_ctx->tag_instances[linked_tag_idx];
     }
 
-    if (!ctx->gc && module->repr_count > 0) {
+    if (!ctx->gc) {
         WAH_CHECK_GOTO(wah_gc_start(ctx), cleanup);
     }
 

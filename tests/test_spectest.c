@@ -12,25 +12,25 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/align0.bin.wast",
     "tests/spectest/align64.bin.wast",
     //"tests/spectest/annotations.bin.wast",     // annotations proposal
-    //"tests/spectest/array.bin.wast",           // GC proposal
-    //"tests/spectest/array_copy.bin.wast",      // GC proposal
-    //"tests/spectest/array_fill.bin.wast",      // GC proposal
-    //"tests/spectest/array_init_data.bin.wast", // GC proposal
-    //"tests/spectest/array_init_elem.bin.wast", // GC proposal
-    //"tests/spectest/array_new_data.bin.wast",  // GC proposal
-    //"tests/spectest/array_new_elem.bin.wast",  // GC proposal
-    //"tests/spectest/binary.bin.wast",          // needs extended ref types
+    "tests/spectest/array.bin.wast",
+    "tests/spectest/array_copy.bin.wast",
+    "tests/spectest/array_fill.bin.wast",
+    "tests/spectest/array_init_data.bin.wast",
+    "tests/spectest/array_init_elem.bin.wast",
+    "tests/spectest/array_new_data.bin.wast",
+    "tests/spectest/array_new_elem.bin.wast",
+    "tests/spectest/binary.bin.wast",
     "tests/spectest/binary_leb128_64.bin.wast",
     "tests/spectest/binary0.bin.wast",
-    //"tests/spectest/binary-gc.bin.wast",       // GC proposal
+    "tests/spectest/binary-gc.bin.wast",
     "tests/spectest/binary-leb128.bin.wast",
     "tests/spectest/block.bin.wast",
     "tests/spectest/br.bin.wast",
     "tests/spectest/br_if.bin.wast",
-    //"tests/spectest/br_on_cast.bin.wast",      // GC proposal
-    //"tests/spectest/br_on_cast_fail.bin.wast", // GC proposal
-    //"tests/spectest/br_on_non_null.bin.wast",  // needs extended ref types
-    //"tests/spectest/br_on_null.bin.wast",      // needs extended ref types
+    "tests/spectest/br_on_cast.bin.wast",
+    "tests/spectest/br_on_cast_fail.bin.wast",
+    "tests/spectest/br_on_non_null.bin.wast",
+    "tests/spectest/br_on_null.bin.wast",
     "tests/spectest/br_table.bin.wast",
     "tests/spectest/bulk.bin.wast",
     "tests/spectest/bulk64.bin.wast",
@@ -40,17 +40,17 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/call_ref.bin.wast",
     "tests/spectest/const.bin.wast",
     "tests/spectest/conversions.bin.wast",
-    //"tests/spectest/custom.bin.wast",          // needs extended ref types
+    "tests/spectest/custom.bin.wast",
     "tests/spectest/data.bin.wast",
     "tests/spectest/data_drop0.bin.wast",
     "tests/spectest/data0.bin.wast",
     "tests/spectest/data1.bin.wast",
-    //"tests/spectest/elem.bin.wast",             // needs table-with-init-expr (0x40)
+    "tests/spectest/elem.bin.wast",
     "tests/spectest/endianness.bin.wast",
     "tests/spectest/endianness64.bin.wast",
     "tests/spectest/exports.bin.wast",
     "tests/spectest/exports0.bin.wast",
-    //"tests/spectest/extern.bin.wast",          // GC proposal
+    "tests/spectest/extern.bin.wast",
     "tests/spectest/f32.bin.wast",
     "tests/spectest/f32_bitwise.bin.wast",
     "tests/spectest/f32_cmp.bin.wast",
@@ -71,26 +71,26 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/func_ptrs.bin.wast",
     "tests/spectest/global.bin.wast",
     "tests/spectest/i16x8_relaxed_q15mulr_s.bin.wast",
-    //"tests/spectest/i31.bin.wast",             // GC proposal
+    "tests/spectest/i31.bin.wast",
     "tests/spectest/i32.bin.wast",
     "tests/spectest/i32x4_relaxed_trunc.bin.wast",
     "tests/spectest/i64.bin.wast",
     "tests/spectest/i8x16_relaxed_swizzle.bin.wast",
     "tests/spectest/id.bin.wast",
     "tests/spectest/if.bin.wast",
-    //"tests/spectest/imports.bin.wast",         // needs extended ref types
+    "tests/spectest/imports.bin.wast",
     "tests/spectest/imports0.bin.wast",
     "tests/spectest/imports1.bin.wast",
     "tests/spectest/imports2.bin.wast",
     "tests/spectest/imports3.bin.wast",
     "tests/spectest/imports4.bin.wast",
     "tests/spectest/inline-module.bin.wast",
-    //"tests/spectest/instance.bin.wast",        // GC proposal
+    "tests/spectest/instance.bin.wast",
     "tests/spectest/int_exprs.bin.wast",
     "tests/spectest/int_literals.bin.wast",
     "tests/spectest/labels.bin.wast",
     "tests/spectest/left-to-right.bin.wast",
-    //"tests/spectest/linking.bin.wast",         // needs extended ref types
+    "tests/spectest/linking.bin.wast",
     "tests/spectest/linking0.bin.wast",
     "tests/spectest/linking1.bin.wast",
     "tests/spectest/linking2.bin.wast",
@@ -137,13 +137,13 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/nop.bin.wast",
     //"tests/spectest/obsolete-keywords.bin.wast", // obsolete keywords
     "tests/spectest/ref.bin.wast",
-    //"tests/spectest/ref_as_non_null.bin.wast", // needs extended ref types
-    //"tests/spectest/ref_cast.bin.wast",        // GC proposal
-    //"tests/spectest/ref_eq.bin.wast",          // GC proposal
+    "tests/spectest/ref_as_non_null.bin.wast",
+    "tests/spectest/ref_cast.bin.wast",
+    "tests/spectest/ref_eq.bin.wast",
     "tests/spectest/ref_func.bin.wast",
     "tests/spectest/ref_is_null.bin.wast",
     "tests/spectest/ref_null.bin.wast",
-    //"tests/spectest/ref_test.bin.wast",        // GC proposal
+    "tests/spectest/ref_test.bin.wast",
     "tests/spectest/relaxed_dot_product.bin.wast",
     "tests/spectest/relaxed_laneselect.bin.wast",
     "tests/spectest/relaxed_madd_nmadd.bin.wast",
@@ -253,8 +253,8 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/type-rec.bin.wast",
     "tests/spectest/type-subtyping.bin.wast",
     "tests/spectest/unreachable.bin.wast",
-    //"tests/spectest/unreached-invalid.bin.wast",// needs extended ref types
-    //"tests/spectest/unreached-valid.bin.wast",  // needs extended ref types
+    "tests/spectest/unreached-invalid.bin.wast",
+    "tests/spectest/unreached-valid.bin.wast",
     "tests/spectest/unwind.bin.wast",
     "tests/spectest/utf8-custom-section-id.bin.wast",
     "tests/spectest/utf8-import-field.bin.wast",
