@@ -810,7 +810,7 @@ int main() {
             wah_free_module(&mod);
         }
 
-        // ref.func 0, ref.test.null anyref -> 1 (funcref <: anyref)
+        // ref.func 0, ref.test.null anyref -> 0 (funcref not <: anyref in GC spec)
         {
             memset(&mod, 0, sizeof(mod));
             memset(&ctx4, 0, sizeof(ctx4));
@@ -821,7 +821,7 @@ int main() {
             assert_ok(wah_exec_context_create(&ctx4, &mod));
             assert_ok(wah_instantiate(&ctx4));
             assert_ok(wah_call(&ctx4, 0, NULL, 0, &result));
-            assert_eq_i32(result.i32, 1);
+            assert_eq_i32(result.i32, 0);
             wah_exec_context_destroy(&ctx4);
             wah_free_module(&mod);
         }

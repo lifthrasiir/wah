@@ -5522,7 +5522,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 WAH_CHECK(wah_validation_push_type_with_flags(vctx, dst_type, diff_flags));
             }
             EMIT_INSTR_EX(opcode_val, WAH_IMM_BR_ON_CAST,
-                _di->imm.br_on_cast.cast_flags = cast_flags; _di->imm.br_on_cast.target_symbol = 0;
+                _di->imm.br_on_cast.cast_flags = cast_flags; _di->imm.br_on_cast.target_symbol = label_idx;
                 _di->imm.br_on_cast.src_type = ht1; _di->imm.br_on_cast.dst_type = ht2;
                 _di->imm.br_on_cast.dst_heap_type = (int32_t)ht2;
                 _di->imm.br_on_cast.keep = 0; _di->imm.br_on_cast.drop = 0);
@@ -8092,9 +8092,9 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
 
     switch (target) {
         case WAH_TYPE_ANYREF:
-            return true;
-        case WAH_TYPE_EQREF:
             return repr_id != WAH_TYPE_FUNCTION;
+        case WAH_TYPE_EQREF:
+            return wah_repr_is_positive(repr_id) || repr_id == WAH_REPR_I31;
         case WAH_TYPE_I31REF:
             return repr_id == WAH_REPR_I31;
         case WAH_TYPE_STRUCTREF:
