@@ -8481,14 +8481,14 @@ WAH_RUN(REF_IS_NULL) {
 }
 
 WAH_RUN(REF_FUNC) {
-    // Read function index from bytecode (already parsed as uint32_t)
     uint32_t func_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
 
-    // Push function reference as pointer to wah_function_t
-    // func_idx is the module-local function index (not including imports)
-    WAH_ASSERT(func_idx < ctx->module->function_count && "validation should have verified function index");
-    (*sp++).ref = &ctx->module->functions[func_idx];
+    wah_function_t *ref_ftable = frame->frame_function_table ? frame->frame_function_table : ctx->function_table;
+    uint32_t ref_ftable_count = frame->frame_function_table ? frame->frame_function_table_count : ctx->function_table_count;
+    WAH_ASSERT(func_idx < ref_ftable_count && "validation should have verified function index");
+    (void)ref_ftable_count;
+    (*sp++).ref = &ref_ftable[func_idx];
     WAH_NEXT();
 }
 
