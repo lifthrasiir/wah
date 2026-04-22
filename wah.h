@@ -12489,6 +12489,7 @@ static wah_error_t wah_create_const_expr(wah_type_t type, const wah_value_t *val
             return WAH_ERROR_VALIDATION_FAILED;
     }
 
+    size += sizeof(uint16_t); // END opcode
     WAH_MALLOC_ARRAY(parsed_code->bytecode, size);
     parsed_code->bytecode_size = size;
 
@@ -12499,20 +12500,26 @@ static wah_error_t wah_create_const_expr(wah_type_t type, const wah_value_t *val
     switch (type) {
         case WAH_TYPE_I32:
             memcpy(out, &value->i32, sizeof(int32_t));
+            out += sizeof(int32_t);
             break;
         case WAH_TYPE_I64:
             memcpy(out, &value->i64, sizeof(int64_t));
+            out += sizeof(int64_t);
             break;
         case WAH_TYPE_F32:
             memcpy(out, &value->f32, sizeof(float));
+            out += sizeof(float);
             break;
         case WAH_TYPE_F64:
             memcpy(out, &value->f64, sizeof(double));
+            out += sizeof(double);
             break;
         case WAH_TYPE_V128:
             memcpy(out, &value->v128, sizeof(wah_v128_t));
+            out += sizeof(wah_v128_t);
             break;
     }
+    wah_write_u16_le(out, WAH_OP_END);
 
     return WAH_OK;
 }
@@ -12758,173 +12765,25 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
 }
 
 // --- Const Expression Evaluator ---
-// Evaluates a preparsed const expression and returns the result
-// Used during instantiation to initialize globals
+// Evaluates a preparsed const expression via the main interpreter.
 static wah_error_t wah_eval_const_expr(
     wah_exec_context_t *ctx,
     const uint8_t *bytecode,
     uint32_t bytecode_size,
     wah_value_t *result
 ) {
-    // Simple stack-based evaluator for const expressions
-    // Uses ctx->value_stack temporarily (saves/restores sp)
-    uint32_t saved_sp = ctx->sp;
-    uint32_t stack_start = ctx->sp;
+    wah_code_body_t dummy_code = {.parsed_code = {.bytecode = (uint8_t *)bytecode, .bytecode_size = bytecode_size}};
+    wah_value_t local_stack[16];
+    wah_call_frame_t local_frame = {.code = &dummy_code, .bytecode_ip = bytecode, .locals_offset = 0,
+                                    .result_count = 1, .globals_offset = 0, .module = ctx->module};
+    wah_exec_context_t cctx = {.module = ctx->module, .globals = ctx->globals, .global_count = ctx->global_count,
+                               .value_stack = local_stack, .value_stack_capacity = sizeof(local_stack) / sizeof(wah_value_t),
+                               .sp = 0, .call_stack = &local_frame, .max_call_depth = 1, .call_depth = 1, .gc = ctx->gc};
 
-    const uint8_t *ip = bytecode;
-    const uint8_t *end = bytecode + bytecode_size;
-
-    while (ip < end) {
-        uint16_t opcode_val = wah_read_u16_le(ip);
-        ip += sizeof(uint16_t);
-
-        switch (opcode_val) {
-            case WAH_OP_END:
-                // End of const expression
-                goto eval_done;
-
-            // Constants
-            case WAH_OP_I32_CONST:
-                ctx->value_stack[ctx->sp++].i32 = wah_read_u32_le(ip);
-                ip += sizeof(int32_t);
-                break;
-            case WAH_OP_I64_CONST:
-                ctx->value_stack[ctx->sp++].i64 = wah_read_u64_le(ip);
-                ip += sizeof(int64_t);
-                break;
-            case WAH_OP_F32_CONST:
-                ctx->value_stack[ctx->sp++].f32 = wah_read_f32_le(ip);
-                ip += sizeof(float);
-                break;
-            case WAH_OP_F64_CONST:
-                ctx->value_stack[ctx->sp++].f64 = wah_read_f64_le(ip);
-                ip += sizeof(double);
-                break;
-
-            // Integer binary operations
-            case WAH_OP_I32_ADD: {
-                int32_t right = ctx->value_stack[--ctx->sp].i32;
-                int32_t left = ctx->value_stack[--ctx->sp].i32;
-                ctx->value_stack[ctx->sp++].i32 = left + right;
-                break;
-            }
-            case WAH_OP_I32_SUB: {
-                int32_t right = ctx->value_stack[--ctx->sp].i32;
-                int32_t left = ctx->value_stack[--ctx->sp].i32;
-                ctx->value_stack[ctx->sp++].i32 = left - right;
-                break;
-            }
-            case WAH_OP_I32_MUL: {
-                int32_t right = ctx->value_stack[--ctx->sp].i32;
-                int32_t left = ctx->value_stack[--ctx->sp].i32;
-                ctx->value_stack[ctx->sp++].i32 = left * right;
-                break;
-            }
-            case WAH_OP_I64_ADD: {
-                int64_t right = ctx->value_stack[--ctx->sp].i64;
-                int64_t left = ctx->value_stack[--ctx->sp].i64;
-                ctx->value_stack[ctx->sp++].i64 = left + right;
-                break;
-            }
-            case WAH_OP_I64_SUB: {
-                int64_t right = ctx->value_stack[--ctx->sp].i64;
-                int64_t left = ctx->value_stack[--ctx->sp].i64;
-                ctx->value_stack[ctx->sp++].i64 = left - right;
-                break;
-            }
-            case WAH_OP_I64_MUL: {
-                int64_t right = ctx->value_stack[--ctx->sp].i64;
-                int64_t left = ctx->value_stack[--ctx->sp].i64;
-                ctx->value_stack[ctx->sp++].i64 = left * right;
-                break;
-            }
-
-            // Reference types
-            case WAH_OP_REF_NULL:
-                ip += sizeof(uint32_t);
-                ctx->value_stack[ctx->sp++].ref = NULL;
-                break;
-            case WAH_OP_REF_FUNC_CONST: {
-                uint32_t func_idx = wah_read_u32_le(ip);
-                ip += sizeof(uint32_t);
-                wah_value_t val;
-                val.prefuncref.sentinel = wah_funcref_sentinel;
-                val.prefuncref.func_idx = func_idx;
-                ctx->value_stack[ctx->sp++] = val;
-                break;
-            }
-
-            case WAH_OP_V128_CONST:
-                memcpy(&ctx->value_stack[ctx->sp++].v128, ip, sizeof(wah_v128_t));
-                ip += sizeof(wah_v128_t);
-                break;
-
-            // Global get
-            case WAH_OP_GLOBAL_GET: {
-                uint32_t global_idx = wah_read_u32_le(ip);
-                ip += sizeof(uint32_t);
-                WAH_ENSURE(global_idx < ctx->global_count, WAH_ERROR_VALIDATION_FAILED);
-                ctx->value_stack[ctx->sp++] = ctx->globals[global_idx];
-                break;
-            }
-
-            case WAH_OP_STRUCT_NEW: {
-                uint32_t typeidx = wah_read_u32_le(ip); ip += sizeof(uint32_t);
-                wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
-                const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
-                wah_gc_object_t *obj = wah_gc_alloc_struct(ctx, repr_id, info);
-                WAH_ENSURE(obj != NULL, WAH_ERROR_OUT_OF_MEMORY);
-                uint8_t *payload = (uint8_t *)wah_gc_payload(obj);
-                const wah_type_def_t *td = &ctx->module->type_defs[typeidx];
-                for (uint32_t fi = td->field_count; fi > 0; --fi) {
-                    wah_value_t val = ctx->value_stack[--ctx->sp];
-                    uint32_t off = info->fields[fi - 1].offset;
-                    switch (td->field_types[fi - 1]) {
-                        case WAH_TYPE_PACKED_I8:  *(uint8_t *)(payload + off) = (uint8_t)val.i32; break;
-                        case WAH_TYPE_PACKED_I16: *(uint16_t *)(payload + off) = (uint16_t)val.i32; break;
-                        case WAH_TYPE_I32: case WAH_TYPE_F32: *(uint32_t *)(payload + off) = val.i32; break;
-                        case WAH_TYPE_I64: case WAH_TYPE_F64: *(uint64_t *)(payload + off) = val.i64; break;
-                        default:
-                            if (WAH_TYPE_IS_REF(td->field_types[fi - 1])) { *(void **)(payload + off) = val.ref; }
-                            break;
-                    }
-                }
-                ctx->value_stack[ctx->sp++].ref = obj;
-                break;
-            }
-            case WAH_OP_STRUCT_NEW_DEFAULT: {
-                uint32_t typeidx = wah_read_u32_le(ip); ip += sizeof(uint32_t);
-                wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
-                const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
-                wah_gc_object_t *obj = wah_gc_alloc_struct(ctx, repr_id, info);
-                WAH_ENSURE(obj != NULL, WAH_ERROR_OUT_OF_MEMORY);
-                ctx->value_stack[ctx->sp++].ref = obj;
-                break;
-            }
-
-            case WAH_OP_REF_I31: {
-                int32_t val = ctx->value_stack[--ctx->sp].i32;
-                wah_gc_object_t *obj = wah_gc_alloc_i31(ctx, val);
-                WAH_ENSURE(obj != NULL, WAH_ERROR_OUT_OF_MEMORY);
-                ctx->value_stack[ctx->sp++].ref = obj;
-                break;
-            }
-            case WAH_OP_ANY_CONVERT_EXTERN:
-            case WAH_OP_EXTERN_CONVERT_ANY:
-                break;
-
-            default:
-                return WAH_ERROR_VALIDATION_FAILED;
-        }
-    }
-
-eval_done:
-    // Result should be the only thing on the stack
-    WAH_ENSURE(ctx->sp == stack_start + 1, WAH_ERROR_VALIDATION_FAILED);
-    *result = ctx->value_stack[stack_start];
-
-    // Restore stack pointer
-    ctx->sp = saved_sp;
+    wah_error_t err = wah_run_interpreter(&cctx);
+    if (err != WAH_OK) return err;
+    WAH_ASSERT(cctx.sp == 1 && "Const expression should leave exactly one value on the stack");
+    *result = local_stack[0];
     return WAH_OK;
 }
 
