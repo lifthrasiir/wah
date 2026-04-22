@@ -715,7 +715,7 @@ static int wast_gather_binary_module(const wast_node_t *module_node, uint8_t **o
     uint8_t *bytes = NULL;
     *out_bytes = NULL;
     *out_len = 0;
-    if (!module_node || module_node->is_atom || module_node->child_count < 3 ||
+    if (!module_node || module_node->is_atom || module_node->child_count < 2 ||
         !wast_atom_eq(module_node->children[0], "module")) {
         return 0;
     }

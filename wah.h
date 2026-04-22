@@ -7194,7 +7194,7 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
         WAH_CHECK_GOTO(wah_read_section_header(&ptr, end, &section_id, &section_size), cleanup_parse);
 
         // Get section handler from lookup table
-        WAH_ENSURE_GOTO(section_id < sizeof(wah_section_handlers) / sizeof(*wah_section_handlers), WAH_ERROR_UNIMPLEMENTED, cleanup_parse);
+        WAH_ENSURE_GOTO(section_id < sizeof(wah_section_handlers) / sizeof(*wah_section_handlers), WAH_ERROR_MALFORMED, cleanup_parse);
         const struct wah_section_handler_s *handler = &wah_section_handlers[section_id];
 
         // Section order validation
