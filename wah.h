@@ -5569,6 +5569,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
     wah_error_t err = WAH_OK;
     wah_validation_context_t vctx = {0};
     uint8_t *ref_map = NULL;
+    wah_analyzed_code_t ac = {0};
 
     uint32_t count;
     // A code body entry requires at least 3 bytes (body_size, num_locals, END opcode).
@@ -5679,6 +5680,9 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         const uint8_t *code_ptr_validation = module->code_bodies[i].code;
         const uint8_t *validation_end = code_ptr_validation + module->code_bodies[i].code_size;
 
+        wah_free_analyzed_code(&ac);
+        ac = (wah_analyzed_code_t){0};
+
         bool is_first_validation_instr = true;
         while (code_ptr_validation < validation_end) {
             uint16_t current_opcode_val;
@@ -5703,7 +5707,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
             if (current_opcode_val == WAH_OP_CALL || current_opcode_val == WAH_OP_CALL_INDIRECT || current_opcode_val == WAH_OP_CALL_REF) {
                 WAH_CAPTURE_REF_MAP();
             }
-            WAH_CHECK_GOTO(wah_validate_opcode(current_opcode_val, &code_ptr_validation, validation_end, &vctx, &module->code_bodies[i], NULL), cleanup);
+            WAH_CHECK_GOTO(wah_validate_opcode(current_opcode_val, &code_ptr_validation, validation_end, &vctx, &module->code_bodies[i], &ac), cleanup);
 
             if (current_opcode_val == WAH_OP_LOOP) {
                 WAH_CAPTURE_REF_MAP();
@@ -5711,6 +5715,9 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         }
         WAH_ENSURE_GOTO(vctx.control_sp == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
         // --- End Validation Pass ---
+
+        ac.max_stack_depth = vctx.max_stack_depth;
+        wah_free_analyzed_code(&ac);
 
         #undef WAH_CAPTURE_REF_MAP
 
@@ -5728,6 +5735,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
     err = WAH_OK; // Ensure err is WAH_OK if everything succeeded
 
 cleanup:
+    wah_free_analyzed_code(&ac);
     free(ref_map);
     if (err != WAH_OK) {
         // Free memory allocated for control frames during validation
