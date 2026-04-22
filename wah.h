@@ -5545,6 +5545,41 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
     return WAH_OK;
 }
 
+static wah_error_t wah_parse_local_decls(const uint8_t **ptr, const uint8_t *body_end,
+                                         wah_code_body_t *body, uint32_t type_count) {
+    uint32_t num_entries;
+    WAH_CHECK(wah_decode_and_validate_count(ptr, body_end, &num_entries, 2));
+
+    uint32_t total = 0;
+    const uint8_t *scan = *ptr;
+    for (uint32_t j = 0; j < num_entries; ++j) {
+        uint32_t n; wah_type_t t; wah_type_flags_t f;
+        WAH_CHECK(wah_decode_uleb128(&scan, body_end, &n));
+        WAH_CHECK(wah_decode_val_type(&scan, body_end, &t, &f));
+        WAH_ENSURE(UINT32_MAX - total >= n, WAH_ERROR_TOO_LARGE);
+        total += n;
+    }
+
+    body->local_count = total;
+    WAH_MALLOC_ARRAY(body->local_types, total);
+    WAH_MALLOC_ARRAY(body->local_type_flags, total);
+    if (total) memset(body->local_type_flags, 0, total * sizeof(wah_type_flags_t));
+
+    uint32_t idx = 0;
+    for (uint32_t j = 0; j < num_entries; ++j) {
+        uint32_t n; wah_type_t t; wah_type_flags_t f;
+        WAH_CHECK(wah_decode_uleb128(ptr, body_end, &n));
+        WAH_CHECK(wah_decode_val_type(ptr, body_end, &t, &f));
+        WAH_ENSURE(t < 0 || (uint32_t)t < type_count, WAH_ERROR_VALIDATION_FAILED);
+        for (uint32_t k = 0; k < n; ++k) {
+            body->local_types[idx] = t;
+            body->local_type_flags[idx] = f;
+            idx++;
+        }
+    }
+    return WAH_OK;
+}
+
 static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     wah_error_t err = WAH_OK;
     wah_validation_context_t vctx = {0};
@@ -5571,41 +5606,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         WAH_ENSURE_GOTO(body_size <= (size_t)(section_end - *ptr), WAH_ERROR_VALIDATION_FAILED, cleanup);
         const uint8_t *code_body_end = *ptr + body_size;
 
-        // Parse locals
-        uint32_t num_local_entries;
-        // Each local entry requires at least 2 bytes (local_type_count, local_type).
-        WAH_CHECK_GOTO(wah_decode_and_validate_count(ptr, code_body_end, &num_local_entries, 2), cleanup);
-
-        uint32_t current_local_count = 0;
-        const uint8_t* ptr_count = *ptr;
-        for (uint32_t j = 0; j < num_local_entries; ++j) {
-            uint32_t local_type_count;
-            wah_type_t skip_type;
-            wah_type_flags_t skip_flags;
-            WAH_CHECK_GOTO(wah_decode_uleb128(&ptr_count, code_body_end, &local_type_count), cleanup);
-            WAH_CHECK_GOTO(wah_decode_val_type(&ptr_count, code_body_end, &skip_type, &skip_flags), cleanup);
-            WAH_ENSURE_GOTO(UINT32_MAX - current_local_count >= local_type_count, WAH_ERROR_TOO_LARGE, cleanup);
-            current_local_count += local_type_count;
-        }
-        module->code_bodies[i].local_count = current_local_count;
-        WAH_MALLOC_ARRAY_GOTO(module->code_bodies[i].local_types, current_local_count, cleanup);
-        WAH_MALLOC_ARRAY_GOTO(module->code_bodies[i].local_type_flags, current_local_count, cleanup);
-        if (current_local_count) memset(module->code_bodies[i].local_type_flags, 0, current_local_count * sizeof(wah_type_flags_t));
-
-        uint32_t local_idx = 0;
-        for (uint32_t j = 0; j < num_local_entries; ++j) {
-            uint32_t local_type_count;
-            WAH_CHECK_GOTO(wah_decode_uleb128(ptr, code_body_end, &local_type_count), cleanup);
-            wah_type_t type;
-            wah_type_flags_t type_flags;
-            WAH_CHECK_GOTO(wah_decode_val_type(ptr, code_body_end, &type, &type_flags), cleanup);
-            WAH_ENSURE_GOTO(type < 0 || (uint32_t)type < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-            for (uint32_t k = 0; k < local_type_count; ++k) {
-                module->code_bodies[i].local_types[local_idx] = type;
-                module->code_bodies[i].local_type_flags[local_idx] = type_flags;
-                local_idx++;
-            }
-        }
+        WAH_CHECK_GOTO(wah_parse_local_decls(ptr, code_body_end, &module->code_bodies[i], module->type_count), cleanup);
 
         module->code_bodies[i].code_size = (uint32_t)(code_body_end - *ptr);
         module->code_bodies[i].code = *ptr;
