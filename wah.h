@@ -6790,39 +6790,36 @@ static wah_error_t wah_lower_analyzed_code(
                 WAH_LOWER_U32(b);
                 break;
             }
+// Shared memory opcode rewriting: redirect base opcode to address-class variant
+#define WAH_LOWER_MEM_REWRITE(MEM0_OPCODES, I64_MEM0_OPCODES, I64_MEM_OPCODES) \
+    do { \
+        bool _is_i64 = wah_memory_type(module, memidx)->addr_type == WAH_TYPE_I64; \
+        if (memidx == 0 && !_is_i64) { \
+            switch (opcode) { \
+                MEM0_OPCODES(WAH_LOWER_MEM_CASE) \
+            } \
+            wah_write_u16_le(buf + buf_size - sizeof(uint16_t), opcode); \
+        } else if (memidx == 0 && _is_i64) { \
+            switch (opcode) { \
+                I64_MEM0_OPCODES(WAH_LOWER_MEM_CASE) \
+            } \
+            wah_write_u16_le(buf + buf_size - sizeof(uint16_t), opcode); \
+        } else if (_is_i64) { \
+            switch (opcode) { \
+                I64_MEM_OPCODES(WAH_LOWER_MEM_CASE) \
+            } \
+            wah_write_u16_le(buf + buf_size - sizeof(uint16_t), opcode); \
+            WAH_LOWER_U32(memidx); \
+        } else { \
+            WAH_LOWER_U32(memidx); \
+        } \
+    } while (0)
+#define WAH_LOWER_MEM_CASE(name, suffix) case WAH_OP_##name: opcode = WAH_OP_##name##_##suffix; break;
+
             case WAH_OPCLASS_M: {
                 uint32_t memidx = instr->imm.memarg.memidx;
                 uint64_t offset = instr->imm.memarg.offset;
-                bool is_i64_mem = wah_memory_type(module, memidx)->addr_type == WAH_TYPE_I64;
-                if (memidx == 0 && !is_i64_mem) {
-                    // Redirect to i32+mem0 fast-path opcode
-                    switch (opcode) {
-                        #define WAH_I32_MEM0_OPCODE_CASE(name, suffix) case WAH_OP_##name: opcode = WAH_OP_##name##_##suffix; break;
-                        WAH_I32_MEM0_OPCODES_M(WAH_I32_MEM0_OPCODE_CASE)
-                        #undef WAH_I32_MEM0_OPCODE_CASE
-                    }
-                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), opcode);
-                } else if (memidx == 0 && is_i64_mem) {
-                    // Redirect to i64+mem0 fast-path opcode
-                    switch (opcode) {
-                        #define WAH_I64_MEM0_OPCODE_CASE(name, suffix) case WAH_OP_##name: opcode = WAH_OP_##name##_##suffix; break;
-                        WAH_I64_MEM0_OPCODES_M(WAH_I64_MEM0_OPCODE_CASE)
-                        #undef WAH_I64_MEM0_OPCODE_CASE
-                    }
-                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), opcode);
-                } else if (is_i64_mem) {
-                    // Non-mem0 i64 memory: redirect to _i64 opcode
-                    switch (opcode) {
-                        #define WAH_I64_MEM_OPCODE_CASE(name, suffix) case WAH_OP_##name: opcode = WAH_OP_##name##_##suffix; break;
-                        WAH_I64_MEM_OPCODES_M(WAH_I64_MEM_OPCODE_CASE)
-                        #undef WAH_I64_MEM_OPCODE_CASE
-                    }
-                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), opcode);
-                    WAH_LOWER_U32(memidx);
-                } else {
-                    // Non-mem0 i32 memory: base opcode is already correct
-                    WAH_LOWER_U32(memidx);
-                }
+                WAH_LOWER_MEM_REWRITE(WAH_I32_MEM0_OPCODES_M, WAH_I64_MEM0_OPCODES_M, WAH_I64_MEM_OPCODES_M);
                 WAH_LOWER_U64(offset);
                 break;
             }
@@ -6830,32 +6827,7 @@ static wah_error_t wah_lower_analyzed_code(
                 uint32_t memidx = instr->imm.memarg_lane.memarg.memidx;
                 uint64_t offset = instr->imm.memarg_lane.memarg.offset;
                 uint8_t lane_idx = instr->imm.memarg_lane.lane;
-                bool is_i64_mem = wah_memory_type(module, memidx)->addr_type == WAH_TYPE_I64;
-                if (memidx == 0 && !is_i64_mem) {
-                    switch (opcode) {
-                        #define WAH_I32_MEM0_OPCODE_CASE(name, suffix) case WAH_OP_##name: opcode = WAH_OP_##name##_##suffix; break;
-                        WAH_I32_MEM0_OPCODES_MB(WAH_I32_MEM0_OPCODE_CASE)
-                        #undef WAH_I32_MEM0_OPCODE_CASE
-                    }
-                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), opcode);
-                } else if (memidx == 0 && is_i64_mem) {
-                    switch (opcode) {
-                        #define WAH_I64_MEM0_OPCODE_CASE(name, suffix) case WAH_OP_##name: opcode = WAH_OP_##name##_##suffix; break;
-                        WAH_I64_MEM0_OPCODES_MB(WAH_I64_MEM0_OPCODE_CASE)
-                        #undef WAH_I64_MEM0_OPCODE_CASE
-                    }
-                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), opcode);
-                } else if (is_i64_mem) {
-                    switch (opcode) {
-                        #define WAH_I64_MEM_OPCODE_CASE(name, suffix) case WAH_OP_##name: opcode = WAH_OP_##name##_##suffix; break;
-                        WAH_I64_MEM_OPCODES_MB(WAH_I64_MEM_OPCODE_CASE)
-                        #undef WAH_I64_MEM_OPCODE_CASE
-                    }
-                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), opcode);
-                    WAH_LOWER_U32(memidx);
-                } else {
-                    WAH_LOWER_U32(memidx);
-                }
+                WAH_LOWER_MEM_REWRITE(WAH_I32_MEM0_OPCODES_MB, WAH_I64_MEM0_OPCODES_MB, WAH_I64_MEM_OPCODES_MB);
                 WAH_LOWER_U64(offset);
                 WAH_LOWER_U8(lane_idx);
                 break;
