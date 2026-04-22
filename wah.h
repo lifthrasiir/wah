@@ -298,6 +298,10 @@ typedef struct wah_module_s {
     wah_repr_t *typeidx_to_repr;
     wah_repr_set_t *type_cast_sets;
 
+    // Bitmap of "declared" function indices (for ref.func validation).
+    // Built at code-section parse time from exports, element segments, and global init exprs.
+    uint8_t *declared_funcs;
+
 } wah_module_t;
 
 // --- GC State ---
@@ -4155,6 +4159,23 @@ static inline bool wah_global_is_mutable(const wah_module_t *m, uint32_t idx) {
     return m->globals[idx - m->import_global_count].is_mutable;
 }
 
+static wah_error_t wah_declare_func(wah_module_t *m, uint32_t func_idx) {
+    if (!m->declared_funcs) {
+        uint32_t total = wah_total_func_count(m);
+        if (total == 0) return WAH_OK;
+        uint32_t bytes = (total + 7) / 8;
+        m->declared_funcs = (uint8_t *)calloc(bytes, 1);
+        if (!m->declared_funcs) return WAH_ERROR_OUT_OF_MEMORY;
+    }
+    m->declared_funcs[func_idx / 8] |= (uint8_t)(1u << (func_idx % 8));
+    return WAH_OK;
+}
+
+static inline bool wah_is_func_declared(const wah_module_t *m, uint32_t func_idx) {
+    if (!m->declared_funcs) return false;
+    return (m->declared_funcs[func_idx / 8] & (1u << (func_idx % 8))) != 0;
+}
+
 static inline const wah_func_type_t *wah_resolve_func_type(const wah_module_t *m, uint32_t func_idx) {
     if (func_idx < m->import_function_count) {
         return &m->types[m->func_imports[func_idx].type_index];
@@ -5152,6 +5173,11 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             uint32_t func_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &func_idx));
             WAH_ENSURE(func_idx < wah_total_func_count(vctx->module), WAH_ERROR_VALIDATION_FAILED);
+            if (vctx->mode == WAH_ANALYZE_CONST_EXPR) {
+                WAH_CHECK(wah_declare_func(vctx->module, func_idx));
+            } else {
+                WAH_ENSURE(wah_is_func_declared(vctx->module, func_idx), WAH_ERROR_VALIDATION_FAILED);
+            }
             const wah_func_type_t *ft = wah_resolve_func_type(vctx->module, func_idx);
             uint32_t type_idx = (uint32_t)(ft - vctx->module->types);
             WAH_CHECK(wah_validation_push_type_with_flags(vctx, (wah_type_t)type_idx, 0));
@@ -6217,6 +6243,7 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
         switch (export_entry->kind) {
             case 0: // Function
                 WAH_ENSURE_GOTO(export_entry->index < wah_total_func_count(module), WAH_ERROR_VALIDATION_FAILED, cleanup);
+                WAH_CHECK_GOTO(wah_declare_func(module, export_entry->index), cleanup);
                 break;
             case 1: // Table
                 WAH_ENSURE_GOTO(export_entry->index < wah_total_table_count(module), WAH_ERROR_VALIDATION_FAILED, cleanup);
@@ -6354,10 +6381,10 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
                     if (is_expr_elem) {
                         WAH_CHECK(wah_compile_const_expr(ptr, section_end, segment->elem_type, module, wah_total_global_count(module), NULL));
                     } else {
-                        // Skip funcidx
                         uint32_t funcidx;
                         WAH_CHECK(wah_decode_uleb128(ptr, section_end, &funcidx));
                         WAH_ENSURE(funcidx < wah_total_func_count(module), WAH_ERROR_VALIDATION_FAILED);
+                        WAH_CHECK(wah_declare_func(module, funcidx));
                     }
                 }
                 continue; // Don't store elem data for declarative segments
@@ -6373,6 +6400,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
                         ++segment->num_elems;
                         WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->u.func_indices[j]));
                         WAH_ENSURE(segment->u.func_indices[j] < wah_total_func_count(module), WAH_ERROR_VALIDATION_FAILED);
+                        WAH_CHECK(wah_declare_func(module, segment->u.func_indices[j]));
                     }
                 } else {
                     WAH_MALLOC_ARRAY(segment->u.expr.bytecodes, num_elems);
@@ -11855,6 +11883,7 @@ void wah_free_module(wah_module_t *module) {
         }
         free(module->type_cast_sets);
     }
+    free(module->declared_funcs);
 
     // Reset all fields to 0/NULL
     memset(module, 0, sizeof(wah_module_t));
