@@ -12399,6 +12399,7 @@ static wah_error_t wah_module_export_global_internal(wah_module_t *mod, const ch
     // Fill in the global entry
     wah_global_t *global = &mod->globals[mod->global_count];
     global->type = type;
+    global->type_flags = 0;
     global->is_mutable = is_mutable;
     global->init_expr = (wah_parsed_code_t){0};  // Initialize to zero
     // Create a const expression for the initial value
@@ -12870,6 +12871,36 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         WAH_ENSURE_GOTO(linked_local_idx < linked->total_function_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
 
         const wah_function_t *src = &linked->functions[linked_local_idx];
+
+        // Verify function type compatibility
+        WAH_ENSURE_GOTO(fi->type_index < module->type_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        const wah_func_type_t *import_type = &module->types[fi->type_index];
+        if (src->is_host) {
+            WAH_ENSURE_GOTO(import_type->param_count == src->nparams, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            WAH_ENSURE_GOTO(import_type->result_count == src->nresults, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            for (uint32_t p = 0; p < import_type->param_count; p++) {
+                WAH_ENSURE_GOTO(import_type->param_types[p] == src->param_types[p], WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            }
+            for (uint32_t r = 0; r < import_type->result_count; r++) {
+                WAH_ENSURE_GOTO(import_type->result_types[r] == src->result_types[r], WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            }
+        } else {
+            uint32_t src_local_fn_idx = linked_local_idx;
+            if (src_local_fn_idx < linked->function_count) {
+                uint32_t linked_type_idx = linked->function_type_indices[src_local_fn_idx];
+                WAH_ENSURE_GOTO(linked_type_idx < linked->type_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                const wah_func_type_t *export_type = &linked->types[linked_type_idx];
+                WAH_ENSURE_GOTO(import_type->param_count == export_type->param_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                WAH_ENSURE_GOTO(import_type->result_count == export_type->result_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                for (uint32_t p = 0; p < import_type->param_count; p++) {
+                    WAH_ENSURE_GOTO(import_type->param_types[p] == export_type->param_types[p], WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                }
+                for (uint32_t r = 0; r < import_type->result_count; r++) {
+                    WAH_ENSURE_GOTO(import_type->result_types[r] == export_type->result_types[r], WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                }
+            }
+        }
+
         ctx->function_table[i] = *src;  // shallow copy (pointers shared with linked module)
         ctx->function_table[i].global_idx = exp->index;  // Set global index from export
         if (!src->is_host) {
@@ -12915,6 +12946,32 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         WAH_ENSURE_GOTO(linked_global_idx < linked->import_global_count + linked->global_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
         WAH_ENSURE_GOTO(linked_global_idx >= linked->import_global_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
         uint32_t linked_local_global_idx = linked_global_idx - linked->import_global_count;
+
+        // Verify global type compatibility
+        {
+            const wah_global_t *exported_global = &linked->globals[linked_local_global_idx];
+            WAH_ENSURE_GOTO(gi->is_mutable == exported_global->is_mutable, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            if (gi->is_mutable) {
+                WAH_ENSURE_GOTO(gi->type == exported_global->type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                WAH_ENSURE_GOTO(gi->type_flags == exported_global->type_flags, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            } else {
+                bool type_ok = wah_type_is_subtype(exported_global->type, gi->type, linked);
+                if (type_ok && exported_global->type != gi->type) {
+                    // subtype via hierarchy is ok
+                } else if (exported_global->type == gi->type) {
+                    if ((exported_global->type_flags & WAH_TYPE_FLAG_NULLABLE) &&
+                        !(gi->type_flags & WAH_TYPE_FLAG_NULLABLE)) {
+                        type_ok = false;
+                    } else {
+                        type_ok = true;
+                    }
+                } else {
+                    type_ok = false;
+                }
+                WAH_ENSURE_GOTO(type_ok, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            }
+        }
+
         ctx->globals[i] = ctx->globals[linked_globals_offset + linked_local_global_idx];
     }
 
