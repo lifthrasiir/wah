@@ -5123,10 +5123,12 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             wah_type_flags_t dst_flags = (cast_flags & 0x02) ? WAH_TYPE_FLAG_NULLABLE : 0;
             RECORD_BRANCH_ADJ(0, 0); // placeholder: GC branch stack adjustment not yet computed
             if (opcode_val == WAH_OP_BR_ON_CAST) {
-                WAH_CHECK(wah_validation_push_type_with_flags(vctx, src_type, src_flags));
+                wah_type_flags_t diff_flags = src_flags & ~dst_flags;
+                WAH_CHECK(wah_validation_push_type_with_flags(vctx, src_type, diff_flags));
             } else {
                 wah_type_t dst_type = WAH_TYPE_IS_REF(ht2) ? ht2 : (ht2 >= 0 ? (wah_type_t)ht2 : WAH_TYPE_ANYREF);
-                WAH_CHECK(wah_validation_push_type_with_flags(vctx, dst_type, dst_flags));
+                wah_type_flags_t diff_flags = dst_flags & ~src_flags;
+                WAH_CHECK(wah_validation_push_type_with_flags(vctx, dst_type, diff_flags));
             }
             break;
         }
@@ -6562,7 +6564,7 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                     wah_type_t ht1, ht2;
                     WAH_CHECK_GOTO(wah_decode_heap_type(&ptr, end, &ht1), cleanup);
                     WAH_CHECK_GOTO(wah_decode_heap_type(&ptr, end, &ht2), cleanup);
-                    preparsed_instr_size += sizeof(uint32_t) + 2 * sizeof(int32_t);
+                    preparsed_instr_size += 1 + sizeof(uint32_t) + 2 * sizeof(int32_t);
                     branch_adj_idx += 2;
                     break;
                 }
@@ -6982,12 +6984,13 @@ static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_i
                 }
                 case WAH_OP_BR_ON_CAST: case WAH_OP_BR_ON_CAST_FAIL: {
                     WAH_ENSURE_GOTO(ptr < end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
-                    uint8_t flags = *ptr++; (void)flags;
+                    uint8_t flags = *ptr++;
                     uint32_t relative_depth;
                     WAH_CHECK_GOTO(wah_decode_uleb128(&ptr, end, &relative_depth), cleanup);
                     wah_type_t ht1, ht2;
                     WAH_CHECK_GOTO(wah_decode_heap_type(&ptr, end, &ht1), cleanup);
                     WAH_CHECK_GOTO(wah_decode_heap_type(&ptr, end, &ht2), cleanup);
+                    *write_ptr++ = flags;
                     if (relative_depth == control_sp) {
                         wah_write_u32_le(write_ptr, preparsed_size - sizeof(uint16_t));
                     } else {
@@ -8540,11 +8543,17 @@ WAH_RUN(BR_ON_NON_NULL) {
 }
 
 WAH_RUN(BR_ON_CAST) {
+    uint8_t cast_flags = *bytecode_ip++;
     uint32_t offset = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     wah_type_t target_ht = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(int32_t);
     bytecode_ip += sizeof(int32_t); // skip source ht
     wah_value_t ref_val = sp[-1];
-    bool matches = (ref_val.ref == NULL) || wah_ref_test_heap_type(ctx, ref_val, target_ht);
+    bool matches;
+    if (ref_val.ref == NULL) {
+        matches = (cast_flags & 0x02) != 0;
+    } else {
+        matches = wah_ref_test_heap_type(ctx, ref_val, target_ht);
+    }
     if (matches) {
         bytecode_ip = bytecode_base + offset;
     }
@@ -8552,11 +8561,17 @@ WAH_RUN(BR_ON_CAST) {
 }
 
 WAH_RUN(BR_ON_CAST_FAIL) {
+    uint8_t cast_flags = *bytecode_ip++;
     uint32_t offset = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     wah_type_t target_ht = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(int32_t);
     bytecode_ip += sizeof(int32_t); // skip source ht
     wah_value_t ref_val = sp[-1];
-    bool matches = (ref_val.ref == NULL) || wah_ref_test_heap_type(ctx, ref_val, target_ht);
+    bool matches;
+    if (ref_val.ref == NULL) {
+        matches = (cast_flags & 0x02) != 0;
+    } else {
+        matches = wah_ref_test_heap_type(ctx, ref_val, target_ht);
+    }
     if (!matches) {
         bytecode_ip = bytecode_base + offset;
     }
