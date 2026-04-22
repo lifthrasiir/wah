@@ -977,18 +977,18 @@ typedef enum {
     X(F64X2_CONVERT_LOW_I32X4_S,_V_V, WAH_FD+0xFE) X(F64X2_CONVERT_LOW_I32X4_U,_V_V, WAH_FD+0xFF) \
     X(F32X4_DEMOTE_F64X2_ZERO,_V_V, WAH_FD+0x5E) X(F64X2_PROMOTE_LOW_F32X4,_V_V, WAH_FD+0x5F) \
     \
-    X(I8X16_RELAXED_SWIZZLE,_V_V, WAH_FD+0x100) \
+    X(I8X16_RELAXED_SWIZZLE,_VV_V, WAH_FD+0x100) \
     X(I32X4_RELAXED_TRUNC_F32X4_S,_V_V, WAH_FD+0x101) X(I32X4_RELAXED_TRUNC_F32X4_U,_V_V, WAH_FD+0x102) \
     X(I32X4_RELAXED_TRUNC_F64X2_S,_V_V, WAH_FD+0x103) X(I32X4_RELAXED_TRUNC_F64X2_U,_V_V, WAH_FD+0x104) \
-    X(F32X4_RELAXED_MADD,_V_V, WAH_FD+0x105) X(F32X4_RELAXED_NMADD,_V_V, WAH_FD+0x106) \
-    X(F64X2_RELAXED_MADD,_V_V, WAH_FD+0x107) X(F64X2_RELAXED_NMADD,_V_V, WAH_FD+0x108) \
-    X(I8X16_RELAXED_LANESELECT,_V_V, WAH_FD+0x109) X(I16X8_RELAXED_LANESELECT,_V_V, WAH_FD+0x10A) \
-    X(I32X4_RELAXED_LANESELECT,_V_V, WAH_FD+0x10B) X(I64X2_RELAXED_LANESELECT,_V_V, WAH_FD+0x10C) \
-    X(F32X4_RELAXED_MIN,_V_V, WAH_FD+0x10D) X(F32X4_RELAXED_MAX,_V_V, WAH_FD+0x10E) \
-    X(F64X2_RELAXED_MIN,_V_V, WAH_FD+0x10F) X(F64X2_RELAXED_MAX,_V_V, WAH_FD+0x110) \
-    X(I16X8_RELAXED_Q15MULR_S,_V_V, WAH_FD+0x111) \
-    X(I16X8_RELAXED_DOT_I8X16_I7X16_S,_V_V, WAH_FD+0x112) \
-    X(I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S,_V_V, WAH_FD+0x113) \
+    X(F32X4_RELAXED_MADD,_VVV_V, WAH_FD+0x105) X(F32X4_RELAXED_NMADD,_VVV_V, WAH_FD+0x106) \
+    X(F64X2_RELAXED_MADD,_VVV_V, WAH_FD+0x107) X(F64X2_RELAXED_NMADD,_VVV_V, WAH_FD+0x108) \
+    X(I8X16_RELAXED_LANESELECT,_VVV_V, WAH_FD+0x109) X(I16X8_RELAXED_LANESELECT,_VVV_V, WAH_FD+0x10A) \
+    X(I32X4_RELAXED_LANESELECT,_VVV_V, WAH_FD+0x10B) X(I64X2_RELAXED_LANESELECT,_VVV_V, WAH_FD+0x10C) \
+    X(F32X4_RELAXED_MIN,_VV_V, WAH_FD+0x10D) X(F32X4_RELAXED_MAX,_VV_V, WAH_FD+0x10E) \
+    X(F64X2_RELAXED_MIN,_VV_V, WAH_FD+0x10F) X(F64X2_RELAXED_MAX,_VV_V, WAH_FD+0x110) \
+    X(I16X8_RELAXED_Q15MULR_S,_VV_V, WAH_FD+0x111) \
+    X(I16X8_RELAXED_DOT_I8X16_I7X16_S,_VV_V, WAH_FD+0x112) \
+    X(I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S,_VVV_V, WAH_FD+0x113) \
     \
     /* Vector Comparison Operators */ \
     X(I8X16_EQ,_VV_V, WAH_FD+0x23) X(I8X16_NE,_VV_V, WAH_FD+0x24) \
@@ -3497,9 +3497,13 @@ static inline wah_error_t wah_type_stack_pop(wah_type_stack_t *stack, wah_type_t
 }
 
 // Stack depth tracking helpers
+static inline uint32_t wah_validation_block_base_height(const wah_validation_context_t *vctx) {
+    if (vctx->control_sp == 0) return 0;
+    return vctx->control_stack[vctx->control_sp - 1].stack_height;
+}
+
 static inline wah_error_t wah_validation_push_type_with_flags(wah_validation_context_t *vctx, wah_type_t type, wah_type_flags_t flags) {
-    wah_type_flags_t push_flags = vctx->is_unreachable ? WAH_TYPE_FLAG_NULLABLE : flags;
-    WAH_CHECK(wah_type_stack_push(&vctx->type_stack, vctx->is_unreachable ? WAH_TYPE_ANY : type, push_flags));
+    WAH_CHECK(wah_type_stack_push(&vctx->type_stack, type, flags));
     vctx->current_stack_depth++;
     if (vctx->current_stack_depth > vctx->max_stack_depth) {
         vctx->max_stack_depth = vctx->current_stack_depth;
@@ -3513,16 +3517,13 @@ static inline wah_error_t wah_validation_push_type(wah_validation_context_t *vct
 }
 
 static inline wah_error_t wah_validation_pop_type_with_flags(wah_validation_context_t *vctx, wah_type_t *out_type, wah_type_flags_t *out_flags) {
-    if (vctx->is_unreachable) {
+    uint32_t base = wah_validation_block_base_height(vctx);
+    if (vctx->current_stack_depth <= base) {
+        WAH_ENSURE(vctx->is_unreachable, WAH_ERROR_VALIDATION_FAILED);
         *out_type = WAH_TYPE_ANY;
         if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE;
-        if (vctx->current_stack_depth > 0) {
-            vctx->current_stack_depth--;
-        }
         return WAH_OK;
     }
-
-    WAH_ENSURE(vctx->current_stack_depth > 0, WAH_ERROR_VALIDATION_FAILED);
     WAH_CHECK(wah_type_stack_pop(&vctx->type_stack, out_type, out_flags));
     vctx->current_stack_depth--;
     return WAH_OK;
@@ -4348,6 +4349,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             for (int32_t j = called_func_type->param_count - 1; j >= 0; --j) {
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, called_func_type->param_types[j], called_func_type->param_type_flags[j]));
             }
+            { uint32_t _b = wah_validation_block_base_height(vctx);
+              if (vctx->current_stack_depth > _b) { vctx->type_stack.sp -= (vctx->current_stack_depth - _b); vctx->current_stack_depth = _b; } }
             vctx->is_unreachable = true;
             return WAH_OK;
         }
@@ -4370,6 +4373,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, expected_func_type->param_types[j],
                     expected_func_type->param_type_flags[j]));
             }
+            { uint32_t _b = wah_validation_block_base_height(vctx);
+              if (vctx->current_stack_depth > _b) { vctx->type_stack.sp -= (vctx->current_stack_depth - _b); vctx->current_stack_depth = _b; } }
             vctx->is_unreachable = true;
             return WAH_OK;
         }
@@ -4389,6 +4394,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, expected_func_type->param_types[j],
                     expected_func_type->param_type_flags[j]));
             }
+            { uint32_t _b = wah_validation_block_base_height(vctx);
+              if (vctx->current_stack_depth > _b) { vctx->type_stack.sp -= (vctx->current_stack_depth - _b); vctx->current_stack_depth = _b; } }
             vctx->is_unreachable = true;
             return WAH_OK;
         }
@@ -4569,11 +4576,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             if (resolved != WAH_TYPE_ANY) {
                 WAH_ENSURE(resolved >= WAH_TYPE_V128 && resolved <= WAH_TYPE_I32, WAH_ERROR_VALIDATION_FAILED);
             }
-            if (a_type == WAH_TYPE_ANY || b_type == WAH_TYPE_ANY) {
-                return wah_validation_push_type(vctx, WAH_TYPE_ANY);
-            } else {
-                return wah_validation_push_type(vctx, a_type);
-            }
+            return wah_validation_push_type(vctx, resolved);
         }
         case WAH_OP_SELECT_T: {
             uint32_t vec_len;
@@ -4591,7 +4594,13 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
         // Control flow operations
         case WAH_OP_NOP: break;
-        case WAH_OP_UNREACHABLE: vctx->is_unreachable = true; break;
+        case WAH_OP_UNREACHABLE: {
+            uint32_t base = wah_validation_block_base_height(vctx);
+            vctx->type_stack.sp = vctx->type_stack.sp - (vctx->current_stack_depth - base);
+            vctx->current_stack_depth = base;
+            vctx->is_unreachable = true;
+            break;
+        }
 
         case WAH_OP_BLOCK:
         case WAH_OP_LOOP:
@@ -4650,16 +4659,19 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 }
             }
 
-            WAH_ENSURE(vctx->current_stack_depth >= bt->param_count, WAH_ERROR_VALIDATION_FAILED);
-            for (uint32_t i = 0; i < bt->param_count; ++i) {
-                wah_type_t actual_type = vctx->type_stack.data[vctx->type_stack.sp - bt->param_count + i];
-                wah_type_flags_t actual_flags = vctx->type_stack.flags[vctx->type_stack.sp - bt->param_count + i];
-                WAH_CHECK(wah_validate_type_match(actual_type, actual_flags, bt->param_types[i],
-                    bt->param_type_flags[i], vctx->module));
+            for (int32_t i = bt->param_count - 1; i >= 0; --i) {
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, bt->param_types[i],
+                    bt->param_type_flags ? bt->param_type_flags[i] : 0));
             }
 
-            frame->stack_height = vctx->current_stack_depth - bt->param_count;
-            frame->type_stack_sp = vctx->type_stack.sp - bt->param_count;
+            frame->stack_height = vctx->current_stack_depth;
+            frame->type_stack_sp = vctx->type_stack.sp;
+
+            for (uint32_t i = 0; i < bt->param_count; ++i) {
+                wah_type_flags_t pf = bt->param_type_flags ? bt->param_type_flags[i] : 0;
+                WAH_CHECK(wah_validation_push_type_with_flags(vctx, bt->param_types[i], pf));
+            }
+            vctx->is_unreachable = false;
             return WAH_OK;
         }
         case WAH_OP_ELSE: {
@@ -4672,9 +4684,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, frame->block_type.result_types[i],
                     frame->block_type.result_type_flags[i]));
             }
-            if (!vctx->is_unreachable) {
-                WAH_ENSURE(vctx->current_stack_depth == frame->stack_height, WAH_ERROR_VALIDATION_FAILED);
-            }
+            WAH_ENSURE(vctx->current_stack_depth == frame->stack_height, WAH_ERROR_VALIDATION_FAILED);
 
             vctx->type_stack.sp = frame->type_stack_sp;
             vctx->current_stack_depth = frame->type_stack_sp;
@@ -4684,22 +4694,16 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 WAH_CHECK(wah_validation_push_type_with_flags(vctx, frame->block_type.param_types[i], pf));
             }
 
-            vctx->is_unreachable = frame->is_unreachable;
+            vctx->is_unreachable = false;
             return WAH_OK;
         }
         case WAH_OP_END: {
             if (vctx->control_sp == 0) {
-                if (vctx->is_unreachable) {
-                    vctx->type_stack.sp = 0;
-                    vctx->current_stack_depth = 0;
-                } else if (vctx->func_type->result_count == 0) {
-                    WAH_ENSURE(vctx->type_stack.sp == 0, WAH_ERROR_VALIDATION_FAILED);
-                } else {
-                    for (int32_t j = vctx->func_type->result_count - 1; j >= 0; --j) {
-                        WAH_CHECK(wah_validation_pop_and_match_type(vctx, vctx->func_type->result_types[j],
-                            vctx->func_type->result_type_flags[j]));
-                    }
+                for (int32_t j = vctx->func_type->result_count - 1; j >= 0; --j) {
+                    WAH_CHECK(wah_validation_pop_and_match_type(vctx, vctx->func_type->result_types[j],
+                        vctx->func_type->result_type_flags[j]));
                 }
+                WAH_ENSURE(vctx->current_stack_depth == 0, WAH_ERROR_VALIDATION_FAILED);
                 vctx->is_unreachable = false;
                 return WAH_OK;
             }
@@ -4713,19 +4717,11 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 }
             }
 
-            // Pop results from the executed branch and verify
-            if (!vctx->is_unreachable) {
-                for (int32_t i = frame->block_type.result_count - 1; i >= 0; --i) {
-                    WAH_CHECK(wah_validation_pop_and_match_type(vctx, frame->block_type.result_types[i],
-                        frame->block_type.result_type_flags[i]));
-                }
-                WAH_ENSURE(vctx->current_stack_depth == frame->stack_height, WAH_ERROR_VALIDATION_FAILED);
-            } else {
-                for (int32_t i = frame->block_type.result_count - 1; i >= 0; --i) {
-                    WAH_CHECK(wah_validation_pop_and_match_type(vctx, frame->block_type.result_types[i],
-                        frame->block_type.result_type_flags[i]));
-                }
+            for (int32_t i = frame->block_type.result_count - 1; i >= 0; --i) {
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, frame->block_type.result_types[i],
+                    frame->block_type.result_type_flags[i]));
             }
+            WAH_ENSURE(vctx->current_stack_depth == frame->stack_height, WAH_ERROR_VALIDATION_FAILED);
 
             // Reset stack to the state before the block
             vctx->type_stack.sp = frame->type_stack_sp;
@@ -4782,9 +4778,10 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                     br_result_type_flags[i]));
             }
 
-            while (vctx->current_stack_depth > br_stack_height) {
-                wah_type_t temp_type;
-                WAH_CHECK(wah_validation_pop_type(vctx, &temp_type));
+            uint32_t base = wah_validation_block_base_height(vctx);
+            if (vctx->current_stack_depth > base) {
+                vctx->type_stack.sp -= (vctx->current_stack_depth - base);
+                vctx->current_stack_depth = base;
             }
 
             vctx->is_unreachable = true;
@@ -4798,25 +4795,26 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_I32, 0));
 
-            if (vctx->is_unreachable) {
-                RECORD_BRANCH_ADJ(0, 0);
-                return WAH_OK;
-            }
-
             uint32_t br_result_count;
             const wah_type_t *br_result_types;
             const wah_type_flags_t *br_result_type_flags;
             uint32_t br_stack_height;
             wah_validation_resolve_br_target(vctx, label_idx, &br_result_count, &br_result_types, &br_result_type_flags, &br_stack_height);
 
-            WAH_ENSURE(vctx->current_stack_depth >= br_result_count, WAH_ERROR_VALIDATION_FAILED);
-            RECORD_BRANCH_ADJ(br_result_count, vctx->current_stack_depth - br_stack_height - br_result_count);
+            if (!vctx->is_unreachable) {
+                WAH_ENSURE(vctx->current_stack_depth >= br_result_count, WAH_ERROR_VALIDATION_FAILED);
+                RECORD_BRANCH_ADJ(br_result_count, vctx->current_stack_depth - br_stack_height - br_result_count);
+            } else {
+                RECORD_BRANCH_ADJ(0, 0);
+            }
 
+            for (int32_t i = br_result_count - 1; i >= 0; --i) {
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, br_result_types[i],
+                    br_result_type_flags[i]));
+            }
             for (uint32_t i = 0; i < br_result_count; ++i) {
-                wah_type_t actual_type = vctx->type_stack.data[vctx->type_stack.sp - br_result_count + i];
-                wah_type_flags_t actual_flags = vctx->type_stack.flags[vctx->type_stack.sp - br_result_count + i];
-                WAH_CHECK(wah_validate_type_match(actual_type, actual_flags, br_result_types[i],
-                    br_result_type_flags[i], vctx->module));
+                WAH_CHECK(wah_validation_push_type_with_flags(vctx, br_result_types[i],
+                    br_result_type_flags[i]));
             }
 
             return WAH_OK;
@@ -4896,9 +4894,12 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             free(popped_flags);
             if (err != WAH_OK) goto cleanup_br_table;
 
-            while (vctx->current_stack_depth > default_stack_height) {
-                wah_type_t temp_type;
-                WAH_CHECK_GOTO(wah_validation_pop_type(vctx, &temp_type), cleanup_br_table);
+            {
+                uint32_t bt_base = wah_validation_block_base_height(vctx);
+                if (vctx->current_stack_depth > bt_base) {
+                    vctx->type_stack.sp -= (vctx->current_stack_depth - bt_base);
+                    vctx->current_stack_depth = bt_base;
+                }
             }
 
             vctx->is_unreachable = true;
@@ -4916,6 +4917,11 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             for (int32_t j = vctx->func_type->result_count - 1; j >= 0; --j) {
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, vctx->func_type->result_types[j],
                     vctx->func_type->result_type_flags[j]));
+            }
+            uint32_t ret_base = wah_validation_block_base_height(vctx);
+            if (vctx->current_stack_depth > ret_base) {
+                vctx->type_stack.sp -= (vctx->current_stack_depth - ret_base);
+                vctx->current_stack_depth = ret_base;
             }
             vctx->is_unreachable = true;
             return WAH_OK;
@@ -5174,6 +5180,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, tag_type->param_types[i],
                     tag_type->param_type_flags[i]));
             }
+            { uint32_t _b = wah_validation_block_base_height(vctx);
+              if (vctx->current_stack_depth > _b) { vctx->type_stack.sp -= (vctx->current_stack_depth - _b); vctx->current_stack_depth = _b; } }
             vctx->is_unreachable = true;
             break;
         }
@@ -5181,10 +5189,10 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_THROW_REF: {
             wah_type_t ref_type;
             WAH_CHECK(wah_validation_pop_type(vctx, &ref_type));
-            if (!vctx->is_unreachable) {
-                WAH_ENSURE(ref_type == WAH_TYPE_EXNREF || ref_type == WAH_TYPE_NULLEXNREF,
-                           WAH_ERROR_VALIDATION_FAILED);
-            }
+            WAH_ENSURE(ref_type == WAH_TYPE_EXNREF || ref_type == WAH_TYPE_NULLEXNREF || ref_type == WAH_TYPE_ANY,
+                       WAH_ERROR_VALIDATION_FAILED);
+            { uint32_t _b = wah_validation_block_base_height(vctx);
+              if (vctx->current_stack_depth > _b) { vctx->type_stack.sp -= (vctx->current_stack_depth - _b); vctx->current_stack_depth = _b; } }
             vctx->is_unreachable = true;
             break;
         }
@@ -5407,17 +5415,11 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
             if (current_opcode_val == WAH_OP_END) {
                  if (vctx.control_sp == 0) { // End of function
-                    if (vctx.is_unreachable) {
-                        vctx.type_stack.sp = 0;
-                        vctx.current_stack_depth = 0;
-                    } else if (vctx.func_type->result_count == 0) {
-                        WAH_ENSURE_GOTO(vctx.type_stack.sp == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                    } else {
-                        for (int32_t j = vctx.func_type->result_count - 1; j >= 0; --j) {
-                            WAH_CHECK_GOTO(wah_validation_pop_and_match_type(&vctx, vctx.func_type->result_types[j],
-                                vctx.func_type->result_type_flags[j]), cleanup);
-                        }
+                    for (int32_t j = vctx.func_type->result_count - 1; j >= 0; --j) {
+                        WAH_CHECK_GOTO(wah_validation_pop_and_match_type(&vctx, vctx.func_type->result_types[j],
+                            vctx.func_type->result_type_flags[j]), cleanup);
                     }
+                    WAH_ENSURE_GOTO(vctx.current_stack_depth == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
                     WAH_ENSURE_GOTO(code_ptr_validation == validation_end, WAH_ERROR_VALIDATION_FAILED, cleanup);
                     break;
                 }

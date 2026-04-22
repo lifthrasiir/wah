@@ -955,7 +955,7 @@ int main() {
             funcs {[ 0 ]} \
             exports {[ {'f'} fn# 0 ]} \
             code {[ {[] \
-                block [] ref.null funcref br_on_null 0 drop i32.const 0 br 1 end i32.const 1 end \
+                block void ref.null funcref br_on_null 0 drop i32.const 0 br 1 end i32.const 1 end \
             } ]}";
         wah_module_t module;
         assert_ok(wah_parse_module_from_spec(&module, spec));
@@ -971,16 +971,25 @@ int main() {
 
     printf("Running test_br_on_non_null...\n");
     {
-        // br_on_non_null: if non-null, branch (return 1), else fall through (return 0)
-        const char *spec = "wasm \
-            types {[ fn [] [i32] ]} \
-            funcs {[ 0 ]} \
-            exports {[ {'f'} fn# 0 ]} \
-            code {[ {[] \
-                block [] ref.func 0 br_on_non_null 0 i32.const 0 br 1 end drop i32.const 1 end \
-            } ]}";
+        // br_on_non_null: push non-null ref, br_on_non_null branches, drop ref, return 1
+        // Encode block type as funcref result via raw bytes
+        uint8_t wasm[] = {
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, // header
+            0x01, 0x05, 0x01, 0x60, 0x00, 0x01, 0x7f,       // type section: () -> (i32)
+            0x03, 0x02, 0x01, 0x00,                           // func section: 1 func, type 0
+            0x07, 0x05, 0x01, 0x01, 0x66, 0x00, 0x00,        // export "f" func 0
+            0x0a, 0x10, 0x01, 0x0e, 0x00,                    // code section, 1 body, 14 bytes, 0 locals
+            0x02, 0x70,                                        // block (result funcref)
+            0xd2, 0x00,                                        // ref.func 0
+            0xd6, 0x00,                                        // br_on_non_null 0
+            0xd0, 0x70,                                        // ref.null funcref
+            0x0b,                                              // end block
+            0x1a,                                              // drop
+            0x41, 0x01,                                        // i32.const 1
+            0x0b,                                              // end func
+        };
         wah_module_t module;
-        assert_ok(wah_parse_module_from_spec(&module, spec));
+        assert_ok(wah_parse_module(wasm, sizeof(wasm), &module));
         wah_exec_context_t ctx;
         assert_ok(wah_exec_context_create(&ctx, &module));
         assert_ok(wah_instantiate(&ctx));
