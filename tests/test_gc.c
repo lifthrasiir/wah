@@ -107,6 +107,8 @@ int main() {
     wah_gc_reset(&ctx);
     assert_null(ctx.gc);
 
+    wah_exec_context_destroy(&ctx);
+
     printf("Testing exec context destroy cleans up GC...\n");
     assert_ok(wah_exec_context_create(&ctx, &module));
     assert_ok(wah_gc_start(&ctx));
