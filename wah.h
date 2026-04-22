@@ -193,9 +193,10 @@ typedef struct {
     wah_repr_field_t fields[];
 } wah_repr_info_t;
 
-#define WAH_REPR_NONE ((wah_repr_t)-1)
-#define WAH_REPR_I31  ((wah_repr_t)-2)
-#define WAH_REPR_REF  ((wah_repr_t)-3)
+#define WAH_REPR_NONE   ((wah_repr_t)-1)
+#define WAH_REPR_I31    ((wah_repr_t)-2)
+#define WAH_REPR_REF    ((wah_repr_t)-3)
+#define WAH_REPR_EXTERN ((wah_repr_t)-4)
 
 static inline bool wah_repr_is_positive(wah_repr_t id) { return id >= 0; }
 static inline bool wah_repr_is_builtin(wah_repr_t id) { return id < 0; }
@@ -203,6 +204,10 @@ static inline bool wah_repr_is_builtin(wah_repr_t id) { return id < 0; }
 typedef struct {
     int32_t value;
 } wah_gc_i31_body_t;
+
+typedef struct {
+    void *inner;
+} wah_gc_extern_body_t;
 
 typedef struct {
     uint32_t length;
@@ -234,6 +239,8 @@ typedef struct {
     wah_type_t *field_types;
     wah_type_flags_t *field_type_flags;
     bool *field_mutables;
+    uint32_t rec_group_start;
+    uint32_t rec_group_size;
 } wah_type_def_t;
 
 typedef struct wah_module_s {
@@ -3873,7 +3880,7 @@ static wah_error_t wah_parse_struct_type(const uint8_t **ptr, const uint8_t *end
         WAH_CHECK(wah_decode_storage_type(ptr, end, &td->field_types[j], &td->field_type_flags[j]));
         WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
         uint8_t mut = *(*ptr)++;
-        WAH_ENSURE(mut <= 1, WAH_ERROR_VALIDATION_FAILED);
+        WAH_ENSURE(mut <= 1, WAH_ERROR_MALFORMED);
         td->field_mutables[j] = (mut == 1);
     }
     return WAH_OK;
@@ -3889,7 +3896,7 @@ static wah_error_t wah_parse_array_type(const uint8_t **ptr, const uint8_t *end,
     WAH_CHECK(wah_decode_storage_type(ptr, end, &td->field_types[0], &td->field_type_flags[0]));
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t mut = *(*ptr)++;
-    WAH_ENSURE(mut <= 1, WAH_ERROR_VALIDATION_FAILED);
+    WAH_ENSURE(mut <= 1, WAH_ERROR_MALFORMED);
     td->field_mutables[0] = (mut == 1);
     return WAH_OK;
 }
@@ -3940,6 +3947,86 @@ static wah_error_t wah_parse_sub_type(const uint8_t **ptr, const uint8_t *end,
     return wah_parse_composite_type(ptr, end, ft, td);
 }
 
+static wah_type_t wah_canonicalize_type_ref(wah_type_t t, uint32_t rec_start, uint32_t rec_size,
+                                             const uint32_t *canonical_map) {
+    if (t >= 0 && (uint32_t)t >= rec_start && (uint32_t)t < rec_start + rec_size) {
+        return t;
+    }
+    if (t >= 0) return (wah_type_t)canonical_map[(uint32_t)t];
+    return t;
+}
+
+static bool wah_types_structurally_equal(const wah_module_t *module, uint32_t a, uint32_t b,
+                                          const uint32_t *canonical_map) {
+    const wah_type_def_t *td_a = &module->type_defs[a];
+    const wah_type_def_t *td_b = &module->type_defs[b];
+    if (td_a->kind != td_b->kind) return false;
+    if (td_a->is_final != td_b->is_final) return false;
+
+    uint32_t rg_a_start = td_a->rec_group_start, rg_a_size = td_a->rec_group_size;
+    uint32_t rg_b_start = td_b->rec_group_start, rg_b_size = td_b->rec_group_size;
+
+    // Compare supertypes (canonicalized)
+    if (td_a->supertype == WAH_NO_SUPERTYPE) {
+        if (td_b->supertype != WAH_NO_SUPERTYPE) return false;
+    } else {
+        if (td_b->supertype == WAH_NO_SUPERTYPE) return false;
+        wah_type_t sa = wah_canonicalize_type_ref((wah_type_t)td_a->supertype, rg_a_start, rg_a_size, canonical_map);
+        wah_type_t sb = wah_canonicalize_type_ref((wah_type_t)td_b->supertype, rg_b_start, rg_b_size, canonical_map);
+        // If both are within their respective rec groups, compare by offset
+        if (sa >= 0 && (uint32_t)sa >= rg_a_start && (uint32_t)sa < rg_a_start + rg_a_size &&
+            sb >= 0 && (uint32_t)sb >= rg_b_start && (uint32_t)sb < rg_b_start + rg_b_size) {
+            if ((uint32_t)sa - rg_a_start != (uint32_t)sb - rg_b_start) return false;
+        } else {
+            if (sa != sb) return false;
+        }
+    }
+
+    if (td_a->kind == WAH_COMP_FUNC) {
+        const wah_func_type_t *ft_a = &module->types[a];
+        const wah_func_type_t *ft_b = &module->types[b];
+        if (ft_a->param_count != ft_b->param_count) return false;
+        if (ft_a->result_count != ft_b->result_count) return false;
+        for (uint32_t j = 0; j < ft_a->param_count; ++j) {
+            wah_type_t ta = wah_canonicalize_type_ref(ft_a->param_types[j], rg_a_start, rg_a_size, canonical_map);
+            wah_type_t tb = wah_canonicalize_type_ref(ft_b->param_types[j], rg_b_start, rg_b_size, canonical_map);
+            if (ta >= 0 && (uint32_t)ta >= rg_a_start && (uint32_t)ta < rg_a_start + rg_a_size &&
+                tb >= 0 && (uint32_t)tb >= rg_b_start && (uint32_t)tb < rg_b_start + rg_b_size) {
+                if ((uint32_t)ta - rg_a_start != (uint32_t)tb - rg_b_start) return false;
+            } else {
+                if (ta != tb) return false;
+            }
+            if (ft_a->param_type_flags[j] != ft_b->param_type_flags[j]) return false;
+        }
+        for (uint32_t j = 0; j < ft_a->result_count; ++j) {
+            wah_type_t ta = wah_canonicalize_type_ref(ft_a->result_types[j], rg_a_start, rg_a_size, canonical_map);
+            wah_type_t tb = wah_canonicalize_type_ref(ft_b->result_types[j], rg_b_start, rg_b_size, canonical_map);
+            if (ta >= 0 && (uint32_t)ta >= rg_a_start && (uint32_t)ta < rg_a_start + rg_a_size &&
+                tb >= 0 && (uint32_t)tb >= rg_b_start && (uint32_t)tb < rg_b_start + rg_b_size) {
+                if ((uint32_t)ta - rg_a_start != (uint32_t)tb - rg_b_start) return false;
+            } else {
+                if (ta != tb) return false;
+            }
+            if (ft_a->result_type_flags[j] != ft_b->result_type_flags[j]) return false;
+        }
+    } else {
+        if (td_a->field_count != td_b->field_count) return false;
+        for (uint32_t j = 0; j < td_a->field_count; ++j) {
+            wah_type_t ta = wah_canonicalize_type_ref(td_a->field_types[j], rg_a_start, rg_a_size, canonical_map);
+            wah_type_t tb = wah_canonicalize_type_ref(td_b->field_types[j], rg_b_start, rg_b_size, canonical_map);
+            if (ta >= 0 && (uint32_t)ta >= rg_a_start && (uint32_t)ta < rg_a_start + rg_a_size &&
+                tb >= 0 && (uint32_t)tb >= rg_b_start && (uint32_t)tb < rg_b_start + rg_b_size) {
+                if ((uint32_t)ta - rg_a_start != (uint32_t)tb - rg_b_start) return false;
+            } else {
+                if (ta != tb) return false;
+            }
+            if (td_a->field_type_flags[j] != td_b->field_type_flags[j]) return false;
+            if (td_a->field_mutables[j] != td_b->field_mutables[j]) return false;
+        }
+    }
+    return true;
+}
+
 static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t rec_count;
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &rec_count));
@@ -3957,6 +4044,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
             (*ptr)++;
             uint32_t group_count;
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &group_count));
+            uint32_t group_start = module->type_count;
             for (uint32_t g = 0; g < group_count; ++g) {
                 uint32_t idx = module->type_count;
                 WAH_CHECK(wah_type_section_ensure_capacity(module, idx + 1));
@@ -3965,6 +4053,10 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
                 WAH_CHECK(wah_parse_sub_type(ptr, section_end, idx,
                                              &module->types[idx], &module->type_defs[idx]));
             }
+            for (uint32_t g = 0; g < group_count; ++g) {
+                module->type_defs[group_start + g].rec_group_start = group_start;
+                module->type_defs[group_start + g].rec_group_size = group_count;
+            }
         } else {
             uint32_t idx = module->type_count;
             WAH_CHECK(wah_type_section_ensure_capacity(module, idx + 1));
@@ -3972,6 +4064,8 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
             ++module->type_count;
             WAH_CHECK(wah_parse_sub_type(ptr, section_end, idx,
                                          &module->types[idx], &module->type_defs[idx]));
+            module->type_defs[idx].rec_group_start = idx;
+            module->type_defs[idx].rec_group_size = 1;
         }
     }
 
@@ -3991,6 +4085,30 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
         }
     }
     #undef WAH_VALIDATE_HEAP_TYPE_IDX
+
+    // Build canonical type equivalence map.
+    // canonical_map[i] = j means type i is canonically equal to type j (j <= i).
+    uint32_t *canonical_map;
+    WAH_MALLOC_ARRAY(canonical_map, module->type_count);
+    for (uint32_t i = 0; i < module->type_count; ++i) canonical_map[i] = i;
+    for (uint32_t i = 0; i < module->type_count; ++i) {
+        wah_type_def_t *td_i = &module->type_defs[i];
+        if (i != td_i->rec_group_start) continue;
+        uint32_t rg_size_i = td_i->rec_group_size;
+        for (uint32_t j = 0; j < i; ++j) {
+            wah_type_def_t *td_j = &module->type_defs[j];
+            if (j != td_j->rec_group_start) continue;
+            if (td_j->rec_group_size != rg_size_i) continue;
+            bool match = true;
+            for (uint32_t k = 0; k < rg_size_i && match; ++k) {
+                match = wah_types_structurally_equal(module, i + k, j + k, canonical_map);
+            }
+            if (match) {
+                for (uint32_t k = 0; k < rg_size_i; ++k) canonical_map[i + k] = j + k;
+                break;
+            }
+        }
+    }
 
     WAH_MALLOC_ARRAY(module->typeidx_to_repr, module->type_count);
     for (uint32_t i = 0; i < module->type_count; ++i) {
@@ -4098,16 +4216,24 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
     for (uint32_t i = 0; i < module->type_count; ++i) {
         wah_repr_t repr_id = module->typeidx_to_repr[i];
         if (repr_id == WAH_REPR_NONE) continue;
-        // This concrete type's repr is accepted by itself and all its supertypes
+        // This concrete type's repr is accepted by itself and all its supertypes,
+        // and also by all canonically equivalent types and their supertypes.
         uint32_t t = i;
         while (t != WAH_NO_SUPERTYPE) {
-            wah_repr_set_t *set = &module->type_cast_sets[t];
-            WAH_REALLOC_ARRAY(set->ids, set->count + 1);
-            set->ids[set->count++] = repr_id;
+            // Add repr_id to type t and all types canonically equal to t
+            for (uint32_t c = 0; c < module->type_count; ++c) {
+                if (canonical_map[c] != canonical_map[t]) continue;
+                wah_repr_set_t *set = &module->type_cast_sets[c];
+                if (!wah_repr_set_contains(set, repr_id)) {
+                    WAH_REALLOC_ARRAY(set->ids, set->count + 1);
+                    set->ids[set->count++] = repr_id;
+                }
+            }
             t = module->type_defs[t].supertype;
         }
     }
 
+    free(canonical_map);
     return WAH_OK;
 }
 
@@ -7686,6 +7812,15 @@ wah_gc_object_t *wah_gc_alloc_i31(wah_exec_context_t *ctx, int32_t value) {
     return obj;
 }
 
+static wah_gc_object_t *wah_gc_alloc_extern(wah_exec_context_t *ctx, void *inner) {
+    wah_gc_object_t *obj = wah_gc_alloc(ctx, WAH_REPR_EXTERN, (uint32_t)sizeof(wah_gc_extern_body_t));
+    if (obj) {
+        wah_gc_extern_body_t *body = (wah_gc_extern_body_t *)wah_gc_payload(obj);
+        body->inner = inner;
+    }
+    return obj;
+}
+
 static inline void wah_ref_store_global(wah_exec_context_t *ctx, uint32_t idx, wah_value_t val) {
     ctx->globals[idx] = val;
 }
@@ -8110,7 +8245,7 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
 
     switch (target) {
         case WAH_TYPE_ANYREF:
-            return repr_id != WAH_TYPE_FUNCTION;
+            return repr_id != WAH_TYPE_FUNCTION && repr_id != WAH_REPR_EXTERN;
         case WAH_TYPE_EQREF:
             return wah_repr_is_positive(repr_id) || repr_id == WAH_REPR_I31;
         case WAH_TYPE_I31REF:
@@ -8124,7 +8259,7 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
         case WAH_TYPE_FUNCREF:
             return repr_id == WAH_TYPE_FUNCTION;
         case WAH_TYPE_EXTERNREF:
-            return false;
+            return repr_id == WAH_REPR_EXTERN;
         default:
             return false;
     }
@@ -9071,11 +9206,25 @@ WAH_RUN(ARRAY_INIT_ELEM) {
 }
 
 WAH_RUN(ANY_CONVERT_EXTERN) {
+    void *ref = sp[-1].ref;
+    if (ref != NULL) {
+        wah_gc_object_t *hdr = (wah_gc_object_t *)ref;
+        if (hdr->repr_id == WAH_REPR_EXTERN) {
+            sp[-1].ref = ((wah_gc_extern_body_t *)wah_gc_payload(hdr))->inner;
+        }
+    }
     WAH_NEXT();
 }
 
 WAH_RUN(EXTERN_CONVERT_ANY) {
+    void *ref = sp[-1].ref;
+    if (ref != NULL) {
+        wah_gc_object_t *obj = wah_gc_alloc_extern(ctx, ref);
+        WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+        sp[-1].ref = obj;
+    }
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(REF_I31) {

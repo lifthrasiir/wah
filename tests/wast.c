@@ -854,11 +854,23 @@ static int wast_parse_const(const wast_node_t *node, wast_const_value_t *out,
         out->value.ref = NULL;
         return 1;
     }
-    if ((wast_atom_eq(node->children[0], "ref.extern") || wast_atom_eq(node->children[0], "ref.host")) &&
-        node->child_count == 2) {
+    if (wast_atom_eq(node->children[0], "ref.extern") && node->child_count == 2) {
         if (!wast_parse_u64(node->children[1], &u64)) return 0;
         out->type = WAH_TYPE_EXTERNREF;
         out->value.ref = resolve_ref(ref_userdata, (uint32_t)u64);
+        return out->value.ref != NULL;
+    }
+    if (wast_atom_eq(node->children[0], "ref.host") && node->child_count == 2) {
+        if (!wast_parse_u64(node->children[1], &u64)) return 0;
+        out->type = WAH_TYPE_ANYREF;
+        void *wrapper = resolve_ref(ref_userdata, (uint32_t)u64);
+        if (!wrapper) return 0;
+        wah_gc_object_t *hdr = (wah_gc_object_t *)wrapper;
+        if (hdr->repr_id == WAH_REPR_EXTERN) {
+            out->value.ref = ((wah_gc_extern_body_t *)((uint8_t *)hdr + sizeof(wah_gc_object_t)))->inner;
+        } else {
+            out->value.ref = wrapper;
+        }
         return out->value.ref != NULL;
     }
     if (wast_atom_eq(node->children[0], "v128.const") && node->child_count >= 3) {

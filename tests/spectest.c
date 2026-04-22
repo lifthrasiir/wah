@@ -123,9 +123,13 @@ typedef struct {
     uint32_t id;
 } host_ref_obj_t;
 
+typedef struct {
+    wah_gc_object_t header;
+    wah_gc_extern_body_t body;
+} host_extern_wrapper_t;
+
 static void *host_ref_for_id(spectest_env_t *env, uint32_t id) {
     size_t i;
-    host_ref_obj_t *storage;
     for (i = 0; i < env->host_ref_count; ++i) {
         if (env->host_refs[i].id == id) {
             return env->host_refs[i].ptr;
@@ -135,16 +139,22 @@ static void *host_ref_for_id(spectest_env_t *env, uint32_t id) {
                          sizeof(*env->host_refs), env->host_ref_count + 1)) {
         return NULL;
     }
-    storage = (host_ref_obj_t *)malloc(sizeof(*storage));
-    if (!storage) {
-        return NULL;
-    }
-    storage->header = (wah_gc_object_t){.next_tagged = NULL, .repr_id = WAH_REPR_NONE, .size_bytes = 0};
-    storage->id = id;
+    host_ref_obj_t *inner = (host_ref_obj_t *)malloc(sizeof(*inner));
+    if (!inner) return NULL;
+    inner->header = (wah_gc_object_t){.next_tagged = NULL, .repr_id = WAH_REPR_NONE, .size_bytes = 0};
+    inner->id = id;
+    host_extern_wrapper_t *wrapper = (host_extern_wrapper_t *)malloc(sizeof(*wrapper));
+    if (!wrapper) { free(inner); return NULL; }
+    wrapper->header = (wah_gc_object_t){
+        .next_tagged = NULL,
+        .repr_id = WAH_REPR_EXTERN,
+        .size_bytes = (uint32_t)sizeof(wah_gc_extern_body_t)
+    };
+    wrapper->body.inner = inner;
     env->host_refs[env->host_ref_count].id = id;
-    env->host_refs[env->host_ref_count].ptr = storage;
+    env->host_refs[env->host_ref_count].ptr = wrapper;
     env->host_ref_count++;
-    return storage;
+    return wrapper;
 }
 
 static spectest_module_def_t *find_def_by_name(spectest_env_t *env, const char *name) {
@@ -336,10 +346,14 @@ static int match_single_pattern(const spectest_env_t *env,
             return actual->value.ref != NULL && is_func_ref(instance, actual->value.ref);
         case WAST_PAT_REF_EXTERN:
             return actual->value.ref != NULL;
-        case WAST_PAT_REF_HOST:
+        case WAST_PAT_REF_HOST: {
             if (actual->value.ref == NULL) return 0;
             if (pat->host_ref_id == 0 && !pat->ref_kind_name) return 1;
-            return actual->value.ref == host_ref_for_id((spectest_env_t *)env, pat->host_ref_id);
+            void *expected = host_ref_for_id((spectest_env_t *)env, pat->host_ref_id);
+            if (actual->value.ref == expected) return 1;
+            host_extern_wrapper_t *w = (host_extern_wrapper_t *)expected;
+            return actual->value.ref == w->body.inner;
+        }
         case WAST_PAT_REF_OTHER:
             if (!strcmp(pat->ref_kind_name, "ref.array") ||
                 !strcmp(pat->ref_kind_name, "ref.struct") ||
@@ -1085,7 +1099,9 @@ static void free_env(spectest_env_t *env) {
         free(env->registered[i].name);
     }
     for (i = 0; i < env->host_ref_count; ++i) {
-        free(env->host_refs[i].ptr);
+        host_extern_wrapper_t *w = (host_extern_wrapper_t *)env->host_refs[i].ptr;
+        free(w->body.inner);
+        free(w);
     }
     if (env->host_ready) {
         wah_free_module(&env->spectest_host);
