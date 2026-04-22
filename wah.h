@@ -13137,16 +13137,11 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 WAH_ENSURE_GOTO(gi->type_flags == exported_global->type_flags, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             } else {
                 bool type_ok = wah_type_is_subtype(exported_global->type, gi->type, linked);
-                if (type_ok && exported_global->type != gi->type) {
-                    // subtype via hierarchy is ok
-                } else if (exported_global->type == gi->type) {
-                    if ((exported_global->type_flags & WAH_TYPE_FLAG_NULLABLE) &&
-                        !(gi->type_flags & WAH_TYPE_FLAG_NULLABLE)) {
-                        type_ok = false;
-                    } else {
-                        type_ok = true;
-                    }
-                } else {
+                if (!type_ok && exported_global->type == gi->type) {
+                    type_ok = true;
+                }
+                if (type_ok && (exported_global->type_flags & WAH_TYPE_FLAG_NULLABLE) &&
+                    !(gi->type_flags & WAH_TYPE_FLAG_NULLABLE)) {
                     type_ok = false;
                 }
                 WAH_ENSURE_GOTO(type_ok, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
