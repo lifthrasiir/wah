@@ -13135,11 +13135,15 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         wah_global_import_t *gi = &module->global_imports[i];
 
         const wah_module_t *linked = NULL;
+        wah_exec_context_t *gi_linked_ctx = NULL;
+        uint32_t gi_linked_idx = 0;
         for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
             const char *linked_name = ctx->linked_modules[j].name;
             if (strncmp(linked_name, gi->name.module, gi->name.module_len) == 0 &&
                 linked_name[gi->name.module_len] == '\0') {
                 linked = ctx->linked_modules[j].module;
+                gi_linked_ctx = ctx->linked_modules[j].ctx;
+                gi_linked_idx = j;
                 break;
             }
         }
@@ -13158,8 +13162,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
 
         // Find the linked module's globals offset in ctx->globals
         uint32_t linked_globals_offset = wah_total_global_count(module);
-        for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
-            if (ctx->linked_modules[j].module == linked) break;
+        for (uint32_t j = 0; j < gi_linked_idx; j++) {
             linked_globals_offset += ctx->linked_modules[j].module->global_count;
         }
 
@@ -13194,16 +13197,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         }
 
         if (gi->is_mutable) {
-            // For mutable imports, find the linked ctx and store an indirect pointer
-            wah_exec_context_t *linked_ctx = NULL;
-            for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
-                if (ctx->linked_modules[j].module == linked) {
-                    linked_ctx = ctx->linked_modules[j].ctx;
-                    break;
-                }
-            }
-            if (linked_ctx) {
-                ctx->globals[i].ref = &linked_ctx->globals[linked_global_idx];
+            if (gi_linked_ctx) {
+                ctx->globals[i].ref = &gi_linked_ctx->globals[linked_global_idx];
             } else {
                 ctx->globals[i].ref = &ctx->globals[linked_globals_offset + linked_local_global_idx];
             }
