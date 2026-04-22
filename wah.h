@@ -5419,6 +5419,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(vctx->module->type_defs[typeidx].field_mutables[0], WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(WAH_TYPE_IS_REF(vctx->module->type_defs[typeidx].field_types[0]), WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(elemidx < vctx->module->element_segment_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(wah_type_is_subtype(vctx->module->element_segments[elemidx].elem_type,
+                vctx->module->type_defs[typeidx].field_types[0], vctx->module), WAH_ERROR_VALIDATION_FAILED);
             wah_type_t ie_t; WAH_CHECK(wah_validation_pop_type(vctx, &ie_t)); // size: i32
             WAH_CHECK(wah_validation_pop_type(vctx, &ie_t)); // src_offset: i32
             WAH_CHECK(wah_validation_pop_type(vctx, &ie_t)); // dst_offset: i32
@@ -5428,9 +5430,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         }
 
         case WAH_OP_REF_EQ: {
-            wah_type_t t1, t2;
-            WAH_CHECK(wah_validation_pop_type(vctx, &t2));
-            WAH_CHECK(wah_validation_pop_type(vctx, &t1));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_EQREF, WAH_TYPE_FLAG_NULLABLE));
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_EQREF, WAH_TYPE_FLAG_NULLABLE));
             WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_I32));
             EMIT_SIMPLE();
             break;
@@ -5505,12 +5506,13 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             wah_type_t ht1, ht2;
             WAH_CHECK(wah_decode_heap_type(code_ptr, code_end, &ht1));
             WAH_CHECK(wah_decode_heap_type(code_ptr, code_end, &ht2));
-            wah_type_t ref_type;
-            WAH_CHECK(wah_validation_pop_type(vctx, &ref_type));
-            wah_type_t src_type = WAH_TYPE_IS_REF(ht1) ? ht1 : (ht1 >= 0 ? (wah_type_t)ht1 : WAH_TYPE_ANYREF);
+            WAH_ENSURE(wah_type_is_subtype(ht2, ht1, vctx->module), WAH_ERROR_VALIDATION_FAILED);
             wah_type_flags_t src_flags = (cast_flags & 0x01) ? WAH_TYPE_FLAG_NULLABLE : 0;
             wah_type_flags_t dst_flags = (cast_flags & 0x02) ? WAH_TYPE_FLAG_NULLABLE : 0;
-            RECORD_BRANCH_ADJ(0, 0); // placeholder: GC branch stack adjustment not yet computed
+            WAH_ENSURE(!dst_flags || src_flags, WAH_ERROR_VALIDATION_FAILED);
+            wah_type_t src_type = WAH_TYPE_IS_REF(ht1) ? ht1 : (ht1 >= 0 ? (wah_type_t)ht1 : WAH_TYPE_ANYREF);
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, src_type, src_flags | WAH_TYPE_FLAG_NULLABLE));
+            RECORD_BRANCH_ADJ(0, 0);
             if (opcode_val == WAH_OP_BR_ON_CAST) {
                 wah_type_flags_t diff_flags = src_flags & ~dst_flags;
                 WAH_CHECK(wah_validation_push_type_with_flags(vctx, src_type, diff_flags));
@@ -8509,7 +8511,16 @@ WAH_RUN(REF_CAST_NULL) {
 WAH_RUN(REF_EQ) {
     wah_value_t b = *--sp;
     wah_value_t a = *--sp;
-    (*sp++).i32 = (a.ref == b.ref) ? 1 : 0;
+    bool eq = (a.ref == b.ref);
+    if (!eq && a.ref != NULL && b.ref != NULL) {
+        wah_gc_object_t *ha = (wah_gc_object_t *)a.ref;
+        wah_gc_object_t *hb = (wah_gc_object_t *)b.ref;
+        if (ha->repr_id == WAH_REPR_I31 && hb->repr_id == WAH_REPR_I31) {
+            eq = ((wah_gc_i31_body_t *)wah_gc_payload(ha))->value ==
+                 ((wah_gc_i31_body_t *)wah_gc_payload(hb))->value;
+        }
+    }
+    (*sp++).i32 = eq ? 1 : 0;
     WAH_NEXT();
 }
 
