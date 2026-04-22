@@ -1513,6 +1513,7 @@ typedef struct wah_table_type_s {
     wah_type_t addr_type;     // WAH_TYPE_I32 or WAH_TYPE_I64
     uint64_t min_elements;
     uint64_t max_elements; // UINT64_MAX if no maximum
+    wah_parsed_code_t init_expr;
 } wah_table_type_t;
 
 typedef struct wah_data_segment_s {
@@ -5782,11 +5783,23 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
     // A table entry requires at least 3 bytes (elem_type, flags, min_elements_uleb128).
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 3));
 
-    module->table_count = count;
+    module->table_count = 0;
     if (count > 0) {
         WAH_MALLOC_ARRAY(module->tables, count);
 
         for (uint32_t i = 0; i < count; ++i) {
+            module->tables[i] = (wah_table_type_t){0};
+            module->table_count++;
+
+            WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
+            bool has_init_expr = (**ptr == 0x40);
+            if (has_init_expr) {
+                (*ptr)++;
+                WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
+                WAH_ENSURE(**ptr == 0x00, WAH_ERROR_VALIDATION_FAILED);
+                (*ptr)++;
+            }
+
             wah_type_t elem_type;
             wah_type_flags_t elem_type_flags;
             WAH_CHECK(wah_decode_ref_type(ptr, section_end, &elem_type, &elem_type_flags));
@@ -5823,6 +5836,13 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
             }
             WAH_ENSURE(module->tables[i].min_elements <= module->tables[i].max_elements,
                        WAH_ERROR_VALIDATION_FAILED);
+
+            if (has_init_expr) {
+                const uint8_t *expr_start = *ptr;
+                WAH_CHECK(wah_validate_const_expr(ptr, section_end, elem_type, module, wah_total_global_count(module)));
+                uint32_t expr_size = (uint32_t)(*ptr - expr_start);
+                WAH_CHECK(wah_preparse_code(module, 0, expr_start, expr_size, &module->tables[i].init_expr, false, NULL));
+            }
         }
     }
     return WAH_OK;
@@ -11895,7 +11915,12 @@ void wah_free_module(wah_module_t *module) {
         free(module->globals);
     }
     free(module->memories);
-    free(module->tables);
+    if (module->tables) {
+        for (uint32_t i = 0; i < module->table_count; ++i) {
+            wah_free_parsed_code(&module->tables[i].init_expr);
+        }
+        free(module->tables);
+    }
 
     if (module->element_segments) {
         for (uint32_t i = 0; i < module->element_segment_count; ++i) {
@@ -13191,6 +13216,26 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             }
             WAH_ENSURE_GOTO(offset + segment->data_len <= ctx->memory_sizes[segment->memory_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
             memcpy(ctx->memories[segment->memory_idx] + offset, segment->data, segment->data_len);
+        }
+    }
+
+    // Evaluate table init expressions (for tables declared with 0x40 encoding)
+    for (uint32_t i = 0; i < module->table_count; ++i) {
+        if (module->tables[i].init_expr.bytecode) {
+            uint32_t slot = module->import_table_count + i;
+            wah_value_t init_val;
+            WAH_CHECK_GOTO(wah_eval_const_expr(ctx,
+                module->tables[i].init_expr.bytecode,
+                module->tables[i].init_expr.bytecode_size,
+                &init_val), cleanup);
+            if (init_val.ref == wah_funcref_sentinel) {
+                uint32_t func_idx = init_val.prefuncref.func_idx;
+                WAH_ENSURE_GOTO(func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                init_val.ref = &ctx->function_table[func_idx];
+            }
+            for (uint64_t j = 0; j < ctx->table_sizes[slot]; ++j) {
+                ctx->tables[slot][j] = init_val;
+            }
         }
     }
 
