@@ -1726,6 +1726,138 @@ typedef struct {
     uint32_t control_sp;
 } wah_validation_context_t;
 
+// --- Analyzed-Code IR (structured output of raw-Wasm decoding + validation) ---
+
+typedef enum {
+    WAH_IMM_NONE,
+    WAH_IMM_U32,
+    WAH_IMM_I32,
+    WAH_IMM_I64,
+    WAH_IMM_F32,
+    WAH_IMM_F64,
+    WAH_IMM_V128,
+    WAH_IMM_U32_U32,
+    WAH_IMM_MEMARG,
+    WAH_IMM_MEMARG_LANE,
+    WAH_IMM_BLOCK,
+    WAH_IMM_BRANCH,
+    WAH_IMM_BR_TABLE,
+    WAH_IMM_REF_CAST,
+    WAH_IMM_BR_ON_CAST,
+    WAH_IMM_TYPE_FIELD,
+    WAH_IMM_TYPE_LENGTH,
+    WAH_IMM_TRY_TABLE,
+    WAH_IMM_SELECT_T,
+    WAH_IMM_SHUFFLE,
+} wah_imm_kind_t;
+
+typedef enum {
+    WAH_INSTR_FLAG_NONE          = 0,
+    WAH_INSTR_FLAG_POLL          = 1 << 0,
+    WAH_INSTR_FLAG_UNREACHABLE   = 1 << 1,
+    WAH_INSTR_FLAG_LOWERING_HINT = 1 << 2,
+} wah_instr_flags_t;
+
+typedef struct {
+    uint32_t align;
+    uint32_t memidx;
+    uint64_t offset;
+} wah_imm_memarg_t;
+
+typedef struct {
+    uint32_t target_count;
+    uint32_t *target_symbols;
+    uint32_t default_symbol;
+} wah_imm_br_table_t;
+
+typedef struct {
+    uint8_t cast_flags;
+    uint32_t target_symbol;
+    wah_type_t src_type;
+    wah_type_flags_t src_type_flags;
+    wah_type_t dst_type;
+    wah_type_flags_t dst_type_flags;
+    int32_t dst_heap_type;
+} wah_imm_br_on_cast_t;
+
+typedef struct {
+    uint32_t catch_count;
+    struct {
+        uint8_t kind;
+        uint32_t tag_idx;
+        uint32_t target_symbol;
+    } *catches;
+    wah_func_type_t block_type;
+} wah_imm_try_table_t;
+
+typedef struct {
+    uint16_t opcode;
+    uint16_t flags;
+    uint32_t raw_offset;
+    uint32_t symbol_id;
+    wah_imm_kind_t imm_kind;
+    union {
+        uint32_t u32;
+        int32_t i32;
+        int64_t i64;
+        uint32_t f32_bits;
+        uint64_t f64_bits;
+        uint8_t v128[16];
+        struct { uint32_t a, b; } u32_u32;
+        wah_imm_memarg_t memarg;
+        struct { wah_imm_memarg_t memarg; uint8_t lane; } memarg_lane;
+        struct { wah_func_type_t type; uint32_t symbol_id; } block;
+        struct { uint32_t label_idx; uint32_t target_symbol; } branch;
+        wah_imm_br_table_t br_table;
+        struct { wah_type_t type; wah_type_flags_t type_flags; int32_t heap_type; } ref_cast;
+        wah_imm_br_on_cast_t br_on_cast;
+        struct { uint32_t type_idx; uint32_t field_idx; } type_field;
+        struct { uint32_t type_idx; uint32_t length; } type_length;
+        wah_imm_try_table_t try_table;
+        struct { uint32_t count; wah_type_t type; wah_type_flags_t type_flags; } select_t;
+        uint8_t shuffle[16];
+    } imm;
+} wah_decoded_instr_t;
+
+#define WAH_SYMBOL_UNRESOLVED UINT32_MAX
+
+typedef struct {
+    uint32_t instr_idx;
+} wah_cf_symbol_t;
+
+typedef struct {
+    wah_decoded_instr_t *instrs;
+    uint32_t instr_count;
+    uint32_t instr_capacity;
+
+    wah_cf_symbol_t *symbols;
+    uint32_t symbol_count;
+    uint32_t symbol_capacity;
+
+    uint8_t *operand_ref_map;
+    uint32_t operand_ref_map_size;
+
+    uint32_t max_stack_depth;
+} wah_analyzed_code_t;
+
+static void wah_free_analyzed_code(wah_analyzed_code_t *ac) {
+    if (!ac) return;
+    if (ac->instrs) {
+        for (uint32_t i = 0; i < ac->instr_count; i++) {
+            wah_decoded_instr_t *instr = &ac->instrs[i];
+            if (instr->imm_kind == WAH_IMM_BR_TABLE) {
+                free(instr->imm.br_table.target_symbols);
+            } else if (instr->imm_kind == WAH_IMM_TRY_TABLE) {
+                free(instr->imm.try_table.catches);
+            }
+        }
+        free(ac->instrs);
+    }
+    free(ac->symbols);
+    if (ac->operand_ref_map) free(ac->operand_ref_map);
+    memset(ac, 0, sizeof(*ac));
+}
+
 // --- Forward Declarations ---
 
 static wah_error_t wah_call_module(wah_exec_context_t *exec_ctx, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
