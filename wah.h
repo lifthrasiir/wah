@@ -1161,7 +1161,9 @@ typedef enum {
 #define WAH_INTERNAL_OPCODES(X) \
     X(POLL) \
     X(END_TRY_TABLE) \
-    X(REF_FUNC_CONST)
+    X(REF_FUNC_CONST) \
+    X(GLOBAL_GET_INDIRECT) \
+    X(GLOBAL_SET_INDIRECT)
 
 typedef enum {
 #define WAH_OPCODE_INIT(name, cls, val) WAH_OP_##name = val,
@@ -1585,7 +1587,7 @@ typedef struct wah_call_frame_s {
     uint32_t func_idx;           // Local index of the function being executed (debug)
     uint32_t result_count;       // Number of return values (used by RETURN/END)
     const struct wah_module_s *module; // The module this function belongs to (for cross-module calls)
-    uint32_t globals_offset;     // Offset into ctx->globals for this module's globals (for cross-module calls)
+    wah_value_t *frame_globals;  // Pointer to the globals array for this frame's module
     uint32_t ref_map_offset;     // Byte offset into parsed_code.operand_ref_map for current POLL point
     struct wah_function_s *frame_function_table; // Function table for this frame (NULL = use ctx->function_table)
     uint32_t frame_function_table_count; // Number of entries in frame_function_table
@@ -6721,6 +6723,13 @@ static wah_error_t wah_lower_analyzed_code(
             }
             case WAH_OPCLASS_I: {
                 uint32_t a = instr->imm.u32;
+                // Redirect global.get/set to indirect variants for imported mutable globals
+                if ((opcode == WAH_OP_GLOBAL_GET || opcode == WAH_OP_GLOBAL_SET)
+                    && a < module->import_global_count && module->global_imports[a].is_mutable) {
+                    uint16_t new_opcode = (opcode == WAH_OP_GLOBAL_GET)
+                        ? WAH_OP_GLOBAL_GET_INDIRECT : WAH_OP_GLOBAL_SET_INDIRECT;
+                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), new_opcode);
+                }
                 // Redirect memory.size/memory.grow/memory.fill to i64 variants when needed
                 if ((opcode == WAH_OP_MEMORY_SIZE || opcode == WAH_OP_MEMORY_GROW || opcode == WAH_OP_MEMORY_FILL)
                     && a < wah_total_memory_count(module) && wah_memory_type(module, a)->addr_type == WAH_TYPE_I64) {
@@ -7597,6 +7606,10 @@ static inline void wah_ref_store_global(wah_exec_context_t *ctx, uint32_t idx, w
     ctx->globals[idx] = val;
 }
 
+static inline void wah_ref_store_global_slot(wah_value_t *slot, wah_value_t val) {
+    *slot = val;
+}
+
 static inline void wah_ref_store_table(wah_exec_context_t *ctx, uint32_t table_idx, uint64_t elem_idx, wah_value_t val) {
     ctx->tables[table_idx][elem_idx] = val;
 }
@@ -7889,22 +7902,23 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, const wah_module_t *f
     frame->module = fn_module;
     frame->ref_map_offset = 0;
 
-    // Calculate globals_offset and function_table for cross-module calls
+    // Calculate frame_globals and function_table for cross-module calls
     if (fn_module == ctx->module) {
-        frame->globals_offset = 0;  // Primary module (imports at [0..import_global_count), locals after)
+        frame->frame_globals = ctx->globals;
         frame->frame_function_table = NULL;
         frame->frame_function_table_count = 0;
     } else {
-        // Find the module in linked_modules and calculate offset
+        // Find the module in linked_modules
         uint32_t offset = wah_total_global_count(ctx->module);
         bool found = false;
         for (uint32_t i = 0; i < ctx->linked_module_count; i++) {
             if (ctx->linked_modules[i].module == fn_module) {
-                frame->globals_offset = offset;
                 if (ctx->linked_modules[i].ctx) {
+                    frame->frame_globals = ctx->linked_modules[i].ctx->globals;
                     frame->frame_function_table = ctx->linked_modules[i].ctx->function_table;
                     frame->frame_function_table_count = ctx->linked_modules[i].ctx->function_table_count;
                 } else {
+                    frame->frame_globals = ctx->globals + offset;
                     frame->frame_function_table = NULL;
                     frame->frame_function_table_count = 0;
                 }
@@ -7913,11 +7927,7 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, const wah_module_t *f
             }
             offset += ctx->linked_modules[i].module->global_count;
         }
-        if (!found) {
-            frame->globals_offset = 0;  // Fallback (shouldn't happen)
-            frame->frame_function_table = NULL;
-            frame->frame_function_table_count = 0;
-        }
+        WAH_ASSERT(found && "cross-module call to unknown linked module");
     }
 
     return WAH_OK;
@@ -8364,6 +8374,20 @@ WAH_RUN(REF_FUNC_CONST) {
     val.prefuncref.sentinel = wah_funcref_sentinel;
     val.prefuncref.func_idx = func_idx;
     *sp++ = val;
+    WAH_NEXT();
+}
+
+WAH_RUN(GLOBAL_GET_INDIRECT) {
+    uint32_t global_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    *sp++ = *(wah_value_t *)frame->frame_globals[global_idx].ref;
+    WAH_NEXT();
+}
+
+WAH_RUN(GLOBAL_SET_INDIRECT) {
+    uint32_t global_idx = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    wah_ref_store_global_slot((wah_value_t *)frame->frame_globals[global_idx].ref, *--sp);
     WAH_NEXT();
 }
 
@@ -8839,16 +8863,14 @@ WAH_RUN(LOCAL_TEE) {
 WAH_RUN(GLOBAL_GET) {
     uint32_t global_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    uint32_t effective_global_idx = frame->globals_offset + global_idx;
-    *sp++ = ctx->globals[effective_global_idx];
+    *sp++ = frame->frame_globals[global_idx];
     WAH_NEXT();
 }
 
 WAH_RUN(GLOBAL_SET) {
     uint32_t global_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    uint32_t effective_global_idx = frame->globals_offset + global_idx;
-    wah_ref_store_global(ctx, effective_global_idx, *--sp);
+    wah_ref_store_global_slot(&frame->frame_globals[global_idx], *--sp);
     WAH_NEXT();
 }
 
@@ -9369,19 +9391,23 @@ WAH_RUN(CALL_REF) {
         frame->module = tc_module; \
         frame->ref_map_offset = 0; \
         if (tc_module == ctx->module) { \
-            frame->globals_offset = 0; \
+            frame->frame_globals = ctx->globals; \
         } else { \
             uint32_t tc_offset = wah_total_global_count(ctx->module); \
             bool tc_found = false; \
             for (uint32_t tc_i = 0; tc_i < ctx->linked_module_count; tc_i++) { \
                 if (ctx->linked_modules[tc_i].module == tc_module) { \
-                    frame->globals_offset = tc_offset; \
+                    if (ctx->linked_modules[tc_i].ctx) { \
+                        frame->frame_globals = ctx->linked_modules[tc_i].ctx->globals; \
+                    } else { \
+                        frame->frame_globals = ctx->globals + tc_offset; \
+                    } \
                     tc_found = true; \
                     break; \
                 } \
                 tc_offset += ctx->linked_modules[tc_i].module->global_count; \
             } \
-            if (!tc_found) frame->globals_offset = 0; \
+            WAH_ASSERT(tc_found && "tail call to unknown linked module"); \
         } \
         bytecode_ip = frame->bytecode_ip; \
         bytecode_base = frame->code->parsed_code.bytecode; \
@@ -12523,7 +12549,7 @@ static wah_error_t wah_eval_const_expr(
     wah_code_body_t dummy_code = {.parsed_code = {.bytecode = (uint8_t *)bytecode, .bytecode_size = bytecode_size}};
     wah_value_t local_stack[16];
     wah_call_frame_t local_frame = {.code = &dummy_code, .bytecode_ip = bytecode, .locals_offset = 0,
-                                    .result_count = 1, .globals_offset = 0, .module = ctx->module};
+                                    .result_count = 1, .frame_globals = ctx->globals, .module = ctx->module};
     wah_exec_context_t cctx = {.module = ctx->module, .globals = ctx->globals, .global_count = ctx->global_count,
                                .value_stack = local_stack, .value_stack_capacity = sizeof(local_stack) / sizeof(wah_value_t),
                                .sp = 0, .call_stack = &local_frame, .max_call_depth = 1, .call_depth = 1, .gc = ctx->gc};
@@ -12730,7 +12756,23 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             }
         }
 
-        ctx->globals[i] = ctx->globals[linked_globals_offset + linked_local_global_idx];
+        if (gi->is_mutable) {
+            // For mutable imports, find the linked ctx and store an indirect pointer
+            wah_exec_context_t *linked_ctx = NULL;
+            for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+                if (ctx->linked_modules[j].module == linked) {
+                    linked_ctx = ctx->linked_modules[j].ctx;
+                    break;
+                }
+            }
+            if (linked_ctx) {
+                ctx->globals[i].ref = &linked_ctx->globals[linked_global_idx];
+            } else {
+                ctx->globals[i].ref = &ctx->globals[linked_globals_offset + linked_local_global_idx];
+            }
+        } else {
+            ctx->globals[i] = ctx->globals[linked_globals_offset + linked_local_global_idx];
+        }
     }
 
     // Resolve tag imports from linked modules

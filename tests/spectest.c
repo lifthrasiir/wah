@@ -518,7 +518,12 @@ static int execute_action(const wast_node_t *action_node,
             return 0;
         }
         result->values[0].type = entry.type;
-        result->values[0].value = instance->exec.globals[global_idx];
+        if (global_idx < instance->exec.module->import_global_count &&
+            instance->exec.module->global_imports[global_idx].is_mutable) {
+            result->values[0].value = *(wah_value_t *)instance->exec.globals[global_idx].ref;
+        } else {
+            result->values[0].value = instance->exec.globals[global_idx];
+        }
         result->count = 1;
         if (out_instance) *out_instance = instance;
         free(field_name);
