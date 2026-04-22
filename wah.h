@@ -5717,15 +5717,19 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         // --- End Validation Pass ---
 
         ac.max_stack_depth = vctx.max_stack_depth;
-        wah_free_analyzed_code(&ac);
+        ac.operand_ref_map = ref_map;
+        ac.operand_ref_map_size = ref_map_size;
+        ref_map = NULL;
 
         #undef WAH_CAPTURE_REF_MAP
 
-        module->code_bodies[i].parsed_code.operand_ref_map = ref_map;
-        module->code_bodies[i].parsed_code.operand_ref_map_size = ref_map_size;
-        ref_map = NULL;
+        module->code_bodies[i].parsed_code.operand_ref_map = ac.operand_ref_map;
+        module->code_bodies[i].parsed_code.operand_ref_map_size = ac.operand_ref_map_size;
+        ac.operand_ref_map = NULL;
 
-        module->code_bodies[i].max_stack_depth = vctx.max_stack_depth;
+        module->code_bodies[i].max_stack_depth = ac.max_stack_depth;
+
+        wah_free_analyzed_code(&ac);
 
         // Pre-parse the code for optimized execution
         WAH_CHECK_GOTO(wah_preparse_code(module, i, module->code_bodies[i].code, module->code_bodies[i].code_size, &module->code_bodies[i].parsed_code, true, module->code_bodies[i].branch_stack_adj), cleanup);
