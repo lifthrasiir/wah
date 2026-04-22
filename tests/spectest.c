@@ -925,16 +925,30 @@ static int handle_module_instance(const wast_node_t *node, spectest_env_t *env, 
     err = instantiate_def_into_instance(env, def, instance);
     if (expect_failure_kind == 1) {
         if (expect_unlinkable(err)) {
+            if (instance == &tmp && tmp.exec.function_table) {
+                wah_exec_context_destroy(&tmp.exec);
+            }
             pass_check(env);
             return 1;
+        }
+        if (instance == &tmp && tmp.exec.function_table) {
+            wah_exec_context_destroy(&tmp.exec);
         }
         fail_check(env, "expected unlinkable, got %s", wah_strerror(err));
         return 0;
     }
     if (expect_failure_kind == 2) {
         if (expect_trap_like(err)) {
+            spectest_instance_t *kept = add_instance(env, NULL, def);
+            if (kept) {
+                kept->exec = tmp.exec;
+                kept->live = 1;
+            }
             pass_check(env);
             return 1;
+        }
+        if (instance == &tmp && tmp.exec.function_table) {
+            wah_exec_context_destroy(&tmp.exec);
         }
         fail_check(env, "expected instantiation trap, got %s", wah_strerror(err));
         return 0;
