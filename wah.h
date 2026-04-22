@@ -1665,9 +1665,6 @@ typedef struct wah_code_body_s {
     const uint8_t *code; // Pointer to the raw instruction bytes within the WASM binary
     uint32_t max_stack_depth; // Maximum operand stack depth required
     wah_parsed_code_t parsed_code; // Pre-parsed opcodes and arguments for optimized execution
-    uint32_t *branch_stack_adj;
-    uint32_t branch_stack_adj_count;
-    uint32_t branch_stack_adj_capacity;
 } wah_code_body_t;
 
 // --- WebAssembly Element Segment Structure ---
@@ -1768,6 +1765,8 @@ typedef struct {
     uint32_t target_count;
     uint32_t *target_symbols;
     uint32_t default_symbol;
+    uint32_t keep;
+    uint32_t *drops;
 } wah_imm_br_table_t;
 
 typedef struct {
@@ -1778,6 +1777,8 @@ typedef struct {
     wah_type_t dst_type;
     wah_type_flags_t dst_type_flags;
     int32_t dst_heap_type;
+    uint32_t keep;
+    uint32_t drop;
 } wah_imm_br_on_cast_t;
 
 typedef struct {
@@ -1807,7 +1808,7 @@ typedef struct {
         wah_imm_memarg_t memarg;
         struct { wah_imm_memarg_t memarg; uint8_t lane; } memarg_lane;
         struct { wah_func_type_t type; uint32_t symbol_id; } block;
-        struct { uint32_t label_idx; uint32_t target_symbol; } branch;
+        struct { uint32_t label_idx; uint32_t target_symbol; uint32_t keep; uint32_t drop; } branch;
         wah_imm_br_table_t br_table;
         struct { wah_type_t type; wah_type_flags_t type_flags; int32_t heap_type; } ref_cast;
         wah_imm_br_on_cast_t br_on_cast;
@@ -1847,6 +1848,7 @@ static void wah_free_analyzed_code(wah_analyzed_code_t *ac) {
             wah_decoded_instr_t *instr = &ac->instrs[i];
             if (instr->imm_kind == WAH_IMM_BR_TABLE) {
                 free(instr->imm.br_table.target_symbols);
+                free(instr->imm.br_table.drops);
             } else if (instr->imm_kind == WAH_IMM_TRY_TABLE) {
                 free(instr->imm.try_table.catches);
             }
@@ -2316,7 +2318,7 @@ static wah_error_t wah_call_host_function_internal(
 static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code_ptr, const uint8_t *code_end, wah_validation_context_t *vctx, wah_code_body_t* code_body, wah_analyzed_code_t *ac);
 
 // Pre-parsing / lowering functions
-static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah_analyzed_code_t *ac, wah_parsed_code_t *parsed_code, bool emit_poll, const uint32_t *branch_stack_adj);
+static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah_analyzed_code_t *ac, wah_parsed_code_t *parsed_code, bool emit_poll);
 static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_idx, const uint8_t *code, uint32_t code_size, wah_parsed_code_t *parsed_code, bool emit_poll, const uint32_t *branch_stack_adj);
 static void wah_free_parsed_code(wah_parsed_code_t *parsed_code);
 
@@ -4147,20 +4149,7 @@ static inline bool wah_global_is_mutable(const wah_module_t *m, uint32_t idx) {
 static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code_ptr, const uint8_t *code_end, wah_validation_context_t *vctx, wah_code_body_t* code_body, wah_analyzed_code_t *ac) {
 #define POP(T) WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_##T, 0))
 #define PUSH(T) WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_##T))
-#define RECORD_BRANCH_ADJ(keep, drop) do { \
-    if (code_body) { \
-        uint32_t _needed = code_body->branch_stack_adj_count + 2; \
-        if (_needed > code_body->branch_stack_adj_capacity) { \
-            uint32_t _new_cap = _needed < 16 ? 16 : _needed * 2; \
-            uint32_t *_tmp = (uint32_t *)realloc(code_body->branch_stack_adj, _new_cap * sizeof(uint32_t)); \
-            WAH_ENSURE(_tmp != NULL, WAH_ERROR_OUT_OF_MEMORY); \
-            code_body->branch_stack_adj = _tmp; \
-            code_body->branch_stack_adj_capacity = _new_cap; \
-        } \
-        code_body->branch_stack_adj[code_body->branch_stack_adj_count++] = (keep); \
-        code_body->branch_stack_adj[code_body->branch_stack_adj_count++] = (drop); \
-    } \
-} while (0)
+#define RECORD_BRANCH_ADJ(keep, drop) ((void)(keep), (void)(drop))
 
 #define EMIT_INSTR_EX(op, kind, ...) do { \
     if (ac) { \
@@ -4983,14 +4972,15 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             uint32_t br_stack_height;
             wah_validation_resolve_br_target(vctx, label_idx, &br_result_count, &br_result_types, &br_result_type_flags, &br_stack_height);
 
+            uint32_t adj_keep = 0, adj_drop = 0;
             if (!vctx->is_unreachable) {
                 uint32_t block_floor = (vctx->control_sp > 0) ? vctx->control_stack[vctx->control_sp - 1].stack_height : 0;
                 WAH_ENSURE(vctx->current_stack_depth >= br_stack_height + br_result_count, WAH_ERROR_VALIDATION_FAILED);
                 WAH_ENSURE(vctx->current_stack_depth >= block_floor + br_result_count, WAH_ERROR_VALIDATION_FAILED);
-                RECORD_BRANCH_ADJ(br_result_count, vctx->current_stack_depth - br_stack_height - br_result_count);
-            } else {
-                RECORD_BRANCH_ADJ(0, 0);
+                adj_keep = br_result_count;
+                adj_drop = vctx->current_stack_depth - br_stack_height - br_result_count;
             }
+            RECORD_BRANCH_ADJ(adj_keep, adj_drop);
 
             for (int32_t i = br_result_count - 1; i >= 0; --i) {
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, br_result_types[i],
@@ -5005,7 +4995,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
             vctx->is_unreachable = true;
             EMIT_INSTR_EX(opcode_val, WAH_IMM_BRANCH,
-                _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0);
+                _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0;
+                _di->imm.branch.keep = adj_keep; _di->imm.branch.drop = adj_drop);
             return WAH_OK;
         }
 
@@ -5022,12 +5013,13 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             uint32_t br_stack_height;
             wah_validation_resolve_br_target(vctx, label_idx, &br_result_count, &br_result_types, &br_result_type_flags, &br_stack_height);
 
+            uint32_t adj_keep = 0, adj_drop = 0;
             if (!vctx->is_unreachable) {
                 WAH_ENSURE(vctx->current_stack_depth >= br_result_count, WAH_ERROR_VALIDATION_FAILED);
-                RECORD_BRANCH_ADJ(br_result_count, vctx->current_stack_depth - br_stack_height - br_result_count);
-            } else {
-                RECORD_BRANCH_ADJ(0, 0);
+                adj_keep = br_result_count;
+                adj_drop = vctx->current_stack_depth - br_stack_height - br_result_count;
             }
+            RECORD_BRANCH_ADJ(adj_keep, adj_drop);
 
             for (int32_t i = br_result_count - 1; i >= 0; --i) {
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, br_result_types[i],
@@ -5039,7 +5031,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             }
 
             EMIT_INSTR_EX(opcode_val, WAH_IMM_BRANCH,
-                _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0);
+                _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0;
+                _di->imm.branch.keep = adj_keep; _di->imm.branch.drop = adj_drop);
             return WAH_OK;
         }
 
@@ -5049,6 +5042,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &num_targets));
 
             uint32_t* label_indices = NULL;
+            uint32_t *bt_drops = NULL;
             WAH_MALLOC_ARRAY_GOTO(label_indices, num_targets + 1, cleanup_br_table);
 
             for (uint32_t i = 0; i < num_targets; ++i) {
@@ -5075,15 +5069,23 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 WAH_ENSURE_GOTO(cur_result_count == default_result_count, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
             }
 
+            WAH_MALLOC_ARRAY_GOTO(bt_drops, num_targets + 1, cleanup_br_table);
+            uint32_t bt_keep = 0;
             if (!vctx->is_unreachable) {
+                bt_keep = default_result_count;
                 for (uint32_t i = 0; i < num_targets; ++i) {
                     uint32_t target_stack_height, dummy_count;
                     wah_validation_resolve_br_target(vctx, label_indices[i], &dummy_count, NULL, NULL, &target_stack_height);
-                    RECORD_BRANCH_ADJ(default_result_count, vctx->current_stack_depth - target_stack_height - default_result_count);
+                    uint32_t d = vctx->current_stack_depth - target_stack_height - default_result_count;
+                    bt_drops[i] = d;
+                    RECORD_BRANCH_ADJ(default_result_count, d);
                 }
-                RECORD_BRANCH_ADJ(default_result_count, vctx->current_stack_depth - default_stack_height - default_result_count);
+                uint32_t dd = vctx->current_stack_depth - default_stack_height - default_result_count;
+                bt_drops[num_targets] = dd;
+                RECORD_BRANCH_ADJ(default_result_count, dd);
             } else {
                 for (uint32_t i = 0; i <= num_targets; ++i) {
+                    bt_drops[i] = 0;
                     RECORD_BRANCH_ADJ(0, 0);
                 }
             }
@@ -5130,6 +5132,9 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 _di->imm.br_table.target_count = num_targets;
                 _di->imm.br_table.default_symbol = label_indices[num_targets];
                 _di->imm.br_table.target_symbols = NULL;
+                _di->imm.br_table.keep = bt_keep;
+                _di->imm.br_table.drops = bt_drops;
+                bt_drops = NULL;
                 if (num_targets > 0) {
                     _di->imm.br_table.target_symbols = (uint32_t *)malloc(num_targets * sizeof(uint32_t));
                     if (!_di->imm.br_table.target_symbols) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup_br_table; }
@@ -5138,6 +5143,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             });
             err = WAH_OK;
         cleanup_br_table:
+            free(bt_drops);
             free(label_indices);
             return err;
         }
@@ -5325,7 +5331,9 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_ANY, WAH_ERROR_VALIDATION_FAILED);
             RECORD_BRANCH_ADJ(0, 0);
             WAH_CHECK(wah_validation_push_type_with_flags(vctx, ref_type, ref_flags & ~WAH_TYPE_FLAG_NULLABLE));
-            EMIT_INSTR_EX(opcode_val, WAH_IMM_BRANCH, _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0);
+            EMIT_INSTR_EX(opcode_val, WAH_IMM_BRANCH,
+                _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0;
+                _di->imm.branch.keep = 0; _di->imm.branch.drop = 0);
             break;
         }
         case WAH_OP_BR_ON_NON_NULL: {
@@ -5336,7 +5344,9 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_validation_pop_type_with_flags(vctx, &ref_type, &ref_flags));
             WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_ANY, WAH_ERROR_VALIDATION_FAILED);
             RECORD_BRANCH_ADJ(0, 0);
-            EMIT_INSTR_EX(opcode_val, WAH_IMM_BRANCH, _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0);
+            EMIT_INSTR_EX(opcode_val, WAH_IMM_BRANCH,
+                _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0;
+                _di->imm.branch.keep = 0; _di->imm.branch.drop = 0);
             break;
         }
 
@@ -5390,7 +5400,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_INSTR_EX(opcode_val, WAH_IMM_BR_ON_CAST,
                 _di->imm.br_on_cast.cast_flags = cast_flags; _di->imm.br_on_cast.target_symbol = 0;
                 _di->imm.br_on_cast.src_type = ht1; _di->imm.br_on_cast.dst_type = ht2;
-                _di->imm.br_on_cast.dst_heap_type = (int32_t)ht2);
+                _di->imm.br_on_cast.dst_heap_type = (int32_t)ht2;
+                _di->imm.br_on_cast.keep = 0; _di->imm.br_on_cast.drop = 0);
             break;
         }
 
@@ -5593,9 +5604,6 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         module->code_bodies[i].local_types = NULL;
         module->code_bodies[i].local_type_flags = NULL;
         module->code_bodies[i].parsed_code = (wah_parsed_code_t){0};
-        module->code_bodies[i].branch_stack_adj = NULL;
-        module->code_bodies[i].branch_stack_adj_count = 0;
-        module->code_bodies[i].branch_stack_adj_capacity = 0;
         ++module->code_count;
 
         uint32_t body_size;
@@ -5751,7 +5759,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         module->code_bodies[i].max_stack_depth = ac.max_stack_depth;
 
         // Lower analyzed IR to optimized bytecode
-        WAH_CHECK_GOTO(wah_lower_analyzed_code(module, &ac, &module->code_bodies[i].parsed_code, true, module->code_bodies[i].branch_stack_adj), cleanup);
+        WAH_CHECK_GOTO(wah_lower_analyzed_code(module, &ac, &module->code_bodies[i].parsed_code, true), cleanup);
 
         wah_free_analyzed_code(&ac);
 
@@ -5776,7 +5784,6 @@ cleanup:
             for (uint32_t i = 0; i < module->code_count; ++i) {
                 free(module->code_bodies[i].local_types);
                 free(module->code_bodies[i].local_type_flags);
-                free(module->code_bodies[i].branch_stack_adj);
                 wah_free_parsed_code(&module->code_bodies[i].parsed_code);
             }
             free(module->code_bodies);
@@ -6724,8 +6731,7 @@ static wah_error_t wah_lower_analyzed_code(
     const wah_module_t* module,
     const wah_analyzed_code_t *ac,
     wah_parsed_code_t *parsed_code,
-    bool emit_poll,
-    const uint32_t *branch_stack_adj)
+    bool emit_poll)
 {
     wah_error_t err = WAH_OK;
     uint8_t *saved_ref_map = parsed_code->operand_ref_map;
@@ -6756,7 +6762,6 @@ static wah_error_t wah_lower_analyzed_code(
 
     wah_lower_cf_t control_stack[WAH_MAX_CONTROL_DEPTH];
     uint32_t control_sp = 0;
-    uint32_t branch_adj_idx = 0;
 
     // Initialize buffer
     buf_capacity = 256;
@@ -7129,14 +7134,8 @@ static wah_error_t wah_lower_analyzed_code(
                 case WAH_OP_BR_ON_NULL: case WAH_OP_BR_ON_NON_NULL: {
                     uint32_t relative_depth = instr->imm.branch.label_idx;
                     WAH_LOWER_RESOLVE_BRANCH(relative_depth);
-                    if (branch_stack_adj) {
-                        WAH_LOWER_U32(branch_stack_adj[branch_adj_idx]);
-                        WAH_LOWER_U32(branch_stack_adj[branch_adj_idx + 1]);
-                    } else {
-                        WAH_LOWER_U32(0);
-                        WAH_LOWER_U32(0);
-                    }
-                    branch_adj_idx += 2;
+                    WAH_LOWER_U32(instr->imm.branch.keep);
+                    WAH_LOWER_U32(instr->imm.branch.drop);
                     break;
                 }
                 case WAH_OP_BR_ON_CAST: case WAH_OP_BR_ON_CAST_FAIL: {
@@ -7149,15 +7148,13 @@ static wah_error_t wah_lower_analyzed_code(
                     WAH_LOWER_RESOLVE_BRANCH(relative_depth);
                     WAH_LOWER_U32((uint32_t)ht2);
                     WAH_LOWER_U32((uint32_t)ht1);
-                    branch_adj_idx += 2;
                     break;
                 }
                 case WAH_OP_BR_TABLE: {
                     WAH_ASSERT(instr->imm_kind == WAH_IMM_BR_TABLE);
                     uint32_t num_targets = instr->imm.br_table.target_count;
                     WAH_LOWER_U32(num_targets);
-                    uint32_t bt_keep = (branch_stack_adj) ? branch_stack_adj[branch_adj_idx] : 0;
-                    WAH_LOWER_U32(bt_keep);
+                    WAH_LOWER_U32(instr->imm.br_table.keep);
                     for (uint32_t i = 0; i < num_targets + 1; ++i) {
                         uint32_t relative_depth;
                         if (i < num_targets) {
@@ -7166,10 +7163,9 @@ static wah_error_t wah_lower_analyzed_code(
                             relative_depth = instr->imm.br_table.default_symbol;
                         }
                         WAH_LOWER_RESOLVE_BRANCH(relative_depth);
-                        uint32_t bt_drop = (branch_stack_adj) ? branch_stack_adj[branch_adj_idx + 1 + i * 2] : 0;
+                        uint32_t bt_drop = instr->imm.br_table.drops ? instr->imm.br_table.drops[i] : 0;
                         WAH_LOWER_U32(bt_drop);
                     }
-                    branch_adj_idx += 2 * (num_targets + 1);
                     break;
                 }
                 case WAH_OP_I32_CONST: {
@@ -12783,7 +12779,6 @@ void wah_free_module(wah_module_t *module) {
     if (module->code_bodies) {
         for (uint32_t i = 0; i < module->code_count; ++i) {
             free(module->code_bodies[i].local_types);
-            free(module->code_bodies[i].branch_stack_adj);
             wah_free_parsed_code(&module->code_bodies[i].parsed_code);
         }
         free(module->code_bodies);
