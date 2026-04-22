@@ -4265,6 +4265,20 @@ static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, co
     return WAH_OK;
 }
 
+static wah_error_t wah_analyzed_append_end(wah_analyzed_code_t *ac) {
+    if (ac->instr_count >= ac->instr_capacity) {
+        uint32_t nc = ac->instr_capacity == 0 ? 64 : ac->instr_capacity * 2;
+        wah_decoded_instr_t *ni = (wah_decoded_instr_t *)realloc(ac->instrs, nc * sizeof(wah_decoded_instr_t));
+        WAH_ENSURE(ni != NULL, WAH_ERROR_OUT_OF_MEMORY);
+        ac->instrs = ni; ac->instr_capacity = nc;
+    }
+    memset(&ac->instrs[ac->instr_count], 0, sizeof(wah_decoded_instr_t));
+    ac->instrs[ac->instr_count].opcode = WAH_OP_END;
+    ac->instrs[ac->instr_count].imm_kind = WAH_IMM_NONE;
+    ac->instr_count++;
+    return WAH_OK;
+}
+
 // Validation helper function that handles a single opcode
 static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code_ptr, const uint8_t *code_end, wah_validation_context_t *vctx, wah_code_body_t* code_body, wah_analyzed_code_t *ac) {
 #define POP(T) WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_##T, 0))
@@ -5666,17 +5680,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
                     }
                     WAH_ENSURE_GOTO(vctx.current_stack_depth == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
                     WAH_ENSURE_GOTO(code_ptr_validation == validation_end, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                    // Emit final END into the analyzed IR
-                    if (ac.instr_count >= ac.instr_capacity) {
-                        uint32_t nc = ac.instr_capacity == 0 ? 64 : ac.instr_capacity * 2;
-                        wah_decoded_instr_t *ni = (wah_decoded_instr_t *)realloc(ac.instrs, nc * sizeof(wah_decoded_instr_t));
-                        WAH_ENSURE_GOTO(ni != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
-                        ac.instrs = ni; ac.instr_capacity = nc;
-                    }
-                    memset(&ac.instrs[ac.instr_count], 0, sizeof(wah_decoded_instr_t));
-                    ac.instrs[ac.instr_count].opcode = WAH_OP_END;
-                    ac.instrs[ac.instr_count].imm_kind = WAH_IMM_NONE;
-                    ac.instr_count++;
+                    WAH_CHECK_GOTO(wah_analyzed_append_end(&ac), cleanup);
                     break;
                 }
             }
@@ -5780,17 +5784,7 @@ static wah_error_t wah_compile_const_expr(
             wah_type_t actual = vctx.type_stack.data[0];
             WAH_ENSURE_GOTO(actual == WAH_TYPE_ANY || wah_type_is_subtype(actual, expected_type, module),
                 WAH_ERROR_VALIDATION_FAILED, cleanup);
-            // Emit END into IR
-            if (ac.instr_count >= ac.instr_capacity) {
-                uint32_t nc = ac.instr_capacity == 0 ? 16 : ac.instr_capacity * 2;
-                wah_decoded_instr_t *ni = (wah_decoded_instr_t *)realloc(ac.instrs, nc * sizeof(wah_decoded_instr_t));
-                WAH_ENSURE_GOTO(ni != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
-                ac.instrs = ni; ac.instr_capacity = nc;
-            }
-            memset(&ac.instrs[ac.instr_count], 0, sizeof(wah_decoded_instr_t));
-            ac.instrs[ac.instr_count].opcode = WAH_OP_END;
-            ac.instrs[ac.instr_count].imm_kind = WAH_IMM_NONE;
-            ac.instr_count++;
+            WAH_CHECK_GOTO(wah_analyzed_append_end(&ac), cleanup);
             break;
         }
 
