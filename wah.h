@@ -3103,22 +3103,28 @@ WAH_IF_AVX512VL(
 // AVX-512BW comparison helpers (vpcmpeqb/vpcmpb -> k -> vpmovm2b, no __mmask types needed)
 #if defined(__GNUC__)
 WAH_IF_AVX512BW(
+    // GCC rejects explicit k-register operands/clobbers for non-AVX-512 targets even when
+    // the instruction itself is only reached via runtime dispatch. We therefore keep the
+    // AVX-512 opcodes in the asm string but expose only XMM operands to the compiler.
+    // This works in practice because the hidden mask register is fully internal to the asm:
+    // inputs and outputs stay in vector registers, and generic x86-64 code generation does
+    // not otherwise allocate k-registers when AVX-512 is not enabled for the containing TU.
     static WAH_ALWAYS_INLINE __m128i wah_mm_cmpeq_epi8_avx512(__m128i a, __m128i b) {
         __m128i result;
         __asm__("vpcmpeqb %[b], %[a], %%k1\n\t vpmovm2b %%k1, %[result]"
-            : [result] "=v" (result) : [a] "v" (a), [b] "v" (b) : "k1");
+            : [result] "=x" (result) : [a] "x" (a), [b] "x" (b));
         return result;
     }
     static WAH_ALWAYS_INLINE __m128i wah_mm_cmpgt_epi8_avx512(__m128i a, __m128i b) {
         __m128i result;
         __asm__("vpcmpb $6, %[b], %[a], %%k1\n\t vpmovm2b %%k1, %[result]"
-            : [result] "=v" (result) : [a] "v" (a), [b] "v" (b) : "k1");
+            : [result] "=x" (result) : [a] "x" (a), [b] "x" (b));
         return result;
     }
     static WAH_ALWAYS_INLINE __m128i wah_mm_cmplt_epu8_avx512(__m128i a, __m128i b) {
         __m128i result;
         __asm__("vpcmpub $1, %[b], %[a], %%k1\n\t vpmovm2b %%k1, %[result]"
-            : [result] "=v" (result) : [a] "v" (a), [b] "v" (b) : "k1");
+            : [result] "=x" (result) : [a] "x" (a), [b] "x" (b));
         return result;
     }
 )
