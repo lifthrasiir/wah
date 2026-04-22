@@ -4899,7 +4899,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             }
             vctx->is_unreachable = false;
             EMIT_INSTR_EX(opcode_val, WAH_IMM_BLOCK,
-                _di->imm.block.type = *bt; _di->imm.block.symbol_id = 0);
+                _di->imm.block.symbol_id = 0);
             return WAH_OK;
         }
         case WAH_OP_ELSE: {
@@ -5513,7 +5513,6 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             frame->type_stack_sp = vctx->type_stack.sp - bt->param_count;
             EMIT_INSTR_EX(opcode_val, WAH_IMM_TRY_TABLE, {
                 _di->imm.try_table.catch_count = catch_count;
-                _di->imm.try_table.block_type = *bt;
                 _di->imm.try_table.catches = NULL;
                 if (catch_count > 0) {
                     _di->imm.try_table.catches = malloc(catch_count * sizeof(*_di->imm.try_table.catches));
