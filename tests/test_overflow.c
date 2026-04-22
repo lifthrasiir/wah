@@ -97,19 +97,17 @@ int main(void) {
         ]}";
     assert_err(wah_parse_module_from_spec(&module, type_stack_overflow_spec), WAH_ERROR_TOO_LARGE);
 
-    // This tests if the constant expression stack exceeds its limit (16).
-    // We create a global with a constant expression that tries to push more than 16 values.
-    printf("9. Testing constant expression stack overflow (>16 items)...\n");
+    // Const expressions now use the full validation type stack (same as function
+    // bodies), so the previous 16-entry limit no longer applies.
+    printf("9. Testing constant expression with deep stack (>16 items)...\n");
     const char *const_expr_stack_overflow_spec = "wasm \
         types {[ fn [] [] ]} \
         globals {[ i32 mut \
             " REPEAT16("i32.const 0 ") "i32.const 0 \
             " REPEAT16("i32.add ") "\
         end ]}";
-    // This pushes 17 i32.const values before END.
-    // The 17th push should trigger WAH_ERROR_TOO_LARGE.
-    // The final stack size is still 1, so it should not trigger the END check.
-    assert_err(wah_parse_module_from_spec(&module, const_expr_stack_overflow_spec), WAH_ERROR_TOO_LARGE);
+    assert_ok(wah_parse_module_from_spec(&module, const_expr_stack_overflow_spec));
+    wah_free_module(&module);
 
     printf("10. Testing i32 memory load with offset=0xffffffff (u32 max) passes validation...\n");
     const char *i32_mem_offset_max_spec = "wasm \
