@@ -13099,6 +13099,9 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 }
             }
         }
+
+        // Active element segments are dropped after instantiation per spec
+        module->element_segments[i].is_dropped = true;
     }
 
     // If a start function is defined, call it after all imports/globals/elements are ready.
