@@ -7077,68 +7077,68 @@ static wah_error_t wah_decode_opcode(const uint8_t **ptr, const uint8_t *end, ui
 }
 
 // Helper function to decode a raw byte representing a value type into a wah_type_t
-static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type, wah_type_flags_t *out_flags) {
-    WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
-    uint8_t byte = *(*ptr)++;
+static inline bool wah_decode_abstract_heap_byte(uint8_t byte, wah_type_t *out_type) {
     switch (byte) {
-        case 0x7F: *out_type = WAH_TYPE_I32; if (out_flags) *out_flags = 0; return WAH_OK;
-        case 0x7E: *out_type = WAH_TYPE_I64; if (out_flags) *out_flags = 0; return WAH_OK;
-        case 0x7D: *out_type = WAH_TYPE_F32; if (out_flags) *out_flags = 0; return WAH_OK;
-        case 0x7C: *out_type = WAH_TYPE_F64; if (out_flags) *out_flags = 0; return WAH_OK;
-        case 0x7B: *out_type = WAH_TYPE_V128; if (out_flags) *out_flags = 0; return WAH_OK;
-        case 0x70: *out_type = WAH_TYPE_FUNCREF;       if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x6F: *out_type = WAH_TYPE_EXTERNREF;     if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x6E: *out_type = WAH_TYPE_ANYREF;        if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x6D: *out_type = WAH_TYPE_EQREF;         if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x6C: *out_type = WAH_TYPE_I31REF;        if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x6B: *out_type = WAH_TYPE_STRUCTREF;     if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x6A: *out_type = WAH_TYPE_ARRAYREF;      if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x69: *out_type = WAH_TYPE_EXNREF;        if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x74: *out_type = WAH_TYPE_NULLEXNREF;    if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x73: *out_type = WAH_TYPE_NULLFUNCREF;   if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x72: *out_type = WAH_TYPE_NULLEXTERNREF;  if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x71: *out_type = WAH_TYPE_NULLREF;       if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x63: {
-            WAH_CHECK(wah_decode_heap_type(ptr, end, out_type));
-            if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE;
-            return WAH_OK;
-        }
-        case 0x64: {
-            WAH_CHECK(wah_decode_heap_type(ptr, end, out_type));
-            if (out_flags) *out_flags = 0;
-            return WAH_OK;
-        }
-        default: return WAH_ERROR_VALIDATION_FAILED;
+        case 0x70: *out_type = WAH_TYPE_FUNCREF;       return true;
+        case 0x6F: *out_type = WAH_TYPE_EXTERNREF;     return true;
+        case 0x6E: *out_type = WAH_TYPE_ANYREF;        return true;
+        case 0x6D: *out_type = WAH_TYPE_EQREF;         return true;
+        case 0x6C: *out_type = WAH_TYPE_I31REF;        return true;
+        case 0x6B: *out_type = WAH_TYPE_STRUCTREF;     return true;
+        case 0x6A: *out_type = WAH_TYPE_ARRAYREF;      return true;
+        case 0x69: *out_type = WAH_TYPE_EXNREF;        return true;
+        case 0x74: *out_type = WAH_TYPE_NULLEXNREF;    return true;
+        case 0x73: *out_type = WAH_TYPE_NULLFUNCREF;   return true;
+        case 0x72: *out_type = WAH_TYPE_NULLEXTERNREF;  return true;
+        case 0x71: *out_type = WAH_TYPE_NULLREF;       return true;
+        default: return false;
     }
+}
+
+static wah_error_t wah_decode_heap_type(const uint8_t **ptr, const uint8_t *end,
+                                        wah_type_t *out_type) {
+    WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
+    if (wah_decode_abstract_heap_byte(**ptr, out_type)) {
+        (*ptr)++;
+        return WAH_OK;
+    }
+    int32_t idx;
+    WAH_CHECK(wah_decode_sleb128_32(ptr, end, &idx));
+    WAH_ENSURE(idx >= 0, WAH_ERROR_VALIDATION_FAILED);
+    *out_type = (wah_type_t)idx;
+    return WAH_OK;
 }
 
 static wah_error_t wah_decode_ref_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type, wah_type_flags_t *out_flags) {
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t byte = *(*ptr)++;
+    if (wah_decode_abstract_heap_byte(byte, out_type)) {
+        if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE;
+        return WAH_OK;
+    }
+    if (byte == 0x63) {
+        WAH_CHECK(wah_decode_heap_type(ptr, end, out_type));
+        if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE;
+        return WAH_OK;
+    }
+    if (byte == 0x64) {
+        WAH_CHECK(wah_decode_heap_type(ptr, end, out_type));
+        if (out_flags) *out_flags = 0;
+        return WAH_OK;
+    }
+    return WAH_ERROR_VALIDATION_FAILED;
+}
+
+static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type, wah_type_flags_t *out_flags) {
+    WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
+    uint8_t byte = **ptr;
     switch (byte) {
-        case 0x70: *out_type = WAH_TYPE_FUNCREF;       if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x6F: *out_type = WAH_TYPE_EXTERNREF;     if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x6E: *out_type = WAH_TYPE_ANYREF;        if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x6D: *out_type = WAH_TYPE_EQREF;         if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x6C: *out_type = WAH_TYPE_I31REF;        if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x6B: *out_type = WAH_TYPE_STRUCTREF;     if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x6A: *out_type = WAH_TYPE_ARRAYREF;      if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x69: *out_type = WAH_TYPE_EXNREF;        if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x74: *out_type = WAH_TYPE_NULLEXNREF;    if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x73: *out_type = WAH_TYPE_NULLFUNCREF;   if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x72: *out_type = WAH_TYPE_NULLEXTERNREF;  if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x71: *out_type = WAH_TYPE_NULLREF;       if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE; return WAH_OK;
-        case 0x63: {
-            WAH_CHECK(wah_decode_heap_type(ptr, end, out_type));
-            if (out_flags) *out_flags = WAH_TYPE_FLAG_NULLABLE;
-            return WAH_OK;
-        }
-        case 0x64: {
-            WAH_CHECK(wah_decode_heap_type(ptr, end, out_type));
-            if (out_flags) *out_flags = 0;
-            return WAH_OK;
-        }
-        default: return WAH_ERROR_VALIDATION_FAILED;
+        case 0x7F: *out_type = WAH_TYPE_I32; if (out_flags) *out_flags = 0; (*ptr)++; return WAH_OK;
+        case 0x7E: *out_type = WAH_TYPE_I64; if (out_flags) *out_flags = 0; (*ptr)++; return WAH_OK;
+        case 0x7D: *out_type = WAH_TYPE_F32; if (out_flags) *out_flags = 0; (*ptr)++; return WAH_OK;
+        case 0x7C: *out_type = WAH_TYPE_F64; if (out_flags) *out_flags = 0; (*ptr)++; return WAH_OK;
+        case 0x7B: *out_type = WAH_TYPE_V128; if (out_flags) *out_flags = 0; (*ptr)++; return WAH_OK;
+        default: return wah_decode_ref_type(ptr, end, out_type, out_flags);
     }
 }
 
@@ -7146,40 +7146,10 @@ static wah_error_t wah_decode_storage_type(const uint8_t **ptr, const uint8_t *e
                                             wah_type_t *out_type, wah_type_flags_t *out_flags) {
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t byte = **ptr;
-    *out_flags = 0;
     switch (byte) {
-        case 0x78: *out_type = WAH_TYPE_PACKED_I8; (*ptr)++; return WAH_OK;
-        case 0x77: *out_type = WAH_TYPE_PACKED_I16; (*ptr)++; return WAH_OK;
-        default: {
-            return wah_decode_val_type(ptr, end, out_type, out_flags);
-        }
-    }
-}
-
-static wah_error_t wah_decode_heap_type(const uint8_t **ptr, const uint8_t *end,
-                                        wah_type_t *out_type) {
-    WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
-    uint8_t byte = **ptr;
-    switch (byte) {
-        case 0x70: *out_type = WAH_TYPE_FUNCREF;       (*ptr)++; return WAH_OK;
-        case 0x6F: *out_type = WAH_TYPE_EXTERNREF;     (*ptr)++; return WAH_OK;
-        case 0x6E: *out_type = WAH_TYPE_ANYREF;        (*ptr)++; return WAH_OK;
-        case 0x6D: *out_type = WAH_TYPE_EQREF;         (*ptr)++; return WAH_OK;
-        case 0x6C: *out_type = WAH_TYPE_I31REF;        (*ptr)++; return WAH_OK;
-        case 0x6B: *out_type = WAH_TYPE_STRUCTREF;     (*ptr)++; return WAH_OK;
-        case 0x6A: *out_type = WAH_TYPE_ARRAYREF;      (*ptr)++; return WAH_OK;
-        case 0x69: *out_type = WAH_TYPE_EXNREF;        (*ptr)++; return WAH_OK;
-        case 0x74: *out_type = WAH_TYPE_NULLEXNREF;    (*ptr)++; return WAH_OK;
-        case 0x73: *out_type = WAH_TYPE_NULLFUNCREF;   (*ptr)++; return WAH_OK;
-        case 0x72: *out_type = WAH_TYPE_NULLEXTERNREF;  (*ptr)++; return WAH_OK;
-        case 0x71: *out_type = WAH_TYPE_NULLREF;       (*ptr)++; return WAH_OK;
-        default: {
-            int32_t idx;
-            WAH_CHECK(wah_decode_sleb128_32(ptr, end, &idx));
-            WAH_ENSURE(idx >= 0, WAH_ERROR_VALIDATION_FAILED);
-            *out_type = (wah_type_t)idx;
-            return WAH_OK;
-        }
+        case 0x78: *out_type = WAH_TYPE_PACKED_I8; *out_flags = 0; (*ptr)++; return WAH_OK;
+        case 0x77: *out_type = WAH_TYPE_PACKED_I16; *out_flags = 0; (*ptr)++; return WAH_OK;
+        default: return wah_decode_val_type(ptr, end, out_type, out_flags);
     }
 }
 
