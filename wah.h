@@ -8109,6 +8109,38 @@ static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t 
     return WAH_ERROR_EXCEPTION;
 }
 
+static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t ref_val, wah_type_t target) {
+    void *ref = ref_val.ref;
+    if (ref == NULL) return false;
+
+    wah_gc_object_t *hdr = (wah_gc_object_t *)ref;
+    wah_repr_t repr_id = hdr->repr_id;
+
+    if (target >= 0) {
+        return wah_type_accepts_repr(ctx->module, (uint32_t)target, repr_id);
+    }
+
+    switch (target) {
+        case WAH_TYPE_ANYREF:
+            return true;
+        case WAH_TYPE_EQREF:
+            return repr_id != WAH_TYPE_FUNCTION;
+        case WAH_TYPE_I31REF:
+            return repr_id == WAH_REPR_I31;
+        case WAH_TYPE_STRUCTREF:
+            return wah_repr_is_positive(repr_id) &&
+                   ctx->module->repr_infos[repr_id]->type == WAH_REPR_STRUCT;
+        case WAH_TYPE_ARRAYREF:
+            return wah_repr_is_positive(repr_id) &&
+                   ctx->module->repr_infos[repr_id]->type == WAH_REPR_ARRAY;
+        case WAH_TYPE_FUNCREF:
+            return repr_id == WAH_TYPE_FUNCTION;
+        case WAH_TYPE_EXTERNREF:
+            return false;
+        default:
+            return false;
+    }
+}
 
 #ifdef WAH_FORCE_MUSTTAIL
     #define WAH_USE_MUSTTAIL
@@ -8174,7 +8206,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
     // Computed goto jump table
     static const void* wah_opcode_labels[] = {
 #define WAH_OPCODE_LABEL(name, cls, val) [WAH_OP_##name] = &&wah_op_##name,
-#define WAH_EXTRA_OPCODE_LABEL(name) [WAH_OP_##name] = &&wah_op_##name,
+#define WAH_EXTRA_OPCODE_LABEL(name, suffix) [WAH_OP_##name##_##suffix] = &&wah_op_##name##_##suffix,
 #define WAH_INTERNAL_OPCODE_LABEL(name) [WAH_OP_##name] = &&wah_op_##name,
         WAH_OPCODES(WAH_OPCODE_LABEL)
         WAH_INTERNAL_OPCODES(WAH_INTERNAL_OPCODE_LABEL)
@@ -8405,39 +8437,6 @@ WAH_RUN(V128_CONST) {
     memcpy(&(*sp++).v128, bytecode_ip, sizeof(wah_v128_t));
     bytecode_ip += sizeof(wah_v128_t);
     WAH_NEXT();
-}
-
-static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t ref_val, wah_type_t target) {
-    void *ref = ref_val.ref;
-    if (ref == NULL) return false;
-
-    wah_gc_object_t *hdr = (wah_gc_object_t *)ref;
-    wah_repr_t repr_id = hdr->repr_id;
-
-    if (target >= 0) {
-        return wah_type_accepts_repr(ctx->module, (uint32_t)target, repr_id);
-    }
-
-    switch (target) {
-        case WAH_TYPE_ANYREF:
-            return true;
-        case WAH_TYPE_EQREF:
-            return repr_id != WAH_TYPE_FUNCTION;
-        case WAH_TYPE_I31REF:
-            return repr_id == WAH_REPR_I31;
-        case WAH_TYPE_STRUCTREF:
-            return wah_repr_is_positive(repr_id) &&
-                   ctx->module->repr_infos[repr_id]->type == WAH_REPR_STRUCT;
-        case WAH_TYPE_ARRAYREF:
-            return wah_repr_is_positive(repr_id) &&
-                   ctx->module->repr_infos[repr_id]->type == WAH_REPR_ARRAY;
-        case WAH_TYPE_FUNCREF:
-            return repr_id == WAH_TYPE_FUNCTION;
-        case WAH_TYPE_EXTERNREF:
-            return false;
-        default:
-            return false;
-    }
 }
 
 WAH_RUN(REF_NULL) {
