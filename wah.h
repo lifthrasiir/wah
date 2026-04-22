@@ -2315,7 +2315,8 @@ static wah_error_t wah_call_host_function_internal(
 // Validation/analysis helper functions
 static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code_ptr, const uint8_t *code_end, wah_validation_context_t *vctx, wah_code_body_t* code_body, wah_analyzed_code_t *ac);
 
-// Pre-parsing functions
+// Pre-parsing / lowering functions
+static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah_analyzed_code_t *ac, wah_parsed_code_t *parsed_code, bool emit_poll, const uint32_t *branch_stack_adj);
 static wah_error_t wah_preparse_code(const wah_module_t* module, uint32_t func_idx, const uint8_t *code, uint32_t code_size, wah_parsed_code_t *parsed_code, bool emit_poll, const uint32_t *branch_stack_adj);
 static void wah_free_parsed_code(wah_parsed_code_t *parsed_code);
 
@@ -5125,7 +5126,16 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             }
 
             vctx->is_unreachable = true;
-            EMIT_SIMPLE();
+            EMIT_INSTR_EX(opcode_val, WAH_IMM_BR_TABLE, {
+                _di->imm.br_table.target_count = num_targets;
+                _di->imm.br_table.default_symbol = label_indices[num_targets];
+                _di->imm.br_table.target_symbols = NULL;
+                if (num_targets > 0) {
+                    _di->imm.br_table.target_symbols = (uint32_t *)malloc(num_targets * sizeof(uint32_t));
+                    if (!_di->imm.br_table.target_symbols) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup_br_table; }
+                    for (uint32_t _k = 0; _k < num_targets; _k++) _di->imm.br_table.target_symbols[_k] = label_indices[_k];
+                }
+            });
             err = WAH_OK;
         cleanup_br_table:
             free(label_indices);
@@ -5701,6 +5711,17 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
                     }
                     WAH_ENSURE_GOTO(vctx.current_stack_depth == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
                     WAH_ENSURE_GOTO(code_ptr_validation == validation_end, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    // Emit final END into the analyzed IR
+                    if (ac.instr_count >= ac.instr_capacity) {
+                        uint32_t nc = ac.instr_capacity == 0 ? 64 : ac.instr_capacity * 2;
+                        wah_decoded_instr_t *ni = (wah_decoded_instr_t *)realloc(ac.instrs, nc * sizeof(wah_decoded_instr_t));
+                        WAH_ENSURE_GOTO(ni != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+                        ac.instrs = ni; ac.instr_capacity = nc;
+                    }
+                    memset(&ac.instrs[ac.instr_count], 0, sizeof(wah_decoded_instr_t));
+                    ac.instrs[ac.instr_count].opcode = WAH_OP_END;
+                    ac.instrs[ac.instr_count].imm_kind = WAH_IMM_NONE;
+                    ac.instr_count++;
                     break;
                 }
             }
@@ -5729,10 +5750,10 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
         module->code_bodies[i].max_stack_depth = ac.max_stack_depth;
 
-        wah_free_analyzed_code(&ac);
+        // Lower analyzed IR to optimized bytecode
+        WAH_CHECK_GOTO(wah_lower_analyzed_code(module, &ac, &module->code_bodies[i].parsed_code, true, module->code_bodies[i].branch_stack_adj), cleanup);
 
-        // Pre-parse the code for optimized execution
-        WAH_CHECK_GOTO(wah_preparse_code(module, i, module->code_bodies[i].code, module->code_bodies[i].code_size, &module->code_bodies[i].parsed_code, true, module->code_bodies[i].branch_stack_adj), cleanup);
+        wah_free_analyzed_code(&ac);
 
         *ptr = code_body_end;
     }
@@ -6696,6 +6717,560 @@ static wah_error_t wah_skip_block_type(const uint8_t **ptr, const uint8_t *end) 
     }
     int32_t idx;
     return wah_decode_sleb128_32(ptr, end, &idx);
+}
+
+// Lowering function that consumes analyzed IR instead of raw Wasm bytes
+static wah_error_t wah_lower_analyzed_code(
+    const wah_module_t* module,
+    const wah_analyzed_code_t *ac,
+    wah_parsed_code_t *parsed_code,
+    bool emit_poll,
+    const uint32_t *branch_stack_adj)
+{
+    wah_error_t err = WAH_OK;
+    uint8_t *saved_ref_map = parsed_code->operand_ref_map;
+    uint32_t saved_ref_map_size = parsed_code->operand_ref_map_size;
+    *parsed_code = (wah_parsed_code_t){0};
+    parsed_code->operand_ref_map = saved_ref_map;
+    parsed_code->operand_ref_map_size = saved_ref_map_size;
+
+    // --- Control frame for single-pass backpatching ---
+    typedef struct {
+        wah_opcode_t opcode;
+        uint32_t continuation_offset; // for LOOP: offset of loop header in buf
+        uint32_t if_false_patch;      // for IF: buf offset of the false-branch placeholder
+        uint32_t *patch_offsets;      // positions needing backpatch with this frame's end offset
+        uint32_t patch_count;
+        uint32_t patch_capacity;
+    } wah_lower_cf_t;
+
+    // --- Growable buffer ---
+    uint8_t *buf = NULL;
+    uint32_t buf_size = 0;
+    uint32_t buf_capacity = 0;
+
+    // --- Function-end patches (for branches targeting function scope) ---
+    uint32_t *func_end_patches = NULL;
+    uint32_t func_end_patch_count = 0;
+    uint32_t func_end_patch_capacity = 0;
+
+    wah_lower_cf_t control_stack[WAH_MAX_CONTROL_DEPTH];
+    uint32_t control_sp = 0;
+    uint32_t branch_adj_idx = 0;
+
+    // Initialize buffer
+    buf_capacity = 256;
+    WAH_MALLOC_ARRAY_GOTO(buf, buf_capacity, cleanup);
+
+    #define WAH_LOWER_ENSURE(n) do { \
+        while (buf_size + (n) > buf_capacity) { \
+            buf_capacity = buf_capacity * 2; \
+            WAH_REALLOC_ARRAY_GOTO(buf, buf_capacity, cleanup); \
+        } \
+    } while (0)
+
+    #define WAH_LOWER_U8(v) do { \
+        WAH_LOWER_ENSURE(1); \
+        buf[buf_size++] = (uint8_t)(v); \
+    } while (0)
+
+    #define WAH_LOWER_U16(v) do { \
+        WAH_LOWER_ENSURE(sizeof(uint16_t)); \
+        wah_write_u16_le(buf + buf_size, (v)); \
+        buf_size += sizeof(uint16_t); \
+    } while (0)
+
+    #define WAH_LOWER_U32(v) do { \
+        WAH_LOWER_ENSURE(sizeof(uint32_t)); \
+        wah_write_u32_le(buf + buf_size, (v)); \
+        buf_size += sizeof(uint32_t); \
+    } while (0)
+
+    #define WAH_LOWER_U64(v) do { \
+        WAH_LOWER_ENSURE(sizeof(uint64_t)); \
+        wah_write_u64_le(buf + buf_size, (v)); \
+        buf_size += sizeof(uint64_t); \
+    } while (0)
+
+    #define WAH_LOWER_MEM(p, n) do { \
+        WAH_LOWER_ENSURE(n); \
+        memcpy(buf + buf_size, (p), (n)); \
+        buf_size += (n); \
+    } while (0)
+
+    #define WAH_LOWER_PATCH_U32(off, v) do { \
+        wah_write_u32_le(buf + (off), (v)); \
+    } while (0)
+
+    #define WAH_LOWER_ADD_PATCH(cf_ptr) do { \
+        wah_lower_cf_t *_cf = (cf_ptr); \
+        if (_cf->patch_count >= _cf->patch_capacity) { \
+            _cf->patch_capacity = _cf->patch_capacity == 0 ? 4 : _cf->patch_capacity * 2; \
+            WAH_REALLOC_ARRAY_GOTO(_cf->patch_offsets, _cf->patch_capacity, cleanup); \
+        } \
+        _cf->patch_offsets[_cf->patch_count++] = buf_size; \
+    } while (0)
+
+    #define WAH_LOWER_ADD_FUNC_END_PATCH() do { \
+        if (func_end_patch_count >= func_end_patch_capacity) { \
+            func_end_patch_capacity = func_end_patch_capacity == 0 ? 4 : func_end_patch_capacity * 2; \
+            WAH_REALLOC_ARRAY_GOTO(func_end_patches, func_end_patch_capacity, cleanup); \
+        } \
+        func_end_patches[func_end_patch_count++] = buf_size; \
+    } while (0)
+
+    // Macro to resolve a branch target: if LOOP write continuation_offset,
+    // if function scope add to func_end_patches, otherwise add to target frame's patch list.
+    // In all cases, writes a u32 at current position and advances buf_size.
+    #define WAH_LOWER_RESOLVE_BRANCH(relative_depth) do { \
+        uint32_t _rd = (relative_depth); \
+        if (_rd == control_sp) { \
+            WAH_LOWER_ADD_FUNC_END_PATCH(); \
+            WAH_LOWER_U32(0); \
+        } else { \
+            WAH_ASSERT(_rd < control_sp && "validation should have verified relative depth"); \
+            wah_lower_cf_t *_target = &control_stack[control_sp - 1 - _rd]; \
+            if (_target->opcode == WAH_OP_LOOP) { \
+                WAH_LOWER_U32(_target->continuation_offset); \
+            } else { \
+                WAH_LOWER_ADD_PATCH(_target); \
+                WAH_LOWER_U32(0); \
+            } \
+        } \
+    } while (0)
+
+    #ifdef WAH_X86_64
+    wah_x86_64_features_t features = wah_x86_64_features();
+    #endif
+
+    uint32_t poll_ref_cursor = 0;
+
+    #define WAH_EMIT_POLL() do { \
+        WAH_LOWER_U16(WAH_OP_POLL); \
+        WAH_LOWER_U32(poll_ref_cursor); \
+        if (parsed_code->operand_ref_map && poll_ref_cursor < parsed_code->operand_ref_map_size) { \
+            uint16_t _cnt = wah_read_u16_le(parsed_code->operand_ref_map + poll_ref_cursor); \
+            uint32_t _bmp_words = (_cnt + 15) / 16; \
+            const uint8_t *_bmp = parsed_code->operand_ref_map + poll_ref_cursor + sizeof(uint16_t); \
+            uint32_t _refs = 0; \
+            for (uint32_t _k = 0; _k < _bmp_words; _k++) { \
+                uint16_t _w = wah_read_u16_le(_bmp + _k * sizeof(uint16_t)); \
+                while (_w) { _refs++; _w &= _w - 1; } \
+            } \
+            poll_ref_cursor += sizeof(uint16_t) * (1 + _bmp_words) + _refs * sizeof(wah_type_t); \
+        } \
+    } while (0)
+
+    // --- Single pass: emit bytecode with backpatching ---
+    for (uint32_t ii = 0; ii < ac->instr_count; ii++) {
+        const wah_decoded_instr_t *instr = &ac->instrs[ii];
+        uint16_t opcode = instr->opcode;
+
+        if (emit_poll && ii == 0) {
+            WAH_EMIT_POLL();
+        }
+
+        if (opcode == WAH_OP_BLOCK || opcode == WAH_OP_LOOP) {
+            WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
+            wah_lower_cf_t cf = {0};
+            cf.opcode = (wah_opcode_t)opcode;
+            if (opcode == WAH_OP_LOOP && emit_poll) {
+                WAH_EMIT_POLL();
+            }
+            cf.continuation_offset = buf_size; // for LOOP: points here (after POLL if any)
+            control_stack[control_sp++] = cf;
+            continue;
+        }
+        if (opcode == WAH_OP_TRY_TABLE) {
+            WAH_ASSERT(instr->imm_kind == WAH_IMM_TRY_TABLE);
+            uint32_t try_catch_count = instr->imm.try_table.catch_count;
+
+            WAH_LOWER_U16(WAH_OP_TRY_TABLE);
+            WAH_LOWER_U32(try_catch_count);
+
+            // We need to push the frame BEFORE resolving catch targets so that
+            // we can add patches to it, but we also need control_sp to reflect
+            // the state before pushing. Push after emitting catches.
+            // Actually catch targets reference the OUTER control stack, not this
+            // TRY_TABLE's own frame, so we resolve before pushing.
+            for (uint32_t ci = 0; ci < try_catch_count; ci++) {
+                uint8_t catch_kind = instr->imm.try_table.catches[ci].kind;
+                WAH_LOWER_U8(catch_kind);
+                uint32_t tag_idx = instr->imm.try_table.catches[ci].tag_idx;
+                WAH_LOWER_U32(tag_idx);
+                uint32_t label_depth = instr->imm.try_table.catches[ci].target_symbol;
+                WAH_ASSERT(label_depth <= control_sp);
+                WAH_LOWER_RESOLVE_BRANCH(label_depth);
+            }
+
+            WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH);
+            wah_lower_cf_t cf = {0};
+            cf.opcode = WAH_OP_TRY_TABLE;
+            control_stack[control_sp++] = cf;
+            continue;
+        }
+        if (opcode == WAH_OP_END) {
+            if (control_sp > 0) {
+                wah_lower_cf_t *cf = &control_stack[--control_sp];
+                if (cf->opcode == WAH_OP_TRY_TABLE) {
+                    WAH_LOWER_U16(WAH_OP_END_TRY_TABLE);
+                }
+                // Resolve all end-patches to current position
+                uint32_t end_pos = buf_size;
+                for (uint32_t pi = 0; pi < cf->patch_count; pi++) {
+                    WAH_LOWER_PATCH_U32(cf->patch_offsets[pi], end_pos);
+                }
+                // For IF without ELSE, also patch the false-branch to END
+                if (cf->opcode == WAH_OP_IF) {
+                    WAH_LOWER_PATCH_U32(cf->if_false_patch, end_pos);
+                }
+                free(cf->patch_offsets);
+                cf->patch_offsets = NULL;
+                cf->patch_count = 0;
+                cf->patch_capacity = 0;
+                continue;
+            }
+            // Final END: emit WAH_OP_END and resolve function-end patches
+            WAH_LOWER_U16(WAH_OP_END);
+            // Function-end branches target buf_size - sizeof(uint16_t), i.e. the END opcode position
+            uint32_t func_end_pos = buf_size - sizeof(uint16_t);
+            for (uint32_t pi = 0; pi < func_end_patch_count; pi++) {
+                WAH_LOWER_PATCH_U32(func_end_patches[pi], func_end_pos);
+            }
+            continue;
+        }
+
+        if (emit_poll && (opcode == WAH_OP_CALL || opcode == WAH_OP_CALL_INDIRECT || opcode == WAH_OP_CALL_REF ||
+                         opcode == WAH_OP_RETURN_CALL || opcode == WAH_OP_RETURN_CALL_INDIRECT || opcode == WAH_OP_RETURN_CALL_REF)) {
+            WAH_EMIT_POLL();
+        }
+
+        #ifdef WAH_X86_64
+        uint16_t native_opcode = wah_x86_64_opcode(opcode, features);
+        #else
+        uint16_t native_opcode = opcode;
+        #endif
+
+        WAH_LOWER_U16(native_opcode);
+
+        switch (wah_opclasses[opcode]) {
+            case WAH_OPCLASS_B: {
+                WAH_LOWER_U8(instr->imm.u32);
+                break;
+            }
+            case WAH_OPCLASS_I: {
+                uint32_t a = instr->imm.u32;
+                // Redirect memory.size/memory.grow/memory.fill to i64 variants when needed
+                if ((opcode == WAH_OP_MEMORY_SIZE || opcode == WAH_OP_MEMORY_GROW || opcode == WAH_OP_MEMORY_FILL)
+                    && a < wah_total_memory_count(module) && wah_memory_type(module, a)->addr_type == WAH_TYPE_I64) {
+                    uint16_t new_opcode;
+                    if (opcode == WAH_OP_MEMORY_SIZE) new_opcode = WAH_OP_MEMORY_SIZE_i64;
+                    else if (opcode == WAH_OP_MEMORY_GROW) new_opcode = WAH_OP_MEMORY_GROW_i64;
+                    else new_opcode = WAH_OP_MEMORY_FILL_i64;
+                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), new_opcode);
+                }
+                // Redirect table ops to i64 variants for table64
+                if ((opcode == WAH_OP_TABLE_GET || opcode == WAH_OP_TABLE_SET ||
+                     opcode == WAH_OP_TABLE_SIZE || opcode == WAH_OP_TABLE_GROW || opcode == WAH_OP_TABLE_FILL)
+                    && a < wah_total_table_count(module) && wah_table_type(module, a)->addr_type == WAH_TYPE_I64) {
+                    uint16_t new_opcode;
+                    if (opcode == WAH_OP_TABLE_GET) new_opcode = WAH_OP_TABLE_GET_i64;
+                    else if (opcode == WAH_OP_TABLE_SET) new_opcode = WAH_OP_TABLE_SET_i64;
+                    else if (opcode == WAH_OP_TABLE_SIZE) new_opcode = WAH_OP_TABLE_SIZE_i64;
+                    else if (opcode == WAH_OP_TABLE_GROW) new_opcode = WAH_OP_TABLE_GROW_i64;
+                    else new_opcode = WAH_OP_TABLE_FILL_i64;
+                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), new_opcode);
+                }
+                WAH_LOWER_U32(a);
+                break;
+            }
+            case WAH_OPCLASS_II: {
+                uint32_t a = instr->imm.u32_u32.a;
+                uint32_t b = instr->imm.u32_u32.b;
+                // Redirect memory.init/memory.copy to i64 variants when needed
+                if (opcode == WAH_OP_MEMORY_INIT && b < wah_total_memory_count(module) && wah_memory_type(module, b)->addr_type == WAH_TYPE_I64) {
+                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), WAH_OP_MEMORY_INIT_i64);
+                }
+                if (opcode == WAH_OP_MEMORY_COPY) {
+                    if ((a < wah_total_memory_count(module) && wah_memory_type(module, a)->addr_type == WAH_TYPE_I64)
+                        || (b < wah_total_memory_count(module) && wah_memory_type(module, b)->addr_type == WAH_TYPE_I64)) {
+                        wah_write_u16_le(buf + buf_size - sizeof(uint16_t), WAH_OP_MEMORY_COPY_i64);
+                    }
+                }
+                // TABLE_COPY: a=dst_table, b=src_table
+                if (opcode == WAH_OP_TABLE_COPY) {
+                    if ((a < wah_total_table_count(module) && wah_table_type(module, a)->addr_type == WAH_TYPE_I64)
+                        || (b < wah_total_table_count(module) && wah_table_type(module, b)->addr_type == WAH_TYPE_I64)) {
+                        wah_write_u16_le(buf + buf_size - sizeof(uint16_t), WAH_OP_TABLE_COPY_i64);
+                    }
+                }
+                // TABLE_INIT: a=elem_idx, b=table_idx
+                if (opcode == WAH_OP_TABLE_INIT) {
+                    if (b < wah_total_table_count(module) && wah_table_type(module, b)->addr_type == WAH_TYPE_I64) {
+                        wah_write_u16_le(buf + buf_size - sizeof(uint16_t), WAH_OP_TABLE_INIT_i64);
+                    }
+                }
+                // CALL_INDIRECT: a=type_idx, b=table_idx
+                if (opcode == WAH_OP_CALL_INDIRECT) {
+                    if (b < wah_total_table_count(module) && wah_table_type(module, b)->addr_type == WAH_TYPE_I64) {
+                        wah_write_u16_le(buf + buf_size - sizeof(uint16_t), WAH_OP_CALL_INDIRECT_i64);
+                    }
+                }
+                if (opcode == WAH_OP_RETURN_CALL_INDIRECT) {
+                    if (b < wah_total_table_count(module) && wah_table_type(module, b)->addr_type == WAH_TYPE_I64) {
+                        wah_write_u16_le(buf + buf_size - sizeof(uint16_t), WAH_OP_RETURN_CALL_INDIRECT_i64);
+                    }
+                }
+                WAH_LOWER_U32(a);
+                WAH_LOWER_U32(b);
+                break;
+            }
+            case WAH_OPCLASS_M: {
+                uint32_t memidx = instr->imm.memarg.memidx;
+                uint64_t offset = instr->imm.memarg.offset;
+                bool is_i64_mem = wah_memory_type(module, memidx)->addr_type == WAH_TYPE_I64;
+                if (memidx == 0 && !is_i64_mem) {
+                    // Redirect to i32+mem0 fast-path opcode
+                    switch (opcode) {
+                        #define WAH_I32_MEM0_OPCODE_CASE(name, suffix) case WAH_OP_##name: opcode = WAH_OP_##name##_##suffix; break;
+                        WAH_I32_MEM0_OPCODES_M(WAH_I32_MEM0_OPCODE_CASE)
+                        #undef WAH_I32_MEM0_OPCODE_CASE
+                    }
+                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), opcode);
+                } else if (memidx == 0 && is_i64_mem) {
+                    // Redirect to i64+mem0 fast-path opcode
+                    switch (opcode) {
+                        #define WAH_I64_MEM0_OPCODE_CASE(name, suffix) case WAH_OP_##name: opcode = WAH_OP_##name##_##suffix; break;
+                        WAH_I64_MEM0_OPCODES_M(WAH_I64_MEM0_OPCODE_CASE)
+                        #undef WAH_I64_MEM0_OPCODE_CASE
+                    }
+                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), opcode);
+                } else if (is_i64_mem) {
+                    // Non-mem0 i64 memory: redirect to _i64 opcode
+                    switch (opcode) {
+                        #define WAH_I64_MEM_OPCODE_CASE(name, suffix) case WAH_OP_##name: opcode = WAH_OP_##name##_##suffix; break;
+                        WAH_I64_MEM_OPCODES_M(WAH_I64_MEM_OPCODE_CASE)
+                        #undef WAH_I64_MEM_OPCODE_CASE
+                    }
+                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), opcode);
+                    WAH_LOWER_U32(memidx);
+                } else {
+                    // Non-mem0 i32 memory: base opcode is already correct
+                    WAH_LOWER_U32(memidx);
+                }
+                WAH_LOWER_U64(offset);
+                break;
+            }
+            case WAH_OPCLASS_MB: {
+                uint32_t memidx = instr->imm.memarg_lane.memarg.memidx;
+                uint64_t offset = instr->imm.memarg_lane.memarg.offset;
+                uint8_t lane_idx = instr->imm.memarg_lane.lane;
+                bool is_i64_mem = wah_memory_type(module, memidx)->addr_type == WAH_TYPE_I64;
+                if (memidx == 0 && !is_i64_mem) {
+                    switch (opcode) {
+                        #define WAH_I32_MEM0_OPCODE_CASE(name, suffix) case WAH_OP_##name: opcode = WAH_OP_##name##_##suffix; break;
+                        WAH_I32_MEM0_OPCODES_MB(WAH_I32_MEM0_OPCODE_CASE)
+                        #undef WAH_I32_MEM0_OPCODE_CASE
+                    }
+                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), opcode);
+                } else if (memidx == 0 && is_i64_mem) {
+                    switch (opcode) {
+                        #define WAH_I64_MEM0_OPCODE_CASE(name, suffix) case WAH_OP_##name: opcode = WAH_OP_##name##_##suffix; break;
+                        WAH_I64_MEM0_OPCODES_MB(WAH_I64_MEM0_OPCODE_CASE)
+                        #undef WAH_I64_MEM0_OPCODE_CASE
+                    }
+                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), opcode);
+                } else if (is_i64_mem) {
+                    switch (opcode) {
+                        #define WAH_I64_MEM_OPCODE_CASE(name, suffix) case WAH_OP_##name: opcode = WAH_OP_##name##_##suffix; break;
+                        WAH_I64_MEM_OPCODES_MB(WAH_I64_MEM_OPCODE_CASE)
+                        #undef WAH_I64_MEM_OPCODE_CASE
+                    }
+                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), opcode);
+                    WAH_LOWER_U32(memidx);
+                } else {
+                    WAH_LOWER_U32(memidx);
+                }
+                WAH_LOWER_U64(offset);
+                WAH_LOWER_U8(lane_idx);
+                break;
+            }
+            default: switch (opcode) {
+                case WAH_OP_IF: {
+                    WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
+                    wah_lower_cf_t cf = {0};
+                    cf.opcode = WAH_OP_IF;
+                    cf.if_false_patch = buf_size; // record position of placeholder
+                    WAH_LOWER_U32(0); // placeholder for false-branch offset
+                    control_stack[control_sp++] = cf;
+                    break;
+                }
+                case WAH_OP_ELSE: {
+                    WAH_ASSERT(control_sp > 0 && control_stack[control_sp - 1].opcode == WAH_OP_IF && "validation should have verified ELSE is inside IF");
+                    wah_lower_cf_t *cf = &control_stack[control_sp - 1];
+                    // The ELSE opcode + end-offset placeholder is emitted as part of ELSE
+                    uint32_t else_end_patch = buf_size; // record position for end-offset placeholder
+                    WAH_LOWER_U32(0); // placeholder for end offset
+                    // Patch the IF's false-branch to point here (after the ELSE header)
+                    WAH_LOWER_PATCH_U32(cf->if_false_patch, buf_size);
+                    // Transfer existing end-patches to the new ELSE frame, add the else-end placeholder
+                    // Actually: the existing patches from BR targeting this block still need to go to END.
+                    // We keep them. Just add the ELSE's own end-offset placeholder.
+                    // Change frame to ELSE and add the else-end placeholder to patch list.
+                    cf->opcode = WAH_OP_ELSE;
+                    cf->if_false_patch = 0; // no longer relevant
+                    // Add the ELSE end-offset placeholder to the patch list
+                    WAH_LOWER_ADD_PATCH(cf);
+                    // The patch we just added recorded buf_size (current), but we want else_end_patch
+                    cf->patch_offsets[cf->patch_count - 1] = else_end_patch;
+                    break;
+                }
+                case WAH_OP_BR: case WAH_OP_BR_IF:
+                case WAH_OP_BR_ON_NULL: case WAH_OP_BR_ON_NON_NULL: {
+                    uint32_t relative_depth = instr->imm.branch.label_idx;
+                    WAH_LOWER_RESOLVE_BRANCH(relative_depth);
+                    if (branch_stack_adj) {
+                        WAH_LOWER_U32(branch_stack_adj[branch_adj_idx]);
+                        WAH_LOWER_U32(branch_stack_adj[branch_adj_idx + 1]);
+                    } else {
+                        WAH_LOWER_U32(0);
+                        WAH_LOWER_U32(0);
+                    }
+                    branch_adj_idx += 2;
+                    break;
+                }
+                case WAH_OP_BR_ON_CAST: case WAH_OP_BR_ON_CAST_FAIL: {
+                    WAH_ASSERT(instr->imm_kind == WAH_IMM_BR_ON_CAST);
+                    uint8_t flags = instr->imm.br_on_cast.cast_flags;
+                    uint32_t relative_depth = instr->imm.br_on_cast.target_symbol;
+                    wah_type_t ht1 = instr->imm.br_on_cast.src_type;
+                    wah_type_t ht2 = instr->imm.br_on_cast.dst_type;
+                    WAH_LOWER_U8(flags);
+                    WAH_LOWER_RESOLVE_BRANCH(relative_depth);
+                    WAH_LOWER_U32((uint32_t)ht2);
+                    WAH_LOWER_U32((uint32_t)ht1);
+                    branch_adj_idx += 2;
+                    break;
+                }
+                case WAH_OP_BR_TABLE: {
+                    WAH_ASSERT(instr->imm_kind == WAH_IMM_BR_TABLE);
+                    uint32_t num_targets = instr->imm.br_table.target_count;
+                    WAH_LOWER_U32(num_targets);
+                    uint32_t bt_keep = (branch_stack_adj) ? branch_stack_adj[branch_adj_idx] : 0;
+                    WAH_LOWER_U32(bt_keep);
+                    for (uint32_t i = 0; i < num_targets + 1; ++i) {
+                        uint32_t relative_depth;
+                        if (i < num_targets) {
+                            relative_depth = instr->imm.br_table.target_symbols[i];
+                        } else {
+                            relative_depth = instr->imm.br_table.default_symbol;
+                        }
+                        WAH_LOWER_RESOLVE_BRANCH(relative_depth);
+                        uint32_t bt_drop = (branch_stack_adj) ? branch_stack_adj[branch_adj_idx + 1 + i * 2] : 0;
+                        WAH_LOWER_U32(bt_drop);
+                    }
+                    branch_adj_idx += 2 * (num_targets + 1);
+                    break;
+                }
+                case WAH_OP_I32_CONST: {
+                    WAH_LOWER_U32((uint32_t)instr->imm.i32);
+                    break;
+                }
+                case WAH_OP_I64_CONST: {
+                    WAH_LOWER_U64((uint64_t)instr->imm.i64);
+                    break;
+                }
+                case WAH_OP_F32_CONST: {
+                    WAH_LOWER_U32(instr->imm.f32_bits);
+                    break;
+                }
+                case WAH_OP_F64_CONST: {
+                    WAH_LOWER_U64(instr->imm.f64_bits);
+                    break;
+                }
+                case WAH_OP_V128_CONST: case WAH_OP_I8X16_SHUFFLE: {
+                    WAH_LOWER_MEM(instr->imm.v128, 16);
+                    break;
+                }
+                case WAH_OP_SELECT_T: {
+                    // Rewrite SELECT_T to SELECT: overwrite the opcode we just emitted
+                    buf_size -= sizeof(uint16_t);
+                    WAH_LOWER_U16(WAH_OP_SELECT);
+                    break;
+                }
+                case WAH_OP_REF_NULL: {
+                    WAH_ASSERT(instr->imm_kind == WAH_IMM_U32);
+                    WAH_LOWER_U32(instr->imm.u32);
+                    break;
+                }
+                case WAH_OP_REF_FUNC: {
+                    WAH_ASSERT(instr->imm_kind == WAH_IMM_U32);
+                    WAH_LOWER_U32(instr->imm.u32);
+                    break;
+                }
+                case WAH_OP_REF_TEST_NULL: case WAH_OP_REF_TEST:
+                case WAH_OP_REF_CAST_NULL: case WAH_OP_REF_CAST: {
+                    WAH_ASSERT(instr->imm_kind == WAH_IMM_REF_CAST);
+                    WAH_LOWER_U32((uint32_t)instr->imm.ref_cast.heap_type);
+                    break;
+                }
+                case WAH_OP_STRUCT_NEW: case WAH_OP_STRUCT_NEW_DEFAULT:
+                case WAH_OP_ARRAY_NEW: case WAH_OP_ARRAY_NEW_DEFAULT:
+                case WAH_OP_ARRAY_GET: case WAH_OP_ARRAY_GET_S: case WAH_OP_ARRAY_GET_U:
+                case WAH_OP_ARRAY_SET: {
+                    WAH_LOWER_U32(instr->imm.u32);
+                    break;
+                }
+                case WAH_OP_STRUCT_GET: case WAH_OP_STRUCT_GET_S: case WAH_OP_STRUCT_GET_U:
+                case WAH_OP_STRUCT_SET: {
+                    WAH_LOWER_U32(instr->imm.type_field.type_idx);
+                    WAH_LOWER_U32(instr->imm.type_field.field_idx);
+                    break;
+                }
+                case WAH_OP_ARRAY_NEW_FIXED: {
+                    WAH_LOWER_U32(instr->imm.type_length.type_idx);
+                    WAH_LOWER_U32(instr->imm.type_length.length);
+                    break;
+                }
+                case WAH_OP_ARRAY_LEN: break;
+                case WAH_OP_ANY_CONVERT_EXTERN: break;
+                case WAH_OP_EXTERN_CONVERT_ANY: break;
+                case WAH_OP_REF_I31: break;
+                case WAH_OP_I31_GET_S: break;
+                case WAH_OP_I31_GET_U: break;
+            }
+        }
+    }
+
+    #undef WAH_EMIT_POLL
+    #undef WAH_LOWER_RESOLVE_BRANCH
+    #undef WAH_LOWER_ADD_FUNC_END_PATCH
+    #undef WAH_LOWER_ADD_PATCH
+    #undef WAH_LOWER_PATCH_U32
+    #undef WAH_LOWER_MEM
+    #undef WAH_LOWER_U64
+    #undef WAH_LOWER_U32
+    #undef WAH_LOWER_U16
+    #undef WAH_LOWER_U8
+    #undef WAH_LOWER_ENSURE
+
+    // Transfer buffer ownership to parsed_code
+    parsed_code->bytecode = buf;
+    parsed_code->bytecode_size = buf_size;
+    buf = NULL;
+
+cleanup:
+    free(buf);
+    free(func_end_patches);
+    for (uint32_t i = 0; i < control_sp; i++) {
+        free(control_stack[i].patch_offsets);
+    }
+    if (err != WAH_OK && parsed_code->bytecode) {
+        free(parsed_code->bytecode);
+        parsed_code->bytecode = NULL;
+        parsed_code->bytecode_size = 0;
+    }
+    return err;
 }
 
 // Pre-parsing function to convert bytecode to optimized structure
