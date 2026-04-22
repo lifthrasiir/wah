@@ -5507,17 +5507,35 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_heap_type(code_ptr, code_end, &ht1));
             WAH_CHECK(wah_decode_heap_type(code_ptr, code_end, &ht2));
             WAH_ENSURE(wah_type_is_subtype(ht2, ht1, vctx->module), WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(label_idx <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
             wah_type_flags_t src_flags = (cast_flags & 0x01) ? WAH_TYPE_FLAG_NULLABLE : 0;
             wah_type_flags_t dst_flags = (cast_flags & 0x02) ? WAH_TYPE_FLAG_NULLABLE : 0;
             WAH_ENSURE(!dst_flags || src_flags, WAH_ERROR_VALIDATION_FAILED);
             wah_type_t src_type = WAH_TYPE_IS_REF(ht1) ? ht1 : (ht1 >= 0 ? (wah_type_t)ht1 : WAH_TYPE_ANYREF);
+            wah_type_t dst_type = WAH_TYPE_IS_REF(ht2) ? ht2 : (ht2 >= 0 ? (wah_type_t)ht2 : WAH_TYPE_ANYREF);
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, src_type, src_flags | WAH_TYPE_FLAG_NULLABLE));
+            {
+                uint32_t br_result_count;
+                const wah_type_t *br_result_types;
+                const wah_type_flags_t *br_result_type_flags;
+                wah_validation_resolve_br_target(vctx, label_idx, &br_result_count, &br_result_types, &br_result_type_flags, NULL);
+                if (br_result_count >= 1) {
+                    wah_type_t br_type;
+                    wah_type_flags_t br_flags;
+                    if (opcode_val == WAH_OP_BR_ON_CAST) {
+                        br_type = dst_type; br_flags = dst_flags;
+                    } else {
+                        br_type = src_type; br_flags = src_flags & ~dst_flags;
+                    }
+                    WAH_CHECK(wah_validate_type_match(br_type, br_flags,
+                        br_result_types[br_result_count - 1], br_result_type_flags[br_result_count - 1], vctx->module));
+                }
+            }
             RECORD_BRANCH_ADJ(0, 0);
             if (opcode_val == WAH_OP_BR_ON_CAST) {
                 wah_type_flags_t diff_flags = src_flags & ~dst_flags;
                 WAH_CHECK(wah_validation_push_type_with_flags(vctx, src_type, diff_flags));
             } else {
-                wah_type_t dst_type = WAH_TYPE_IS_REF(ht2) ? ht2 : (ht2 >= 0 ? (wah_type_t)ht2 : WAH_TYPE_ANYREF);
                 wah_type_flags_t diff_flags = dst_flags & ~src_flags;
                 WAH_CHECK(wah_validation_push_type_with_flags(vctx, dst_type, diff_flags));
             }
