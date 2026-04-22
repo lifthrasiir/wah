@@ -2340,6 +2340,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 // Pre-parsing / lowering functions
 static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah_analyzed_code_t *ac, wah_parsed_code_t *parsed_code);
 static void wah_free_parsed_code(wah_parsed_code_t *parsed_code);
+static void wah_free_code_bodies(wah_module_t *module);
 
 // Const expression functions
 static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, const uint8_t *bytecode, uint32_t bytecode_size, wah_value_t *result);
@@ -5744,15 +5745,7 @@ cleanup:
             free(frame->block_type.result_type_flags);
         }
 
-        if (module->code_bodies) {
-            for (uint32_t i = 0; i < module->code_count; ++i) {
-                free(module->code_bodies[i].local_types);
-                free(module->code_bodies[i].local_type_flags);
-                wah_free_parsed_code(&module->code_bodies[i].parsed_code);
-            }
-            free(module->code_bodies);
-            module->code_bodies = NULL;
-        }
+        wah_free_code_bodies(module);
     }
     return err;
 }
@@ -7012,6 +7005,17 @@ static void wah_free_parsed_code(wah_parsed_code_t *parsed_code) {
     free(parsed_code->operand_ref_map);
     parsed_code->operand_ref_map = NULL;
     parsed_code->operand_ref_map_size = 0;
+}
+
+static void wah_free_code_bodies(wah_module_t *module) {
+    if (!module->code_bodies) return;
+    for (uint32_t i = 0; i < module->code_count; ++i) {
+        free(module->code_bodies[i].local_types);
+        free(module->code_bodies[i].local_type_flags);
+        wah_free_parsed_code(&module->code_bodies[i].parsed_code);
+    }
+    free(module->code_bodies);
+    module->code_bodies = NULL;
 }
 
 static wah_error_t wah_decode_opcode(const uint8_t **ptr, const uint8_t *end, uint16_t *opcode_val) {
@@ -11763,13 +11767,7 @@ void wah_free_module(wah_module_t *module) {
 
     free(module->tags);
 
-    if (module->code_bodies) {
-        for (uint32_t i = 0; i < module->code_count; ++i) {
-            free(module->code_bodies[i].local_types);
-            wah_free_parsed_code(&module->code_bodies[i].parsed_code);
-        }
-        free(module->code_bodies);
-    }
+    wah_free_code_bodies(module);
 
     if (module->globals) {
         for (uint32_t i = 0; i < module->global_count; ++i) {
