@@ -5645,7 +5645,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 const wah_type_t *br_result_types;
                 const wah_type_flags_t *br_result_type_flags;
                 wah_validation_resolve_br_target(vctx, label_idx, &br_result_count, &br_result_types, &br_result_type_flags, NULL);
-                if (br_result_count >= 1) {
+                WAH_ENSURE(br_result_count >= 1, WAH_ERROR_VALIDATION_FAILED);
+                {
                     wah_type_t br_type;
                     wah_type_flags_t br_flags;
                     if (opcode_val == WAH_OP_BR_ON_CAST) {
@@ -5655,6 +5656,16 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                     }
                     WAH_CHECK(wah_validate_type_match(br_type, br_flags,
                         br_result_types[br_result_count - 1], br_result_type_flags[br_result_count - 1], vctx->module));
+                }
+                if (!vctx->is_unreachable && br_result_count > 1) {
+                    WAH_ENSURE(vctx->current_stack_depth >= br_result_count - 1, WAH_ERROR_VALIDATION_FAILED);
+                    for (uint32_t k = 0; k < br_result_count - 1; ++k) {
+                        uint32_t stack_pos = vctx->type_stack.sp - 1 - k;
+                        WAH_CHECK(wah_validate_type_match(
+                            vctx->type_stack.data[stack_pos], vctx->type_stack.flags[stack_pos],
+                            br_result_types[br_result_count - 2 - k], br_result_type_flags[br_result_count - 2 - k],
+                            vctx->module));
+                    }
                 }
             }
             RECORD_BRANCH_ADJ(0, 0);
