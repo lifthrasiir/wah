@@ -7832,6 +7832,39 @@ static wah_gc_object_t *wah_gc_alloc_extern(wah_exec_context_t *ctx, void *inner
     return obj;
 }
 
+static inline void wah_gc_store_field(wah_type_t ft, uint8_t *addr, const wah_value_t *val, uint32_t size) {
+    switch (ft) {
+        case WAH_TYPE_PACKED_I8:  *(uint8_t *)addr = (uint8_t)val->i32; break;
+        case WAH_TYPE_PACKED_I16: *(uint16_t *)addr = (uint16_t)val->i32; break;
+        case WAH_TYPE_I32: case WAH_TYPE_F32: *(uint32_t *)addr = val->i32; break;
+        case WAH_TYPE_I64: case WAH_TYPE_F64: *(uint64_t *)addr = val->i64; break;
+        default:
+            if (WAH_TYPE_IS_REF(ft)) *(void **)addr = val->ref;
+            else memcpy(addr, val, size);
+            break;
+    }
+}
+
+static inline void wah_gc_load_field(wah_type_t ft, const uint8_t *addr, wah_value_t *val, uint32_t size) {
+    *val = (wah_value_t){0};
+    switch (ft) {
+        case WAH_TYPE_PACKED_I8:  val->i32 = *(uint8_t *)addr; break;
+        case WAH_TYPE_PACKED_I16: val->i32 = *(uint16_t *)addr; break;
+        case WAH_TYPE_I32: case WAH_TYPE_F32: val->i32 = *(int32_t *)addr; break;
+        case WAH_TYPE_I64: case WAH_TYPE_F64: val->i64 = *(int64_t *)addr; break;
+        default:
+            if (WAH_TYPE_IS_REF(ft)) val->ref = *(void **)addr;
+            else memcpy(val, addr, size);
+            break;
+    }
+}
+
+static inline int32_t wah_gc_load_packed(wah_type_t ft, const uint8_t *addr, bool sign_extend) {
+    if (ft == WAH_TYPE_PACKED_I8)
+        return sign_extend ? (int32_t)(int8_t)*(uint8_t *)addr : (int32_t)*(uint8_t *)addr;
+    return sign_extend ? (int32_t)(int16_t)*(uint16_t *)addr : (int32_t)*(uint16_t *)addr;
+}
+
 static inline void wah_ref_store_global(wah_exec_context_t *ctx, uint32_t idx, wah_value_t val) {
     ctx->globals[idx] = val;
 }
@@ -8779,16 +8812,7 @@ WAH_RUN(STRUCT_NEW) {
     const wah_type_def_t *td = &ctx->module->type_defs[typeidx];
     for (uint32_t i = td->field_count; i > 0; --i) {
         wah_value_t val = *--sp;
-        uint32_t off = info->fields[i - 1].offset;
-        switch (td->field_types[i - 1]) {
-            case WAH_TYPE_PACKED_I8:  *(uint8_t *)(payload + off) = (uint8_t)val.i32; break;
-            case WAH_TYPE_PACKED_I16: *(uint16_t *)(payload + off) = (uint16_t)val.i32; break;
-            case WAH_TYPE_I32: case WAH_TYPE_F32: *(uint32_t *)(payload + off) = val.i32; break;
-            case WAH_TYPE_I64: case WAH_TYPE_F64: *(uint64_t *)(payload + off) = val.i64; break;
-            default:
-                if (WAH_TYPE_IS_REF(td->field_types[i - 1])) { *(void **)(payload + off) = val.ref; }
-                break;
-        }
+        wah_gc_store_field(td->field_types[i - 1], payload + info->fields[i - 1].offset, &val, 0);
     }
     (*sp++).ref = obj;
     WAH_NEXT();
@@ -8811,21 +8835,11 @@ WAH_RUN(STRUCT_GET) {
     uint32_t fieldidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     wah_gc_object_t *obj = (wah_gc_object_t *)(--sp)->ref;
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
-    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
-    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    const wah_repr_info_t *info = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]];
     uint8_t *payload = (uint8_t *)wah_gc_payload(obj);
-    uint32_t off = info->fields[fieldidx].offset;
-    wah_type_t ft = ctx->module->type_defs[typeidx].field_types[fieldidx];
-    wah_value_t val = {0};
-    switch (ft) {
-        case WAH_TYPE_PACKED_I8:  val.i32 = *(uint8_t *)(payload + off); break;
-        case WAH_TYPE_PACKED_I16: val.i32 = *(uint16_t *)(payload + off); break;
-        case WAH_TYPE_I32: case WAH_TYPE_F32: val.i32 = *(int32_t *)(payload + off); break;
-        case WAH_TYPE_I64: case WAH_TYPE_F64: val.i64 = *(int64_t *)(payload + off); break;
-        default:
-            if (WAH_TYPE_IS_REF(ft)) { val.ref = *(void **)(payload + off); }
-            break;
-    }
+    wah_value_t val;
+    wah_gc_load_field(ctx->module->type_defs[typeidx].field_types[fieldidx],
+                      payload + info->fields[fieldidx].offset, &val, 0);
     *sp++ = val;
     WAH_NEXT();
     WAH_CLEANUP();
@@ -8836,14 +8850,11 @@ WAH_RUN(STRUCT_GET_S) {
     uint32_t fieldidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     wah_gc_object_t *obj = (wah_gc_object_t *)(--sp)->ref;
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
-    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
-    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    const wah_repr_info_t *info = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]];
     uint8_t *payload = (uint8_t *)wah_gc_payload(obj);
-    uint32_t off = info->fields[fieldidx].offset;
-    wah_type_t ft = ctx->module->type_defs[typeidx].field_types[fieldidx];
     wah_value_t val = {0};
-    if (ft == WAH_TYPE_PACKED_I8)  val.i32 = (int32_t)(int8_t)*(uint8_t *)(payload + off);
-    else if (ft == WAH_TYPE_PACKED_I16) val.i32 = (int32_t)(int16_t)*(uint16_t *)(payload + off);
+    val.i32 = wah_gc_load_packed(ctx->module->type_defs[typeidx].field_types[fieldidx],
+                                  payload + info->fields[fieldidx].offset, true);
     *sp++ = val;
     WAH_NEXT();
     WAH_CLEANUP();
@@ -8854,14 +8865,11 @@ WAH_RUN(STRUCT_GET_U) {
     uint32_t fieldidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     wah_gc_object_t *obj = (wah_gc_object_t *)(--sp)->ref;
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
-    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
-    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    const wah_repr_info_t *info = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]];
     uint8_t *payload = (uint8_t *)wah_gc_payload(obj);
-    uint32_t off = info->fields[fieldidx].offset;
-    wah_type_t ft = ctx->module->type_defs[typeidx].field_types[fieldidx];
     wah_value_t val = {0};
-    if (ft == WAH_TYPE_PACKED_I8)  val.i32 = (int32_t)*(uint8_t *)(payload + off);
-    else if (ft == WAH_TYPE_PACKED_I16) val.i32 = (int32_t)*(uint16_t *)(payload + off);
+    val.i32 = wah_gc_load_packed(ctx->module->type_defs[typeidx].field_types[fieldidx],
+                                  payload + info->fields[fieldidx].offset, false);
     *sp++ = val;
     WAH_NEXT();
     WAH_CLEANUP();
@@ -8873,20 +8881,10 @@ WAH_RUN(STRUCT_SET) {
     wah_value_t val = *--sp;
     wah_gc_object_t *obj = (wah_gc_object_t *)(--sp)->ref;
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
-    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
-    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    const wah_repr_info_t *info = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]];
     uint8_t *payload = (uint8_t *)wah_gc_payload(obj);
-    uint32_t off = info->fields[fieldidx].offset;
-    wah_type_t ft = ctx->module->type_defs[typeidx].field_types[fieldidx];
-    switch (ft) {
-        case WAH_TYPE_PACKED_I8:  *(uint8_t *)(payload + off) = (uint8_t)val.i32; break;
-        case WAH_TYPE_PACKED_I16: *(uint16_t *)(payload + off) = (uint16_t)val.i32; break;
-        case WAH_TYPE_I32: case WAH_TYPE_F32: *(uint32_t *)(payload + off) = val.i32; break;
-        case WAH_TYPE_I64: case WAH_TYPE_F64: *(uint64_t *)(payload + off) = val.i64; break;
-        default:
-            if (WAH_TYPE_IS_REF(ft)) { *(void **)(payload + off) = val.ref; }
-            break;
-    }
+    wah_gc_store_field(ctx->module->type_defs[typeidx].field_types[fieldidx],
+                       payload + info->fields[fieldidx].offset, &val, 0);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -8900,20 +8898,9 @@ WAH_RUN(ARRAY_NEW) {
     wah_gc_object_t *obj = wah_gc_alloc_array(ctx, repr_id, info, length);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)wah_gc_payload(obj) + sizeof(wah_gc_array_body_t);
-    uint32_t esz = info->size;
     wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
-    for (uint32_t i = 0; i < length; i++) {
-        switch (et) {
-            case WAH_TYPE_PACKED_I8:  elems[i] = (uint8_t)init_val.i32; break;
-            case WAH_TYPE_PACKED_I16: ((uint16_t *)elems)[i] = (uint16_t)init_val.i32; break;
-            case WAH_TYPE_I32: case WAH_TYPE_F32: ((uint32_t *)elems)[i] = init_val.i32; break;
-            case WAH_TYPE_I64: case WAH_TYPE_F64: ((uint64_t *)elems)[i] = init_val.i64; break;
-            default:
-                if (WAH_TYPE_IS_REF(et)) { ((void **)elems)[i] = init_val.ref; }
-                else memcpy(elems + i * esz, &init_val, esz);
-                break;
-        }
-    }
+    for (uint32_t i = 0; i < length; i++)
+        wah_gc_store_field(et, elems + i * info->size, &init_val, info->size);
     (*sp++).ref = obj;
     WAH_NEXT();
     WAH_CLEANUP();
@@ -8940,19 +8927,9 @@ WAH_RUN(ARRAY_NEW_FIXED) {
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)wah_gc_payload(obj) + sizeof(wah_gc_array_body_t);
     wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
-    uint32_t esz = info->size;
     for (uint32_t i = length; i > 0; --i) {
         wah_value_t val = *--sp;
-        switch (et) {
-            case WAH_TYPE_PACKED_I8:  elems[i - 1] = (uint8_t)val.i32; break;
-            case WAH_TYPE_PACKED_I16: ((uint16_t *)elems)[i - 1] = (uint16_t)val.i32; break;
-            case WAH_TYPE_I32: case WAH_TYPE_F32: ((uint32_t *)elems)[i - 1] = val.i32; break;
-            case WAH_TYPE_I64: case WAH_TYPE_F64: ((uint64_t *)elems)[i - 1] = val.i64; break;
-            default:
-                if (WAH_TYPE_IS_REF(et)) { ((void **)elems)[i - 1] = val.ref; }
-                else memcpy(elems + (i - 1) * esz, &val, esz);
-                break;
-        }
+        wah_gc_store_field(et, elems + (i - 1) * info->size, &val, info->size);
     }
     (*sp++).ref = obj;
     WAH_NEXT();
@@ -8966,21 +8943,11 @@ WAH_RUN(ARRAY_GET) {
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     wah_gc_array_body_t *body = (wah_gc_array_body_t *)wah_gc_payload(obj);
     WAH_ENSURE_GOTO(idx < body->length, WAH_ERROR_TRAP, cleanup);
-    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
-    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    const wah_repr_info_t *info = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]];
     uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
-    wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
-    wah_value_t val = {0};
-    switch (et) {
-        case WAH_TYPE_PACKED_I8:  val.i32 = *(uint8_t *)(elems + idx); break;
-        case WAH_TYPE_PACKED_I16: val.i32 = ((uint16_t *)elems)[idx]; break;
-        case WAH_TYPE_I32: case WAH_TYPE_F32: val.i32 = ((int32_t *)elems)[idx]; break;
-        case WAH_TYPE_I64: case WAH_TYPE_F64: val.i64 = ((int64_t *)elems)[idx]; break;
-        default:
-            if (WAH_TYPE_IS_REF(et)) { val.ref = ((void **)elems)[idx]; }
-            else memcpy(&val, elems + idx * info->size, info->size);
-            break;
-    }
+    wah_value_t val;
+    wah_gc_load_field(ctx->module->type_defs[typeidx].field_types[0],
+                      elems + idx * info->size, &val, info->size);
     *sp++ = val;
     WAH_NEXT();
     WAH_CLEANUP();
@@ -8995,9 +8962,9 @@ WAH_RUN(ARRAY_GET_S) {
     WAH_ENSURE_GOTO(idx < body->length, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
     wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
+    uint32_t esz = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]]->size;
     wah_value_t val = {0};
-    if (et == WAH_TYPE_PACKED_I8)  val.i32 = (int32_t)(int8_t)elems[idx];
-    else if (et == WAH_TYPE_PACKED_I16) val.i32 = (int32_t)(int16_t)((uint16_t *)elems)[idx];
+    val.i32 = wah_gc_load_packed(et, elems + idx * esz, true);
     *sp++ = val;
     WAH_NEXT();
     WAH_CLEANUP();
@@ -9012,9 +8979,9 @@ WAH_RUN(ARRAY_GET_U) {
     WAH_ENSURE_GOTO(idx < body->length, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
     wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
+    uint32_t esz = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]]->size;
     wah_value_t val = {0};
-    if (et == WAH_TYPE_PACKED_I8)  val.i32 = (int32_t)elems[idx];
-    else if (et == WAH_TYPE_PACKED_I16) val.i32 = (int32_t)((uint16_t *)elems)[idx];
+    val.i32 = wah_gc_load_packed(et, elems + idx * esz, false);
     *sp++ = val;
     WAH_NEXT();
     WAH_CLEANUP();
@@ -9028,20 +8995,10 @@ WAH_RUN(ARRAY_SET) {
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     wah_gc_array_body_t *body = (wah_gc_array_body_t *)wah_gc_payload(obj);
     WAH_ENSURE_GOTO(idx < body->length, WAH_ERROR_TRAP, cleanup);
-    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
-    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    const wah_repr_info_t *info = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]];
     uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
-    wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
-    switch (et) {
-        case WAH_TYPE_PACKED_I8:  elems[idx] = (uint8_t)val.i32; break;
-        case WAH_TYPE_PACKED_I16: ((uint16_t *)elems)[idx] = (uint16_t)val.i32; break;
-        case WAH_TYPE_I32: case WAH_TYPE_F32: ((uint32_t *)elems)[idx] = val.i32; break;
-        case WAH_TYPE_I64: case WAH_TYPE_F64: ((uint64_t *)elems)[idx] = val.i64; break;
-        default:
-            if (WAH_TYPE_IS_REF(et)) { ((void **)elems)[idx] = val.ref; }
-            else memcpy(elems + idx * info->size, &val, info->size);
-            break;
-    }
+    wah_gc_store_field(ctx->module->type_defs[typeidx].field_types[0],
+                       elems + idx * info->size, &val, info->size);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -9119,19 +9076,8 @@ WAH_RUN(ARRAY_FILL) {
     const wah_repr_info_t *info = ctx->module->repr_infos[obj->repr_id];
     uint32_t esz = info->size;
     wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
-    for (uint32_t i = 0; i < size; i++) {
-        uint32_t idx = offset + i;
-        switch (et) {
-            case WAH_TYPE_PACKED_I8:  elems[idx] = (uint8_t)fill_val.i32; break;
-            case WAH_TYPE_PACKED_I16: ((uint16_t *)elems)[idx] = (uint16_t)fill_val.i32; break;
-            case WAH_TYPE_I32: case WAH_TYPE_F32: ((uint32_t *)elems)[idx] = fill_val.i32; break;
-            case WAH_TYPE_I64: case WAH_TYPE_F64: ((uint64_t *)elems)[idx] = fill_val.i64; break;
-            default:
-                if (WAH_TYPE_IS_REF(et)) { ((void **)elems)[idx] = fill_val.ref; }
-                else memcpy(elems + idx * esz, &fill_val, esz);
-                break;
-        }
-    }
+    for (uint32_t i = 0; i < size; i++)
+        wah_gc_store_field(et, elems + (offset + i) * esz, &fill_val, esz);
     WAH_NEXT();
     WAH_CLEANUP();
 }
