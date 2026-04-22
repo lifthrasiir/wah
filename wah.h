@@ -5702,12 +5702,14 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         ac = (wah_analyzed_code_t){0};
 
         bool is_first_validation_instr = true;
+        uint16_t poll_flags = 0;
         while (code_ptr_validation < validation_end) {
             uint16_t current_opcode_val;
             WAH_CHECK_GOTO(wah_decode_opcode(&code_ptr_validation, validation_end, &current_opcode_val), cleanup);
 
             if (is_first_validation_instr) {
                 WAH_CAPTURE_REF_MAP();
+                poll_flags = WAH_INSTR_FLAG_POLL;
                 is_first_validation_instr = false;
             }
 
@@ -5735,11 +5737,22 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
             }
             if (current_opcode_val == WAH_OP_CALL || current_opcode_val == WAH_OP_CALL_INDIRECT || current_opcode_val == WAH_OP_CALL_REF) {
                 WAH_CAPTURE_REF_MAP();
+                poll_flags = WAH_INSTR_FLAG_POLL;
+            } else if (current_opcode_val == WAH_OP_RETURN_CALL || current_opcode_val == WAH_OP_RETURN_CALL_INDIRECT || current_opcode_val == WAH_OP_RETURN_CALL_REF) {
+                poll_flags = WAH_INSTR_FLAG_POLL;
             }
+            uint32_t instr_count_before = ac.instr_count;
             WAH_CHECK_GOTO(wah_validate_opcode(current_opcode_val, &code_ptr_validation, validation_end, &vctx, &module->code_bodies[i], &ac), cleanup);
+            if (poll_flags && ac.instr_count > instr_count_before) {
+                ac.instrs[instr_count_before].flags |= poll_flags;
+                poll_flags = 0;
+            }
 
             if (current_opcode_val == WAH_OP_LOOP) {
                 WAH_CAPTURE_REF_MAP();
+                if (ac.instr_count > 0) {
+                    ac.instrs[ac.instr_count - 1].flags |= WAH_INSTR_FLAG_POLL;
+                }
             }
         }
         WAH_ENSURE_GOTO(vctx.control_sp == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
@@ -6871,18 +6884,14 @@ static wah_error_t wah_lower_analyzed_code(
         const wah_decoded_instr_t *instr = &ac->instrs[ii];
         uint16_t opcode = instr->opcode;
 
-        if (emit_poll && ii == 0) {
-            WAH_EMIT_POLL();
-        }
-
         if (opcode == WAH_OP_BLOCK || opcode == WAH_OP_LOOP) {
             WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
             wah_lower_cf_t cf = {0};
             cf.opcode = (wah_opcode_t)opcode;
-            if (opcode == WAH_OP_LOOP && emit_poll) {
+            if (emit_poll && (instr->flags & WAH_INSTR_FLAG_POLL)) {
                 WAH_EMIT_POLL();
             }
-            cf.continuation_offset = buf_size; // for LOOP: points here (after POLL if any)
+            cf.continuation_offset = buf_size;
             control_stack[control_sp++] = cf;
             continue;
         }
@@ -6945,8 +6954,7 @@ static wah_error_t wah_lower_analyzed_code(
             continue;
         }
 
-        if (emit_poll && (opcode == WAH_OP_CALL || opcode == WAH_OP_CALL_INDIRECT || opcode == WAH_OP_CALL_REF ||
-                         opcode == WAH_OP_RETURN_CALL || opcode == WAH_OP_RETURN_CALL_INDIRECT || opcode == WAH_OP_RETURN_CALL_REF)) {
+        if (emit_poll && (instr->flags & WAH_INSTR_FLAG_POLL)) {
             WAH_EMIT_POLL();
         }
 
