@@ -1763,7 +1763,6 @@ typedef enum {
     WAH_IMM_U32_U32,
     WAH_IMM_MEMARG,
     WAH_IMM_MEMARG_LANE,
-    WAH_IMM_BLOCK,
     WAH_IMM_BRANCH,
     WAH_IMM_BR_TABLE,
     WAH_IMM_REF_CAST,
@@ -1771,7 +1770,6 @@ typedef enum {
     WAH_IMM_TYPE_FIELD,
     WAH_IMM_TYPE_LENGTH,
     WAH_IMM_TRY_TABLE,
-    WAH_IMM_SELECT_T,
     WAH_IMM_SHUFFLE,
 } wah_imm_kind_t;
 
@@ -1800,9 +1798,7 @@ typedef struct {
     uint8_t cast_flags;
     uint32_t target_symbol;
     wah_type_t src_type;
-    wah_type_flags_t src_type_flags;
     wah_type_t dst_type;
-    wah_type_flags_t dst_type_flags;
     int32_t dst_heap_type;
     uint32_t keep;
     uint32_t drop;
@@ -1815,7 +1811,6 @@ typedef struct {
         uint32_t tag_idx;
         uint32_t target_symbol;
     } *catches;
-    wah_func_type_t block_type;
 } wah_imm_try_table_t;
 
 typedef struct {
@@ -1834,15 +1829,13 @@ typedef struct {
         struct { uint32_t a, b; } u32_u32;
         wah_imm_memarg_t memarg;
         struct { wah_imm_memarg_t memarg; uint8_t lane; } memarg_lane;
-        struct { wah_func_type_t type; uint32_t symbol_id; } block;
         struct { uint32_t label_idx; uint32_t target_symbol; uint32_t keep; uint32_t drop; } branch;
         wah_imm_br_table_t br_table;
-        struct { wah_type_t type; wah_type_flags_t type_flags; int32_t heap_type; } ref_cast;
+        struct { int32_t heap_type; } ref_cast;
         wah_imm_br_on_cast_t br_on_cast;
         struct { uint32_t type_idx; uint32_t field_idx; } type_field;
         struct { uint32_t type_idx; uint32_t length; } type_length;
         wah_imm_try_table_t try_table;
-        struct { uint32_t count; wah_type_t type; wah_type_flags_t type_flags; } select_t;
         uint8_t shuffle[16];
     } imm;
 } wah_decoded_instr_t;
@@ -4994,8 +4987,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_I32, 0));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, sel_type, sel_flags));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, sel_type, sel_flags));
-            EMIT_INSTR_EX(opcode_val, WAH_IMM_SELECT_T,
-                _di->imm.select_t.count = 1; _di->imm.select_t.type = sel_type; _di->imm.select_t.type_flags = sel_flags);
+            EMIT_SIMPLE();
             return wah_validation_push_type_with_flags(vctx, sel_type, sel_flags);
         }
 
@@ -5037,8 +5029,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 WAH_CHECK(wah_validation_push_type_with_flags(vctx, bt->param_types[i], pf));
             }
             vctx->is_unreachable = false;
-            EMIT_INSTR_EX(opcode_val, WAH_IMM_BLOCK,
-                _di->imm.block.symbol_id = 0);
+            EMIT_SIMPLE();
             return WAH_OK;
         }
         case WAH_OP_ELSE: {
@@ -5618,8 +5609,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 wah_type_flags_t cast_flags = (opcode_val == WAH_OP_REF_CAST_NULL) ? WAH_TYPE_FLAG_NULLABLE : 0;
                 WAH_CHECK(wah_validation_push_type_with_flags(vctx, cast_type, cast_flags));
             }
-            EMIT_INSTR_EX(opcode_val, WAH_IMM_REF_CAST,
-                _di->imm.ref_cast.type = heap_type; _di->imm.ref_cast.type_flags = 0; _di->imm.ref_cast.heap_type = (int32_t)heap_type);
+            EMIT_INSTR_EX(opcode_val, WAH_IMM_REF_CAST, _di->imm.ref_cast.heap_type = (int32_t)heap_type);
             break;
         }
 
