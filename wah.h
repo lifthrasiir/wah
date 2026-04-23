@@ -4073,6 +4073,9 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
         wah_type_def_t *td = &module->type_defs[i];
         if (td->supertype != WAH_NO_SUPERTYPE) {
             WAH_ENSURE(td->supertype < module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            const wah_type_def_t *super_td = &module->type_defs[td->supertype];
+            WAH_ENSURE(!super_td->is_final, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(td->kind == super_td->kind, WAH_ERROR_VALIDATION_FAILED);
         }
         if (td->kind == WAH_COMP_STRUCT || td->kind == WAH_COMP_ARRAY) {
             for (uint32_t j = 0; j < td->field_count; ++j) WAH_VALIDATE_HEAP_TYPE_IDX(td->field_types[j]);
@@ -4102,6 +4105,70 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
                 break;
             }
         }
+    }
+
+    // Validate structural subtype compatibility (requires canonical_map)
+    for (uint32_t i = 0; i < module->type_count; ++i) {
+        wah_type_def_t *td = &module->type_defs[i];
+        if (td->supertype == WAH_NO_SUPERTYPE) continue;
+        wah_type_def_t *super_td = &module->type_defs[td->supertype];
+
+        #define WAH_SUBTYPE_CHECK(sub_t, sup_t) ( \
+            (sub_t) == (sup_t) || \
+            ((sub_t) >= 0 && (sup_t) >= 0 && canonical_map[(uint32_t)(sub_t)] == canonical_map[(uint32_t)(sup_t)]) || \
+            wah_type_is_subtype((sub_t), (sup_t), module) || \
+            ((sub_t) >= 0 && (sup_t) >= 0 && wah_type_is_subtype((wah_type_t)canonical_map[(uint32_t)(sub_t)], (wah_type_t)canonical_map[(uint32_t)(sup_t)], module)) \
+        )
+
+        if (td->kind == WAH_COMP_FUNC) {
+            wah_func_type_t *sub_ft = &module->types[i];
+            wah_func_type_t *sup_ft = &module->types[td->supertype];
+            WAH_ENSURE(sub_ft->param_count == sup_ft->param_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(sub_ft->result_count == sup_ft->result_count, WAH_ERROR_VALIDATION_FAILED);
+            for (uint32_t j = 0; j < sub_ft->param_count; ++j) {
+                WAH_ENSURE(WAH_SUBTYPE_CHECK(sup_ft->param_types[j], sub_ft->param_types[j]), WAH_ERROR_VALIDATION_FAILED);
+                wah_type_flags_t sf = sup_ft->param_type_flags ? sup_ft->param_type_flags[j] : 0;
+                wah_type_flags_t bf = sub_ft->param_type_flags ? sub_ft->param_type_flags[j] : 0;
+                if (bf & WAH_TYPE_FLAG_NULLABLE)
+                    WAH_ENSURE(sf & WAH_TYPE_FLAG_NULLABLE, WAH_ERROR_VALIDATION_FAILED);
+            }
+            for (uint32_t j = 0; j < sub_ft->result_count; ++j) {
+                WAH_ENSURE(WAH_SUBTYPE_CHECK(sub_ft->result_types[j], sup_ft->result_types[j]), WAH_ERROR_VALIDATION_FAILED);
+                wah_type_flags_t sf = sup_ft->result_type_flags ? sup_ft->result_type_flags[j] : 0;
+                wah_type_flags_t bf = sub_ft->result_type_flags ? sub_ft->result_type_flags[j] : 0;
+                if (!(sf & WAH_TYPE_FLAG_NULLABLE))
+                    WAH_ENSURE(!(bf & WAH_TYPE_FLAG_NULLABLE), WAH_ERROR_VALIDATION_FAILED);
+            }
+        } else if (td->kind == WAH_COMP_STRUCT) {
+            WAH_ENSURE(td->field_count >= super_td->field_count, WAH_ERROR_VALIDATION_FAILED);
+            for (uint32_t j = 0; j < super_td->field_count; ++j) {
+                if (super_td->field_mutables[j]) {
+                    WAH_ENSURE(td->field_mutables[j], WAH_ERROR_VALIDATION_FAILED);
+                    wah_type_t st = super_td->field_types[j], tt = td->field_types[j];
+                    WAH_ENSURE(st == tt || (st >= 0 && tt >= 0 && canonical_map[(uint32_t)st] == canonical_map[(uint32_t)tt]), WAH_ERROR_VALIDATION_FAILED);
+                    WAH_ENSURE(td->field_type_flags[j] == super_td->field_type_flags[j], WAH_ERROR_VALIDATION_FAILED);
+                } else {
+                    WAH_ENSURE(!td->field_mutables[j], WAH_ERROR_VALIDATION_FAILED);
+                    WAH_ENSURE(WAH_SUBTYPE_CHECK(td->field_types[j], super_td->field_types[j]), WAH_ERROR_VALIDATION_FAILED);
+                    if (!(super_td->field_type_flags[j] & WAH_TYPE_FLAG_NULLABLE))
+                        WAH_ENSURE(!(td->field_type_flags[j] & WAH_TYPE_FLAG_NULLABLE), WAH_ERROR_VALIDATION_FAILED);
+                }
+            }
+        } else if (td->kind == WAH_COMP_ARRAY) {
+            WAH_ENSURE(td->field_count == 1 && super_td->field_count == 1, WAH_ERROR_VALIDATION_FAILED);
+            if (super_td->field_mutables[0]) {
+                WAH_ENSURE(td->field_mutables[0], WAH_ERROR_VALIDATION_FAILED);
+                wah_type_t st = super_td->field_types[0], tt = td->field_types[0];
+                WAH_ENSURE(st == tt || (st >= 0 && tt >= 0 && canonical_map[(uint32_t)st] == canonical_map[(uint32_t)tt]), WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(td->field_type_flags[0] == super_td->field_type_flags[0], WAH_ERROR_VALIDATION_FAILED);
+            } else {
+                WAH_ENSURE(!td->field_mutables[0], WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(WAH_SUBTYPE_CHECK(td->field_types[0], super_td->field_types[0]), WAH_ERROR_VALIDATION_FAILED);
+                if (!(super_td->field_type_flags[0] & WAH_TYPE_FLAG_NULLABLE))
+                    WAH_ENSURE(!(td->field_type_flags[0] & WAH_TYPE_FLAG_NULLABLE), WAH_ERROR_VALIDATION_FAILED);
+            }
+        }
+        #undef WAH_SUBTYPE_CHECK
     }
 
     WAH_MALLOC_ARRAY(module->typeidx_to_repr, module->type_count);
