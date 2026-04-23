@@ -9978,10 +9978,12 @@ WAH_RUN(ELEM_DROP) {
                             expected_func_type->result_count == actual_func_type->result_count, \
                             WAH_ERROR_TRAP, cleanup); \
             for (uint32_t i = 0; i < expected_func_type->param_count; ++i) { \
-                WAH_ENSURE_GOTO(expected_func_type->param_types[i] == actual_func_type->param_types[i], WAH_ERROR_TRAP, cleanup); \
+                WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(fctx->module, expected_func_type->param_types[i], \
+                                                              fn_module, actual_func_type->param_types[i]), WAH_ERROR_TRAP, cleanup); \
             } \
             for (uint32_t i = 0; i < expected_func_type->result_count; ++i) { \
-                WAH_ENSURE_GOTO(expected_func_type->result_types[i] == actual_func_type->result_types[i], WAH_ERROR_TRAP, cleanup); \
+                WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(fctx->module, expected_func_type->result_types[i], \
+                                                              fn_module, actual_func_type->result_types[i]), WAH_ERROR_TRAP, cleanup); \
             } \
             CALL_WASM; \
         } \
@@ -10010,10 +10012,12 @@ WAH_RUN(ELEM_DROP) {
                             expected_func_type->result_count == actual_func_type->result_count, \
                             WAH_ERROR_TRAP, cleanup); \
             for (uint32_t i = 0; i < expected_func_type->param_count; ++i) { \
-                WAH_ENSURE_GOTO(expected_func_type->param_types[i] == actual_func_type->param_types[i], WAH_ERROR_TRAP, cleanup); \
+                WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(fctx->module, expected_func_type->param_types[i], \
+                                                              fn_module, actual_func_type->param_types[i]), WAH_ERROR_TRAP, cleanup); \
             } \
             for (uint32_t i = 0; i < expected_func_type->result_count; ++i) { \
-                WAH_ENSURE_GOTO(expected_func_type->result_types[i] == actual_func_type->result_types[i], WAH_ERROR_TRAP, cleanup); \
+                WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(fctx->module, expected_func_type->result_types[i], \
+                                                              fn_module, actual_func_type->result_types[i]), WAH_ERROR_TRAP, cleanup); \
             } \
             CALL_WASM; \
         } \
