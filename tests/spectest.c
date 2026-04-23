@@ -148,11 +148,11 @@ static void *host_ref_for_id(spectest_env_t *env, uint32_t id) {
         .repr_id = WAH_REPR_EXTERN,
         .size_bytes = (uint32_t)sizeof(wah_gc_extern_body_t)
     };
-    wrapper->body.inner = inner;
+    wrapper->body.inner = &inner->id; // payload pointer (after header)
     env->host_refs[env->host_ref_count].id = id;
-    env->host_refs[env->host_ref_count].ptr = wrapper;
+    env->host_refs[env->host_ref_count].ptr = &wrapper->body;
     env->host_ref_count++;
-    return wrapper;
+    return &wrapper->body;
 }
 
 static spectest_module_def_t *find_def_by_name(spectest_env_t *env, const char *name) {
@@ -369,8 +369,8 @@ static int match_single_pattern(const spectest_env_t *env,
             if (pat->host_ref_id == 0 && !pat->ref_kind_name) return 1;
             void *expected = host_ref_for_id((spectest_env_t *)env, pat->host_ref_id);
             if (actual->value.ref == expected) return 1;
-            host_extern_wrapper_t *w = (host_extern_wrapper_t *)expected;
-            return actual->value.ref == w->body.inner;
+            wah_gc_extern_body_t *body = (wah_gc_extern_body_t *)expected;
+            return actual->value.ref == body->inner;
         }
         case WAST_PAT_REF_OTHER:
             if (!strcmp(pat->ref_kind_name, "ref.array") ||
@@ -1110,9 +1110,12 @@ static void free_env(spectest_env_t *env) {
         free(env->registered[i].name);
     }
     for (i = 0; i < env->host_ref_count; ++i) {
-        host_extern_wrapper_t *w = (host_extern_wrapper_t *)env->host_refs[i].ptr;
-        free(w->body.inner);
-        free(w);
+        void *payload = env->host_refs[i].ptr;
+        wah_gc_extern_body_t *body = (wah_gc_extern_body_t *)payload;
+        // body->inner points to payload of host_ref_obj_t; recover malloc pointer
+        free((uint8_t *)body->inner - sizeof(wah_gc_object_t));
+        // payload points to wrapper->body; recover malloc pointer
+        free((uint8_t *)payload - sizeof(wah_gc_object_t));
     }
     if (env->host_ready) {
         wah_free_module(&env->spectest_host);
