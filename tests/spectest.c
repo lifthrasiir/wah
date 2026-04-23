@@ -212,18 +212,38 @@ static void *spectest_resolve_ref(void *userdata, uint32_t id) {
     return host_ref_for_id((spectest_env_t *)userdata, id);
 }
 
-static int is_func_ref(const spectest_instance_t *instance, void *ref) {
-    uintptr_t start;
-    uintptr_t end;
-    uintptr_t ptr;
-    if (!instance || !instance->live || !ref || !instance->exec.function_table ||
-        instance->exec.function_table_count == 0) {
-        return 0;
-    }
-    start = (uintptr_t)&instance->exec.function_table[0];
-    end = (uintptr_t)(&instance->exec.function_table[instance->exec.function_table_count]);
+static int is_func_ref_in_table(const wah_exec_context_t *ctx, void *ref) {
+    uintptr_t start, end, ptr;
+    if (!ctx || !ctx->function_table || ctx->function_table_count == 0) return 0;
+    start = (uintptr_t)&ctx->function_table[0];
+    end = (uintptr_t)(&ctx->function_table[ctx->function_table_count]);
     ptr = (uintptr_t)ref;
     return ptr >= start && ptr < end;
+}
+
+static int is_func_ref_in_module(const wah_module_t *m, void *ref) {
+    uintptr_t start, end, ptr;
+    if (!m || !m->functions || m->total_function_count == 0) return 0;
+    start = (uintptr_t)&m->functions[0];
+    end = (uintptr_t)(&m->functions[m->total_function_count]);
+    ptr = (uintptr_t)ref;
+    return ptr >= start && ptr < end;
+}
+
+static int is_func_ref(const spectest_instance_t *instance, void *ref) {
+    uint32_t i;
+    if (!instance || !instance->live || !ref) return 0;
+    if (is_func_ref_in_table(&instance->exec, ref)) return 1;
+    if (is_func_ref_in_module(instance->exec.module, ref)) return 1;
+    for (i = 0; i < instance->exec.linked_module_count; i++) {
+        if (instance->exec.linked_modules[i].ctx &&
+            is_func_ref_in_table(instance->exec.linked_modules[i].ctx, ref))
+            return 1;
+        if (instance->exec.linked_modules[i].module &&
+            is_func_ref_in_module(instance->exec.linked_modules[i].module, ref))
+            return 1;
+    }
+    return 0;
 }
 
 static int match_num_pat_i32(int32_t actual, const wast_num_pat_t *pat) {
