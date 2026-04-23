@@ -3010,27 +3010,16 @@ static WAH_ALWAYS_INLINE __m128i wah_i8x16_shr_u_sse2(__m128i a, int32_t count) 
     return _mm_packus_epi16(lo, hi);
 }
 
-// I7X16 sign-extension: treat lower 7 bits as signed (bit6=sign, bit7 ignored)
-// (b & 0x7F) | ((b << 1) & 0x80) -- shifts bit6 into bit7 position for sign
-static WAH_ALWAYS_INLINE __m128i wah_i7x16_to_i8_sse2(__m128i b) {
-    return _mm_or_si128(
-        _mm_and_si128(b, _mm_set1_epi8(0x7F)),
-        _mm_and_si128(_mm_add_epi8(b, b), _mm_set1_epi8(0x80))
-    );
-}
-
-// I16X8 relaxed dot: i8x16 (signed) * i7x16 (7-bit signed), sum adjacent pairs -> i16x8
-// Correctly sign-extends i7 operand, unlike pmaddubsw which treats both as i8.
+// I16X8 relaxed dot: i8x16 (signed) * i7x16, sum adjacent pairs -> i16x8
+// Deterministic profile: treat i7 operand as signed i8 directly.
 static WAH_ALWAYS_INLINE __m128i wah_i16x8_relaxed_dot_i8x16_i7x16_s_sse2(__m128i a, __m128i b) {
-    __m128i b_i8 = wah_i7x16_to_i8_sse2(b);
     __m128i zero = _mm_setzero_si128();
-    // Sign-extend i8 bytes to i16 for both operands
-    __m128i a_sign = _mm_cmplt_epi8(a, zero);      // 0xFF if negative, 0x00 otherwise
-    __m128i b_sign = _mm_cmplt_epi8(b_i8, zero);
-    __m128i a_lo = _mm_unpacklo_epi8(a, a_sign);   // bytes 0-7 as i16x8
-    __m128i a_hi = _mm_unpackhi_epi8(a, a_sign);   // bytes 8-15 as i16x8
-    __m128i b_lo = _mm_unpacklo_epi8(b_i8, b_sign);
-    __m128i b_hi = _mm_unpackhi_epi8(b_i8, b_sign);
+    __m128i a_sign = _mm_cmplt_epi8(a, zero);
+    __m128i b_sign = _mm_cmplt_epi8(b, zero);
+    __m128i a_lo = _mm_unpacklo_epi8(a, a_sign);
+    __m128i a_hi = _mm_unpackhi_epi8(a, a_sign);
+    __m128i b_lo = _mm_unpacklo_epi8(b, b_sign);
+    __m128i b_hi = _mm_unpackhi_epi8(b, b_sign);
     // pmaddwd: result[i] = a[2i]*b[2i] + a[2i+1]*b[2i+1] as i32
     __m128i dot_lo = _mm_madd_epi16(a_lo, b_lo);   // 4 i32 values from bytes 0-7
     __m128i dot_hi = _mm_madd_epi16(a_hi, b_hi);   // 4 i32 values from bytes 8-15
@@ -3041,14 +3030,13 @@ static WAH_ALWAYS_INLINE __m128i wah_i16x8_relaxed_dot_i8x16_i7x16_s_sse2(__m128
 // I32X4 relaxed dot-add: sum 4 consecutive (i8*i7) products per lane, add accumulator
 // Uses shuffle trick for horizontal add (avoids SSSE3 phaddd).
 static WAH_ALWAYS_INLINE __m128i wah_i32x4_relaxed_dot_i8x16_i7x16_add_s_sse2(__m128i a, __m128i b, __m128i c) {
-    __m128i b_i8 = wah_i7x16_to_i8_sse2(b);
     __m128i zero = _mm_setzero_si128();
     __m128i a_sign = _mm_cmplt_epi8(a, zero);
-    __m128i b_sign = _mm_cmplt_epi8(b_i8, zero);
+    __m128i b_sign = _mm_cmplt_epi8(b, zero);
     __m128i a_lo = _mm_unpacklo_epi8(a, a_sign);
     __m128i a_hi = _mm_unpackhi_epi8(a, a_sign);
-    __m128i b_lo = _mm_unpacklo_epi8(b_i8, b_sign);
-    __m128i b_hi = _mm_unpackhi_epi8(b_i8, b_sign);
+    __m128i b_lo = _mm_unpacklo_epi8(b, b_sign);
+    __m128i b_hi = _mm_unpackhi_epi8(b, b_sign);
     // dots_lo[i] = a[2i]*b[2i] + a[2i+1]*b[2i+1] as i32 (4 results from bytes 0-7)
     // dots_hi[i] = a[8+2i]*b[8+2i] + a[9+2i]*b[9+2i] as i32 (4 results from bytes 8-15)
     __m128i dots_lo = _mm_madd_epi16(a_lo, b_lo);
@@ -11825,8 +11813,7 @@ WAH_RUN(I16X8_RELAXED_DOT_I8X16_I7X16_S) M128I_BINARY_OP(wah_i16x8_relaxed_dot_i
     wah_v128_t result;
     for (int i = 0; i < 8; ++i) {
         int8_t a0 = a.i8[i * 2], a1 = a.i8[i * 2 + 1];
-        int8_t b0 = (int8_t)((b.u8[i * 2]     & 0x7F) | ((b.u8[i * 2]     & 0x40) ? 0x80 : 0x00));
-        int8_t b1 = (int8_t)((b.u8[i * 2 + 1] & 0x7F) | ((b.u8[i * 2 + 1] & 0x40) ? 0x80 : 0x00));
+        int8_t b0 = b.i8[i * 2], b1 = b.i8[i * 2 + 1];
         result.i16[i] = (int16_t)a0 * b0 + (int16_t)a1 * b1;
     }
     sp[-2].v128 = result;
@@ -11840,10 +11827,7 @@ WAH_RUN(I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S) M128I_TERNARY_OP(wah_i32x4_relaxed_
     wah_v128_t result;
     for (int i = 0; i < 4; ++i) {
         int8_t a0 = a.i8[i*4], a1 = a.i8[i*4+1], a2 = a.i8[i*4+2], a3 = a.i8[i*4+3];
-        int8_t b0 = (int8_t)((b.u8[i*4]   & 0x7F) | ((b.u8[i*4]   & 0x40) ? 0x80 : 0x00));
-        int8_t b1 = (int8_t)((b.u8[i*4+1] & 0x7F) | ((b.u8[i*4+1] & 0x40) ? 0x80 : 0x00));
-        int8_t b2 = (int8_t)((b.u8[i*4+2] & 0x7F) | ((b.u8[i*4+2] & 0x40) ? 0x80 : 0x00));
-        int8_t b3 = (int8_t)((b.u8[i*4+3] & 0x7F) | ((b.u8[i*4+3] & 0x40) ? 0x80 : 0x00));
+        int8_t b0 = b.i8[i*4], b1 = b.i8[i*4+1], b2 = b.i8[i*4+2], b3 = b.i8[i*4+3];
         result.i32[i] = c.i32[i] + (int32_t)a0*b0 + (int32_t)a1*b1 + (int32_t)a2*b2 + (int32_t)a3*b3;
     }
     sp[-3].v128 = result;
@@ -11867,7 +11851,15 @@ WAH_IF_X86_64(
             sp--;
             WAH_NEXT();
         }
-        WAH_RUN(I16X8_Q15MULR_SAT_S_ssse3) M128I_BINARY_OP(wah_mm_mulhrs_epi16)
+        WAH_RUN(I16X8_Q15MULR_SAT_S_ssse3) {
+            __m128i a = sp[-2]._m128i, b = sp[-1]._m128i;
+            __m128i result = wah_mm_mulhrs_epi16(a, b);
+            __m128i min16 = _mm_set1_epi16((int16_t)0x8000);
+            __m128i both_min = _mm_and_si128(_mm_cmpeq_epi16(a, min16), _mm_cmpeq_epi16(b, min16));
+            sp[-2]._m128i = _mm_xor_si128(result, both_min);
+            sp--;
+            WAH_NEXT();
+        }
         WAH_RUN(I16X8_RELAXED_Q15MULR_S_ssse3) M128I_BINARY_OP(wah_mm_mulhrs_epi16)
     )
 

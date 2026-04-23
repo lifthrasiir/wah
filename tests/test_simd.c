@@ -1048,22 +1048,15 @@ void test_f32x4_pmax_nan_handling() {
 
 void test_i16x8_relaxed_dot_i8x16_i7x16_s() {
     // a (i8x16): [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-    // b (i7x16): [1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8]
-    // Note: i7 values are represented as i8, where bit 6 is sign bit.
-    // 1 (0x01), -1 (0x7F, sign-extended from 0x3F), 2 (0x02), -2 (0x7E, sign-extended from 0x3E)
+    // b: [1, 127, 2, 126, 3, 125, 4, 124, 5, 123, 6, 122, 7, 121, 8, 120]
+    // Deterministic profile: b treated as signed i8 directly (no i7 sign extension)
     wah_v128_t a = {{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}};
     wah_v128_t b = {{0x01, 0x7F, 0x02, 0x7E, 0x03, 0x7D, 0x04, 0x7C, 0x05, 0x7B, 0x06, 0x7A, 0x07, 0x79, 0x08, 0x78}};
 
-    // Expected results for i16x8:
-    // Lane 0: (1 * 1) + (2 * -1) = 1 - 2 = -1 (0xFF, 0xFF)
-    // Lane 1: (3 * 2) + (4 * -2) = 6 - 8 = -2 (0xFE, 0xFF)
-    // Lane 2: (5 * 3) + (6 * -3) = 15 - 18 = -3 (0xFD, 0xFF)
-    // Lane 3: (7 * 4) + (8 * -4) = 28 - 32 = -4 (0xFC, 0xFF)
-    // Lane 4: (9 * 5) + (10 * -5) = 45 - 50 = -5 (0xFB, 0xFF)
-    // Lane 5: (11 * 6) + (12 * -6) = 66 - 72 = -6 (0xFA, 0xFF)
-    // Lane 6: (13 * 7) + (14 * -7) = 91 - 98 = -7 (0xF9, 0xFF)
-    // Lane 7: (15 * 8) + (16 * -8) = 120 - 128 = -8 (0xF8, 0xFF)
-    wah_v128_t expected = {{0xFF, 0xFF, 0xFE, 0xFF, 0xFD, 0xFF, 0xFC, 0xFF, 0xFB, 0xFF, 0xFA, 0xFF, 0xF9, 0xFF, 0xF8, 0xFF}};
+    // Lane 0: 1*1 + 2*127 = 255, Lane 1: 3*2 + 4*126 = 510, Lane 2: 5*3 + 6*125 = 765
+    // Lane 3: 7*4 + 8*124 = 1020, Lane 4: 9*5 + 10*123 = 1275, Lane 5: 11*6 + 12*122 = 1530
+    // Lane 6: 13*7 + 14*121 = 1785, Lane 7: 15*8 + 16*120 = 2040
+    wah_v128_t expected = { .i16 = {255, 510, 765, 1020, 1275, 1530, 1785, 2040} };
 
     run_simd_binary_op_test("i16x8.relaxed_dot_i8x16_i7x16_s", binary_op_wasm_spec, &a, &b, &expected);
 
@@ -1082,30 +1075,24 @@ void test_i16x8_relaxed_dot_i8x16_i7x16_s() {
 
 void test_i32x4_relaxed_dot_i8x16_i7x16_add_s() {
     // a (i8x16): [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]
-    // b (i7x16): [1, -1, 2, -2, 3, -3, 4, -4, 5, -5, 6, -6, 7, -7, 8, -8]
+    // b: [1, 127, 2, 126, 3, 125, 4, 124, 5, 123, 6, 122, 7, 121, 8, 120]
     // c (i32x4): [100, 200, 300, 400]
+    // Deterministic profile: b treated as signed i8 directly
     wah_v128_t a = {{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}};
     wah_v128_t b = {{0x01, 0x7F, 0x02, 0x7E, 0x03, 0x7D, 0x04, 0x7C, 0x05, 0x7B, 0x06, 0x7A, 0x07, 0x79, 0x08, 0x78}};
     wah_v128_t c = { .i32 = {100, 200, 300, 400} };
 
-    // Intermediate dot product results (i16x8) from previous test:
-    // [-1, -2, -3, -4, -5, -6, -7, -8]
-    // Extended to i32 and added to c:
-    // Lane 0: c.i32[0] + (a.i8[0]*b.i7[0] + a.i8[1]*b.i7[1] + a.i8[2]*b.i7[2] + a.i8[3]*b.i7[3])
-    //         100 + (1*1 + 2*-1 + 3*2 + 4*-2) = 100 + (1 - 2 + 6 - 8) = 100 - 3 = 97
-    // Lane 1: c.i32[1] + (a.i8[4]*b.i7[4] + a.i8[5]*b.i7[5] + a.i8[6]*b.i7[6] + a.i8[7]*b.i7[7])
-    //         200 + (5*3 + 6*-3 + 7*4 + 8*-4) = 200 + (15 - 18 + 28 - 32) = 200 - 7 = 193
-    // Lane 2: c.i32[2] + (a.i8[8]*b.i7[8] + a.i8[9]*b.i7[9] + a.i8[10]*b.i7[10] + a.i8[11]*b.i7[11])
-    //         300 + (9*5 + 10*-5 + 11*6 + 12*-6) = 300 + (45 - 50 + 66 - 72) = 300 - 11 = 289
-    // Lane 3: c.i32[3] + (a.i8[12]*b.i7[12] + a.i8[13]*b.i7[13] + a.i8[14]*b.i7[14] + a.i8[15]*b.i7[15])
-    //         400 + (13*7 + 14*-7 + 15*8 + 16*-8) = 400 + (91 - 98 + 120 - 128) = 400 - 15 = 385
-    wah_v128_t expected = { .i32 = {97, 193, 289, 385} };
+    // Lane 0: 100 + (1*1 + 2*127 + 3*2 + 4*126) = 100 + (1+254+6+504) = 100+765 = 865
+    // Lane 1: 200 + (5*3 + 6*125 + 7*4 + 8*124) = 200 + (15+750+28+992) = 200+1785 = 1985
+    // Lane 2: 300 + (9*5 + 10*123 + 11*6 + 12*122) = 300 + (45+1230+66+1464) = 300+2805 = 3105
+    // Lane 3: 400 + (13*7 + 14*121 + 15*8 + 16*120) = 400 + (91+1694+120+1920) = 400+3825 = 4225
+    wah_v128_t expected = { .i32 = {865, 1985, 3105, 4225} };
 
     run_simd_ternary_op_test("i32x4.relaxed_dot_i8x16_i7x16_add_s", ternary_op_wasm_spec, &a, &b, &c, &expected);
 
     // Test with zero accumulator
     c = (wah_v128_t){ .i32 = {0, 0, 0, 0} };
-    expected = (wah_v128_t){ .i32 = {-3, -7, -11, -15} };
+    expected = (wah_v128_t){ .i32 = {765, 1785, 2805, 3825} };
     run_simd_ternary_op_test("i32x4.relaxed_dot_i8x16_i7x16_add_s (zero acc)", ternary_op_wasm_spec, &a, &b, &c, &expected);
 }
 
