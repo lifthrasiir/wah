@@ -5661,10 +5661,9 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                     WAH_ENSURE(vctx->current_stack_depth >= br_result_count - 1, WAH_ERROR_VALIDATION_FAILED);
                     for (uint32_t k = 0; k < br_result_count - 1; ++k) {
                         uint32_t stack_pos = vctx->type_stack.sp - 1 - k;
-                        WAH_CHECK(wah_validate_type_match(
-                            vctx->type_stack.data[stack_pos], vctx->type_stack.flags[stack_pos],
-                            br_result_types[br_result_count - 2 - k], br_result_type_flags[br_result_count - 2 - k],
-                            vctx->module));
+                        WAH_ENSURE(vctx->type_stack.data[stack_pos] == br_result_types[br_result_count - 2 - k] &&
+                                   vctx->type_stack.flags[stack_pos] == br_result_type_flags[br_result_count - 2 - k],
+                                   WAH_ERROR_VALIDATION_FAILED);
                     }
                 }
             }
@@ -5673,8 +5672,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 wah_type_flags_t diff_flags = src_flags & ~dst_flags;
                 WAH_CHECK(wah_validation_push_type_with_flags(vctx, src_type, diff_flags));
             } else {
-                wah_type_flags_t diff_flags = dst_flags & ~src_flags;
-                WAH_CHECK(wah_validation_push_type_with_flags(vctx, dst_type, diff_flags));
+                WAH_CHECK(wah_validation_push_type_with_flags(vctx, dst_type, dst_flags));
             }
             EMIT_INSTR_EX(opcode_val, WAH_IMM_BR_ON_CAST,
                 _di->imm.br_on_cast.cast_flags = cast_flags; _di->imm.br_on_cast.target_symbol = label_idx;
