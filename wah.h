@@ -4887,7 +4887,9 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             wah_type_t src_addr_type = src_tt->addr_type;
             WAH_CHECK(wah_validate_type_match(src_tt->elem_type, src_tt->elem_type_flags,
                 dst_tt->elem_type, dst_tt->elem_type_flags, vctx->module));
-            WAH_CHECK(wah_validation_pop_and_match_type(vctx, dst_addr_type, 0));
+            wah_type_t size_type = (dst_addr_type == WAH_TYPE_I64 && src_addr_type == WAH_TYPE_I64)
+                ? WAH_TYPE_I64 : WAH_TYPE_I32;
+            WAH_CHECK(wah_validation_pop_and_match_type(vctx, size_type, 0));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, src_addr_type, 0));
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, dst_addr_type, 0));
             EMIT_INSTR_EX(opcode_val, WAH_IMM_U32_U32, _di->imm.u32_u32.a = dst_table_idx; _di->imm.u32_u32.b = src_table_idx);
@@ -5606,7 +5608,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
             WAH_ENSURE(br_result_count >= 1, WAH_ERROR_VALIDATION_FAILED);
             wah_type_t non_null_type = ref_type;
-            wah_type_flags_t non_null_flags = ref_flags & ~WAH_TYPE_FLAG_NULLABLE;
+            (void)(ref_flags);
             WAH_ENSURE(wah_type_is_subtype(non_null_type, br_result_types[br_result_count - 1], vctx->module),
                        WAH_ERROR_VALIDATION_FAILED);
 
