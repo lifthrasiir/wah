@@ -305,6 +305,9 @@ typedef struct wah_module_s {
     wah_repr_t *typeidx_to_repr;
     wah_repr_set_t *type_cast_sets;
 
+    // Canonical type map: canonical_map[i] = j means type i is canonically equal to type j
+    uint32_t *canonical_map;
+
     // Bitmap of "declared" function indices (for ref.func validation).
     // Built at code-section parse time from exports, element segments, and global init exprs.
     uint8_t *declared_funcs;
@@ -4021,6 +4024,132 @@ static bool wah_types_structurally_equal(const wah_module_t *module, uint32_t a,
     return true;
 }
 
+static bool wah_cross_module_rec_group_eq(const wah_module_t *ma, uint32_t rga_s, uint32_t rga_n,
+                                            const wah_module_t *mb, uint32_t rgb_s, uint32_t rgb_n);
+
+// Compare a type reference in the context of a rec-group comparison.
+// Intra-rec-group references are compared by offset; others recurse.
+static bool wah_cross_module_ref_in_recgroup(
+    const wah_module_t *ma, wah_type_t ta, uint32_t rga_s, uint32_t rga_n,
+    const wah_module_t *mb, wah_type_t tb, uint32_t rgb_s, uint32_t rgb_n) {
+    if (ta == tb && ta < 0) return true;
+    if (ta < 0 || tb < 0) return ta == tb;
+    uint32_t ua = (uint32_t)ta, ub = (uint32_t)tb;
+    // Canonicalize
+    uint32_t ca = ma->canonical_map ? ma->canonical_map[ua] : ua;
+    uint32_t cb = mb->canonical_map ? mb->canonical_map[ub] : ub;
+    // Intra-rec-group: compare by offset
+    bool a_in = (ca >= rga_s && ca < rga_s + rga_n);
+    bool b_in = (cb >= rgb_s && cb < rgb_s + rgb_n);
+    if (a_in && b_in) return (ca - rga_s) == (cb - rgb_s);
+    if (a_in || b_in) return false;
+    // Both outside: recurse (no cycle risk since they're outside this rec group)
+    if (ma == mb && ca == cb) return true;
+    const wah_type_def_t *da = &ma->type_defs[ca];
+    const wah_type_def_t *db = &mb->type_defs[cb];
+    if (da->rec_group_size != db->rec_group_size) return false;
+    if (ca - da->rec_group_start != cb - db->rec_group_start) return false;
+    return wah_cross_module_rec_group_eq(ma, da->rec_group_start, da->rec_group_size,
+                                          mb, db->rec_group_start, db->rec_group_size);
+}
+
+static bool wah_cross_module_type_eq_in_recgroup(
+    const wah_module_t *ma, uint32_t ia, uint32_t rga_s, uint32_t rga_n,
+    const wah_module_t *mb, uint32_t ib, uint32_t rgb_s, uint32_t rgb_n) {
+    const wah_type_def_t *da = &ma->type_defs[ia];
+    const wah_type_def_t *db = &mb->type_defs[ib];
+    if (da->kind != db->kind) return false;
+    if (da->is_final != db->is_final) return false;
+
+    // Compare supertypes
+    if (da->supertype == WAH_NO_SUPERTYPE) {
+        if (db->supertype != WAH_NO_SUPERTYPE) return false;
+    } else {
+        if (db->supertype == WAH_NO_SUPERTYPE) return false;
+        if (!wah_cross_module_ref_in_recgroup(ma, (wah_type_t)da->supertype, rga_s, rga_n,
+                                               mb, (wah_type_t)db->supertype, rgb_s, rgb_n))
+            return false;
+    }
+
+    if (da->kind == WAH_COMP_FUNC) {
+        const wah_func_type_t *fa = &ma->types[ia];
+        const wah_func_type_t *fb = &mb->types[ib];
+        if (fa->param_count != fb->param_count || fa->result_count != fb->result_count) return false;
+        for (uint32_t j = 0; j < fa->param_count; ++j) {
+            if (!wah_cross_module_ref_in_recgroup(ma, fa->param_types[j], rga_s, rga_n,
+                                                   mb, fb->param_types[j], rgb_s, rgb_n)) return false;
+            wah_type_flags_t ffa = fa->param_type_flags ? fa->param_type_flags[j] : 0;
+            wah_type_flags_t ffb = fb->param_type_flags ? fb->param_type_flags[j] : 0;
+            if (ffa != ffb) return false;
+        }
+        for (uint32_t j = 0; j < fa->result_count; ++j) {
+            if (!wah_cross_module_ref_in_recgroup(ma, fa->result_types[j], rga_s, rga_n,
+                                                   mb, fb->result_types[j], rgb_s, rgb_n)) return false;
+            wah_type_flags_t ffa = fa->result_type_flags ? fa->result_type_flags[j] : 0;
+            wah_type_flags_t ffb = fb->result_type_flags ? fb->result_type_flags[j] : 0;
+            if (ffa != ffb) return false;
+        }
+    } else {
+        if (da->field_count != db->field_count) return false;
+        for (uint32_t j = 0; j < da->field_count; ++j) {
+            if (!wah_cross_module_ref_in_recgroup(ma, da->field_types[j], rga_s, rga_n,
+                                                   mb, db->field_types[j], rgb_s, rgb_n)) return false;
+            if (da->field_type_flags[j] != db->field_type_flags[j]) return false;
+            if (da->field_mutables[j] != db->field_mutables[j]) return false;
+        }
+    }
+    return true;
+}
+
+static bool wah_cross_module_rec_group_eq(const wah_module_t *ma, uint32_t rga_s, uint32_t rga_n,
+                                            const wah_module_t *mb, uint32_t rgb_s, uint32_t rgb_n) {
+    if (rga_n != rgb_n) return false;
+    if (ma == mb && rga_s == rgb_s) return true;
+    for (uint32_t k = 0; k < rga_n; ++k) {
+        if (!wah_cross_module_type_eq_in_recgroup(ma, rga_s + k, rga_s, rga_n,
+                                                   mb, rgb_s + k, rgb_s, rgb_n))
+            return false;
+    }
+    return true;
+}
+
+static bool wah_cross_module_type_ref_eq(const wah_module_t *ma, wah_type_t ta,
+                                          const wah_module_t *mb, wah_type_t tb) {
+    if (ta == tb && ta < 0) return true;
+    if (ta < 0 || tb < 0) return ta == tb;
+
+    uint32_t ca = ma->canonical_map ? ma->canonical_map[(uint32_t)ta] : (uint32_t)ta;
+    uint32_t cb = mb->canonical_map ? mb->canonical_map[(uint32_t)tb] : (uint32_t)tb;
+
+    if (ma == mb && ca == cb) return true;
+
+    const wah_type_def_t *da = &ma->type_defs[ca];
+    const wah_type_def_t *db = &mb->type_defs[cb];
+
+    uint32_t rga_s = da->rec_group_start, rga_n = da->rec_group_size;
+    uint32_t rgb_s = db->rec_group_start, rgb_n = db->rec_group_size;
+
+    if (rga_n != rgb_n) return false;
+    if (ca - rga_s != cb - rgb_s) return false;
+
+    return wah_cross_module_rec_group_eq(ma, rga_s, rga_n, mb, rgb_s, rgb_n);
+}
+
+static bool wah_cross_module_subtype(const wah_module_t *sub_m, wah_type_t sub_t,
+                                      const wah_module_t *sup_m, wah_type_t sup_t) {
+    if (sub_t == sup_t && sub_m == sup_m) return true;
+    if (wah_cross_module_type_ref_eq(sub_m, sub_t, sup_m, sup_t)) return true;
+    if (sub_t < 0 || sup_t < 0) return wah_type_is_subtype(sub_t, sup_t, sub_m);
+    // Walk supertype chain of sub_t
+    uint32_t t = (uint32_t)sub_t;
+    while (t != WAH_NO_SUPERTYPE) {
+        if (sub_m->type_defs[t].supertype == WAH_NO_SUPERTYPE) break;
+        t = sub_m->type_defs[t].supertype;
+        if (wah_cross_module_type_ref_eq(sub_m, (wah_type_t)t, sup_m, sup_t)) return true;
+    }
+    return false;
+}
+
 static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t rec_count;
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &rec_count));
@@ -4294,7 +4423,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
         }
     }
 
-    free(canonical_map);
+    module->canonical_map = canonical_map;
     return WAH_OK;
 }
 
@@ -12515,6 +12644,7 @@ void wah_free_module(wah_module_t *module) {
         free(module->repr_infos);
     }
     free(module->typeidx_to_repr);
+    free(module->canonical_map);
     if (module->type_cast_sets) {
         for (uint32_t i = 0; i < module->type_count; ++i) {
             free(module->type_cast_sets[i].ids);
@@ -13282,15 +13412,10 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             if (src_local_fn_idx < linked->wasm_function_count) {
                 uint32_t linked_type_idx = linked->function_type_indices[src_local_fn_idx];
                 WAH_ENSURE_GOTO(linked_type_idx < linked->type_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-                const wah_func_type_t *export_type = &linked->types[linked_type_idx];
-                WAH_ENSURE_GOTO(import_type->param_count == export_type->param_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-                WAH_ENSURE_GOTO(import_type->result_count == export_type->result_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-                for (uint32_t p = 0; p < import_type->param_count; p++) {
-                    WAH_ENSURE_GOTO(import_type->param_types[p] == export_type->param_types[p], WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-                }
-                for (uint32_t r = 0; r < import_type->result_count; r++) {
-                    WAH_ENSURE_GOTO(import_type->result_types[r] == export_type->result_types[r], WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-                }
+                WAH_ENSURE_GOTO(
+                    wah_cross_module_subtype(linked, (wah_type_t)linked_type_idx,
+                                             module, (wah_type_t)fi->type_index),
+                    WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             }
         }
 
@@ -13405,16 +13530,14 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         uint32_t linked_tag_idx = exp->index;
         WAH_ENSURE_GOTO(linked_tag_idx < linked->import_tag_count + linked->tag_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
 
-        // Verify type compatibility
+        // Verify type compatibility (tags require exact type match)
         uint32_t linked_type_idx = linked_tag_idx < linked->import_tag_count
             ? linked->tag_imports[linked_tag_idx].type_index
             : linked->tags[linked_tag_idx - linked->import_tag_count].type_index;
-        const wah_func_type_t *linked_tag_type = &linked->types[linked_type_idx];
-        const wah_func_type_t *import_tag_type = &module->types[tgi->type_index];
-        WAH_ENSURE_GOTO(linked_tag_type->param_count == import_tag_type->param_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-        for (uint32_t p = 0; p < linked_tag_type->param_count; p++) {
-            WAH_ENSURE_GOTO(linked_tag_type->param_types[p] == import_tag_type->param_types[p], WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-        }
+        WAH_ENSURE_GOTO(
+            wah_cross_module_type_ref_eq(linked, (wah_type_t)linked_type_idx,
+                                          module, (wah_type_t)tgi->type_index),
+            WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
 
         WAH_ENSURE_GOTO(linked_ctx != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
         WAH_ENSURE_GOTO(linked_tag_idx < linked_ctx->tag_instance_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
