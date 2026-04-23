@@ -5759,6 +5759,47 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
             vctx->control_sp++;
 
+            for (uint32_t ci = 0; ci < catch_count; ci++) {
+                uint32_t adjusted_label = catch_entries[ci].label_idx + 1;
+                uint32_t br_result_count;
+                const wah_type_t *br_result_types;
+                const wah_type_flags_t *br_result_type_flags;
+                wah_validation_resolve_br_target(vctx, adjusted_label,
+                    &br_result_count, &br_result_types, &br_result_type_flags, NULL);
+
+                uint32_t tag_param_count = 0;
+                const wah_type_t *tag_param_types = NULL;
+                const wah_type_flags_t *tag_param_flags = NULL;
+                if (catch_entries[ci].kind == 0 || catch_entries[ci].kind == 1) {
+                    uint32_t tidx = catch_entries[ci].tag_idx;
+                    uint32_t type_idx = (tidx < vctx->module->import_tag_count)
+                        ? vctx->module->tag_imports[tidx].type_index
+                        : vctx->module->tags[tidx - vctx->module->import_tag_count].type_index;
+                    const wah_func_type_t *tag_type = &vctx->module->types[type_idx];
+                    tag_param_count = tag_type->param_count;
+                    tag_param_types = tag_type->param_types;
+                    tag_param_flags = tag_type->param_type_flags;
+                }
+
+                bool has_exnref = (catch_entries[ci].kind == 1 || catch_entries[ci].kind == 3);
+                uint32_t expected_count = tag_param_count + (has_exnref ? 1 : 0);
+                if (br_result_count != expected_count) { free(catch_entries); return WAH_ERROR_VALIDATION_FAILED; }
+                for (uint32_t j = 0; j < tag_param_count; j++) {
+                    wah_type_flags_t tf = tag_param_flags ? tag_param_flags[j] : 0;
+                    wah_error_t match_err = wah_validate_type_match(
+                        tag_param_types[j], tf,
+                        br_result_types[j], br_result_type_flags[j], vctx->module);
+                    if (match_err != WAH_OK) { free(catch_entries); return match_err; }
+                }
+                if (has_exnref) {
+                    wah_error_t match_err = wah_validate_type_match(
+                        WAH_TYPE_EXNREF, 0,
+                        br_result_types[br_result_count - 1],
+                        br_result_type_flags[br_result_count - 1], vctx->module);
+                    if (match_err != WAH_OK) { free(catch_entries); return match_err; }
+                }
+            }
+
             WAH_ENSURE(vctx->current_stack_depth >= bt->param_count, WAH_ERROR_VALIDATION_FAILED);
             for (uint32_t i = 0; i < bt->param_count; ++i) {
                 wah_type_t actual_type = vctx->type_stack.data[vctx->type_stack.sp - bt->param_count + i];
