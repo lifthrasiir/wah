@@ -4332,8 +4332,11 @@ static wah_error_t wah_validation_push_func_results(wah_validation_context_t *vc
 static wah_error_t wah_validation_check_return_types(const wah_validation_context_t *vctx, const wah_func_type_t *ft) {
     WAH_ENSURE(ft->result_count == vctx->func_type->result_count, WAH_ERROR_VALIDATION_FAILED);
     for (uint32_t j = 0; j < ft->result_count; ++j) {
-        WAH_ENSURE(wah_type_is_subtype(ft->result_types[j],
-            vctx->func_type->result_types[j], vctx->module), WAH_ERROR_VALIDATION_FAILED);
+        WAH_CHECK(wah_validate_type_match(ft->result_types[j],
+            ft->result_type_flags ? ft->result_type_flags[j] : 0,
+            vctx->func_type->result_types[j],
+            vctx->func_type->result_type_flags ? vctx->func_type->result_type_flags[j] : 0,
+            vctx->module));
     }
     return WAH_OK;
 }
