@@ -241,6 +241,26 @@ static void test_mutual_tail_recursion(void) {
     wah_free_module(&module);
 }
 
+// 4283e74: Check nullability flags in return_call_ref return-type validation.
+static void test_return_call_ref_nullability() {
+    printf("Testing return_call_ref nullability validation (4283e74)...\n");
+
+    // Negative: return_call_ref where callee returns (ref null func) but
+    // the calling function's return type is (ref func) (non-nullable).
+    // Type 0: fn [] -> [(ref func)] (non-nullable result)
+    // Type 1: fn [] -> [(ref null func)] (nullable result)
+    // Function 0 (type 0) does return_call_ref on a ref of type 1 - mismatch.
+    const char *bad_spec = "wasm \
+        types {[ sub [] fn [] [type.ref.func], sub [] fn [] [funcref] ]} \
+        funcs {[ 0 ]} \
+        elements {[ elem.declarative.expr funcref [ ref.func 0 end ] ]} \
+        code {[ {[] ref.func 0 return_call_ref 1 end } ]}";
+
+    wah_module_t bad = {0};
+    assert_err(wah_parse_module_from_spec(&bad, bad_spec), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad);
+}
+
 int main(void) {
     test_return_call_basic();
     test_return_call_with_params();
@@ -250,6 +270,7 @@ int main(void) {
     test_return_call_ref_basic();
     test_return_call_ref_null_trap();
     test_mutual_tail_recursion();
+    test_return_call_ref_nullability();
     printf("All tail-call tests passed.\n");
     return 0;
 }

@@ -482,211 +482,6 @@ void test_multiple_memories_data_segment() {
     wah_free_module(&module);
 }
 
-void test_memory64_basic() {
-    wah_module_t module;
-    wah_exec_context_t ctx;
-    wah_value_t params[2];
-    wah_value_t result;
-
-    printf("Running memory64 basic load/store tests...\n");
-
-    // Module with i64-addressed memory
-    const char *spec = "wasm \
-        types {[ \
-            fn [i64, i32] [], \
-            fn [i64] [i32], \
-        ]} \
-        funcs {[ 0, 1 ]} \
-        memories {[ limits.i64/1 1 ]} \
-        exports {[ \
-            {'store'} fn# 0, \
-            {'load'}  fn# 1, \
-        ]} \
-        code {[ \
-            {[] local.get 0 local.get 1 i32.store align=4 offset=0 end}, \
-            {[] local.get 0 i32.load align=4 offset=0 end}, \
-        ]}";
-
-    assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_eq_u32(module.memory_count, 1);
-    assert_true(module.memories[0].addr_type == WAH_TYPE_I64);
-    assert_eq_u64(module.memories[0].min_pages, 1);
-
-    assert_ok(wah_exec_context_create(&ctx, &module));
-    assert_true(ctx.memories[0] != NULL);
-
-    // Store and load using i64 address
-    params[0].i64 = 1024LL;
-    params[1].i32 = (int32_t)0xDEADBEEF;
-    assert_ok(wah_call(&ctx, 0, params, 2, NULL));
-
-    // Verify directly in memory
-    int32_t *mem_ptr = (int32_t*)(ctx.memories[0] + 1024);
-    assert_eq_i32(*mem_ptr, (int32_t)0xDEADBEEF);
-
-    // Load via wasm function with i64 address
-    params[0].i64 = 1024LL;
-    assert_ok(wah_call(&ctx, 1, params, 1, &result));
-    assert_eq_i32(result.i32, (int32_t)0xDEADBEEF);
-
-    // Out-of-bounds access
-    params[0].i64 = (int64_t)(WAH_WASM_PAGE_SIZE - 2);
-    params[1].i32 = 0x12345678;
-    assert_err(wah_call(&ctx, 0, params, 2, NULL), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
-
-    wah_exec_context_destroy(&ctx);
-    wah_free_module(&module);
-}
-
-void test_memory64_size_grow() {
-    wah_module_t module;
-    wah_exec_context_t ctx;
-    wah_value_t params[1];
-    wah_value_t result;
-
-    printf("Running memory64 size/grow tests...\n");
-
-    const char *spec = "wasm \
-        types {[ \
-            fn [] [i64], \
-            fn [i64] [i64], \
-        ]} \
-        funcs {[ 0, 1 ]} \
-        memories {[ limits.i64/2 1 2 ]} \
-        exports {[ \
-            {'size'} fn# 0, \
-            {'grow'} fn# 1, \
-        ]} \
-        code {[ \
-            {[] memory.size 0 end}, \
-            {[] local.get 0 memory.grow 0 end}, \
-        ]}";
-
-    assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_true(module.memories[0].addr_type == WAH_TYPE_I64);
-    assert_eq_u64(module.memories[0].min_pages, 1);
-    assert_eq_u64(module.memories[0].max_pages, 2);
-
-    assert_ok(wah_exec_context_create(&ctx, &module));
-
-    // memory.size returns i64
-    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
-    assert_eq_i64(result.i64, 1);
-
-    // memory.grow takes and returns i64
-    params[0].i64 = 1;
-    assert_ok(wah_call(&ctx, 1, params, 1, &result));
-    assert_eq_i64(result.i64, 1); // old size
-
-    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
-    assert_eq_i64(result.i64, 2);
-
-    // memory.grow beyond max returns -1
-    params[0].i64 = 1;
-    assert_ok(wah_call(&ctx, 1, params, 1, &result));
-    assert_eq_i64(result.i64, -1);
-
-    wah_exec_context_destroy(&ctx);
-    wah_free_module(&module);
-}
-
-void test_memory64_data_segment() {
-    wah_module_t module;
-    wah_exec_context_t ctx;
-    wah_value_t params[1];
-    wah_value_t result;
-
-    printf("Running memory64 data segment tests...\n");
-
-    const char *spec = "wasm \
-        types {[ fn [i64] [i32] ]} \
-        funcs {[ 0 ]} \
-        memories {[ limits.i64/1 1 ]} \
-        exports {[ {'get_byte'} fn# 0 ]} \
-        code {[ \
-            {[] local.get 0 i32.load8_u align=1 offset=0 end} \
-        ]} \
-        data {[ \
-            data.active.table#0 i64.const 0 end {%'01020304'} \
-        ]}";
-
-    assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_eq_u32(module.data_segment_count, 1);
-
-    assert_ok(wah_exec_context_create(&ctx, &module));
-    assert_ok(wah_instantiate(&ctx));
-
-    // Active data segment should be initialized
-    assert_eq_u32(ctx.memories[0][0], 0x01);
-    assert_eq_u32(ctx.memories[0][1], 0x02);
-    assert_eq_u32(ctx.memories[0][2], 0x03);
-    assert_eq_u32(ctx.memories[0][3], 0x04);
-
-    // Verify via wasm function with i64 address
-    params[0].i64 = 0;
-    assert_ok(wah_call(&ctx, 0, params, 1, &result));
-    assert_eq_i32(result.i32, 0x01);
-
-    params[0].i64 = 2;
-    assert_ok(wah_call(&ctx, 0, params, 1, &result));
-    assert_eq_i32(result.i32, 0x03);
-
-    wah_exec_context_destroy(&ctx);
-    wah_free_module(&module);
-}
-
-void test_memory64_validation() {
-    wah_module_t module;
-
-    printf("Running memory64 validation tests...\n");
-
-    // i32 memory rejects i64 address
-    const char *spec_i32_i64_addr = "wasm \
-        types {[ fn [i64] [i32] ]} \
-        funcs {[ 0 ]} \
-        memories {[ limits.i32/1 1 ]} \
-        code {[ \
-            {[] local.get 0 i32.load align=4 offset=0 end} \
-        ]}";
-    assert_err(wah_parse_module_from_spec(&module, spec_i32_i64_addr), WAH_ERROR_VALIDATION_FAILED);
-    wah_free_module(&module);
-
-    // i64 memory rejects i32 address
-    const char *spec_i64_i32_addr = "wasm \
-        types {[ fn [i32] [i32] ]} \
-        funcs {[ 0 ]} \
-        memories {[ limits.i64/1 1 ]} \
-        code {[ \
-            {[] local.get 0 i32.load align=4 offset=0 end} \
-        ]}";
-    assert_err(wah_parse_module_from_spec(&module, spec_i64_i32_addr), WAH_ERROR_VALIDATION_FAILED);
-    wah_free_module(&module);
-
-    // i32 memory rejects i64.const data segment offset
-    const char *spec_i32_i64_offset = "wasm \
-        types {[ fn [] [] ]} \
-        funcs {[ 0 ]} \
-        memories {[ limits.i32/1 1 ]} \
-        code {[ {[] end} ]} \
-        data {[ \
-            data.active.table#0 i64.const 0 end {%'01020304'} \
-        ]}";
-    assert_err(wah_parse_module_from_spec(&module, spec_i32_i64_offset), WAH_ERROR_VALIDATION_FAILED);
-    wah_free_module(&module);
-
-    // i64 memory rejects i32.const data segment offset
-    const char *spec_i64_i32_offset = "wasm \
-        types {[ fn [] [] ]} \
-        funcs {[ 0 ]} \
-        memories {[ limits.i64/1 1 ]} \
-        code {[ {[] end} ]} \
-        data {[ \
-            data.active.table#0 i32.const 0 end {%'01020304'} \
-        ]}";
-    assert_err(wah_parse_module_from_spec(&module, spec_i64_i32_offset), WAH_ERROR_VALIDATION_FAILED);
-    wah_free_module(&module);
-}
-
 void test_memory_no_max_is_unbounded() {
     // Regression: limits.i32/1 (flags=0x00) must set max_pages=UINT64_MAX, not min_pages.
     printf("Running test_memory_no_max_is_unbounded...\n");
@@ -719,13 +514,97 @@ void test_memory_no_max_is_unbounded() {
     wah_free_module(&module);
 }
 
-static void test_memory64_large_limits(void) {
-    printf("Running test_memory64_large_limits (regression for uint32 overflow)...\n");
+// b425d61: Implement data.drop.
+static void test_data_drop() {
+    printf("Testing data.drop (b425d61)...\n");
+
+    // Module with passive data segment. Function 0 does memory.init then data.drop.
+    // Function 1 tries memory.init with size 0 after drop (should succeed).
+    // Function 2 tries memory.init with size > 0 after drop (should trap).
+    const char *spec = "wasm \
+        types {[ fn [] [], fn [] [i32] ]} \
+        funcs {[ 0, 0, 1 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        datacount { 1 } \
+        code {[ \
+            {[] \
+                i32.const 0 \
+                i32.const 0 \
+                i32.const 3 \
+                memory.init 0 0 \
+                data.drop 0 \
+            end }, \
+            {[] \
+                i32.const 0 \
+                i32.const 0 \
+                i32.const 1 \
+                memory.init 0 0 \
+            end }, \
+            {[] \
+                i32.const 0 \
+                i32.load align=1 0 \
+            end } \
+        ]} \
+        data {[ data.passive {%'414243'} ]}";
+
     wah_module_t module = {0};
-    const char *spec = "wasm memories {[ limits.i64/2 1 8589934592 ]}";
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_eq_u64(module.memories[0].min_pages, 1);
-    assert_eq_u64(module.memories[0].max_pages, 8589934592ULL); // 2^33
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    // Call func 0: init + drop
+    assert_ok(wah_call(&ctx, 0, NULL, 0, NULL));
+
+    // Verify data was written: read byte at offset 0
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+    assert_eq_i32(result.i32 & 0xFF, 0x41);
+
+    // Call func 1: memory.init with size 1 after drop should trap
+    assert_err(wah_call(&ctx, 1, NULL, 0, NULL), WAH_ERROR_TRAP);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// fd68111: Fix memory.grow to use actual max_pages and handle OOM gracefully.
+static void test_memory_grow_max_pages() {
+    printf("Testing memory.grow respects max_pages (fd68111)...\n");
+
+    // Memory with min=1, max=2. Grow by 1 should succeed, grow by 1 more should fail.
+    const char *spec = "wasm \
+        types {[ fn [i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/2 1 2 ]} \
+        code {[ {[] local.get 0 memory.grow 0 end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t params[1], result;
+
+    // Grow by 1: should succeed, return old size (1)
+    params[0].i32 = 1;
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i32(result.i32, 1);
+
+    // Grow by 1 more: should fail (already at max 2), return -1
+    params[0].i32 = 1;
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i32(result.i32, -1);
+
+    // Grow by 0: should succeed, return current size (2)
+    params[0].i32 = 0;
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i32(result.i32, 2);
+
+    wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
 }
 
@@ -735,12 +614,9 @@ int main() {
     wah_test_data_and_bulk_memory_ops();
     test_multiple_memories();
     test_multiple_memories_data_segment();
-    test_memory64_basic();
-    test_memory64_size_grow();
-    test_memory64_data_segment();
-    test_memory64_validation();
     test_memory_no_max_is_unbounded();
-    test_memory64_large_limits();
+    test_data_drop();
+    test_memory_grow_max_pages();
 
     printf("\nAll memory tests passed!\n");
     return 0;

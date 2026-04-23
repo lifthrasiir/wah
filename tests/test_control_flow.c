@@ -580,6 +580,149 @@ static void test_br_invalid_relative_depth() {
     assert_err(wah_parse_module_from_spec(&module, br_invalid_relative_depth_wasm_spec), WAH_ERROR_VALIDATION_FAILED);
 }
 
+// 02a38a6: Fix BR targeting IF blocks with ELSE jumping to wrong location.
+static void test_br_if_else_target() {
+    printf("Testing br out of if-else lands correctly (02a38a6)...\n");
+
+    // br 1 from inside the then-branch of an if-else should skip the else body
+    // and land at the outer block's end.
+    // func () -> i32:
+    //   block i32 {
+    //     i32.const 1
+    //     if i32 {
+    //       i32.const 42
+    //       br 1          ;; should jump to outer block end with 42
+    //     } else {
+    //       i32.const 99
+    //     }
+    //   }
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] \
+            block i32 \
+                i32.const 1 \
+                if i32 \
+                    i32.const 42 \
+                    br 1 \
+                else \
+                    i32.const 99 \
+                end \
+            end \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+
+    // Also test br from else-branch
+    const char *spec2 = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] \
+            block i32 \
+                i32.const 0 \
+                if i32 \
+                    i32.const 42 \
+                else \
+                    i32.const 77 \
+                    br 1 \
+                end \
+            end \
+        end } ]}";
+
+    wah_module_t module2 = {0};
+    assert_ok(wah_parse_module_from_spec(&module2, spec2));
+
+    wah_exec_context_t ctx2 = {0};
+    assert_ok(wah_exec_context_create(&ctx2, &module2));
+    assert_ok(wah_instantiate(&ctx2));
+
+    wah_value_t result2;
+    assert_ok(wah_call(&ctx2, 0, NULL, 0, &result2));
+    assert_eq_i32(result2.i32, 77);
+
+    wah_exec_context_destroy(&ctx2);
+    wah_free_module(&module2);
+}
+
+// e277746: Fix branch instructions to adjust value stack when crossing block boundaries.
+static void test_br_multi_value_keep_drop() {
+    printf("Testing br keep/drop across multi-value blocks (e277746)...\n");
+
+    // br across block boundary must correctly keep/drop values.
+    // Block (void -> i32): inside, push two values then br. The branch should
+    // keep 1 (the block result) and drop 1 (the extra).
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] \
+            block i32 \
+                i32.const 99 \
+                i32.const 42 \
+                br 0 \
+            end \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+
+    // br_if with keep/drop: block (void -> i32), br_if jumps with value
+    const char *spec2 = "wasm \
+        types {[ fn [i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] \
+            block i32 \
+                i32.const 42 \
+                i32.const 77 \
+                local.get 0 \
+                br_if 0 \
+                drop \
+            end \
+        end } ]}";
+
+    wah_module_t module2 = {0};
+    assert_ok(wah_parse_module_from_spec(&module2, spec2));
+
+    wah_exec_context_t ctx2 = {0};
+    assert_ok(wah_exec_context_create(&ctx2, &module2));
+    assert_ok(wah_instantiate(&ctx2));
+
+    wah_value_t params[1], result2;
+
+    params[0].i32 = 1;
+    assert_ok(wah_call(&ctx2, 0, params, 1, &result2));
+    assert_eq_i32(result2.i32, 77);
+
+    params[0].i32 = 0;
+    assert_ok(wah_call(&ctx2, 0, params, 1, &result2));
+    assert_eq_i32(result2.i32, 42);
+
+    wah_exec_context_destroy(&ctx2);
+    wah_free_module(&module2);
+}
+
 int main() {
     printf("=== Control Flow Tests ===\n");
     test_simple_block();
@@ -604,6 +747,10 @@ int main() {
     printf("\n=== Validation Assertion Tests ===\n");
     test_else_without_if();
     test_br_invalid_relative_depth();
+
+    printf("\n=== Regression Tests ===\n");
+    test_br_if_else_target();
+    test_br_multi_value_keep_drop();
 
     printf("\n=== Control Flow Tests Complete ===\n");
     return 0;

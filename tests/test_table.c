@@ -770,6 +770,144 @@ void wah_test_active_elem_nonnull_into_nonnull_table_accepted() {
     wah_free_module(&module);
 }
 
+// c36d249: Parse 0x40 table encoding (tables with init expressions).
+void wah_test_table_init_expr() {
+    printf("Running wah_test_table_init_expr...\n");
+
+    // Table with init expr (ref.func 0): all slots should have func 0.
+    // func 0 returns 42, func 1 does call_indirect on table[0].
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0, 0 ]} \
+        tables {[ table.w/init funcref limits.i32/1 2 ref.func 0 end ]} \
+        elements {[ elem.declarative.expr funcref [ ref.func 0 end ] ]} \
+        code {[ \
+            {[] i32.const 42 end }, \
+            {[] i32.const 1 call_indirect 0 0 end } \
+        ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    // call_indirect on table[1] should find func 0 (from init expr)
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// b4a8325: Drop active element segments after instantiation per spec.
+void wah_test_active_elem_dropped_after_init() {
+    printf("Running wah_test_active_elem_dropped_after_init...\n");
+
+    // Active elem segment populates table during instantiation.
+    // After instantiation, table.init from that segment (with size > 0) should trap.
+    const char *spec = "wasm \
+        types {[ fn [] [], fn [] [i32] ]} \
+        funcs {[ 0, 1 ]} \
+        tables {[ funcref limits.i32/1 2 ]} \
+        elements {[ elem.active.table#0 i32.const 0 end [ 0 ] ]} \
+        code {[ \
+            {[] \
+                i32.const 1 \
+                i32.const 0 \
+                i32.const 1 \
+                table.init 0 0 \
+            end }, \
+            {[] i32.const 42 end } \
+        ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    // table.init with size 1 from dropped segment should trap
+    assert_err(wah_call(&ctx, 0, NULL, 0, NULL), WAH_ERROR_TRAP);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// 28ffe76: Out-of-bound condition with active element segments must trap.
+void wah_test_active_elem_oob_trap() {
+    printf("Running wah_test_active_elem_oob_trap...\n");
+
+    // Table has 1 slot, but active element tries to write 2 elements at offset 0
+    const char *spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0, 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        elements {[ elem.active.table#0 i32.const 0 end [ 0, 1 ] ]} \
+        code {[ {[] end }, {[] end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_TRAP);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+
+    // Positive control: 1 element in 1-slot table at offset 0 is fine
+    const char *good_spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        elements {[ elem.active.table#0 i32.const 0 end [ 0 ] ]} \
+        code {[ {[] end } ]}";
+
+    wah_module_t good = {0};
+    assert_ok(wah_parse_module_from_spec(&good, good_spec));
+    wah_exec_context_t ctx2 = {0};
+    assert_ok(wah_exec_context_create(&ctx2, &good));
+    assert_ok(wah_instantiate(&ctx2));
+    wah_exec_context_destroy(&ctx2);
+    wah_free_module(&good);
+}
+
+// 621bae8: Reject tables with non-defaultable element type lacking init expression.
+void wah_test_nonnull_table_no_init() {
+    printf("Running wah_test_nonnull_table_no_init...\n");
+
+    // Negative: non-nullable (ref func) table without init expression
+    const char *bad_spec = "wasm \
+        types {[ fn [] [] ]} \
+        tables {[ type.ref.func limits.i32/1 1 ]}";
+    wah_module_t bad = {0};
+    assert_err(wah_parse_module_from_spec(&bad, bad_spec), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad);
+
+    // Positive: non-nullable (ref func) table WITH init expression (0x40 encoding)
+    const char *good_spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ table.w/init type.ref.func limits.i32/1 1 ref.func 0 end ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[] end} ]}";
+    wah_module_t good = {0};
+    assert_ok(wah_parse_module_from_spec(&good, good_spec));
+    wah_free_module(&good);
+
+    // Positive: nullable funcref table without init is fine
+    const char *nullable_spec = "wasm \
+        types {[ fn [] [] ]} \
+        tables {[ funcref limits.i32/1 1 ]}";
+    wah_module_t nullable = {0};
+    assert_ok(wah_parse_module_from_spec(&nullable, nullable_spec));
+    wah_free_module(&nullable);
+}
+
 int main() {
     wah_test_table_indirect_call();
     wah_test_table_size();
@@ -797,5 +935,9 @@ int main() {
     wah_test_table_init_nonnull_elem_to_nullable_table_accepted();
     wah_test_active_elem_nullable_into_nonnull_table_rejected();
     wah_test_active_elem_nonnull_into_nonnull_table_accepted();
+    wah_test_nonnull_table_no_init();
+    wah_test_active_elem_oob_trap();
+    wah_test_active_elem_dropped_after_init();
+    wah_test_table_init_expr();
     return 0;
 }

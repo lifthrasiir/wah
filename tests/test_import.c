@@ -505,6 +505,147 @@ static void test_mixed_imports(void) {
     wah_free_module(&provider);
 }
 
+// aefa56d: Fix global import resolution order in wah_instantiate.
+// Globals imported after other import kinds must be resolved before local globals init.
+static void test_global_import_order() {
+    printf("Testing global import order (aefa56d)...\n");
+
+    // Provider module: exports a global i32 with value 100.
+    const char *provider_spec = "wasm \
+        types {[]} \
+        globals {[ i32 immut i32.const 100 end ]} \
+        exports {[ {'g'} global# 0 ]}";
+
+    // Consumer module: imports the global, then has a local global initialized via global.get 0
+    // (the imported global). A function returns the local global.
+    const char *consumer_spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        imports {[ {'provider'} {'g'} global# i32 immut ]} \
+        funcs {[ 0 ]} \
+        globals {[ i32 immut global.get 0 end ]} \
+        code {[ {[] global.get 1 end } ]}";
+
+    wah_module_t provider = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+
+    wah_module_t consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_module(&ctx, "provider", &provider));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 100);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
+// e445f7a: Verify import type compatibility during module linking.
+static void test_import_type_mismatch() {
+    printf("Testing import type mismatch (e445f7a)...\n");
+
+    // Provider exports fn ()->(i32)
+    const char *provider_spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[] i32.const 42 end } ]}";
+
+    // Consumer imports fn ()->(i64) -- mismatched result type
+    const char *consumer_bad = "wasm \
+        types {[ fn [] [i64] ]} \
+        imports {[ {'provider'} {'f'} fn# 0 ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] call 0 end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_bad));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_module(&ctx, "provider", &provider));
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_IMPORT_NOT_FOUND);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+
+    // Provider exports fn (i32)->(i32), consumer imports fn ()->(i32) -- param count mismatch
+    const char *provider_spec2 = "wasm \
+        types {[ fn [i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[] local.get 0 end } ]}";
+
+    const char *consumer_bad2 = "wasm \
+        types {[ fn [] [i32] ]} \
+        imports {[ {'provider'} {'f'} fn# 0 ]}";
+
+    wah_module_t prov2 = {0}, cons2 = {0};
+    assert_ok(wah_parse_module_from_spec(&prov2, provider_spec2));
+    assert_ok(wah_parse_module_from_spec(&cons2, consumer_bad2));
+
+    wah_exec_context_t ctx2 = {0};
+    assert_ok(wah_exec_context_create(&ctx2, &cons2));
+    assert_ok(wah_link_module(&ctx2, "provider", &prov2));
+    assert_err(wah_instantiate(&ctx2), WAH_ERROR_IMPORT_NOT_FOUND);
+
+    wah_exec_context_destroy(&ctx2);
+    wah_free_module(&cons2);
+    wah_free_module(&prov2);
+}
+
+// 2830538: Fix immutable global import nullability check for cross-type subtyping.
+static void test_global_import_nullability() {
+    printf("Testing global import nullability (2830538)...\n");
+
+    // Provider exports immutable global of type (ref null func) = nullable funcref
+    const char *provider_spec = "wasm \
+        types {[]} \
+        globals {[ funcref immut ref.null funcref end ]} \
+        exports {[ {'g'} global# 0 ]}";
+
+    // Negative: consumer imports as (ref func) = non-nullable. Should fail.
+    const char *consumer_bad = "wasm \
+        types {[]} \
+        imports {[ {'provider'} {'g'} global# type.ref.func immut ]}";
+
+    wah_module_t provider = {0}, consumer_b = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer_b, consumer_bad));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer_b));
+    assert_ok(wah_link_module(&ctx, "provider", &provider));
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_IMPORT_NOT_FOUND);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&consumer_b);
+
+    // Positive: consumer imports as (ref null func) = nullable. Should succeed.
+    const char *consumer_good = "wasm \
+        types {[]} \
+        imports {[ {'provider'} {'g'} global# funcref immut ]}";
+
+    wah_module_t consumer_g = {0};
+    assert_ok(wah_parse_module_from_spec(&consumer_g, consumer_good));
+
+    wah_exec_context_t ctx2 = {0};
+    assert_ok(wah_exec_context_create(&ctx2, &consumer_g));
+    assert_ok(wah_link_module(&ctx2, "provider", &provider));
+    assert_ok(wah_instantiate(&ctx2));
+
+    wah_exec_context_destroy(&ctx2);
+    wah_free_module(&consumer_g);
+    wah_free_module(&provider);
+}
+
 int main(void) {
     printf("=== Import Section & Import Resolution Tests ===\n\n");
 
@@ -522,6 +663,9 @@ int main(void) {
     test_table_import();
     test_table_import_not_found();
     test_mixed_imports();
+    test_global_import_order();
+    test_import_type_mismatch();
+    test_global_import_nullability();
 
     printf("All import tests passed!\n");
     return 0;

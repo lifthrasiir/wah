@@ -683,6 +683,110 @@ static void test_all_hang_wasm_parsing_errors() {
     }
 }
 
+// 22d534b: Reject (very slightly) overlong signed LEB128 i64 encodings.
+static void test_overlong_sleb128_i64() {
+    printf("Testing overlong signed LEB128 i64 rejection (22d534b)...\n");
+
+    // Valid 10-byte signed LEB128 for -1: nine 0xFF bytes then 0x7F
+    const char *good_spec = "wasm \
+        types {[ fn [] [i64] ]} \
+        funcs {[ 0 ]} \
+        code {[ { [] %'42' %'FFFFFFFFFFFFFFFFFF7F' end } ]}";
+    wah_module_t good = {0};
+    assert_ok(wah_parse_module_from_spec(&good, good_spec));
+    wah_free_module(&good);
+
+    // Valid 10-byte signed LEB128 for 0: nine 0x80 bytes then 0x00
+    const char *good_zero = "wasm \
+        types {[ fn [] [i64] ]} \
+        funcs {[ 0 ]} \
+        code {[ { [] %'42' %'80808080808080808000' end } ]}";
+    wah_module_t good2 = {0};
+    assert_ok(wah_parse_module_from_spec(&good2, good_zero));
+    wah_free_module(&good2);
+
+    // Overlong: 10-byte encoding with last byte 0x01 (not 0x00 or 0x7F)
+    const char *bad_spec = "wasm \
+        types {[ fn [] [i64] ]} \
+        funcs {[ 0 ]} \
+        code {[ { [] %'42' %'80808080808080808001' end } ]}";
+    wah_module_t bad = {0};
+    assert_err(wah_parse_module_from_spec(&bad, bad_spec), WAH_ERROR_TOO_LARGE);
+    wah_free_module(&bad);
+
+    // Overlong negative: last byte 0x7E instead of 0x7F
+    const char *bad_neg = "wasm \
+        types {[ fn [] [i64] ]} \
+        funcs {[ 0 ]} \
+        code {[ { [] %'42' %'FFFFFFFFFFFFFFFFFF7E' end } ]}";
+    wah_module_t bad2 = {0};
+    assert_err(wah_parse_module_from_spec(&bad2, bad_neg), WAH_ERROR_TOO_LARGE);
+    wah_free_module(&bad2);
+}
+
+// 1249e11: Validate start function type must be () -> ().
+static void test_start_function_type() {
+    printf("Testing start function type validation (1249e11)...\n");
+
+    // Positive: start function with () -> ()
+    const char *good_spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        start { 0 } \
+        code {[ {[] end } ]}";
+    wah_module_t good = {0};
+    assert_ok(wah_parse_module_from_spec(&good, good_spec));
+    assert_true(good.has_start_function);
+    assert_eq_u32(good.start_function_idx, 0);
+    wah_free_module(&good);
+
+    // Negative: start function with (i32) -> ()
+    const char *bad_params = "wasm \
+        types {[ fn [i32] [] ]} \
+        funcs {[ 0 ]} \
+        start { 0 } \
+        code {[ {[] end } ]}";
+    wah_module_t bad1 = {0};
+    assert_err(wah_parse_module_from_spec(&bad1, bad_params), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad1);
+
+    // Negative: start function with () -> (i32)
+    const char *bad_results = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        start { 0 } \
+        code {[ {[] i32.const 0 end } ]}";
+    wah_module_t bad2 = {0};
+    assert_err(wah_parse_module_from_spec(&bad2, bad_results), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad2);
+}
+
+// 9d3de74: Validate table index bounds in element section parsing.
+static void test_elem_oob_table_idx() {
+    printf("Testing element section OOB table index (9d3de74)...\n");
+
+    // Active element targeting non-existent table (no tables at all)
+    const char *no_table = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        elements {[ elem.active.table#0 i32.const 0 end [ 0 ] ]} \
+        code {[ {[] end } ]}";
+    wah_module_t m1 = {0};
+    assert_err(wah_parse_module_from_spec(&m1, no_table), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m1);
+
+    // Active element targeting table index 5 when only 1 table exists
+    const char *oob_idx = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        elements {[ elem.active.table# 5 i32.const 0 end elem.funcref [ 0 ] ]} \
+        code {[ {[] end } ]}";
+    wah_module_t m2 = {0};
+    assert_err(wah_parse_module_from_spec(&m2, oob_idx), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m2);
+}
+
 int main(void) {
     test_zero_params_zero_results_func_type();
     test_invalid_section_order_mem_table();
@@ -720,6 +824,10 @@ int main(void) {
     test_memory_copy_out_of_bounds_src_mem_idx();
 
     test_all_hang_wasm_parsing_errors();
+
+    test_overlong_sleb128_i64();
+    test_start_function_type();
+    test_elem_oob_table_idx();
 
     printf("All parser tests passed!\n");
     return 0;

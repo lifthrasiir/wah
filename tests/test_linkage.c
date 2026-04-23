@@ -372,6 +372,152 @@ int main() {
         wah_free_module(&mod_c);
     }
 
+    // 2cc74f5: Fix cross-module CALL using wrong function table.
+    {
+        printf("Testing cross-module call uses correct function (2cc74f5)...\n");
+
+        // Provider has 2 functions: func0 returns 10, func1 returns 20.
+        // It exports func1 (not func0).
+        const char *provider_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0, 0 ]} \
+            exports {[ {'get20'} fn# 1 ]} \
+            code {[ {[] i32.const 10 end }, {[] i32.const 20 end } ]}";
+
+        // Consumer imports get20 and calls it.
+        // Consumer also has a local func0 that returns 99.
+        // The bug was that the call would use the consumer's func table slot,
+        // calling 99 instead of 20.
+        const char *consumer_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'provider'} {'get20'} fn# 0 ]} \
+            funcs {[ 0, 0 ]} \
+            code {[ {[] i32.const 99 end }, {[] call 0 end } ]}";
+
+        wah_module_t provider = {0}, consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_exec_context_create(&ctx, &consumer));
+        assert_ok(wah_link_module(&ctx, "provider", &provider));
+        assert_ok(wah_instantiate(&ctx));
+
+        // Call func2 (index 2 = import + local 1) which calls import 0
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+        assert_eq_i32(result.i32, 20);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&consumer);
+        wah_free_module(&provider);
+    }
+
+    // 7e69288: Share mutable globals across linked modules via indirect opcodes.
+    {
+        printf("Testing shared mutable globals across modules (7e69288)...\n");
+
+        // Provider exports a mutable global and a setter function.
+        const char *provider_spec = "wasm \
+            types {[ fn [i32] [], fn [] [i32] ]} \
+            funcs {[ 0, 1 ]} \
+            globals {[ i32 mut i32.const 0 end ]} \
+            exports {[ {'g'} global# 0, {'set'} fn# 0, {'get'} fn# 1 ]} \
+            code {[ \
+                {[] local.get 0 global.set 0 end }, \
+                {[] global.get 0 end } \
+            ]}";
+
+        // Consumer imports the global and the setter.
+        // Consumer reads the global after the provider sets it.
+        const char *consumer_spec = "wasm \
+            types {[ fn [i32] [], fn [] [i32] ]} \
+            imports {[ {'provider'} {'set'} fn# 0, {'provider'} {'g'} global# i32 mut ]} \
+            funcs {[ 1 ]} \
+            code {[ {[] global.get 0 end } ]}";
+
+        wah_module_t provider = {0}, consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_exec_context_create(&ctx, &consumer));
+        assert_ok(wah_link_module(&ctx, "provider", &provider));
+        assert_ok(wah_instantiate(&ctx));
+
+        // Set via imported function (provider's set)
+        wah_value_t params[1] = {{.i32 = 555}};
+        assert_ok(wah_call(&ctx, 0, params, 1, NULL));
+
+        // Read via consumer's read (which reads the imported global)
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 555);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&consumer);
+        wah_free_module(&provider);
+    }
+
+    // 0a4153b: Fix linked module globals offset for multi-instance same-module linking.
+    {
+        printf("Testing multi-instance same-module globals offset (0a4153b)...\n");
+
+        // Provider exports a mutable i32 global, setter and getter.
+        const char *provider_spec = "wasm \
+            types {[ fn [i32] [], fn [] [i32] ]} \
+            funcs {[ 0, 1 ]} \
+            globals {[ i32 mut i32.const 0 end ]} \
+            exports {[ {'set'} fn# 0, {'get'} fn# 1 ]} \
+            code {[ \
+                {[] local.get 0 global.set 0 end }, \
+                {[] global.get 0 end } \
+            ]}";
+
+        // Consumer imports set/get from two instances: 'a' and 'b'.
+        const char *consumer_spec = "wasm \
+            types {[ fn [i32] [], fn [] [i32] ]} \
+            imports {[ \
+                {'a'} {'set'} fn# 0, \
+                {'a'} {'get'} fn# 1, \
+                {'b'} {'set'} fn# 0, \
+                {'b'} {'get'} fn# 1 \
+            ]}";
+
+        wah_module_t provider_a = {0}, provider_b = {0}, consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&provider_a, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&provider_b, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_exec_context_create(&ctx, &consumer));
+        assert_ok(wah_link_module(&ctx, "a", &provider_a));
+        assert_ok(wah_link_module(&ctx, "b", &provider_b));
+        assert_ok(wah_instantiate(&ctx));
+
+        // Set 'a' global to 111
+        wah_value_t params[1] = {{.i32 = 111}};
+        assert_ok(wah_call(&ctx, 0, params, 1, NULL));
+
+        // Set 'b' global to 222
+        params[0].i32 = 222;
+        assert_ok(wah_call(&ctx, 2, params, 1, NULL));
+
+        // Get 'a' should be 111 (not aliased by 'b')
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 111);
+
+        // Get 'b' should be 222
+        assert_ok(wah_call(&ctx, 3, NULL, 0, &result));
+        assert_eq_i32(result.i32, 222);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&consumer);
+        wah_free_module(&provider_a);
+        wah_free_module(&provider_b);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

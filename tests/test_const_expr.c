@@ -160,8 +160,81 @@ void test_invalid_forward_ref(void) {
     assert_err(wah_parse_module_from_spec(&module, wasm_invalid_forward_ref_spec), WAH_ERROR_VALIDATION_FAILED);
 }
 
+// cff3b2b: Add v128.const to the list of const-evaluatable opcodes.
+static void test_v128_const_in_global() {
+    printf("Testing v128.const in global init (cff3b2b)...\n");
+
+    // Global initialized with v128.const, read it back via a function
+    uint8_t bytes[16] = {1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16};
+    const char *spec = "wasm \
+        types {[ fn [] [v128] ]} \
+        funcs {[ 0 ]} \
+        globals {[ v128 immut v128.const %v128 end ]} \
+        code {[ {[] global.get 0 end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec, (const uint8_t *)bytes));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_true(memcmp(&result.v128, bytes, 16) == 0);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// 8ae24a1: Fix a parsing of ref.null immediates in const exprs.
+static void test_ref_null_const_expr() {
+    printf("Testing ref.null in global const expr (8ae24a1)...\n");
+
+    // Global of type funcref initialized with ref.null funcref
+    const char *spec = "wasm \
+        types {[ fn [] [funcref] ]} \
+        funcs {[ 0 ]} \
+        globals {[ funcref immut ref.null funcref end ]} \
+        code {[ {[] global.get 0 end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_null(result.ref);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+
+    // Also test with externref
+    const char *spec2 = "wasm \
+        types {[ fn [] [externref] ]} \
+        funcs {[ 0 ]} \
+        globals {[ externref immut ref.null externref end ]} \
+        code {[ {[] global.get 0 end } ]}";
+
+    wah_module_t module2 = {0};
+    assert_ok(wah_parse_module_from_spec(&module2, spec2));
+
+    wah_exec_context_t ctx2 = {0};
+    assert_ok(wah_exec_context_create(&ctx2, &module2));
+    assert_ok(wah_instantiate(&ctx2));
+
+    wah_value_t result2;
+    assert_ok(wah_call(&ctx2, 0, NULL, 0, &result2));
+    assert_null(result2.ref);
+
+    wah_exec_context_destroy(&ctx2);
+    wah_free_module(&module2);
+}
+
 int main(void) {
-    // Run each test separately
     test_simple_const();
     test_binary_op();
     test_global_get();
@@ -169,6 +242,8 @@ int main(void) {
     test_invalid_control_flow();
     test_invalid_type();
     test_invalid_forward_ref();
+    test_v128_const_in_global();
+    test_ref_null_const_expr();
 
     printf("\n--- All Const Expression Tests Passed ---\n");
     fflush(stdout);

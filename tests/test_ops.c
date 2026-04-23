@@ -534,6 +534,52 @@ void test_i64_trunc_sat_f64_u() {
     CHECK_UNARY("I64.TRUNC_SAT_F64_U (negative)", f64, -0.5, i64, 0ULL); // Value less than 0 should saturate to 0
 }
 
+// 3af6770: Fix wah_trunc_fN_to_iN for edge cases.
+void test_trunc_edge_cases() {
+    printf("Testing trunc edge cases (3af6770)...\n");
+
+    // i32.trunc_f32_s: -0.0 should give 0 (not trap)
+    {
+        static const char *wasm_spec = UNARY_WASM_SPEC(f32, i32, "i32.trunc_f32_s");
+        CHECK_UNARY("I32.TRUNC_F32_S (-0.0)", f32, -0.0f, i32, 0);
+        // Value just inside range: -2147483648.0f is INT32_MIN, should succeed
+        CHECK_UNARY("I32.TRUNC_F32_S (INT32_MIN)", f32, -2147483648.0f, i32, INT32_MIN);
+    }
+
+    // i32.trunc_f32_u: -0.0 should give 0 (not trap)
+    {
+        static const char *wasm_spec = UNARY_WASM_SPEC(f32, i32, "i32.trunc_f32_u");
+        wah_value_t params[1] = { { .f32 = -0.0f } };
+        run_test_i32("I32.TRUNC_F32_U (-0.0)", wasm_spec, params, 1, 0, false);
+    }
+
+    // i32.trunc_f64_s: -0.0 should give 0
+    {
+        static const char *wasm_spec = UNARY_WASM_SPEC(f64, i32, "i32.trunc_f64_s");
+        CHECK_UNARY("I32.TRUNC_F64_S (-0.0)", f64, -0.0, i32, 0);
+        // Just inside: 2147483647.0 is max i32
+        CHECK_UNARY("I32.TRUNC_F64_S (2147483647.0)", f64, 2147483647.0, i32, 2147483647);
+        // Just outside: 2147483648.0 should trap
+        CHECK_UNARY_TRAP("I32.TRUNC_F64_S (2147483648.0)", f64, 2147483648.0, i32);
+    }
+
+    // i64.trunc_f64_s: -0.0 should give 0
+    {
+        static const char *wasm_spec = UNARY_WASM_SPEC(f64, i64, "i64.trunc_f64_s");
+        CHECK_UNARY("I64.TRUNC_F64_S (-0.0)", f64, -0.0, i64, (int64_t)0);
+    }
+
+    // i64.trunc_f64_u: -0.0 should give 0
+    {
+        static const char *wasm_spec = UNARY_WASM_SPEC(f64, i64, "i64.trunc_f64_u");
+        wah_value_t params[1] = { { .f64 = -0.0 } };
+        run_test_i64("I64.TRUNC_F64_U (-0.0)", wasm_spec, params, 1, 0, false);
+        // -0.99999 truncates to -0.0 which is 0, should not trap
+        wah_value_t params2[1] = { { .f64 = -0.99999 } };
+        run_test_i64("I64.TRUNC_F64_U (-0.99999)", wasm_spec, params2, 1, 0, false);
+    }
+}
+
 int main() {
     test_i32_and();
     test_i32_eq();
@@ -592,6 +638,8 @@ int main() {
     test_i64_extend8_s();
     test_i64_extend16_s();
     test_i64_extend32_s();
+
+    test_trunc_edge_cases();
 
     printf("\nSUMMARY: All tests PASSED!\n");
     return 0;

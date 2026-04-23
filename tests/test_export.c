@@ -237,8 +237,16 @@ void test_export_name_with_null_byte() {
     assert_err(wah_module_export_by_name(&module, "bad", &entry), WAH_ERROR_NOT_FOUND);
 
     // Attempt lookup by "bad\0name" (exact length, but strlen stops at null)
-    char lookup_name_with_null[] = {'b', 'a', 'd', 0x00, 'n', 'a', 'm', 'e', '\0'}; // Ensure it's null-terminated for strlen
+    char lookup_name_with_null[] = {'b', 'a', 'd', 0x00, 'n', 'a', 'm', 'e', '\0'};
     assert_err(wah_module_export_by_name(&module, lookup_name_with_null, &entry), WAH_ERROR_NOT_FOUND);
+
+    // ec03097: wah_module_export_by_name_len should find it with explicit length
+    assert_ok(wah_module_export_by_name_len(&module, "bad\0name", 8, &entry));
+    assert_true(WAH_TYPE_IS_FUNCTION(entry.type));
+    assert_eq_u64(entry.name_len, 8);
+
+    // Wrong length should not match
+    assert_err(wah_module_export_by_name_len(&module, "bad", 3, &entry), WAH_ERROR_NOT_FOUND);
 
     wah_free_module(&module);
 }

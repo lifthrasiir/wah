@@ -10967,6 +10967,7 @@ WAH_RUN(NOP) { WAH_NEXT(); }
 
 WAH_RUN(UNREACHABLE) {
     (void)bytecode_base;
+    (void)fctx;
     err = WAH_ERROR_TRAP;
     WAH_CLEANUP();
 }
