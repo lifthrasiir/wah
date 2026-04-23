@@ -5852,10 +5852,139 @@ static wah_error_t wah_parse_local_decls(const uint8_t **ptr, const uint8_t *bod
     return WAH_OK;
 }
 
+// Shared analysis loop for function bodies and const expressions.
+// Decodes opcodes, validates, captures ref-map/poll (function body only),
+// appends terminal END, and finalizes analyzed-code metadata.
+static wah_error_t wah_analyze_stream(
+    const uint8_t **code_ptr,
+    const uint8_t *code_end,
+    wah_validation_context_t *vctx,
+    wah_code_body_t *code_body,       // NULL for const_expr
+    wah_type_t expected_type,          // const_expr only: required result type
+    wah_analyzed_code_t *ac
+) {
+    wah_error_t err = WAH_OK;
+    uint8_t *ref_map = NULL;
+    uint32_t ref_map_size = 0, ref_map_capacity = 0;
+    bool is_func_body = (code_body != NULL);
+
+    #define WAH_CAPTURE_REF_MAP() do { \
+        uint32_t depth = vctx->is_unreachable ? 0 : vctx->type_stack.sp; \
+        uint32_t _words = (depth + 15) / 16; \
+        uint32_t _ref_count = 0; \
+        for (uint32_t _j = 0; _j < depth; _j++) { \
+            if (WAH_TYPE_IS_REF(vctx->type_stack.data[_j])) _ref_count++; \
+        } \
+        uint32_t _entry_bytes = sizeof(uint16_t) * (1 + _words) + _ref_count * sizeof(wah_type_t); \
+        uint32_t needed = ref_map_size + _entry_bytes; \
+        if (needed > ref_map_capacity) { \
+            ref_map_capacity = needed < 64 ? 64 : needed * 2; \
+            uint8_t *tmp = (uint8_t *)realloc(ref_map, ref_map_capacity); \
+            if (!tmp) { free(ref_map); ref_map = NULL; err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; } \
+            ref_map = tmp; \
+        } \
+        wah_write_u16_le(ref_map + ref_map_size, (uint16_t)depth); \
+        memset(ref_map + ref_map_size + sizeof(uint16_t), 0, _words * sizeof(uint16_t)); \
+        uint8_t *_type_ptr = ref_map + ref_map_size + sizeof(uint16_t) * (1 + _words); \
+        for (uint32_t _j = 0; _j < depth; _j++) { \
+            if (WAH_TYPE_IS_REF(vctx->type_stack.data[_j])) { \
+                uint32_t _byte_off = ref_map_size + sizeof(uint16_t) + (_j / 16) * sizeof(uint16_t); \
+                uint16_t _bits = wah_read_u16_le(ref_map + _byte_off); \
+                _bits |= (uint16_t)(1u << (_j % 16)); \
+                wah_write_u16_le(ref_map + _byte_off, _bits); \
+                wah_write_u32_le(_type_ptr, (uint32_t)vctx->type_stack.data[_j]); \
+                _type_ptr += sizeof(wah_type_t); \
+            } \
+        } \
+        ref_map_size += _entry_bytes; \
+    } while (0)
+
+    bool is_first_instr = true;
+    uint16_t poll_flags = 0;
+
+    while (*code_ptr < code_end) {
+        uint16_t opcode_val;
+        WAH_CHECK_GOTO(wah_decode_opcode(code_ptr, code_end, &opcode_val), cleanup);
+
+        if (is_func_body && is_first_instr) {
+            WAH_CAPTURE_REF_MAP();
+            poll_flags = WAH_INSTR_FLAG_POLL;
+            is_first_instr = false;
+        }
+
+        if (opcode_val == WAH_OP_END) {
+            if (is_func_body) {
+                if (vctx->control_sp == 0) {
+                    for (int32_t j = vctx->func_type->result_count - 1; j >= 0; --j) {
+                        WAH_CHECK_GOTO(wah_validation_pop_and_match_type(vctx, vctx->func_type->result_types[j],
+                            vctx->func_type->result_type_flags[j]), cleanup);
+                    }
+                    WAH_ENSURE_GOTO(vctx->current_stack_depth == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    WAH_ENSURE_GOTO(*code_ptr == code_end, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    WAH_CHECK_GOTO(wah_analyzed_append_end(ac), cleanup);
+                    goto done;
+                }
+            } else {
+                WAH_ENSURE_GOTO(vctx->current_stack_depth == 1, WAH_ERROR_VALIDATION_FAILED, cleanup);
+                wah_type_t actual = vctx->type_stack.data[0];
+                WAH_ENSURE_GOTO(actual == WAH_TYPE_ANY || wah_type_is_subtype(actual, expected_type, vctx->module),
+                    WAH_ERROR_VALIDATION_FAILED, cleanup);
+                WAH_CHECK_GOTO(wah_analyzed_append_end(ac), cleanup);
+                goto done;
+            }
+        }
+
+        if (is_func_body) {
+            if (opcode_val == WAH_OP_CALL || opcode_val == WAH_OP_CALL_INDIRECT || opcode_val == WAH_OP_CALL_REF) {
+                WAH_CAPTURE_REF_MAP();
+                poll_flags = WAH_INSTR_FLAG_POLL;
+            } else if (opcode_val == WAH_OP_RETURN_CALL || opcode_val == WAH_OP_RETURN_CALL_INDIRECT || opcode_val == WAH_OP_RETURN_CALL_REF) {
+                poll_flags = WAH_INSTR_FLAG_POLL;
+            }
+        }
+
+        uint32_t instr_count_before = ac->instr_count;
+        WAH_CHECK_GOTO(wah_validate_opcode(opcode_val, code_ptr, code_end, vctx, code_body, ac), cleanup);
+
+        if (is_func_body) {
+            if (poll_flags && ac->instr_count > instr_count_before) {
+                ac->instrs[instr_count_before].flags |= poll_flags;
+                poll_flags = 0;
+            }
+            if (opcode_val == WAH_OP_LOOP) {
+                WAH_CAPTURE_REF_MAP();
+                if (ac->instr_count > 0) {
+                    ac->instrs[ac->instr_count - 1].flags |= WAH_INSTR_FLAG_POLL;
+                }
+            }
+        }
+    }
+    if (!is_func_body) {
+        err = WAH_ERROR_UNEXPECTED_EOF;
+        goto cleanup;
+    }
+
+done:
+    if (is_func_body) {
+        WAH_ENSURE_GOTO(vctx->control_sp == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
+    }
+    ac->mode = vctx->mode;
+    ac->max_stack_depth = vctx->max_stack_depth;
+    if (is_func_body) {
+        ac->operand_ref_map = ref_map;
+        ac->operand_ref_map_size = ref_map_size;
+        ref_map = NULL;
+    }
+
+cleanup:
+    #undef WAH_CAPTURE_REF_MAP
+    free(ref_map);
+    return err;
+}
+
 static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     wah_error_t err = WAH_OK;
     wah_validation_context_t vctx = {0};
-    uint8_t *ref_map = NULL;
     wah_analyzed_code_t ac = {0};
 
     uint32_t count;
@@ -5863,10 +5992,9 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
     WAH_CHECK_GOTO(wah_decode_and_validate_count(ptr, section_end, &count, 3), cleanup);
     WAH_ENSURE_GOTO(count == module->function_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
     WAH_MALLOC_ARRAY_GOTO(module->code_bodies, count, cleanup);
-    module->code_count = 0; // For a while, this doubles as how many entries have been initialized (for cleanup).
+    module->code_count = 0;
 
     for (uint32_t i = 0; i < count; ++i) {
-        // Initialize pointer fields for safe cleanup on parsing failure
         module->code_bodies[i].local_types = NULL;
         module->code_bodies[i].local_type_flags = NULL;
         module->code_bodies[i].parsed_code = (wah_parsed_code_t){0};
@@ -5874,7 +6002,6 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
         uint32_t body_size;
         WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &body_size), cleanup);
-
         WAH_ENSURE_GOTO(body_size <= (size_t)(section_end - *ptr), WAH_ERROR_VALIDATION_FAILED, cleanup);
         const uint8_t *code_body_end = *ptr + body_size;
 
@@ -5883,131 +6010,35 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         module->code_bodies[i].code_size = (uint32_t)(code_body_end - *ptr);
         module->code_bodies[i].code = *ptr;
 
-        // --- Validation Pass for Code Body ---
         const wah_func_type_t *func_type = &module->types[module->function_type_indices[i]];
-
         vctx = (wah_validation_context_t){
-            .is_unreachable = false, // Functions start in a reachable state
             .module = module,
             .func_type = func_type,
             .total_locals = func_type->param_count + module->code_bodies[i].local_count,
         };
 
-        ref_map = NULL;
-        uint32_t ref_map_size = 0, ref_map_capacity = 0;
-
-        #define WAH_CAPTURE_REF_MAP() do { \
-            uint32_t depth = vctx.is_unreachable ? 0 : vctx.type_stack.sp; \
-            uint32_t _words = (depth + 15) / 16; \
-            uint32_t _ref_count = 0; \
-            for (uint32_t _j = 0; _j < depth; _j++) { \
-                if (WAH_TYPE_IS_REF(vctx.type_stack.data[_j])) _ref_count++; \
-            } \
-            uint32_t _entry_bytes = sizeof(uint16_t) * (1 + _words) + _ref_count * sizeof(wah_type_t); \
-            uint32_t needed = ref_map_size + _entry_bytes; \
-            if (needed > ref_map_capacity) { \
-                ref_map_capacity = needed < 64 ? 64 : needed * 2; \
-                uint8_t *tmp = (uint8_t *)realloc(ref_map, ref_map_capacity); \
-                if (!tmp) { free(ref_map); ref_map = NULL; err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; } \
-                ref_map = tmp; \
-            } \
-            wah_write_u16_le(ref_map + ref_map_size, (uint16_t)depth); \
-            memset(ref_map + ref_map_size + sizeof(uint16_t), 0, _words * sizeof(uint16_t)); \
-            uint8_t *_type_ptr = ref_map + ref_map_size + sizeof(uint16_t) * (1 + _words); \
-            for (uint32_t _j = 0; _j < depth; _j++) { \
-                if (WAH_TYPE_IS_REF(vctx.type_stack.data[_j])) { \
-                    uint32_t _byte_off = ref_map_size + sizeof(uint16_t) + (_j / 16) * sizeof(uint16_t); \
-                    uint16_t _bits = wah_read_u16_le(ref_map + _byte_off); \
-                    _bits |= (uint16_t)(1u << (_j % 16)); \
-                    wah_write_u16_le(ref_map + _byte_off, _bits); \
-                    wah_write_u32_le(_type_ptr, (uint32_t)vctx.type_stack.data[_j]); \
-                    _type_ptr += sizeof(wah_type_t); \
-                } \
-            } \
-            ref_map_size += _entry_bytes; \
-        } while (0)
-
-        const uint8_t *code_ptr_validation = module->code_bodies[i].code;
-        const uint8_t *validation_end = code_ptr_validation + module->code_bodies[i].code_size;
-
         wah_free_analyzed_code(&ac);
         ac = (wah_analyzed_code_t){0};
 
-        bool is_first_validation_instr = true;
-        uint16_t poll_flags = 0;
-        while (code_ptr_validation < validation_end) {
-            uint16_t current_opcode_val;
-            WAH_CHECK_GOTO(wah_decode_opcode(&code_ptr_validation, validation_end, &current_opcode_val), cleanup);
-
-            if (is_first_validation_instr) {
-                WAH_CAPTURE_REF_MAP();
-                poll_flags = WAH_INSTR_FLAG_POLL;
-                is_first_validation_instr = false;
-            }
-
-            if (current_opcode_val == WAH_OP_END) {
-                 if (vctx.control_sp == 0) { // End of function
-                    for (int32_t j = vctx.func_type->result_count - 1; j >= 0; --j) {
-                        WAH_CHECK_GOTO(wah_validation_pop_and_match_type(&vctx, vctx.func_type->result_types[j],
-                            vctx.func_type->result_type_flags[j]), cleanup);
-                    }
-                    WAH_ENSURE_GOTO(vctx.current_stack_depth == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                    WAH_ENSURE_GOTO(code_ptr_validation == validation_end, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                    WAH_CHECK_GOTO(wah_analyzed_append_end(&ac), cleanup);
-                    break;
-                }
-            }
-            if (current_opcode_val == WAH_OP_CALL || current_opcode_val == WAH_OP_CALL_INDIRECT || current_opcode_val == WAH_OP_CALL_REF) {
-                WAH_CAPTURE_REF_MAP();
-                poll_flags = WAH_INSTR_FLAG_POLL;
-            } else if (current_opcode_val == WAH_OP_RETURN_CALL || current_opcode_val == WAH_OP_RETURN_CALL_INDIRECT || current_opcode_val == WAH_OP_RETURN_CALL_REF) {
-                poll_flags = WAH_INSTR_FLAG_POLL;
-            }
-            uint32_t instr_count_before = ac.instr_count;
-            WAH_CHECK_GOTO(wah_validate_opcode(current_opcode_val, &code_ptr_validation, validation_end, &vctx, &module->code_bodies[i], &ac), cleanup);
-            if (poll_flags && ac.instr_count > instr_count_before) {
-                ac.instrs[instr_count_before].flags |= poll_flags;
-                poll_flags = 0;
-            }
-
-            if (current_opcode_val == WAH_OP_LOOP) {
-                WAH_CAPTURE_REF_MAP();
-                if (ac.instr_count > 0) {
-                    ac.instrs[ac.instr_count - 1].flags |= WAH_INSTR_FLAG_POLL;
-                }
-            }
-        }
-        WAH_ENSURE_GOTO(vctx.control_sp == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
-        // --- End Validation Pass ---
-
-        ac.mode = vctx.mode;
-        ac.max_stack_depth = vctx.max_stack_depth;
-        ac.operand_ref_map = ref_map;
-        ac.operand_ref_map_size = ref_map_size;
-        ref_map = NULL;
-
-        #undef WAH_CAPTURE_REF_MAP
+        const uint8_t *code_ptr = module->code_bodies[i].code;
+        const uint8_t *code_end = code_ptr + module->code_bodies[i].code_size;
+        WAH_CHECK_GOTO(wah_analyze_stream(&code_ptr, code_end, &vctx, &module->code_bodies[i], 0, &ac), cleanup);
 
         module->code_bodies[i].parsed_code.operand_ref_map = ac.operand_ref_map;
         module->code_bodies[i].parsed_code.operand_ref_map_size = ac.operand_ref_map_size;
         ac.operand_ref_map = NULL;
-
         module->code_bodies[i].max_stack_depth = ac.max_stack_depth;
 
-        // Lower analyzed IR to optimized bytecode
         WAH_CHECK_GOTO(wah_lower_analyzed_code(module, &ac, &module->code_bodies[i].parsed_code), cleanup);
-
         wah_free_analyzed_code(&ac);
 
         *ptr = code_body_end;
     }
-    err = WAH_OK; // Ensure err is WAH_OK if everything succeeded
+    err = WAH_OK;
 
 cleanup:
     wah_free_analyzed_code(&ac);
-    free(ref_map);
     if (err != WAH_OK) {
-        // Free memory allocated for control frames during validation
         for (int32_t j = vctx.control_sp - 1; j >= 0; --j) {
             wah_validation_control_frame_t* frame = &vctx.control_stack[j];
             free(frame->block_type.param_types);
@@ -6015,7 +6046,6 @@ cleanup:
             free(frame->block_type.result_types);
             free(frame->block_type.result_type_flags);
         }
-
         wah_free_code_bodies(module);
     }
     return err;
@@ -6039,25 +6069,8 @@ static wah_error_t wah_compile_const_expr(
     wah_analyzed_code_t ac = {0};
     wah_error_t err = WAH_OK;
 
-    while (1) {
-        WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
-        uint16_t opcode_val;
-        WAH_CHECK_GOTO(wah_decode_opcode(ptr, section_end, &opcode_val), cleanup);
+    WAH_CHECK_GOTO(wah_analyze_stream(ptr, section_end, &vctx, NULL, expected_type, &ac), cleanup);
 
-        if (opcode_val == WAH_OP_END) {
-            WAH_ENSURE_GOTO(vctx.current_stack_depth == 1, WAH_ERROR_VALIDATION_FAILED, cleanup);
-            wah_type_t actual = vctx.type_stack.data[0];
-            WAH_ENSURE_GOTO(actual == WAH_TYPE_ANY || wah_type_is_subtype(actual, expected_type, module),
-                WAH_ERROR_VALIDATION_FAILED, cleanup);
-            WAH_CHECK_GOTO(wah_analyzed_append_end(&ac), cleanup);
-            break;
-        }
-
-        WAH_CHECK_GOTO(wah_validate_opcode(opcode_val, ptr, section_end, &vctx, NULL, &ac), cleanup);
-    }
-
-    ac.mode = WAH_ANALYZE_CONST_EXPR;
-    ac.max_stack_depth = vctx.max_stack_depth;
     if (out) {
         err = wah_lower_analyzed_code(module, &ac, out);
     }
