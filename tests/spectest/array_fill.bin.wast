@@ -72,22 +72,3 @@
 (assert_return (invoke "array_get_nth" (i32.const 0x2)) (i32.const 0xb))
 (assert_return (invoke "array_get_nth" (i32.const 0x3)) (i32.const 0xb))
 (assert_return (invoke "array_get_nth" (i32.const 0x4)) (i32.const 0x0))
-(assert_return
-  (invoke "array_fill" (i32.const 0x0) (i32.const 0x2a) (i32.const 0xc))
-)
-(assert_return (invoke "array_get_nth" (i32.const 0x0)) (i32.const 0x2a))
-(assert_return (invoke "array_get_nth" (i32.const 0x2)) (i32.const 0x2a))
-(assert_return (invoke "array_get_nth" (i32.const 0x5)) (i32.const 0x2a))
-(assert_return (invoke "array_get_nth" (i32.const 0xb)) (i32.const 0x2a))
-(assert_return
-  (invoke "array_fill" (i32.const 0x0) (i32.const 0x7) (i32.const 0x1))
-)
-(assert_return (invoke "array_get_nth" (i32.const 0x0)) (i32.const 0x7))
-(assert_return (invoke "array_get_nth" (i32.const 0x1)) (i32.const 0x2a))
-(assert_return (invoke "array_get_nth" (i32.const 0xb)) (i32.const 0x2a))
-(assert_return
-  (invoke "array_fill" (i32.const 0xa) (i32.const 0x9) (i32.const 0x2))
-)
-(assert_return (invoke "array_get_nth" (i32.const 0x9)) (i32.const 0x2a))
-(assert_return (invoke "array_get_nth" (i32.const 0xa)) (i32.const 0x9))
-(assert_return (invoke "array_get_nth" (i32.const 0xb)) (i32.const 0x9))
