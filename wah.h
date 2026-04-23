@@ -9973,18 +9973,10 @@ WAH_RUN(ELEM_DROP) {
             const wah_module_t *fn_module = actual_fn->fn_module ? actual_fn->fn_module : fctx->module; \
             wah_exec_context_t *fn_ctx = actual_fn->fn_ctx; \
             uint32_t local_idx = actual_fn->local_idx; \
-            const wah_func_type_t *actual_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]]; \
-            WAH_ENSURE_GOTO(expected_func_type->param_count == actual_func_type->param_count && \
-                            expected_func_type->result_count == actual_func_type->result_count, \
-                            WAH_ERROR_TRAP, cleanup); \
-            for (uint32_t i = 0; i < expected_func_type->param_count; ++i) { \
-                WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(fctx->module, expected_func_type->param_types[i], \
-                                                              fn_module, actual_func_type->param_types[i]), WAH_ERROR_TRAP, cleanup); \
-            } \
-            for (uint32_t i = 0; i < expected_func_type->result_count; ++i) { \
-                WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(fctx->module, expected_func_type->result_types[i], \
-                                                              fn_module, actual_func_type->result_types[i]), WAH_ERROR_TRAP, cleanup); \
-            } \
+            uint32_t actual_type_idx = fn_module->function_type_indices[local_idx]; \
+            const wah_func_type_t *actual_func_type = &fn_module->types[actual_type_idx]; \
+            WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(fctx->module, (wah_type_t)type_idx, \
+                                                          fn_module, (wah_type_t)actual_type_idx), WAH_ERROR_TRAP, cleanup); \
             CALL_WASM; \
         } \
     }
@@ -10007,18 +9999,10 @@ WAH_RUN(ELEM_DROP) {
             const wah_module_t *fn_module = (actual_fn)->fn_module ? (actual_fn)->fn_module : fctx->module; \
             wah_exec_context_t *fn_ctx = (actual_fn)->fn_ctx; \
             uint32_t local_idx = (actual_fn)->local_idx; \
-            const wah_func_type_t *actual_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]]; \
-            WAH_ENSURE_GOTO(expected_func_type->param_count == actual_func_type->param_count && \
-                            expected_func_type->result_count == actual_func_type->result_count, \
-                            WAH_ERROR_TRAP, cleanup); \
-            for (uint32_t i = 0; i < expected_func_type->param_count; ++i) { \
-                WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(fctx->module, expected_func_type->param_types[i], \
-                                                              fn_module, actual_func_type->param_types[i]), WAH_ERROR_TRAP, cleanup); \
-            } \
-            for (uint32_t i = 0; i < expected_func_type->result_count; ++i) { \
-                WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(fctx->module, expected_func_type->result_types[i], \
-                                                              fn_module, actual_func_type->result_types[i]), WAH_ERROR_TRAP, cleanup); \
-            } \
+            uint32_t actual_type_idx = fn_module->function_type_indices[local_idx]; \
+            const wah_func_type_t *actual_func_type = &fn_module->types[actual_type_idx]; \
+            WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(fctx->module, (wah_type_t)type_idx, \
+                                                          fn_module, (wah_type_t)actual_type_idx), WAH_ERROR_TRAP, cleanup); \
             CALL_WASM; \
         } \
     }
