@@ -1897,19 +1897,19 @@ static void wah_free_analyzed_code(wah_analyzed_code_t *ac) {
     }
     free(ac->symbols);
     if (ac->operand_ref_map) free(ac->operand_ref_map);
-    memset(ac, 0, sizeof(*ac));
+    *ac = (wah_analyzed_code_t){0};
 }
 
 // --- Forward Declarations ---
 
 static wah_error_t wah_call_module(wah_exec_context_t *exec_ctx, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
 
-#define WAH_FUNCREF_FAKE_HEADER {.next_tagged = NULL, .repr_id = WAH_TYPE_FUNCTION, .size_bytes = 0}
+#define WAH_FUNCREF_FAKE_HEADER { .next_tagged = NULL, .repr_id = WAH_TYPE_FUNCTION, .size_bytes = 0 }
 
 // Sentinel used by wah_value_t.prefuncref to distinguish ref.func 0 from ref.null.
 // A prefuncref with .sentinel == wah_funcref_sentinel is a valid function reference;
 // .ref == NULL means null. This sentinel is never executed.
-static wah_function_t wah_funcref_sentinel[1] = {{.fake_header = WAH_FUNCREF_FAKE_HEADER}};
+static wah_function_t wah_funcref_sentinel[1] = {{ .fake_header = WAH_FUNCREF_FAKE_HEADER }};
 
 static uint32_t wah_next_tag_unique_id = 1;
 
@@ -3836,11 +3836,7 @@ static wah_error_t wah_type_section_ensure_capacity(wah_module_t *module, uint32
 
 static void wah_type_section_init_slot(wah_module_t *module, uint32_t idx) {
     module->types[idx] = (wah_func_type_t){0};
-    module->type_defs[idx] = (wah_type_def_t){
-        .kind = WAH_COMP_FUNC,
-        .is_final = true,
-        .supertype = WAH_NO_SUPERTYPE,
-    };
+    module->type_defs[idx] = (wah_type_def_t){ .kind = WAH_COMP_FUNC, .is_final = true, .supertype = WAH_NO_SUPERTYPE };
 }
 
 static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end, wah_func_type_t *ft) {
@@ -4330,7 +4326,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
                 if (fterr != WAH_OK) { free(fields); return fterr; }
                 uint32_t align = field_size < sizeof(void *) ? field_size : sizeof(void *);
                 offset = (offset + align - 1) & ~(align - 1);
-                fields[j] = (wah_repr_field_t){.offset = offset, .repr_id = field_repr};
+                fields[j] = (wah_repr_field_t){ .offset = offset, .repr_id = field_repr };
                 offset += field_size;
             }
 
@@ -4357,7 +4353,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
             wah_repr_t elem_repr;
             WAH_CHECK(wah_field_type_layout(td->field_types[0], &elem_size, &elem_repr));
 
-            wah_repr_field_t elem_field = {.offset = 0, .repr_id = elem_repr};
+            wah_repr_field_t elem_field = { .offset = 0, .repr_id = elem_repr };
             size_t info_size = sizeof(wah_repr_info_t) + sizeof(wah_repr_field_t);
             wah_repr_info_t *info = (wah_repr_info_t *)malloc(info_size);
             if (!info) return WAH_ERROR_OUT_OF_MEMORY;
@@ -4580,9 +4576,7 @@ static wah_error_t wah_analyzed_append_end(wah_analyzed_code_t *ac) {
         WAH_ENSURE(ni != NULL, WAH_ERROR_OUT_OF_MEMORY);
         ac->instrs = ni; ac->instr_capacity = nc;
     }
-    memset(&ac->instrs[ac->instr_count], 0, sizeof(wah_decoded_instr_t));
-    ac->instrs[ac->instr_count].opcode = WAH_OP_END;
-    ac->instrs[ac->instr_count].imm_kind = WAH_IMM_NONE;
+    ac->instrs[ac->instr_count] = (wah_decoded_instr_t){ .opcode = WAH_OP_END, .imm_kind = WAH_IMM_NONE };
     ac->instr_count++;
     return WAH_OK;
 }
@@ -4603,10 +4597,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             ac->instr_capacity = _nc; \
         } \
         wah_decoded_instr_t *_di = &ac->instrs[ac->instr_count++]; \
-        memset(_di, 0, sizeof(*_di)); \
-        _di->opcode = (op); \
-        _di->imm_kind = (kind); \
-        _di->flags = vctx->is_unreachable ? WAH_INSTR_FLAG_UNREACHABLE : 0; \
+        *_di = (wah_decoded_instr_t){ .opcode = (op), .imm_kind = (kind), .flags = vctx->is_unreachable ? WAH_INSTR_FLAG_UNREACHABLE : 0 }; \
         __VA_ARGS__; \
     } \
 } while (0)
@@ -6353,11 +6344,7 @@ static wah_error_t wah_compile_const_expr(
     uint32_t max_global_idx,
     wah_parsed_code_t *out
 ) {
-    wah_validation_context_t vctx = {0};
-    vctx.mode = WAH_ANALYZE_CONST_EXPR;
-    vctx.module = module;
-    vctx.max_global_idx = max_global_idx;
-
+    wah_validation_context_t vctx = { .mode = WAH_ANALYZE_CONST_EXPR, .module = module, .max_global_idx = max_global_idx };
     wah_analyzed_code_t ac = {0};
     wah_error_t err = WAH_OK;
 
@@ -6878,7 +6865,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
 
         for (uint32_t i = 0; i < count; ++i) {
             wah_element_segment_t *segment = &module->element_segments[i];
-            memset(segment, 0, sizeof(wah_element_segment_t));
+            *segment = (wah_element_segment_t){0};
             ++module->element_segment_count;
 
             uint32_t flags;
@@ -7059,9 +7046,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
     wah_error_t err = WAH_OK;
     uint8_t *saved_ref_map = parsed_code->operand_ref_map;
     uint32_t saved_ref_map_size = parsed_code->operand_ref_map_size;
-    *parsed_code = (wah_parsed_code_t){0};
-    parsed_code->operand_ref_map = saved_ref_map;
-    parsed_code->operand_ref_map_size = saved_ref_map_size;
+    *parsed_code = (wah_parsed_code_t){ .operand_ref_map = saved_ref_map, .operand_ref_map_size = saved_ref_map_size };
 
     // --- Control frame for single-pass backpatching ---
     typedef struct {
@@ -7166,10 +7151,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
 
     #define WAH_LOWER_PUSH_FRAME(op) do { \
         WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size"); \
-        wah_lower_cf_t _cf = {0}; \
-        _cf.opcode = (op); \
-        _cf.continuation_offset = buf_size; \
-        control_stack[control_sp++] = _cf; \
+        control_stack[control_sp++] = (wah_lower_cf_t){ .opcode = (op), .continuation_offset = buf_size }; \
     } while (0)
 
     #define WAH_LOWER_FINISH_FRAME() do { \
@@ -7797,9 +7779,8 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
     // Host functions may be appended later via wah_module_export_funcv.
     if (module->wasm_function_count > 0) {
         WAH_MALLOC_ARRAY_GOTO(module->functions, module->wasm_function_count, cleanup_parse);
-        memset(module->functions, 0, module->wasm_function_count * sizeof(wah_function_t));
         for (uint32_t i = 0; i < module->wasm_function_count; i++) {
-            module->functions[i].fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER;
+            module->functions[i] = (wah_function_t){ .fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER };
         }
         module->function_capacity = module->wasm_function_count;
     }
@@ -7815,9 +7796,8 @@ cleanup_parse:
 // --- Interpreter Implementation ---
 
 wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_module_t *module) {
-    *exec_ctx = (wah_exec_context_t){0};
+    *exec_ctx = (wah_exec_context_t){ .is_instantiated = false };
     wah_error_t err = WAH_OK;
-    exec_ctx->is_instantiated = false;
 
     exec_ctx->value_stack_capacity = WAH_DEFAULT_VALUE_STACK_SIZE;
     WAH_MALLOC_ARRAY_GOTO(exec_ctx->value_stack, exec_ctx->value_stack_capacity, cleanup);
@@ -7840,15 +7820,14 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
     uint32_t total_memories = wah_memory_index_limit(module);
     if (total_memories > 0) {
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->memories, total_memories, cleanup);
-        memset(exec_ctx->memories, 0, sizeof(wah_memory_inst_t) * total_memories);
-        exec_ctx->memory_count = total_memories;
+        exec_ctx->memory_count = 0;
 
         for (uint32_t i = 0; i < total_memories; ++i) {
             const wah_memory_type_t *mt = wah_memory_type(module, i);
             uint64_t page_limit = (mt->addr_type == WAH_TYPE_I32) ? 65536ULL : (1ULL << 48);
             uint64_t max_p = mt->max_pages;
             if (max_p > page_limit) max_p = page_limit;
-            exec_ctx->memories[i].max_pages = max_p;
+            exec_ctx->memories[exec_ctx->memory_count++] = (wah_memory_inst_t){ .max_pages = max_p };
         }
 
         // Import memory slots are left zero-initialized; wah_instantiate() fills them in.
@@ -7871,17 +7850,17 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
     uint32_t total_tables = wah_table_index_limit(module);
     if (total_tables > 0) {
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables, total_tables, cleanup);
-        memset(exec_ctx->tables, 0, sizeof(wah_table_inst_t) * total_tables);
-
-        exec_ctx->table_count = total_tables;
+        exec_ctx->table_count = 0;
 
         // Import table slots are left zero-initialized; wah_instantiate() fills them in.
+        for (uint32_t i = 0; i < module->import_table_count; ++i) {
+            exec_ctx->tables[exec_ctx->table_count++] = (wah_table_inst_t){0};
+        }
         // Only allocate local tables (starting at offset import_table_count).
         for (uint32_t i = 0; i < module->table_count; ++i) {
-            uint32_t slot = module->import_table_count + i;
+            uint32_t slot = exec_ctx->table_count++;
             uint32_t min_elements = module->tables[i].min_elements;
-            exec_ctx->tables[slot].size = min_elements;
-            exec_ctx->tables[slot].max_size = module->tables[i].max_elements;
+            exec_ctx->tables[slot] = (wah_table_inst_t){ .size = min_elements, .max_size = module->tables[i].max_elements };
             WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables[slot].entries, min_elements, cleanup);
             memset(exec_ctx->tables[slot].entries, 0, sizeof(wah_value_t) * min_elements);
         }
@@ -7889,18 +7868,16 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
 
     // Build the runtime tag_instances (global tag index space: imports + locals).
     uint32_t total_tags = module->import_tag_count + module->tag_count;
-    exec_ctx->tag_instance_count = total_tags;
     if (total_tags > 0) {
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->tag_instances, total_tags, cleanup);
-        memset(exec_ctx->tag_instances, 0, sizeof(wah_tag_instance_t) * total_tags);
+        exec_ctx->tag_instance_count = 0;
         for (uint32_t i = 0; i < module->import_tag_count; i++) {
-            exec_ctx->tag_instances[i].type_index = module->tag_imports[i].type_index;
-            // unique_id filled during instantiation from linked module
+            exec_ctx->tag_instances[exec_ctx->tag_instance_count++] =
+                (wah_tag_instance_t){ .type_index = module->tag_imports[i].type_index };
         }
         for (uint32_t i = 0; i < module->tag_count; i++) {
-            uint32_t slot = module->import_tag_count + i;
-            exec_ctx->tag_instances[slot].type_index = module->tags[i].type_index;
-            exec_ctx->tag_instances[slot].unique_id = wah_next_tag_unique_id++;
+            exec_ctx->tag_instances[exec_ctx->tag_instance_count++] =
+                (wah_tag_instance_t){ .type_index = module->tags[i].type_index, .unique_id = wah_next_tag_unique_id++ };
         }
     }
 
@@ -7913,8 +7890,7 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->function_table, table_size, cleanup);
         // Initialize import slots (will be filled during import resolution)
         for (uint32_t i = 0; i < import_count; i++) {
-            memset(&exec_ctx->function_table[i], 0, sizeof(wah_function_t));
-            exec_ctx->function_table[i].fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER;
+            exec_ctx->function_table[i] = (wah_function_t){ .fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER };
         }
         // Copy local/host functions at offset import_count
         for (uint32_t i = 0; i < module->total_function_count; i++) {
@@ -7974,7 +7950,7 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
 
     wah_gc_destroy(exec_ctx);
 
-    memset(exec_ctx, 0, sizeof(wah_exec_context_t));
+    *exec_ctx = (wah_exec_context_t){0};
 }
 
 #define WAH_GC_DEFAULT_THRESHOLD (256 * 1024)
@@ -7996,8 +7972,7 @@ wah_error_t wah_gc_start(wah_exec_context_t *ctx) {
     if (ctx->gc) return WAH_OK;
     wah_gc_state_t *gc = (wah_gc_state_t *)malloc(sizeof(wah_gc_state_t));
     if (!gc) return WAH_ERROR_OUT_OF_MEMORY;
-    memset(gc, 0, sizeof(*gc));
-    gc->allocation_threshold = WAH_GC_DEFAULT_THRESHOLD;
+    *gc = (wah_gc_state_t){ .allocation_threshold = WAH_GC_DEFAULT_THRESHOLD };
     ctx->gc = gc;
     return WAH_OK;
 }
@@ -11020,26 +10995,26 @@ WAH_RUN(V128_LOAD64_SPLAT_i32_mem0) V128_LOAD_SPLAT_OP_MEM0(WAH_SP_ADDR_I32, 64)
 WAH_RUN(V128_LOAD32_ZERO) {
     V128_LOAD_COMMON(0, 4, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u32_le(fctx->memories[memidx].data + effective_addr), 0}};
+    *v = (wah_v128_t){ .u64 = {wah_read_u32_le(fctx->memories[memidx].data + effective_addr), 0} };
     WAH_NEXT();
 }
 WAH_RUN(V128_LOAD64_ZERO) {
     V128_LOAD_COMMON(0, 8, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u64_le(fctx->memories[memidx].data + effective_addr), 0}};
+    *v = (wah_v128_t){ .u64 = {wah_read_u64_le(fctx->memories[memidx].data + effective_addr), 0} };
     WAH_NEXT();
 }
 
 WAH_RUN(V128_LOAD32_ZERO_i32_mem0) {
     V128_LOAD_COMMON(1, 4, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u32_le(fctx->memory_base + effective_addr), 0}};
+    *v = (wah_v128_t){ .u64 = {wah_read_u32_le(fctx->memory_base + effective_addr), 0} };
     WAH_NEXT();
 }
 WAH_RUN(V128_LOAD64_ZERO_i32_mem0) {
     V128_LOAD_COMMON(1, 8, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u64_le(fctx->memory_base + effective_addr), 0}};
+    *v = (wah_v128_t){ .u64 = {wah_read_u64_le(fctx->memory_base + effective_addr), 0} };
     WAH_NEXT();
 }
 
@@ -11164,26 +11139,26 @@ WAH_RUN(V128_LOAD64_SPLAT_i64_mem0) V128_LOAD_SPLAT_OP_MEM0(WAH_SP_ADDR_I64, 64)
 WAH_RUN(V128_LOAD32_ZERO_i64) {
     V128_LOAD_COMMON(0, 4, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u32_le(fctx->memories[memidx].data + effective_addr), 0}};
+    *v = (wah_v128_t){ .u64 = {wah_read_u32_le(fctx->memories[memidx].data + effective_addr), 0} };
     WAH_NEXT();
 }
 WAH_RUN(V128_LOAD64_ZERO_i64) {
     V128_LOAD_COMMON(0, 8, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u64_le(fctx->memories[memidx].data + effective_addr), 0}};
+    *v = (wah_v128_t){ .u64 = {wah_read_u64_le(fctx->memories[memidx].data + effective_addr), 0} };
     WAH_NEXT();
 }
 
 WAH_RUN(V128_LOAD32_ZERO_i64_mem0) {
     V128_LOAD_COMMON(1, 4, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u32_le(fctx->memory_base + effective_addr), 0}};
+    *v = (wah_v128_t){ .u64 = {wah_read_u32_le(fctx->memory_base + effective_addr), 0} };
     WAH_NEXT();
 }
 WAH_RUN(V128_LOAD64_ZERO_i64_mem0) {
     V128_LOAD_COMMON(1, 8, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u64_le(fctx->memory_base + effective_addr), 0}};
+    *v = (wah_v128_t){ .u64 = {wah_read_u64_le(fctx->memory_base + effective_addr), 0} };
     WAH_NEXT();
 }
 
@@ -12539,8 +12514,7 @@ void wah_free_module(wah_module_t *module) {
     }
     free(module->declared_funcs);
 
-    // Reset all fields to 0/NULL
-    memset(module, 0, sizeof(wah_module_t));
+    *module = (wah_module_t){0};
 }
 
 // --- Repr Allocation ---
@@ -12573,11 +12547,7 @@ wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx, const 
 wah_error_t wah_new_module(wah_module_t *mod) {
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
 
-    *mod = (wah_module_t){
-        .function_capacity = 16,
-        .total_function_count = 0,
-        .capacity_exports = 16,
-    };
+    *mod = (wah_module_t){ .function_capacity = 16, .total_function_count = 0, .capacity_exports = 16 };
 
     // Allocate initial unified functions[] array (all host functions for a new module)
     WAH_MALLOC_ARRAY(mod->functions, mod->function_capacity);
@@ -12933,7 +12903,7 @@ static wah_error_t wah_module_export_global_internal(wah_module_t *mod, const ch
     global->type = type;
     global->type_flags = 0;
     global->is_mutable = is_mutable;
-    global->init_expr = (wah_parsed_code_t){0};  // Initialize to zero
+    global->init_expr = (wah_parsed_code_t){0};
     // Create a const expression for the initial value
     WAH_CHECK_GOTO(wah_create_const_expr(type, init_value, &global->init_expr), cleanup);
 
@@ -13010,27 +12980,27 @@ cleanup:
 }
 
 wah_error_t wah_module_export_global_i32(wah_module_t *mod, const char *name, bool is_mutable, int32_t init_value) {
-    wah_value_t val = {.i32 = init_value};
+    wah_value_t val = { .i32 = init_value };
     return wah_module_export_global_internal(mod, name, WAH_TYPE_I32, is_mutable, &val);
 }
 
 wah_error_t wah_module_export_global_i64(wah_module_t *mod, const char *name, bool is_mutable, int64_t init_value) {
-    wah_value_t val = {.i64 = init_value};
+    wah_value_t val = { .i64 = init_value };
     return wah_module_export_global_internal(mod, name, WAH_TYPE_I64, is_mutable, &val);
 }
 
 wah_error_t wah_module_export_global_f32(wah_module_t *mod, const char *name, bool is_mutable, float init_value) {
-    wah_value_t val = {.f32 = init_value};
+    wah_value_t val = { .f32 = init_value };
     return wah_module_export_global_internal(mod, name, WAH_TYPE_F32, is_mutable, &val);
 }
 
 wah_error_t wah_module_export_global_f64(wah_module_t *mod, const char *name, bool is_mutable, double init_value) {
-    wah_value_t val = {.f64 = init_value};
+    wah_value_t val = { .f64 = init_value };
     return wah_module_export_global_internal(mod, name, WAH_TYPE_F64, is_mutable, &val);
 }
 
 wah_error_t wah_module_export_global_v128(wah_module_t *mod, const char *name, bool is_mutable, const wah_v128_t *init_value) {
-    wah_value_t val = {.v128 = *init_value};
+    wah_value_t val = { .v128 = *init_value };
     return wah_module_export_global_internal(mod, name, WAH_TYPE_V128, is_mutable, &val);
 }
 
@@ -13051,17 +13021,14 @@ static wah_error_t wah_call_host_function_internal(
     uint32_t param_count,
     wah_value_t *results
 ) {
-    wah_call_context_t call_ctx = {0};
-    call_ctx.exec = exec_ctx;
-    call_ctx.nparams = param_count;
-    call_ctx.params = params;
-    call_ctx.nresults = fn->nresults;
-    call_ctx.results = results;
-    call_ctx.param_types = fn->param_types;
-    call_ctx.result_types = fn->result_types;
-    call_ctx.param_type_flags = fn->param_type_flags;
-    call_ctx.result_type_flags = fn->result_type_flags;
-    call_ctx.trap_reason = WAH_OK;
+    wah_call_context_t call_ctx = {
+        .exec = exec_ctx,
+        .nparams = param_count, .params = params,
+        .nresults = fn->nresults, .results = results,
+        .param_types = fn->param_types, .result_types = fn->result_types,
+        .param_type_flags = fn->param_type_flags, .result_type_flags = fn->result_type_flags,
+        .trap_reason = WAH_OK,
+    };
 
     WAH_ASSERT(!exec_ctx->gc || exec_ctx->gc->phase == WAH_GC_PHASE_IDLE);
     fn->func(&call_ctx, fn->userdata);
@@ -13140,13 +13107,13 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
 // --- Const Expression Evaluator ---
 // Evaluates a preparsed const expression via the main interpreter.
 static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, const uint8_t *bytecode, uint32_t bytecode_size, wah_value_t *result) {
-    wah_code_body_t dummy_code = {.parsed_code = {.bytecode = (uint8_t *)bytecode, .bytecode_size = bytecode_size}};
+    wah_code_body_t dummy_code = { .parsed_code = { .bytecode = (uint8_t *)bytecode, .bytecode_size = bytecode_size } };
     wah_value_t local_stack[16];
-    wah_call_frame_t local_frame = {.code = &dummy_code, .bytecode_ip = bytecode, .locals_offset = 0,
-                                    .result_count = 1, .frame_globals = ctx->globals, .module = ctx->module};
-    wah_exec_context_t cctx = {.module = ctx->module, .globals = ctx->globals, .global_count = ctx->global_count,
-                               .value_stack = local_stack, .value_stack_capacity = sizeof(local_stack) / sizeof(wah_value_t),
-                               .sp = 0, .call_stack = &local_frame, .max_call_depth = 1, .call_depth = 1, .gc = ctx->gc};
+    wah_call_frame_t local_frame = { .code = &dummy_code, .bytecode_ip = bytecode, .locals_offset = 0,
+                                     .result_count = 1, .frame_globals = ctx->globals, .module = ctx->module };
+    wah_exec_context_t cctx = { .module = ctx->module, .globals = ctx->globals, .global_count = ctx->global_count,
+                                .value_stack = local_stack, .value_stack_capacity = sizeof(local_stack) / sizeof(wah_value_t),
+                                .sp = 0, .call_stack = &local_frame, .max_call_depth = 1, .call_depth = 1, .gc = ctx->gc };
 
     wah_error_t err = wah_run_interpreter(&cctx);
     if (err != WAH_OK) return err;
