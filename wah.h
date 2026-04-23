@@ -8625,7 +8625,20 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
     wah_repr_t repr_id = hdr->repr_id;
 
     if (target >= 0) {
-        return wah_type_accepts_repr(ctx->module, (uint32_t)target, repr_id);
+        if (wah_type_accepts_repr(ctx->module, (uint32_t)target, repr_id))
+            return true;
+        if (repr_id == WAH_TYPE_FUNCTION &&
+            ctx->module->type_defs && (uint32_t)target < ctx->module->type_count &&
+            ctx->module->type_defs[(uint32_t)target].kind == WAH_COMP_FUNC) {
+            const wah_function_t *fn = (const wah_function_t *)ref;
+            const wah_module_t *fn_module = fn->fn_module ? fn->fn_module : ctx->module;
+            if (!fn->is_host && fn->local_idx < fn_module->wasm_function_count) {
+                uint32_t fn_type = fn_module->function_type_indices[fn->local_idx];
+                return wah_cross_module_subtype(fn_module, (wah_type_t)fn_type,
+                                                 ctx->module, target);
+            }
+        }
+        return false;
     }
 
     switch (target) {
