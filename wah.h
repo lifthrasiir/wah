@@ -1195,6 +1195,12 @@ static const uint8_t wah_opclasses[WAH_FE] = {
 #undef WAH_OPCLASS_INIT
 };
 
+static const bool wah_opcode_exists[WAH_FE] = {
+#define WAH_OPCODE_EXISTS_INIT(name, cls, val) [WAH_OP_##name] = true,
+    WAH_OPCODES(WAH_OPCODE_EXISTS_INIT)
+#undef WAH_OPCODE_EXISTS_INIT
+};
+
 #ifdef WAH_X86_64
 
 #ifdef __GNUC__
@@ -4426,6 +4432,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
 #define EMIT_SIMPLE() EMIT_INSTR_EX(opcode_val, WAH_IMM_NONE, (void)0)
 
+    WAH_ENSURE(wah_opcode_exists[opcode_val], WAH_ERROR_MALFORMED);
+
     if (vctx->mode == WAH_ANALYZE_CONST_EXPR) {
         switch (opcode_val) {
             case WAH_OP_I32_CONST: case WAH_OP_I64_CONST: case WAH_OP_F32_CONST:
@@ -5783,7 +5791,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 (opcode_val >= WAH_FB && opcode_val < WAH_FC)) {
                 return WAH_ERROR_UNIMPLEMENTED;
             }
-            return WAH_ERROR_VALIDATION_FAILED;
+            return WAH_ERROR_MALFORMED;
     }
 
 #undef PUSH
@@ -5937,10 +5945,8 @@ static wah_error_t wah_analyze_stream(
             }
         }
     }
-    if (!is_func_body) {
-        err = WAH_ERROR_UNEXPECTED_EOF;
-        goto cleanup;
-    }
+    err = is_func_body ? WAH_ERROR_MALFORMED : WAH_ERROR_UNEXPECTED_EOF;
+    goto cleanup;
 
 done:
     if (is_func_body) {
@@ -7303,7 +7309,7 @@ static wah_error_t wah_decode_opcode(const uint8_t **ptr, const uint8_t *end, ui
             *opcode_val = WAH_FD + (uint16_t)sub_opcode_val;
             break;
         default:
-            WAH_ENSURE(first_byte < WAH_FB, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(first_byte < WAH_FB, WAH_ERROR_MALFORMED);
             *opcode_val = (uint16_t)first_byte;
             break;
     }
