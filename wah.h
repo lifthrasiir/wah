@@ -1738,6 +1738,7 @@ typedef struct {
     bool else_found; // For if blocks
     bool is_unreachable; // True if this control frame is currently unreachable
     uint32_t stack_height; // Stack height at the beginning of the block
+    uint32_t local_init_save_offset; // Offset into local_init_stack for saved state
 } wah_validation_control_frame_t;
 
 typedef struct {
@@ -1754,6 +1755,12 @@ typedef struct {
     // Control flow validation stack
     wah_validation_control_frame_t control_stack[WAH_MAX_CONTROL_DEPTH];
     uint32_t control_sp;
+
+    // Local initialization tracking for non-defaultable locals
+    uint8_t *local_inits; // Per-local init state: 1=initialized, 0=not
+    uint8_t *local_init_stack; // Saved states for control frames
+    uint32_t local_init_stack_used; // Current usage in local_init_stack
+    uint32_t num_non_defaultable; // Number of non-defaultable locals
 } wah_validation_context_t;
 
 // --- Analyzed-Code IR (structured output of raw-Wasm decoding + validation) ---
@@ -4791,12 +4798,16 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             }
 
             if (opcode_val == WAH_OP_LOCAL_GET) {
+                if (vctx->local_inits && !vctx->local_inits[local_idx] && !vctx->is_unreachable)
+                    return WAH_ERROR_VALIDATION_FAILED;
                 WAH_CHECK(wah_validation_push_type_with_flags(vctx, expected_type, expected_flags));
             } else if (opcode_val == WAH_OP_LOCAL_SET) {
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, expected_type, expected_flags));
+                if (vctx->local_inits) vctx->local_inits[local_idx] = 1;
             } else { // WAH_OP_LOCAL_TEE
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, expected_type, expected_flags));
                 WAH_CHECK(wah_validation_push_type_with_flags(vctx, expected_type, expected_flags));
+                if (vctx->local_inits) vctx->local_inits[local_idx] = 1;
             }
             EMIT_INSTR_EX(opcode_val, WAH_IMM_U32, _di->imm.u32 = local_idx);
             break;
@@ -5025,6 +5036,13 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             frame->stack_height = vctx->current_stack_depth;
             frame->type_stack_sp = vctx->type_stack.sp;
 
+            if (vctx->local_inits) {
+                frame->local_init_save_offset = vctx->local_init_stack_used;
+                memcpy(vctx->local_init_stack + vctx->local_init_stack_used,
+                       vctx->local_inits, vctx->total_locals);
+                vctx->local_init_stack_used += vctx->total_locals;
+            }
+
             for (uint32_t i = 0; i < bt->param_count; ++i) {
                 wah_type_flags_t pf = bt->param_type_flags ? bt->param_type_flags[i] : 0;
                 WAH_CHECK(wah_validation_push_type_with_flags(vctx, bt->param_types[i], pf));
@@ -5047,6 +5065,12 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
             vctx->type_stack.sp = frame->type_stack_sp;
             vctx->current_stack_depth = frame->type_stack_sp;
+
+            if (vctx->local_inits) {
+                memcpy(vctx->local_inits,
+                       vctx->local_init_stack + frame->local_init_save_offset,
+                       vctx->total_locals);
+            }
 
             for (uint32_t i = 0; i < frame->block_type.param_count; ++i) {
                 wah_type_flags_t pf = frame->block_type.param_type_flags[i];
@@ -5087,6 +5111,13 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             // Reset stack to the state before the block
             vctx->type_stack.sp = frame->type_stack_sp;
             vctx->current_stack_depth = frame->type_stack_sp;
+
+            if (vctx->local_inits) {
+                memcpy(vctx->local_inits,
+                       vctx->local_init_stack + frame->local_init_save_offset,
+                       vctx->total_locals);
+                vctx->local_init_stack_used = frame->local_init_save_offset;
+            }
 
             vctx->control_sp--;
             // Restore the unreachable state from the parent control frame
@@ -5849,6 +5880,14 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
             frame->stack_height = vctx->current_stack_depth - bt->param_count;
             frame->type_stack_sp = vctx->type_stack.sp - bt->param_count;
+
+            if (vctx->local_inits) {
+                frame->local_init_save_offset = vctx->local_init_stack_used;
+                memcpy(vctx->local_init_stack + vctx->local_init_stack_used,
+                       vctx->local_inits, vctx->total_locals);
+                vctx->local_init_stack_used += vctx->total_locals;
+            }
+
             EMIT_INSTR_EX(opcode_val, WAH_IMM_TRY_TABLE, {
                 _di->imm.try_table.catch_count = catch_count;
                 _di->imm.try_table.catches = NULL;
@@ -6081,6 +6120,35 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
             .total_locals = func_type->param_count + module->code_bodies[i].local_count,
         };
 
+        // Set up local initialization tracking for non-defaultable locals
+        free(vctx.local_inits); vctx.local_inits = NULL;
+        free(vctx.local_init_stack); vctx.local_init_stack = NULL;
+        vctx.local_init_stack_used = 0;
+        vctx.num_non_defaultable = 0;
+        {
+            uint32_t tl = vctx.total_locals;
+            uint32_t pc = func_type->param_count;
+            for (uint32_t li = 0; li < module->code_bodies[i].local_count; ++li) {
+                wah_type_t lt = module->code_bodies[i].local_types[li];
+                wah_type_flags_t lf = module->code_bodies[i].local_type_flags ? module->code_bodies[i].local_type_flags[li] : 0;
+                if (WAH_TYPE_IS_REF(lt) && !(lf & WAH_TYPE_FLAG_NULLABLE))
+                    ++vctx.num_non_defaultable;
+            }
+            if (vctx.num_non_defaultable > 0) {
+                WAH_MALLOC_ARRAY_GOTO(vctx.local_inits, tl, cleanup);
+                memset(vctx.local_inits, 1, pc); // params are initialized
+                memset(vctx.local_inits + pc, 0, tl - pc); // declared locals start uninitialized
+                // Mark defaultable locals as always initialized
+                for (uint32_t li = 0; li < module->code_bodies[i].local_count; ++li) {
+                    wah_type_t lt = module->code_bodies[i].local_types[li];
+                    wah_type_flags_t lf = module->code_bodies[i].local_type_flags ? module->code_bodies[i].local_type_flags[li] : 0;
+                    if (!WAH_TYPE_IS_REF(lt) || (lf & WAH_TYPE_FLAG_NULLABLE))
+                        vctx.local_inits[pc + li] = 1;
+                }
+                WAH_MALLOC_ARRAY_GOTO(vctx.local_init_stack, (size_t)tl * WAH_MAX_CONTROL_DEPTH, cleanup);
+            }
+        }
+
         wah_free_analyzed_code(&ac);
         ac = (wah_analyzed_code_t){0};
 
@@ -6102,6 +6170,8 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
 cleanup:
     wah_free_analyzed_code(&ac);
+    free(vctx.local_inits);
+    free(vctx.local_init_stack);
     if (err != WAH_OK) {
         for (int32_t j = vctx.control_sp - 1; j >= 0; --j) {
             wah_validation_control_frame_t* frame = &vctx.control_stack[j];
