@@ -38,8 +38,8 @@ static void test_basic_import_resolution(void) {
     assert_ok(make_env_module(&env_mod));
     assert_ok(wah_parse_module_from_spec(&wasm_mod, k_import_spec));
     assert_eq_u32(wasm_mod.import_function_count, 1);
-    printf("  import_function_count=%u  function_count=%u\n",
-           wasm_mod.import_function_count, wasm_mod.function_count);
+    printf("  import_function_count=%u  wasm_function_count=%u\n",
+           wasm_mod.import_function_count, wasm_mod.wasm_function_count);
 
     assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
     assert_ok(wah_link_module(&ctx, "env", &env_mod));
