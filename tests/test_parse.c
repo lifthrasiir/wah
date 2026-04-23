@@ -15,7 +15,7 @@ static void test_malformed_code_body_size_wasm() {
 #define REPEAT100(x) REPEAT10(REPEAT10(x))
 #define REPEAT1000(x) REPEAT10(REPEAT10(REPEAT10(x)))
 
-    // This WASM module is known to cause a validation failure due to an oversized code body.
+    // This WASM module has an oversized code body (body_size exceeds section bounds).
     const char *wasm_spec = "wasm \
         types {[ fn [i32 i32] [i32] ]} \
         funcs {[ 0 ]} \
@@ -24,7 +24,7 @@ static void test_malformed_code_body_size_wasm() {
         REPEAT1000("30") REPEAT1000("30") REPEAT1000("30") REPEAT1000("30") \
         REPEAT10("30") REPEAT10("30") REPEAT10("30") REPEAT10("30") REPEAT10("30") "'";
 
-    assert_err(wah_parse_module_from_spec(&module, wasm_spec), WAH_ERROR_VALIDATION_FAILED);
+    assert_err(wah_parse_module_from_spec(&module, wasm_spec), WAH_ERROR_MALFORMED);
     wah_free_module(&module);
 }
 
@@ -58,7 +58,7 @@ static void test_invalid_section_order_mem_table() {
         funcs {[ 0 ]} \
         code {[ {[] end} ]}";
 
-    assert_err(wah_parse_module_from_spec(&module, wasm_spec), WAH_ERROR_VALIDATION_FAILED);
+    assert_err(wah_parse_module_from_spec(&module, wasm_spec), WAH_ERROR_MALFORMED);
     wah_free_module(&module);
 }
 
@@ -93,13 +93,13 @@ void test_code_section_no_function_section() {
     memset(&module, 0, sizeof(wah_module_t));
 
     // This WASM module has a code section but no function section.
-    // This should result in WAH_ERROR_VALIDATION_FAILED because module->function_count will be 0
+    // This should result in WAH_ERROR_MALFORMED because wasm_function_count will be 0
     // but the code section count will be > 0.
     const char *wasm_spec = "wasm \
         types {[ fn [] [] ]} \
         code {[ {[] end} ]}";
 
-    assert_err(wah_parse_module_from_spec(&module, wasm_spec), WAH_ERROR_VALIDATION_FAILED);
+    assert_err(wah_parse_module_from_spec(&module, wasm_spec), WAH_ERROR_MALFORMED);
     wah_free_module(&module);
 }
 
@@ -110,13 +110,13 @@ void test_function_section_no_code_section() {
     memset(&module, 0, sizeof(wah_module_t));
 
     // This WASM module has a function section but no code section.
-    // This should result in WAH_ERROR_VALIDATION_FAILED because module->function_count will be > 0
+    // This should result in WAH_ERROR_MALFORMED because wasm_function_count will be > 0
     // but module->code_count will be 0.
     const char *wasm_spec = "wasm \
         types {[ fn [] [] ]} \
         funcs {[ 0 ]}";
 
-    assert_err(wah_parse_module_from_spec(&module, wasm_spec), WAH_ERROR_VALIDATION_FAILED);
+    assert_err(wah_parse_module_from_spec(&module, wasm_spec), WAH_ERROR_MALFORMED);
     wah_free_module(&module);
 }
 
@@ -563,8 +563,8 @@ static void test_memory_init_out_of_bounds_mem_idx() {
         types {[ fn [] [] ]} \
         funcs {[ 0 ]} \
         memories {[ limits.i32/1 1 ]} \
-        data {[ data.passive {'hello'} ]} \
-        code {[ {[] i32.const 0 i32.const 0 i32.const 5 memory.init 0 1 end} ]}";
+        code {[ {[] i32.const 0 i32.const 0 i32.const 5 memory.init 0 1 end} ]} \
+        data {[ data.passive {'hello'} ]}";
 
     assert_err(wah_parse_module_from_spec(&module, wasm_spec), WAH_ERROR_VALIDATION_FAILED);
     wah_free_module(&module);
@@ -583,8 +583,8 @@ static void test_memory_init_out_of_bounds_data_idx() {
         types {[ fn [] [] ]} \
         funcs {[ 0 ]} \
         memories {[ limits.i32/1 1 ]} \
-        data {[ data.passive {'hello'} ]} \
-        code {[ {[] i32.const 0 i32.const 0 i32.const 5 memory.init 1 0 end} ]}";
+        code {[ {[] i32.const 0 i32.const 0 i32.const 5 memory.init 1 0 end} ]} \
+        data {[ data.passive {'hello'} ]}";
 
     assert_err(wah_parse_module_from_spec(&module, wasm_spec), WAH_ERROR_VALIDATION_FAILED);
     wah_free_module(&module);

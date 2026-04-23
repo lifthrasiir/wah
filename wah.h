@@ -3913,7 +3913,7 @@ static wah_error_t wah_parse_sub_type(const uint8_t **ptr, const uint8_t *end,
 
         uint32_t super_count;
         WAH_CHECK(wah_decode_uleb128(ptr, end, &super_count));
-        WAH_ENSURE(super_count <= 1, WAH_ERROR_VALIDATION_FAILED);
+        WAH_ENSURE(super_count <= 1, WAH_ERROR_MALFORMED);
         if (super_count == 1) {
             uint32_t super_idx;
             WAH_CHECK(wah_decode_uleb128(ptr, end, &super_idx));
@@ -4362,7 +4362,7 @@ static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, co
     } else {
         int32_t block_type_val;
         WAH_CHECK(wah_decode_sleb128_32(code_ptr, code_end, &block_type_val));
-        WAH_ENSURE(block_type_val >= 0, WAH_ERROR_VALIDATION_FAILED);
+        WAH_ENSURE(block_type_val >= 0, WAH_ERROR_MALFORMED);
         uint32_t type_idx = (uint32_t)block_type_val;
         WAH_ENSURE(type_idx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
         const wah_func_type_t* referenced_type = &vctx->module->types[type_idx];
@@ -5968,7 +5968,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
     uint32_t count;
     // A code body entry requires at least 3 bytes (body_size, num_locals, END opcode).
     WAH_CHECK_GOTO(wah_decode_and_validate_count(ptr, section_end, &count, 3), cleanup);
-    WAH_ENSURE_GOTO(count == module->wasm_function_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+    WAH_ENSURE_GOTO(count == module->wasm_function_count, WAH_ERROR_MALFORMED, cleanup);
     WAH_MALLOC_ARRAY_GOTO(module->code_bodies, count, cleanup);
     module->code_count = 0;
 
@@ -5980,7 +5980,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
         uint32_t body_size;
         WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &body_size), cleanup);
-        WAH_ENSURE_GOTO(body_size <= (size_t)(section_end - *ptr), WAH_ERROR_VALIDATION_FAILED, cleanup);
+        WAH_ENSURE_GOTO(body_size <= (size_t)(section_end - *ptr), WAH_ERROR_MALFORMED, cleanup);
         const uint8_t *code_body_end = *ptr + body_size;
 
         WAH_CHECK_GOTO(wah_parse_local_decls(ptr, code_body_end, &module->code_bodies[i], module->type_count), cleanup);
@@ -6106,7 +6106,7 @@ static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *
             } else if (flags == 0x04 || flags == 0x05) {
                 module->memories[i].addr_type = WAH_TYPE_I64;
             } else {
-                return WAH_ERROR_VALIDATION_FAILED; // Unknown memory type flags
+                return WAH_ERROR_MALFORMED; // Unknown memory type flags
             }
 
             if (flags == 0x04 || flags == 0x05) {
@@ -6157,7 +6157,7 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
             if (has_init_expr) {
                 (*ptr)++;
                 WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
-                WAH_ENSURE(**ptr == 0x00, WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(**ptr == 0x00, WAH_ERROR_MALFORMED);
                 (*ptr)++;
             }
 
@@ -6215,7 +6215,7 @@ static wah_error_t wah_parse_tag_section(const uint8_t **ptr, const uint8_t *sec
     for (uint32_t i = 0; i < count; ++i) {
         WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
         uint8_t attribute = *(*ptr)++;
-        WAH_ENSURE_GOTO(attribute == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
+        WAH_ENSURE_GOTO(attribute == 0, WAH_ERROR_MALFORMED, cleanup);
         WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &module->tags[i].type_index), cleanup);
         WAH_ENSURE_GOTO(module->tags[i].type_index < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
         WAH_ENSURE_GOTO(module->types[module->tags[i].type_index].result_count == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
@@ -6336,7 +6336,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             } else if (flags == 0x04 || flags == 0x05) {
                 mi->type.addr_type = WAH_TYPE_I64;
             } else {
-                err = WAH_ERROR_VALIDATION_FAILED;
+                err = WAH_ERROR_MALFORMED;
                 goto cleanup;
             }
             if (flags == 0x04 || flags == 0x05) {
@@ -6383,7 +6383,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
 
             WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
             uint8_t attribute = *(*ptr)++;
-            WAH_ENSURE_GOTO(attribute == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            WAH_ENSURE_GOTO(attribute == 0, WAH_ERROR_MALFORMED, cleanup);
             WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &tgi->type_index), cleanup);
             WAH_ENSURE_GOTO(tgi->type_index < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
             WAH_ENSURE_GOTO(module->types[tgi->type_index].result_count == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
@@ -6513,7 +6513,7 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
                 WAH_ENSURE_GOTO(export_entry->index < module->import_tag_count + module->tag_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
                 break;
             default:
-                err = WAH_ERROR_VALIDATION_FAILED; // Unknown export kind
+                err = WAH_ERROR_MALFORMED; // Unknown export kind
                 goto cleanup;
         }
     }
@@ -6615,7 +6615,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
                 } else {
                     WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
                     uint8_t elemkind = *(*ptr)++;
-                    WAH_ENSURE(elemkind == 0x00, WAH_ERROR_VALIDATION_FAILED);
+                    WAH_ENSURE(elemkind == 0x00, WAH_ERROR_MALFORMED);
                 }
             }
 
@@ -6685,7 +6685,7 @@ static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *se
 
     // If a datacount section was present, validate that the data section count matches.
     if (module->has_data_count_section) {
-        WAH_ENSURE(count == module->data_segment_count, WAH_ERROR_VALIDATION_FAILED);
+        WAH_ENSURE(count == module->data_segment_count, WAH_ERROR_MALFORMED);
     }
 
     if (count > 0) {
@@ -6707,7 +6707,7 @@ static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *se
                 WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->memory_idx));
                 WAH_ENSURE(segment->memory_idx < wah_memory_index_limit(module), WAH_ERROR_VALIDATION_FAILED);
             } else {
-                return WAH_ERROR_VALIDATION_FAILED; // Unknown data segment flags
+                return WAH_ERROR_MALFORMED; // Unknown data segment flags
             }
 
             if (segment->flags == 0x00 || segment->flags == 0x02) { // Active segments have offset expression
@@ -7336,7 +7336,7 @@ static wah_error_t wah_decode_heap_type(const uint8_t **ptr, const uint8_t *end,
     }
     int32_t idx;
     WAH_CHECK(wah_decode_sleb128_32(ptr, end, &idx));
-    WAH_ENSURE(idx >= 0, WAH_ERROR_VALIDATION_FAILED);
+    WAH_ENSURE(idx >= 0, WAH_ERROR_MALFORMED);
     *out_type = (wah_type_t)idx;
     return WAH_OK;
 }
@@ -7358,7 +7358,7 @@ static wah_error_t wah_decode_ref_type(const uint8_t **ptr, const uint8_t *end, 
         if (out_flags) *out_flags = 0;
         return WAH_OK;
     }
-    return WAH_ERROR_VALIDATION_FAILED;
+    return WAH_ERROR_MALFORMED;
 }
 
 static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type, wah_type_flags_t *out_flags) {
@@ -7441,7 +7441,7 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
 
         // Section order validation
         if (section_id != 0) { // Custom sections do not affect the order
-            WAH_ENSURE_GOTO(handler->order > last_parsed_order, WAH_ERROR_VALIDATION_FAILED, cleanup_parse);
+            WAH_ENSURE_GOTO(handler->order > last_parsed_order, WAH_ERROR_MALFORMED, cleanup_parse);
             last_parsed_order = handler->order;
         }
 
@@ -7452,11 +7452,11 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
         WAH_CHECK_GOTO(handler->parser_func(&ptr, section_payload_end, module), cleanup_parse);
 
         // Ensure we consumed exactly the section_size bytes
-        WAH_ENSURE_GOTO(ptr == section_payload_end, WAH_ERROR_VALIDATION_FAILED, cleanup_parse); // Indicate a parsing error within the section
+        WAH_ENSURE_GOTO(ptr == section_payload_end, WAH_ERROR_MALFORMED, cleanup_parse);
     }
 
     // After all sections are parsed, validate that wasm_function_count matches code_count
-    WAH_ENSURE_GOTO(module->wasm_function_count == module->code_count, WAH_ERROR_VALIDATION_FAILED, cleanup_parse);
+    WAH_ENSURE_GOTO(module->wasm_function_count == module->code_count, WAH_ERROR_MALFORMED, cleanup_parse);
 
     // Validate data segment references
     WAH_ENSURE_GOTO(module->data_segment_count >= module->min_data_segment_count_required, WAH_ERROR_VALIDATION_FAILED, cleanup_parse);
