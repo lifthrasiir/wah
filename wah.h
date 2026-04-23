@@ -238,6 +238,7 @@ typedef struct wah_module_s {
     uint32_t table_count;
     uint32_t element_segment_count;
     uint32_t data_segment_count;
+    uint32_t tag_count;
     uint32_t export_count;
 
     uint32_t start_function_idx;
@@ -255,6 +256,7 @@ typedef struct wah_module_s {
     struct wah_table_type_s *tables;
     struct wah_element_segment_s *element_segments;
     struct wah_data_segment_s *data_segments;
+    struct wah_tag_s *tags;
     struct wah_export_s *exports;
 
     // Unified function table: functions[0..wasm_function_count) are WASM functions,
@@ -265,22 +267,16 @@ typedef struct wah_module_s {
 
     // Import section
     uint32_t import_function_count;
-    struct wah_func_import_s *func_imports;
-
     uint32_t import_table_count;
-    struct wah_table_import_s *table_imports;
-
     uint32_t import_memory_count;
-    struct wah_memory_import_s *memory_imports;
-
     uint32_t import_global_count;
-    struct wah_global_import_s *global_imports;
-
     uint32_t import_tag_count;
-    struct wah_tag_import_s *tag_imports;
 
-    uint32_t tag_count;
-    struct wah_tag_s *tags;
+    struct wah_func_import_s *func_imports;
+    struct wah_table_import_s *table_imports;
+    struct wah_memory_import_s *memory_imports;
+    struct wah_global_import_s *global_imports;
+    struct wah_tag_import_s *tag_imports;
 
     // Dynamic export array growth
     uint32_t capacity_exports;  // Capacity for dynamic export array growth
@@ -2213,6 +2209,28 @@ static inline bool wah_is_valid_utf8(const char *s, size_t len) {
         return false; // Invalid start byte
     }
     return true;
+}
+
+static wah_error_t wah_parse_name(const uint8_t **ptr, const uint8_t *section_end, char **out_name, size_t *out_len) {
+    uint32_t name_len = 0;
+    char *name_copy = NULL;
+
+    *out_name = NULL;
+    *out_len = 0;
+
+    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &name_len));
+    WAH_ENSURE(*ptr + name_len <= section_end, WAH_ERROR_UNEXPECTED_EOF);
+    WAH_ENSURE(wah_is_valid_utf8((const char *)*ptr, name_len), WAH_ERROR_MALFORMED);
+
+    name_copy = (char *)malloc((size_t)name_len + 1);
+    WAH_ENSURE(name_copy, WAH_ERROR_OUT_OF_MEMORY);
+    memcpy(name_copy, *ptr, name_len);
+    name_copy[name_len] = '\0';
+
+    *ptr += name_len;
+    *out_name = name_copy;
+    *out_len = (size_t)name_len;
+    return WAH_OK;
 }
 
 // Helper function to duplicate a string
@@ -4465,6 +4483,45 @@ static inline bool wah_global_is_mutable(const wah_module_t *m, uint32_t idx) {
     return m->globals[idx - m->import_global_count].is_mutable;
 }
 
+static inline bool wah_name_matches(const char *name, size_t name_len, const char *expected, size_t expected_len) {
+    return name_len == expected_len && memcmp(name, expected, name_len) == 0;
+}
+
+static bool wah_find_linked_module(
+    const wah_exec_context_t *ctx,
+    const wah_import_name_t *name,
+    const wah_module_t **out_module,
+    wah_exec_context_t **out_linked_ctx,
+    uint32_t *out_linked_idx
+) {
+    WAH_ASSERT(ctx);
+    WAH_ASSERT(name);
+    if (out_module) *out_module = NULL;
+    if (out_linked_ctx) *out_linked_ctx = NULL;
+    if (out_linked_idx) *out_linked_idx = 0;
+
+    for (uint32_t i = 0; i < ctx->linked_module_count; ++i) {
+        const char *linked_name = ctx->linked_modules[i].name;
+        if (!wah_name_matches(linked_name, strlen(linked_name), name->module, name->module_len)) continue;
+        if (out_module) *out_module = ctx->linked_modules[i].module;
+        if (out_linked_ctx) *out_linked_ctx = ctx->linked_modules[i].ctx;
+        if (out_linked_idx) *out_linked_idx = i;
+        return true;
+    }
+
+    return false;
+}
+
+static const wah_export_t *wah_find_export(const wah_module_t *module, uint8_t kind, const wah_import_name_t *name) {
+    for (uint32_t i = 0; i < module->export_count; ++i) {
+        const wah_export_t *exp = &module->exports[i];
+        if (exp->kind != kind) continue;
+        if (wah_name_matches(exp->name, exp->name_len, name->field, name->field_len)) return exp;
+    }
+
+    return NULL;
+}
+
 static wah_error_t wah_declare_func(wah_module_t *m, uint32_t func_idx) {
     if (!m->declared_funcs) {
         uint32_t total = wah_func_index_limit(m);
@@ -6563,25 +6620,8 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
     for (uint32_t i = 0; i < count; ++i) {
         // Parse import name (module_name + field_name)
         wah_import_name_t imp_name = {0};
-        uint32_t module_name_len;
-        WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &module_name_len), cleanup);
-        WAH_ENSURE_GOTO(*ptr + module_name_len <= section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
-        WAH_ENSURE_GOTO(wah_is_valid_utf8((const char *)*ptr, module_name_len), WAH_ERROR_MALFORMED, cleanup);
-        WAH_MALLOC_ARRAY_GOTO(imp_name.module, module_name_len + 1, cleanup);
-        memcpy(imp_name.module, *ptr, module_name_len);
-        imp_name.module[module_name_len] = '\0';
-        imp_name.module_len = module_name_len;
-        *ptr += module_name_len;
-
-        uint32_t field_name_len;
-        WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &field_name_len), cleanup);
-        WAH_ENSURE_GOTO(*ptr + field_name_len <= section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
-        WAH_ENSURE_GOTO(wah_is_valid_utf8((const char *)*ptr, field_name_len), WAH_ERROR_MALFORMED, cleanup);
-        WAH_MALLOC_ARRAY_GOTO(imp_name.field, field_name_len + 1, cleanup);
-        memcpy(imp_name.field, *ptr, field_name_len);
-        imp_name.field[field_name_len] = '\0';
-        imp_name.field_len = field_name_len;
-        *ptr += field_name_len;
+        WAH_CHECK_GOTO(wah_parse_name(ptr, section_end, &imp_name.module, &imp_name.module_len), cleanup);
+        WAH_CHECK_GOTO(wah_parse_name(ptr, section_end, &imp_name.field, &imp_name.field_len), cleanup);
 
         // kind
         WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
@@ -6762,20 +6802,7 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
         *export_entry = (wah_export_t){0};
         ++module->export_count;
 
-        // Name length
-        uint32_t name_len;
-        WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &name_len), cleanup);
-        export_entry->name_len = name_len;
-
-        // Name string
-        WAH_ENSURE_GOTO(*ptr + name_len <= section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
-
-        // Allocate memory for the name and copy it, ensuring null-termination
-        WAH_MALLOC_ARRAY_GOTO(export_entry->name, name_len + 1, cleanup);
-        memcpy((void*)export_entry->name, *ptr, name_len);
-        ((char*)export_entry->name)[name_len] = '\0';
-
-        WAH_ENSURE_GOTO(wah_is_valid_utf8(export_entry->name, export_entry->name_len), WAH_ERROR_MALFORMED, cleanup);
+        WAH_CHECK_GOTO(wah_parse_name(ptr, section_end, (char **)&export_entry->name, &export_entry->name_len), cleanup);
 
         // Check for duplicate export names
         for (uint32_t j = 0; j < i; ++j) {
@@ -6785,8 +6812,6 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
                 goto cleanup;
             }
         }
-
-        *ptr += name_len;
 
         // Export kind
         WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
@@ -13182,28 +13207,10 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     for (uint32_t i = 0; i < import_count; i++) {
         wah_func_import_t *fi = &module->func_imports[i];
 
-        // Find linked module by module_name
         const wah_module_t *linked = NULL;
-        for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
-            const char *linked_name = ctx->linked_modules[j].name;
-            if (strncmp(linked_name, fi->name.module, fi->name.module_len) == 0 &&
-                linked_name[fi->name.module_len] == '\0') {
-                linked = ctx->linked_modules[j].module;
-                break;
-            }
-        }
-        WAH_ENSURE_GOTO(linked != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &fi->name, &linked, NULL, NULL), WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
 
-        // Find export by field_name (function kind)
-        const wah_export_t *exp = NULL;
-        for (uint32_t k = 0; k < linked->export_count; k++) {
-            if (linked->exports[k].kind == 0 &&
-                linked->exports[k].name_len == fi->name.field_len &&
-                memcmp(linked->exports[k].name, fi->name.field, fi->name.field_len) == 0) {
-                exp = &linked->exports[k];
-                break;
-            }
-        }
+        const wah_export_t *exp = wah_find_export(linked, 0, &fi->name);
         WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
 
         // exp->index is the global function index in the linked module.
@@ -13254,27 +13261,9 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         const wah_module_t *linked = NULL;
         wah_exec_context_t *gi_linked_ctx = NULL;
         uint32_t gi_linked_idx = 0;
-        for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
-            const char *linked_name = ctx->linked_modules[j].name;
-            if (strncmp(linked_name, gi->name.module, gi->name.module_len) == 0 &&
-                linked_name[gi->name.module_len] == '\0') {
-                linked = ctx->linked_modules[j].module;
-                gi_linked_ctx = ctx->linked_modules[j].ctx;
-                gi_linked_idx = j;
-                break;
-            }
-        }
-        WAH_ENSURE_GOTO(linked != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &gi->name, &linked, &gi_linked_ctx, &gi_linked_idx), WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
 
-        const wah_export_t *exp = NULL;
-        for (uint32_t k = 0; k < linked->export_count; k++) {
-            if (linked->exports[k].kind == 3 &&
-                linked->exports[k].name_len == gi->name.field_len &&
-                memcmp(linked->exports[k].name, gi->name.field, gi->name.field_len) == 0) {
-                exp = &linked->exports[k];
-                break;
-            }
-        }
+        const wah_export_t *exp = wah_find_export(linked, 3, &gi->name);
         WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
 
         // Find the linked module's globals offset in ctx->globals
@@ -13323,26 +13312,9 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
 
         const wah_module_t *linked = NULL;
         wah_exec_context_t *linked_ctx = NULL;
-        for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
-            const char *linked_name = ctx->linked_modules[j].name;
-            if (strncmp(linked_name, tgi->name.module, tgi->name.module_len) == 0 &&
-                linked_name[tgi->name.module_len] == '\0') {
-                linked = ctx->linked_modules[j].module;
-                linked_ctx = ctx->linked_modules[j].ctx;
-                break;
-            }
-        }
-        WAH_ENSURE_GOTO(linked != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &tgi->name, &linked, &linked_ctx, NULL), WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
 
-        const wah_export_t *exp = NULL;
-        for (uint32_t k = 0; k < linked->export_count; k++) {
-            if (linked->exports[k].kind == 4 &&
-                linked->exports[k].name_len == tgi->name.field_len &&
-                memcmp(linked->exports[k].name, tgi->name.field, tgi->name.field_len) == 0) {
-                exp = &linked->exports[k];
-                break;
-            }
-        }
+        const wah_export_t *exp = wah_find_export(linked, 4, &tgi->name);
         WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
 
         uint32_t linked_tag_idx = exp->index;
@@ -13389,34 +13361,19 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
 
         const wah_module_t *linked = NULL;
         wah_exec_context_t *linked_ctx = NULL;
-        for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
-            const char *linked_name = ctx->linked_modules[j].name;
-            if (strncmp(linked_name, ti->name.module, ti->name.module_len) == 0 &&
-                linked_name[ti->name.module_len] == '\0') {
-                linked = ctx->linked_modules[j].module;
-                linked_ctx = ctx->linked_modules[j].ctx;
-                break;
-            }
-        }
-        WAH_ENSURE_GOTO(linked != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &ti->name, &linked, &linked_ctx, NULL), WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
 
-        const wah_export_t *exp = NULL;
-        for (uint32_t k = 0; k < linked->export_count; k++) {
-            if (linked->exports[k].kind == 1 &&
-                linked->exports[k].name_len == ti->name.field_len &&
-                memcmp(linked->exports[k].name, ti->name.field, ti->name.field_len) == 0) {
-                exp = &linked->exports[k];
-                break;
-            }
-        }
+        const wah_export_t *exp = wah_find_export(linked, 1, &ti->name);
         WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
 
         uint32_t linked_table_idx = exp->index;
         WAH_ENSURE_GOTO(linked_table_idx < wah_table_index_limit(linked), WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        uint32_t local_table_idx;
+        wah_table_type_t *exp_tt;
 
         if (linked_table_idx >= linked->import_table_count) {
-            uint32_t local_table_idx = linked_table_idx - linked->import_table_count;
-            wah_table_type_t *exp_tt = &linked->tables[local_table_idx];
+            local_table_idx = linked_table_idx - linked->import_table_count;
+            exp_tt = &linked->tables[local_table_idx];
             WAH_ENSURE_GOTO(exp_tt->elem_type == ti->type.elem_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             WAH_ENSURE_GOTO(exp_tt->elem_type_flags == ti->type.elem_type_flags, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             WAH_ENSURE_GOTO(exp_tt->addr_type == ti->type.addr_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
@@ -13437,8 +13394,6 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             ctx->tables[i].import_ctx = linked_ctx;
             ctx->tables[i].import_idx = linked_table_idx;
         } else if (linked_table_idx >= linked->import_table_count) {
-            uint32_t local_table_idx = linked_table_idx - linked->import_table_count;
-            wah_table_type_t *exp_tt = &linked->tables[local_table_idx];
             WAH_ENSURE_GOTO(exp_tt->min_elements >= ti->type.min_elements, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             uint32_t min_elements = exp_tt->min_elements;
             ctx->tables[i].is_imported = false;
@@ -13455,42 +13410,30 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
 
         const wah_module_t *linked = NULL;
         wah_exec_context_t *linked_ctx = NULL;
-        for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
-            const char *linked_name = ctx->linked_modules[j].name;
-            if (strncmp(linked_name, mi->name.module, mi->name.module_len) == 0 &&
-                linked_name[mi->name.module_len] == '\0') {
-                linked = ctx->linked_modules[j].module;
-                linked_ctx = ctx->linked_modules[j].ctx;
-                break;
-            }
-        }
-        WAH_ENSURE_GOTO(linked != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &mi->name, &linked, &linked_ctx, NULL), WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
 
-        const wah_export_t *exp = NULL;
-        for (uint32_t k = 0; k < linked->export_count; k++) {
-            if (linked->exports[k].kind == 2 &&
-                linked->exports[k].name_len == mi->name.field_len &&
-                memcmp(linked->exports[k].name, mi->name.field, mi->name.field_len) == 0) {
-                exp = &linked->exports[k];
-                break;
-            }
-        }
+        const wah_export_t *exp = wah_find_export(linked, 2, &mi->name);
         WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
 
         uint32_t linked_mem_idx = exp->index;
         WAH_ENSURE_GOTO(linked_mem_idx < wah_memory_index_limit(linked), WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        uint32_t local_mem_idx = 0;
+        wah_memory_type_t *exp_mt = NULL;
+
+        if (linked_mem_idx >= linked->import_memory_count) {
+            local_mem_idx = linked_mem_idx - linked->import_memory_count;
+            exp_mt = &linked->memories[local_mem_idx];
+            WAH_ENSURE_GOTO(exp_mt->addr_type == mi->type.addr_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            if (mi->type.max_pages != UINT64_MAX) {
+                WAH_ENSURE_GOTO(exp_mt->max_pages != UINT64_MAX, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                WAH_ENSURE_GOTO(exp_mt->max_pages <= mi->type.max_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            }
+        }
 
         if (linked_ctx && linked_mem_idx < linked_ctx->memory_count) {
             if (linked_mem_idx >= linked->import_memory_count) {
-                uint32_t local_mem_idx = linked_mem_idx - linked->import_memory_count;
-                wah_memory_type_t *exp_mt = &linked->memories[local_mem_idx];
-                WAH_ENSURE_GOTO(exp_mt->addr_type == mi->type.addr_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
                 uint64_t cur_pages = linked_ctx->memories[linked_mem_idx].size / WAH_WASM_PAGE_SIZE;
                 WAH_ENSURE_GOTO(cur_pages >= mi->type.min_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-                if (mi->type.max_pages != UINT64_MAX) {
-                    WAH_ENSURE_GOTO(exp_mt->max_pages != UINT64_MAX, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-                    WAH_ENSURE_GOTO(exp_mt->max_pages <= mi->type.max_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-                }
             }
             ctx->memories[i].data = linked_ctx->memories[linked_mem_idx].data;
             ctx->memories[i].size = linked_ctx->memories[linked_mem_idx].size;
@@ -13499,14 +13442,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             ctx->memories[i].import_ctx = linked_ctx;
             ctx->memories[i].import_idx = linked_mem_idx;
         } else if (linked_mem_idx >= linked->import_memory_count) {
-            uint32_t local_mem_idx = linked_mem_idx - linked->import_memory_count;
-            wah_memory_type_t *exp_mt = &linked->memories[local_mem_idx];
-            WAH_ENSURE_GOTO(exp_mt->addr_type == mi->type.addr_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             WAH_ENSURE_GOTO(exp_mt->min_pages >= mi->type.min_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-            if (mi->type.max_pages != UINT64_MAX) {
-                WAH_ENSURE_GOTO(exp_mt->max_pages != UINT64_MAX, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-                WAH_ENSURE_GOTO(exp_mt->max_pages <= mi->type.max_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-            }
             ctx->memories[i].max_pages = exp_mt->max_pages;
             uint64_t min_pages = exp_mt->min_pages;
             uint64_t byte_size = min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
@@ -13576,8 +13512,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     const wah_export_t *exp = NULL;
                     for (uint32_t m = 0; m < provider->export_count; m++) {
                         if (provider->exports[m].kind == 0 &&
-                            provider->exports[m].name_len == fi->name.field_len &&
-                            memcmp(provider->exports[m].name, fi->name.field, fi->name.field_len) == 0) {
+                            wah_name_matches(provider->exports[m].name, provider->exports[m].name_len,
+                                             fi->name.field, fi->name.field_len)) {
                             exp = &provider->exports[m];
                             break;
                         }
@@ -13774,7 +13710,7 @@ wah_error_t wah_module_export_by_name_len(const wah_module_t *module, const char
 
     for (uint32_t i = 0; i < module->export_count; ++i) {
         const wah_export_t *export_entry = &module->exports[i];
-        if (export_entry->name_len == name_len && memcmp(export_entry->name, name, name_len) == 0) {
+        if (wah_name_matches(export_entry->name, export_entry->name_len, name, name_len)) {
             return wah_module_export(module, i, out);
         }
     }
