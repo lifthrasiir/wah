@@ -13299,7 +13299,9 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         if (ctx->globals[slot].ref == wah_funcref_sentinel) {
             uint32_t fidx = ctx->globals[slot].prefuncref.func_idx;
             WAH_ENSURE_GOTO(fidx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-            ctx->globals[slot].ref = &ctx->function_table[fidx];
+            wah_function_t *fn = &ctx->function_table[fidx];
+            if (!fn->is_host && fn->fn_module == NULL) { fn->fn_module = module; fn->fn_ctx = ctx; }
+            ctx->globals[slot].ref = fn;
         }
     }
 
