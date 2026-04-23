@@ -771,7 +771,7 @@ int main() {
         // child struct ref stored in parent-typed local via structref
         // sub.final [0] means: final sub type, 1 supertype count, supertype index 0
         const char *spec = "wasm \
-            types {[ struct [i32 mut], sub.final [0] struct [i32 mut, i32 mut], fn [] [i32] ]} \
+            types {[ sub [] struct [i32 mut], sub.final [0] struct [i32 mut, i32 mut], fn [] [i32] ]} \
             funcs {[ 2 ]} \
             exports {[ {'f'} fn# 0 ]} \
             code {[ {[1 type.ref.null 1] \
@@ -806,7 +806,7 @@ int main() {
         // type 2: func [] -> [i32]
         // type 3: func [] -> [i32]
         const char *spec = "wasm \
-            types {[ struct [i32 mut], sub.final [0] struct [i32 mut], fn [] [i32] ]} \
+            types {[ sub [] struct [i32 mut], sub.final [0] struct [i32 mut], fn [] [i32] ]} \
             funcs {[ 2, 2 ]} \
             exports {[ {'test_parent'} fn# 0, {'test_child'} fn# 1 ]} \
             code {[ \
