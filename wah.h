@@ -3714,13 +3714,22 @@ static inline wah_comp_type_kind_t wah_type_def_kind(const wah_module_t *m, wah_
 static inline bool wah_type_is_subtype(wah_type_t sub, wah_type_t sup, const wah_module_t *module) {
     if (sub == sup || sub == WAH_TYPE_ANY) return true;
 
-    // concrete sub → concrete sup: walk supertype chain
+    // concrete sub → concrete sup: check canonical equivalence then walk supertype chain
     if (sub >= 0 && sup >= 0) {
         if (!module || !module->type_defs) return false;
+        if (module->canonical_map) {
+            uint32_t csub = module->canonical_map[(uint32_t)sub];
+            uint32_t csup = module->canonical_map[(uint32_t)sup];
+            if (csub == csup) return true;
+        }
         uint32_t t = (uint32_t)sub;
         while (t != WAH_NO_SUPERTYPE) {
-            if (module->type_defs[t].supertype == (uint32_t)sup) return true;
-            t = module->type_defs[t].supertype;
+            uint32_t st = module->type_defs[t].supertype;
+            if (st == WAH_NO_SUPERTYPE) break;
+            if (st == (uint32_t)sup) return true;
+            if (module->canonical_map && module->canonical_map[st] == module->canonical_map[(uint32_t)sup])
+                return true;
+            t = st;
         }
         return false;
     }
@@ -3953,6 +3962,17 @@ static wah_type_t wah_canonicalize_type_ref(wah_type_t t, uint32_t rec_start, ui
     return t;
 }
 
+// Compare two canonicalized type refs during structural equivalence.
+// Returns: 1 = equal, 0 = not equal, -1 = need further check (both external and same)
+static inline bool wah_canon_ref_eq(wah_type_t ta, uint32_t rga_s, uint32_t rga_n,
+                                     wah_type_t tb, uint32_t rgb_s, uint32_t rgb_n) {
+    bool a_in = (ta >= 0 && (uint32_t)ta >= rga_s && (uint32_t)ta < rga_s + rga_n);
+    bool b_in = (tb >= 0 && (uint32_t)tb >= rgb_s && (uint32_t)tb < rgb_s + rgb_n);
+    if (a_in && b_in) return ((uint32_t)ta - rga_s) == ((uint32_t)tb - rgb_s);
+    if (a_in != b_in) return false;
+    return ta == tb;
+}
+
 static bool wah_types_structurally_equal(const wah_module_t *module, uint32_t a, uint32_t b,
                                           const uint32_t *canonical_map) {
     const wah_type_def_t *td_a = &module->type_defs[a];
@@ -3970,13 +3990,7 @@ static bool wah_types_structurally_equal(const wah_module_t *module, uint32_t a,
         if (td_b->supertype == WAH_NO_SUPERTYPE) return false;
         wah_type_t sa = wah_canonicalize_type_ref((wah_type_t)td_a->supertype, rg_a_start, rg_a_size, canonical_map);
         wah_type_t sb = wah_canonicalize_type_ref((wah_type_t)td_b->supertype, rg_b_start, rg_b_size, canonical_map);
-        // If both are within their respective rec groups, compare by offset
-        if (sa >= 0 && (uint32_t)sa >= rg_a_start && (uint32_t)sa < rg_a_start + rg_a_size &&
-            sb >= 0 && (uint32_t)sb >= rg_b_start && (uint32_t)sb < rg_b_start + rg_b_size) {
-            if ((uint32_t)sa - rg_a_start != (uint32_t)sb - rg_b_start) return false;
-        } else {
-            if (sa != sb) return false;
-        }
+        if (!wah_canon_ref_eq(sa, rg_a_start, rg_a_size, sb, rg_b_start, rg_b_size)) return false;
     }
 
     if (td_a->kind == WAH_COMP_FUNC) {
@@ -3987,23 +4001,13 @@ static bool wah_types_structurally_equal(const wah_module_t *module, uint32_t a,
         for (uint32_t j = 0; j < ft_a->param_count; ++j) {
             wah_type_t ta = wah_canonicalize_type_ref(ft_a->param_types[j], rg_a_start, rg_a_size, canonical_map);
             wah_type_t tb = wah_canonicalize_type_ref(ft_b->param_types[j], rg_b_start, rg_b_size, canonical_map);
-            if (ta >= 0 && (uint32_t)ta >= rg_a_start && (uint32_t)ta < rg_a_start + rg_a_size &&
-                tb >= 0 && (uint32_t)tb >= rg_b_start && (uint32_t)tb < rg_b_start + rg_b_size) {
-                if ((uint32_t)ta - rg_a_start != (uint32_t)tb - rg_b_start) return false;
-            } else {
-                if (ta != tb) return false;
-            }
+            if (!wah_canon_ref_eq(ta, rg_a_start, rg_a_size, tb, rg_b_start, rg_b_size)) return false;
             if (ft_a->param_type_flags[j] != ft_b->param_type_flags[j]) return false;
         }
         for (uint32_t j = 0; j < ft_a->result_count; ++j) {
             wah_type_t ta = wah_canonicalize_type_ref(ft_a->result_types[j], rg_a_start, rg_a_size, canonical_map);
             wah_type_t tb = wah_canonicalize_type_ref(ft_b->result_types[j], rg_b_start, rg_b_size, canonical_map);
-            if (ta >= 0 && (uint32_t)ta >= rg_a_start && (uint32_t)ta < rg_a_start + rg_a_size &&
-                tb >= 0 && (uint32_t)tb >= rg_b_start && (uint32_t)tb < rg_b_start + rg_b_size) {
-                if ((uint32_t)ta - rg_a_start != (uint32_t)tb - rg_b_start) return false;
-            } else {
-                if (ta != tb) return false;
-            }
+            if (!wah_canon_ref_eq(ta, rg_a_start, rg_a_size, tb, rg_b_start, rg_b_size)) return false;
             if (ft_a->result_type_flags[j] != ft_b->result_type_flags[j]) return false;
         }
     } else {
@@ -4011,12 +4015,7 @@ static bool wah_types_structurally_equal(const wah_module_t *module, uint32_t a,
         for (uint32_t j = 0; j < td_a->field_count; ++j) {
             wah_type_t ta = wah_canonicalize_type_ref(td_a->field_types[j], rg_a_start, rg_a_size, canonical_map);
             wah_type_t tb = wah_canonicalize_type_ref(td_b->field_types[j], rg_b_start, rg_b_size, canonical_map);
-            if (ta >= 0 && (uint32_t)ta >= rg_a_start && (uint32_t)ta < rg_a_start + rg_a_size &&
-                tb >= 0 && (uint32_t)tb >= rg_b_start && (uint32_t)tb < rg_b_start + rg_b_size) {
-                if ((uint32_t)ta - rg_a_start != (uint32_t)tb - rg_b_start) return false;
-            } else {
-                if (ta != tb) return false;
-            }
+            if (!wah_canon_ref_eq(ta, rg_a_start, rg_a_size, tb, rg_b_start, rg_b_size)) return false;
             if (td_a->field_type_flags[j] != td_b->field_type_flags[j]) return false;
             if (td_a->field_mutables[j] != td_b->field_mutables[j]) return false;
         }
