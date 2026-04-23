@@ -120,8 +120,7 @@ void test_function_section_no_code_section() {
     wah_free_module(&module);
 }
 
-// Test case for parsing a module with a data section but no datacount section,
-// and a code section using memory.init. This should fail validation currently.
+// memory.init without a data count section is malformed per spec.
 static void test_parse_data_no_datacount_memory_init_fails() {
     printf("Running test_parse_data_no_datacount_memory_init_fails...\n");
 
@@ -136,12 +135,12 @@ static void test_parse_data_no_datacount_memory_init_fails() {
         code {[ {[] i32.const 0 i32.const 0 i32.const 5 memory.init 0 0 end} ]} \
         data {[ data.active.table#0 i32.const 0 end {'hello'} ]}";
 
-    assert_ok(wah_parse_module_from_spec(&module, wasm_spec));
+    assert_err(wah_parse_module_from_spec(&module, wasm_spec), WAH_ERROR_MALFORMED);
     wah_free_module(&module);
 }
 
 // Test case for deferred data segment validation failure.
-// No datacount section, one data segment (index 0), but memory.init tries to use data_idx 1.
+// One data segment (index 0), but memory.init tries to use data_idx 1.
 static void test_deferred_data_validation_failure() {
     printf("Running test_deferred_data_validation_failure...\n");
 
@@ -153,6 +152,7 @@ static void test_deferred_data_validation_failure() {
         funcs {[ 0 ]} \
         memories {[ limits.i32/1 1 ]} \
         exports {[ {'memory'} mem# 0, {'test_func'} fn# 0 ]} \
+        datacount { 1 } \
         code {[ {[] i32.const 0 i32.const 0 i32.const 5 memory.init 1 0 end } ]} \
         data {[ data.active.table#0 i32.const 0 end {'hello'} ]}";
 
@@ -160,7 +160,7 @@ static void test_deferred_data_validation_failure() {
     wah_free_module(&module);
 }
 
-// Test case for an unused opcode (0x09) in the code section
+// Undefined opcode 0x09 is rejected as malformed.
 static void test_unused_opcode_validation_failure() {
     printf("Running test_unused_opcode_validation_failure...\n");
 
@@ -172,12 +172,11 @@ static void test_unused_opcode_validation_failure() {
         funcs {[ 0 ]} \
         code {[ {[] %'09' end} ]}";
 
-    assert_err(wah_parse_module_from_spec(&module, wasm_spec), WAH_ERROR_VALIDATION_FAILED);
+    assert_err(wah_parse_module_from_spec(&module, wasm_spec), WAH_ERROR_MALFORMED);
     wah_free_module(&module);
 }
 
-// Test case for datacount section present, but no data section.
-// This should result in WAH_ERROR_VALIDATION_FAILED.
+// datacount section present but no data section is malformed.
 static void test_datacount_no_data_section() {
     printf("Running test_datacount_no_data_section...\n");
     wah_module_t module;
@@ -187,7 +186,7 @@ static void test_datacount_no_data_section() {
         types {[ fn [i32] [i32] ]} \
         datacount { 2 }";
 
-    assert_err(wah_parse_module_from_spec(&module, wasm_spec), WAH_ERROR_VALIDATION_FAILED);
+    assert_err(wah_parse_module_from_spec(&module, wasm_spec), WAH_ERROR_MALFORMED);
     wah_free_module(&module);
 }
 
@@ -583,6 +582,7 @@ static void test_memory_init_out_of_bounds_data_idx() {
         types {[ fn [] [] ]} \
         funcs {[ 0 ]} \
         memories {[ limits.i32/1 1 ]} \
+        datacount { 1 } \
         code {[ {[] i32.const 0 i32.const 0 i32.const 5 memory.init 1 0 end} ]} \
         data {[ data.passive {'hello'} ]}";
 

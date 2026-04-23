@@ -153,6 +153,9 @@ static const token_entry_t token_table[] = {
     TOKEN("elem.active.expr.table#", 0x06),  // elem.active.expr.table# <tableidx> <offset_expr> <reftype> [<expr>...]
     TOKEN("elem.declarative.expr", 0x07),    // elem.declarative.expr <reftype> [<expr>...]
 
+    // Tables
+    TOKEN("table.w/init", 0x40, 0x00),
+
     // Data
     TOKEN("data.active.table#0", 0x00),
     TOKEN("data.passive", 0x01),

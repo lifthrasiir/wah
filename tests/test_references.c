@@ -1225,15 +1225,21 @@ int main() {
 
     printf("Running test_br_on_null_refines_to_non_nullable...\n");
     {
-        // br_on_null refines nullable ref to non-nullable; ref.as_non_null should accept it
+        // br_on_null refines nullable ref to non-nullable; struct.get should accept it.
+        // br_on_null $l : [t* (ref null ht)] -> [t* (ref ht)]
+        // label 0 has result type [i32], so we need an i32 on stack before the ref.
         const char *spec = "wasm \
             types {[ struct [i32 mut], fn [type.ref.null 0] [i32] ]} \
             funcs {[ 1 ]} \
             exports {[ {'f'} fn# 0 ]} \
             code {[ {[] \
+                block [] \
                 local.get 0 \
                 br_on_null 0 \
                 struct.get 0 0 \
+                return \
+                end \
+                i32.const 0 \
                 end } ]}";
         wah_module_t module;
         assert_ok(wah_parse_module_from_spec(&module, spec));

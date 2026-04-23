@@ -632,7 +632,7 @@ void wah_test_table_set_nonnull_accepts_ref_func() {
     const char *spec = "wasm \
         types {[ fn [] [] ]} \
         funcs {[ 0 ]} \
-        tables {[ type.ref.func limits.i32/1 1 ]} \
+        tables {[ table.w/init type.ref.func limits.i32/1 1 ref.func 0 end ]} \
         exports {[ {'f'} fn# 0 ]} \
         elements {[ elem.declarative elem.funcref [0] ]} \
         code {[ {[] i32.const 0 ref.func 0 table.set 0 end} ]}";
@@ -704,8 +704,9 @@ void wah_test_table_copy_nonnull_to_nullable_accepted() {
     const char *spec = "wasm \
         types {[ fn [] [] ]} \
         funcs {[ 0 ]} \
-        tables {[ funcref limits.i32/1 1, type.ref.func limits.i32/1 1 ]} \
+        tables {[ funcref limits.i32/1 1, table.w/init type.ref.func limits.i32/1 1 ref.func 0 end ]} \
         exports {[ {'f'} fn# 0 ]} \
+        elements {[ elem.declarative elem.funcref [0] ]} \
         code {[ {[] i32.const 0 i32.const 0 i32.const 1 table.copy 0 1 end} ]}";
     assert_ok(wah_parse_module_from_spec(&module, spec));
     wah_free_module(&module);
@@ -761,7 +762,7 @@ void wah_test_active_elem_nonnull_into_nonnull_table_accepted() {
     const char *spec = "wasm \
         types {[ fn [] [] ]} \
         funcs {[ 0 ]} \
-        tables {[ type.ref.func limits.i32/1 1 ]} \
+        tables {[ table.w/init type.ref.func limits.i32/1 1 ref.func 0 end ]} \
         exports {[ {'f'} fn# 0 ]} \
         elements {[ elem.active.expr.table# 0 i32.const 0 end type.ref.func [ref.func 0 end] ]} \
         code {[ {[] end} ]}";
