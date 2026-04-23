@@ -324,11 +324,11 @@ static void test_memory_import(void) {
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_ok(wah_instantiate(&ctx));
 
-    assert_true(ctx.memories[0] != NULL);
-    assert_true(ctx.memory_sizes[0] == 65536);
+    assert_true(ctx.memories[0].data != NULL);
+    assert_true(ctx.memories[0].size == 65536);
 
     uint32_t val = 0x12345678;
-    memcpy(ctx.memories[0], &val, 4);
+    memcpy(ctx.memories[0].data, &val, 4);
 
     wah_entry_t entry;
     assert_ok(wah_module_export_by_name(&wasm_mod, "load", &entry));

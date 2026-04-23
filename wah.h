@@ -401,6 +401,24 @@ typedef struct wah_exception_handler_s {
     const uint8_t *bytecode_base;
 } wah_exception_handler_t;
 
+typedef struct wah_memory_inst_s {
+    uint8_t *data;
+    uint64_t size;
+    uint64_t max_pages;
+    bool is_imported;
+    struct wah_exec_context_s *import_ctx;
+    uint32_t import_idx;
+} wah_memory_inst_t;
+
+typedef struct wah_table_inst_s {
+    wah_value_t *entries;
+    uint32_t size;
+    uint32_t max_size;
+    bool is_imported;
+    struct wah_exec_context_s *import_ctx;
+    uint32_t import_idx;
+} wah_table_inst_t;
+
 typedef struct wah_exec_context_s {
     wah_value_t *value_stack;       // A single, large stack for operands and locals
     uint32_t sp;                    // Stack pointer for the value_stack (points to next free slot)
@@ -417,27 +435,15 @@ typedef struct wah_exec_context_s {
 
     const struct wah_module_s *module;
 
-    // Memory 0 fast path (kept in sync with memories[0]/memory_sizes[0])
+    // Memory 0 fast path (kept in sync with memories[0].data/memories[0].size)
     uint8_t *memory_base; // Pointer to memory 0 (for i32_i32_mem0 ops; will be moved to register)
     uint64_t memory_size; // Size of memory 0 in bytes
 
-    // Multiple memories support (memories[0] == memory_base, memory_sizes[0] == memory_size)
-    uint8_t **memories;      // Array[memory_count] of all memory base pointers
-    uint64_t *memory_sizes;  // Array[memory_count] of all memory sizes in bytes
-    uint64_t *memory_max_pages; // Array[memory_count] of max pages (runtime limit, may differ from import decl)
-    uint32_t memory_count;   // Total number of instantiated memories
+    wah_memory_inst_t *memories; // Array[memory_count], memories[0].data kept in sync with memory_base/memory_size
+    uint32_t memory_count;
 
-    wah_value_t **tables;
-    uint32_t *table_sizes; // Array[table_count] of current table sizes (mutable, per-instance)
-    uint32_t *table_max_sizes; // Array[table_count] of max table sizes
+    wah_table_inst_t *tables; // Array[table_count]
     uint32_t table_count;
-
-    bool *memory_is_imported; // Array[memory_count], true = alias (don't free)
-    bool *table_is_imported;  // Array[table_count], true = alias (don't free)
-    struct wah_exec_context_s **memory_import_ctx; // Array[memory_count], source ctx for imported memories
-    uint32_t *memory_import_idx; // Array[memory_count], source memory index for imported memories
-    struct wah_exec_context_s **table_import_ctx;
-    uint32_t *table_import_idx;
 
     // Linkage support
     struct wah_linked_modules_s { const char *name; const wah_module_t *module; struct wah_exec_context_s *ctx; } *linked_modules;
@@ -7904,16 +7910,7 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
         uint32_t total_memories = wah_memory_index_limit(module);
         if (total_memories > 0) {
             WAH_MALLOC_ARRAY_GOTO(exec_ctx->memories, total_memories, cleanup);
-            WAH_MALLOC_ARRAY_GOTO(exec_ctx->memory_sizes, total_memories, cleanup);
-            WAH_MALLOC_ARRAY_GOTO(exec_ctx->memory_max_pages, total_memories, cleanup);
-            WAH_MALLOC_ARRAY_GOTO(exec_ctx->memory_is_imported, total_memories, cleanup);
-            WAH_MALLOC_ARRAY_GOTO(exec_ctx->memory_import_ctx, total_memories, cleanup);
-            WAH_MALLOC_ARRAY_GOTO(exec_ctx->memory_import_idx, total_memories, cleanup);
-            memset(exec_ctx->memories, 0, sizeof(uint8_t*) * total_memories);
-            memset(exec_ctx->memory_sizes, 0, sizeof(uint64_t) * total_memories);
-            memset(exec_ctx->memory_is_imported, 0, sizeof(bool) * total_memories);
-            memset(exec_ctx->memory_import_ctx, 0, sizeof(wah_exec_context_t*) * total_memories);
-            memset(exec_ctx->memory_import_idx, 0, sizeof(uint32_t) * total_memories);
+            memset(exec_ctx->memories, 0, sizeof(wah_memory_inst_t) * total_memories);
             exec_ctx->memory_count = total_memories;
 
             for (uint32_t i = 0; i < total_memories; ++i) {
@@ -7921,7 +7918,7 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
                 uint64_t page_limit = (mt->addr_type == WAH_TYPE_I32) ? 65536ULL : (1ULL << 48);
                 uint64_t max_p = mt->max_pages;
                 if (max_p > page_limit) max_p = page_limit;
-                exec_ctx->memory_max_pages[i] = max_p;
+                exec_ctx->memories[i].max_pages = max_p;
             }
 
             // Import memory slots are left zero-initialized; wah_instantiate() fills them in.
@@ -7929,15 +7926,15 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
             for (uint32_t i = 0; i < module->memory_count; ++i) {
                 uint32_t slot = module->import_memory_count + i;
                 WAH_ENSURE_GOTO(module->memories[i].min_pages <= SIZE_MAX / WAH_WASM_PAGE_SIZE, WAH_ERROR_TOO_LARGE, cleanup);
-                exec_ctx->memory_sizes[slot] = module->memories[i].min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
-                if (exec_ctx->memory_sizes[slot] > 0) {
-                    WAH_MALLOC_ARRAY_GOTO(exec_ctx->memories[slot], exec_ctx->memory_sizes[slot], cleanup);
-                    memset(exec_ctx->memories[slot], 0, exec_ctx->memory_sizes[slot]);
+                exec_ctx->memories[slot].size = module->memories[i].min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
+                if (exec_ctx->memories[slot].size > 0) {
+                    WAH_MALLOC_ARRAY_GOTO(exec_ctx->memories[slot].data, exec_ctx->memories[slot].size, cleanup);
+                    memset(exec_ctx->memories[slot].data, 0, exec_ctx->memories[slot].size);
                 }
             }
             if (exec_ctx->memory_count > 0) {
-                exec_ctx->memory_base = exec_ctx->memories[0];
-                exec_ctx->memory_size = exec_ctx->memory_sizes[0];
+                exec_ctx->memory_base = exec_ctx->memories[0].data;
+                exec_ctx->memory_size = exec_ctx->memories[0].size;
             }
         }
     }
@@ -7946,17 +7943,7 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
         uint32_t total_tables = wah_table_index_limit(module);
         if (total_tables > 0) {
             WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables, total_tables, cleanup);
-            memset(exec_ctx->tables, 0, sizeof(wah_value_t*) * total_tables);
-            WAH_MALLOC_ARRAY_GOTO(exec_ctx->table_sizes, total_tables, cleanup);
-            memset(exec_ctx->table_sizes, 0, sizeof(uint32_t) * total_tables);
-            WAH_MALLOC_ARRAY_GOTO(exec_ctx->table_max_sizes, total_tables, cleanup);
-            memset(exec_ctx->table_max_sizes, 0, sizeof(uint32_t) * total_tables);
-            WAH_MALLOC_ARRAY_GOTO(exec_ctx->table_is_imported, total_tables, cleanup);
-            WAH_MALLOC_ARRAY_GOTO(exec_ctx->table_import_ctx, total_tables, cleanup);
-            WAH_MALLOC_ARRAY_GOTO(exec_ctx->table_import_idx, total_tables, cleanup);
-            memset(exec_ctx->table_is_imported, 0, sizeof(bool) * total_tables);
-            memset(exec_ctx->table_import_ctx, 0, sizeof(wah_exec_context_t*) * total_tables);
-            memset(exec_ctx->table_import_idx, 0, sizeof(uint32_t) * total_tables);
+            memset(exec_ctx->tables, 0, sizeof(wah_table_inst_t) * total_tables);
 
             exec_ctx->table_count = total_tables;
 
@@ -7965,10 +7952,10 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
             for (uint32_t i = 0; i < module->table_count; ++i) {
                 uint32_t slot = module->import_table_count + i;
                 uint32_t min_elements = module->tables[i].min_elements;
-                exec_ctx->table_sizes[slot] = min_elements;
-                exec_ctx->table_max_sizes[slot] = module->tables[i].max_elements;
-                WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables[slot], min_elements, cleanup);
-                memset(exec_ctx->tables[slot], 0, sizeof(wah_value_t) * min_elements);
+                exec_ctx->tables[slot].size = min_elements;
+                exec_ctx->tables[slot].max_size = module->tables[i].max_elements;
+                WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables[slot].entries, min_elements, cleanup);
+                memset(exec_ctx->tables[slot].entries, 0, sizeof(wah_value_t) * min_elements);
             }
         }
     }
@@ -8032,31 +8019,21 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
     free(exec_ctx->globals);
     if (exec_ctx->memories) {
         for (uint32_t i = 0; i < exec_ctx->memory_count; ++i) {
-            if (!exec_ctx->memory_is_imported || !exec_ctx->memory_is_imported[i]) {
-                free(exec_ctx->memories[i]);
+            if (!exec_ctx->memories[i].is_imported) {
+                free(exec_ctx->memories[i].data);
             }
         }
         free(exec_ctx->memories);
     }
-    free(exec_ctx->memory_sizes);
-    free(exec_ctx->memory_max_pages);
-    free(exec_ctx->memory_is_imported);
-    free(exec_ctx->memory_import_ctx);
-    free(exec_ctx->memory_import_idx);
     free(exec_ctx->function_table);
-    free(exec_ctx->table_sizes);
-    free(exec_ctx->table_max_sizes);
     if (exec_ctx->tables) {
         for (uint32_t i = 0; i < exec_ctx->table_count; ++i) {
-            if (!exec_ctx->table_is_imported || !exec_ctx->table_is_imported[i]) {
-                free(exec_ctx->tables[i]);
+            if (!exec_ctx->tables[i].is_imported) {
+                free(exec_ctx->tables[i].entries);
             }
         }
         free(exec_ctx->tables);
     }
-    free(exec_ctx->table_is_imported);
-    free(exec_ctx->table_import_ctx);
-    free(exec_ctx->table_import_idx);
 
     free(exec_ctx->tag_instances);
     if (exec_ctx->pending_exception) {
@@ -8216,7 +8193,7 @@ static inline void wah_ref_store_global_slot(wah_value_t *slot, wah_value_t val)
 }
 
 static inline void wah_ref_store_table(wah_exec_context_t *ctx, uint32_t table_idx, uint64_t elem_idx, wah_value_t val) {
-    ctx->tables[table_idx][elem_idx] = val;
+    ctx->tables[table_idx].entries[elem_idx] = val;
 }
 
 void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visitor, void *userdata) {
@@ -8307,8 +8284,8 @@ void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visito
     for (uint32_t t = 0; t < ctx->table_count; t++) {
         const wah_table_type_t *tt = wah_table_type(module, t);
         if (WAH_TYPE_IS_REF(tt->elem_type)) {
-            for (uint32_t e = 0; e < ctx->table_sizes[t]; e++) {
-                visitor(&ctx->tables[t][e], tt->elem_type, userdata);
+            for (uint32_t e = 0; e < ctx->tables[t].size; e++) {
+                visitor(&ctx->tables[t].entries[e], tt->elem_type, userdata);
             }
         }
     }
@@ -9601,8 +9578,8 @@ WAH_RUN(TABLE_GET) {
     bytecode_ip += sizeof(uint32_t);
     uint32_t elem_idx = (uint32_t)(*--sp).i32;
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    WAH_ENSURE_GOTO(elem_idx < ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
-    *sp++ = ctx->tables[table_idx][elem_idx];
+    WAH_ENSURE_GOTO(elem_idx < ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup);
+    *sp++ = ctx->tables[table_idx].entries[elem_idx];
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -9613,7 +9590,7 @@ WAH_RUN(TABLE_SET) {
     wah_value_t val = *--sp;
     uint32_t elem_idx = (uint32_t)(*--sp).i32;
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    WAH_ENSURE_GOTO(elem_idx < ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(elem_idx < ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup);
     wah_ref_store_table(ctx, table_idx, elem_idx, val);
     WAH_NEXT();
     WAH_CLEANUP();
@@ -9623,7 +9600,7 @@ WAH_RUN(TABLE_SIZE) {
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    (*sp++).i32 = (int32_t)ctx->table_sizes[table_idx];
+    (*sp++).i32 = (int32_t)ctx->tables[table_idx].size;
     WAH_NEXT();
 }
 
@@ -9639,10 +9616,10 @@ WAH_RUN(TABLE_GROW) {
         WAH_NEXT();
     }
 
-    uint32_t old_size = ctx->table_sizes[table_idx];
+    uint32_t old_size = ctx->tables[table_idx].size;
     uint64_t new_size = (uint64_t)old_size + delta;
 
-    if (new_size > ctx->table_max_sizes[table_idx]) {
+    if (new_size > ctx->tables[table_idx].max_size) {
         (*sp++).i32 = -1;
         WAH_NEXT();
     }
@@ -9650,27 +9627,27 @@ WAH_RUN(TABLE_GROW) {
     // Reallocate table
     wah_value_t *new_table = NULL;
     WAH_MALLOC_ARRAY_GOTO(new_table, new_size, cleanup);
-    memcpy(new_table, ctx->tables[table_idx], sizeof(wah_value_t) * old_size);
+    memcpy(new_table, ctx->tables[table_idx].entries, sizeof(wah_value_t) * old_size);
     for (uint64_t i = old_size; i < new_size; ++i) {
         new_table[i] = init_val;
     }
-    if (ctx->table_is_imported && ctx->table_is_imported[table_idx]) {
+    if (ctx->tables[table_idx].is_imported) {
         // Imported table: don't free, source context owns the old buffer
     } else {
-        free(ctx->tables[table_idx]);
+        free(ctx->tables[table_idx].entries);
     }
-    ctx->tables[table_idx] = new_table;
-    ctx->table_sizes[table_idx] = (uint32_t)new_size;
-    if (ctx->table_import_ctx && ctx->table_import_ctx[table_idx]) {
-        wah_exec_context_t *src = ctx->table_import_ctx[table_idx];
-        uint32_t src_idx = ctx->table_import_idx[table_idx];
-        if (ctx->table_is_imported && ctx->table_is_imported[table_idx]) {
-            src->table_is_imported[src_idx] = true;
+    ctx->tables[table_idx].entries = new_table;
+    ctx->tables[table_idx].size = (uint32_t)new_size;
+    if (ctx->tables[table_idx].import_ctx) {
+        wah_exec_context_t *src = ctx->tables[table_idx].import_ctx;
+        uint32_t src_idx = ctx->tables[table_idx].import_idx;
+        if (ctx->tables[table_idx].is_imported) {
+            src->tables[src_idx].is_imported = true;
         }
-        src->tables[src_idx] = new_table;
-        src->table_sizes[src_idx] = (uint32_t)new_size;
+        src->tables[src_idx].entries = new_table;
+        src->tables[src_idx].size = (uint32_t)new_size;
     }
-    if (ctx->table_is_imported) ctx->table_is_imported[table_idx] = false;
+    if (ctx->tables) ctx->tables[table_idx].is_imported = false;
 
     (*sp++).i32 = (int32_t)old_size;
     WAH_NEXT();
@@ -9685,7 +9662,7 @@ WAH_RUN(TABLE_FILL) {
     wah_value_t val = *--sp;
     uint32_t offset = (uint32_t)(*--sp).i32;
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    WAH_ENSURE_GOTO((uint64_t)offset + size <= ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)offset + size <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup);
 
     for (uint32_t i = 0; i < size; ++i) {
         wah_ref_store_table(ctx, table_idx, offset + i, val);
@@ -9696,17 +9673,17 @@ WAH_RUN(TABLE_FILL) {
 
 // Common body for TABLE_COPY / TABLE_COPY_i64 after resolving offsets and size
 #define WAH_TABLE_COPY_BODY(dst_offset, src_offset, size) \
-    WAH_ENSURE_GOTO((uint64_t)(src_offset) + (size) <= ctx->table_sizes[src_table_idx], WAH_ERROR_TRAP, cleanup); \
-    WAH_ENSURE_GOTO((uint64_t)(dst_offset) + (size) <= ctx->table_sizes[dst_table_idx], WAH_ERROR_TRAP, cleanup); \
+    WAH_ENSURE_GOTO((uint64_t)(src_offset) + (size) <= ctx->tables[src_table_idx].size, WAH_ERROR_TRAP, cleanup); \
+    WAH_ENSURE_GOTO((uint64_t)(dst_offset) + (size) <= ctx->tables[dst_table_idx].size, WAH_ERROR_TRAP, cleanup); \
     if (src_table_idx == dst_table_idx && (src_offset) == (dst_offset)) { \
         WAH_NEXT(); \
     } else if ((dst_offset) <= (src_offset) || src_table_idx != dst_table_idx) { \
         for (uint64_t _i = 0; _i < (uint64_t)(size); ++_i) { \
-            wah_ref_store_table(ctx, dst_table_idx, (dst_offset) + _i, ctx->tables[src_table_idx][(src_offset) + _i]); \
+            wah_ref_store_table(ctx, dst_table_idx, (dst_offset) + _i, ctx->tables[src_table_idx].entries[(src_offset) + _i]); \
         } \
     } else { \
         for (uint64_t _i = (uint64_t)(size); _i > 0; --_i) { \
-            wah_ref_store_table(ctx, dst_table_idx, (dst_offset) + _i - 1, ctx->tables[src_table_idx][(src_offset) + _i - 1]); \
+            wah_ref_store_table(ctx, dst_table_idx, (dst_offset) + _i - 1, ctx->tables[src_table_idx].entries[(src_offset) + _i - 1]); \
         } \
     }
 
@@ -9716,11 +9693,11 @@ WAH_RUN(TABLE_FILL) {
         const wah_element_segment_t *segment = &ctx->module->element_segments[elem_idx]; \
         if (segment->is_dropped) { \
             WAH_ENSURE_GOTO((size) == 0 && (src_offset) == 0, WAH_ERROR_TRAP, cleanup); \
-            WAH_ENSURE_GOTO((uint64_t)(dst_offset) <= ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup); \
+            WAH_ENSURE_GOTO((uint64_t)(dst_offset) <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
             WAH_NEXT(); \
         } \
         WAH_ENSURE_GOTO((uint64_t)(src_offset) + (size) <= segment->num_elems, WAH_ERROR_TRAP, cleanup); \
-        WAH_ENSURE_GOTO((uint64_t)(dst_offset) + (size) <= ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup); \
+        WAH_ENSURE_GOTO((uint64_t)(dst_offset) + (size) <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
         for (uint32_t _i = 0; _i < (uint32_t)(size); ++_i) { \
             wah_value_t _store_val; \
             if (!segment->is_expr_elem) { \
@@ -9785,8 +9762,8 @@ WAH_RUN(TABLE_GET_i64) {
     bytecode_ip += sizeof(uint32_t);
     uint64_t elem_idx = (uint64_t)(*--sp).i64;
     WAH_ASSERT(table_idx < ctx->table_count);
-    WAH_ENSURE_GOTO(elem_idx < ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
-    *sp++ = ctx->tables[table_idx][elem_idx];
+    WAH_ENSURE_GOTO(elem_idx < ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup);
+    *sp++ = ctx->tables[table_idx].entries[elem_idx];
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -9797,7 +9774,7 @@ WAH_RUN(TABLE_SET_i64) {
     wah_value_t val = *--sp;
     uint64_t elem_idx = (uint64_t)(*--sp).i64;
     WAH_ASSERT(table_idx < ctx->table_count);
-    WAH_ENSURE_GOTO(elem_idx < ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(elem_idx < ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup);
     wah_ref_store_table(ctx, table_idx, elem_idx, val);
     WAH_NEXT();
     WAH_CLEANUP();
@@ -9807,7 +9784,7 @@ WAH_RUN(TABLE_SIZE_i64) {
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     WAH_ASSERT(table_idx < ctx->table_count);
-    (*sp++).i64 = (int64_t)ctx->table_sizes[table_idx];
+    (*sp++).i64 = (int64_t)ctx->tables[table_idx].size;
     WAH_NEXT();
 }
 
@@ -9823,37 +9800,37 @@ WAH_RUN(TABLE_GROW_i64) {
         WAH_NEXT();
     }
 
-    uint32_t old_size = ctx->table_sizes[table_idx];
+    uint32_t old_size = ctx->tables[table_idx].size;
     uint64_t new_size = (uint64_t)old_size + (uint64_t)delta;
 
-    if (new_size > ctx->table_max_sizes[table_idx]) {
+    if (new_size > ctx->tables[table_idx].max_size) {
         (*sp++).i64 = -1;
         WAH_NEXT();
     }
 
     wah_value_t *new_table = NULL;
     WAH_MALLOC_ARRAY_GOTO(new_table, new_size, cleanup);
-    memcpy(new_table, ctx->tables[table_idx], sizeof(wah_value_t) * old_size);
+    memcpy(new_table, ctx->tables[table_idx].entries, sizeof(wah_value_t) * old_size);
     for (uint64_t i = old_size; i < new_size; ++i) {
         new_table[i] = init_val;
     }
-    if (ctx->table_is_imported && ctx->table_is_imported[table_idx]) {
+    if (ctx->tables[table_idx].is_imported) {
         // Imported table: don't free, source context owns the old buffer
     } else {
-        free(ctx->tables[table_idx]);
+        free(ctx->tables[table_idx].entries);
     }
-    ctx->tables[table_idx] = new_table;
-    ctx->table_sizes[table_idx] = (uint32_t)new_size;
-    if (ctx->table_import_ctx && ctx->table_import_ctx[table_idx]) {
-        wah_exec_context_t *src = ctx->table_import_ctx[table_idx];
-        uint32_t src_idx = ctx->table_import_idx[table_idx];
-        if (ctx->table_is_imported && ctx->table_is_imported[table_idx]) {
-            src->table_is_imported[src_idx] = true;
+    ctx->tables[table_idx].entries = new_table;
+    ctx->tables[table_idx].size = (uint32_t)new_size;
+    if (ctx->tables[table_idx].import_ctx) {
+        wah_exec_context_t *src = ctx->tables[table_idx].import_ctx;
+        uint32_t src_idx = ctx->tables[table_idx].import_idx;
+        if (ctx->tables[table_idx].is_imported) {
+            src->tables[src_idx].is_imported = true;
         }
-        src->tables[src_idx] = new_table;
-        src->table_sizes[src_idx] = (uint32_t)new_size;
+        src->tables[src_idx].entries = new_table;
+        src->tables[src_idx].size = (uint32_t)new_size;
     }
-    if (ctx->table_is_imported) ctx->table_is_imported[table_idx] = false;
+    if (ctx->tables) ctx->tables[table_idx].is_imported = false;
 
     (*sp++).i64 = (int64_t)old_size;
     WAH_NEXT();
@@ -9867,7 +9844,7 @@ WAH_RUN(TABLE_FILL_i64) {
     wah_value_t val = *--sp;
     uint64_t offset = (uint64_t)(*--sp).i64;
     WAH_ASSERT(table_idx < ctx->table_count);
-    WAH_ENSURE_GOTO(offset + size <= ctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(offset + size <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup);
 
     for (uint64_t i = 0; i < size; ++i) {
         wah_ref_store_table(ctx, table_idx, offset + i, val);
@@ -9962,8 +9939,8 @@ WAH_RUN(ELEM_DROP) {
 // Common type-check + dispatch for call_indirect family.
 // CALL_HOST / CALL_WASM are invoked with (actual_fn) / (fn_module, local_idx, actual_func_type) in scope.
 #define WAH_INDIRECT_BODY(func_table_idx, CALL_HOST, CALL_WASM) \
-    WAH_ENSURE_GOTO(func_table_idx < fctx->table_sizes[table_idx], WAH_ERROR_TRAP, cleanup); \
-    const wah_function_t *actual_fn = (const wah_function_t *)fctx->tables[table_idx][func_table_idx].ref; \
+    WAH_ENSURE_GOTO(func_table_idx < fctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
+    const wah_function_t *actual_fn = (const wah_function_t *)fctx->tables[table_idx].entries[func_table_idx].ref; \
     WAH_ENSURE_GOTO(actual_fn != NULL, WAH_ERROR_TRAP, cleanup); \
     WAH_ASSERT(actual_fn != wah_funcref_sentinel && "prefuncref stored in table without conversion to funcref"); \
     { \
@@ -10397,8 +10374,8 @@ WAH_RUN(END) { // End of function
     uint64_t effective_addr; \
     \
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_sizes[memidx], &effective_addr), cleanup); \
-    (*sp++).value_field = cast wah_read_##T##_le(fctx->memories[memidx] + effective_addr); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memories[memidx].size, &effective_addr), cleanup); \
+    (*sp++).value_field = cast wah_read_##T##_le(fctx->memories[memidx].data + effective_addr); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -10425,8 +10402,8 @@ WAH_RUN(END) { // End of function
     uint64_t effective_addr; \
     \
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_sizes[memidx], &effective_addr), cleanup); \
-    wah_write_##T##_le(fctx->memories[memidx] + effective_addr, cast (val)); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memories[memidx].size, &effective_addr), cleanup); \
+    wah_write_##T##_le(fctx->memories[memidx].data + effective_addr, cast (val)); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -10454,8 +10431,8 @@ WAH_RUN(END) { // End of function
     uint64_t effective_addr; \
     \
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_sizes[memidx], &effective_addr), cleanup); \
-    (*sp++).value_field = cast wah_read_##T##_le(fctx->memories[memidx] + effective_addr); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memories[memidx].size, &effective_addr), cleanup); \
+    (*sp++).value_field = cast wah_read_##T##_le(fctx->memories[memidx].data + effective_addr); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -10470,8 +10447,8 @@ WAH_RUN(END) { // End of function
     uint64_t effective_addr; \
     \
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_sizes[memidx], &effective_addr), cleanup); \
-    wah_write_##T##_le(fctx->memories[memidx] + effective_addr, cast (val)); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memories[memidx].size, &effective_addr), cleanup); \
+    wah_write_##T##_le(fctx->memories[memidx].data + effective_addr, cast (val)); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -10694,7 +10671,7 @@ WAH_RUN(MEMORY_SIZE) {
     uint32_t mem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     WAH_ASSERT(mem_idx < ctx->memory_count && "validation didn't catch out-of-bound memory index");
-    (*sp++).i32 = (int32_t)(fctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE);
+    (*sp++).i32 = (int32_t)(fctx->memories[mem_idx].size / WAH_WASM_PAGE_SIZE);
     WAH_NEXT();
 }
 
@@ -10709,39 +10686,39 @@ WAH_RUN(MEMORY_GROW) {
         WAH_NEXT();
     }
 
-    uint32_t old_pages = fctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE;
+    uint32_t old_pages = fctx->memories[mem_idx].size / WAH_WASM_PAGE_SIZE;
     uint64_t new_pages = (uint64_t)old_pages + pages_to_grow;
 
-    if (new_pages > ctx->memory_max_pages[mem_idx] || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
+    if (new_pages > ctx->memories[mem_idx].max_pages || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
         (*sp++).i32 = -1;
         WAH_NEXT();
     }
 
     size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
-    WAH_REALLOC_ARRAY_GOTO(fctx->memories[mem_idx], new_memory_size, grow_oom);
+    WAH_REALLOC_ARRAY_GOTO(fctx->memories[mem_idx].data, new_memory_size, grow_oom);
 
-    if (new_memory_size > fctx->memory_sizes[mem_idx]) {
-        memset(fctx->memories[mem_idx] + fctx->memory_sizes[mem_idx], 0, new_memory_size - fctx->memory_sizes[mem_idx]);
+    if (new_memory_size > fctx->memories[mem_idx].size) {
+        memset(fctx->memories[mem_idx].data + fctx->memories[mem_idx].size, 0, new_memory_size - fctx->memories[mem_idx].size);
     }
 
-    fctx->memory_sizes[mem_idx] = (uint64_t)new_memory_size;
-    if (ctx->memory_import_ctx && ctx->memory_import_ctx[mem_idx]) {
-        wah_exec_context_t *src = ctx->memory_import_ctx[mem_idx];
-        uint32_t src_idx = ctx->memory_import_idx[mem_idx];
-        if (ctx->memory_is_imported && ctx->memory_is_imported[mem_idx]) {
-            src->memory_is_imported[src_idx] = true;
+    fctx->memories[mem_idx].size = (uint64_t)new_memory_size;
+    if (ctx->memories[mem_idx].import_ctx) {
+        wah_exec_context_t *src = ctx->memories[mem_idx].import_ctx;
+        uint32_t src_idx = ctx->memories[mem_idx].import_idx;
+        if (ctx->memories[mem_idx].is_imported) {
+            src->memories[src_idx].is_imported = true;
         }
-        src->memories[src_idx] = fctx->memories[mem_idx];
-        src->memory_sizes[src_idx] = fctx->memory_sizes[mem_idx];
+        src->memories[src_idx].data = fctx->memories[mem_idx].data;
+        src->memories[src_idx].size = fctx->memories[mem_idx].size;
         if (src_idx == 0) {
-            src->memory_base = src->memories[0];
-            src->memory_size = src->memory_sizes[0];
+            src->memory_base = src->memories[0].data;
+            src->memory_size = src->memories[0].size;
         }
     }
-    if (ctx->memory_is_imported) ctx->memory_is_imported[mem_idx] = false;
+    if (ctx->memories) ctx->memories[mem_idx].is_imported = false;
     if (mem_idx == 0) {
-        fctx->memory_base = fctx->memories[0];
-        fctx->memory_size = fctx->memory_sizes[0];
+        fctx->memory_base = fctx->memories[0].data;
+        fctx->memory_size = fctx->memories[0].size;
     }
     (*sp++).i32 = (int32_t)old_pages;
     WAH_NEXT();
@@ -10757,8 +10734,8 @@ WAH_RUN(MEMORY_FILL) {
     uint8_t val = (uint8_t)(*--sp).i32;
     uint32_t dst = (uint32_t)(*--sp).i32;
 
-    WAH_ENSURE_GOTO((uint64_t)dst + size <= fctx->memory_sizes[mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-    memset(fctx->memories[mem_idx] + dst, val, size);
+    WAH_ENSURE_GOTO((uint64_t)dst + size <= fctx->memories[mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    memset(fctx->memories[mem_idx].data + dst, val, size);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10778,11 +10755,11 @@ WAH_RUN(MEMORY_INIT) {
 
     const wah_data_segment_t *segment = &ctx->module->data_segments[data_idx];
 
-    WAH_ENSURE_GOTO((uint64_t)dest_offset + size <= fctx->memory_sizes[mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)dest_offset + size <= fctx->memories[mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->data_len, WAH_ERROR_TRAP, cleanup); // Ensure source data is within segment bounds
     WAH_ENSURE_GOTO(size <= segment->data_len, WAH_ERROR_TRAP, cleanup); // Cannot initialize more than available data
 
-    memcpy(fctx->memories[mem_idx] + dest_offset, segment->data + src_offset, size);
+    memcpy(fctx->memories[mem_idx].data + dest_offset, segment->data + src_offset, size);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10811,10 +10788,10 @@ WAH_RUN(MEMORY_COPY) {
     uint32_t src = (uint32_t)(*--sp).i32;
     uint32_t dest = (uint32_t)(*--sp).i32;
 
-    WAH_ENSURE_GOTO((uint64_t)dest + size <= fctx->memory_sizes[dest_mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-    WAH_ENSURE_GOTO((uint64_t)src + size <= fctx->memory_sizes[src_mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)dest + size <= fctx->memories[dest_mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)src + size <= fctx->memories[src_mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
 
-    memmove(fctx->memories[dest_mem_idx] + dest, fctx->memories[src_mem_idx] + src, size);
+    memmove(fctx->memories[dest_mem_idx].data + dest, fctx->memories[src_mem_idx].data + src, size);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10824,7 +10801,7 @@ WAH_RUN(MEMORY_SIZE_i64) {
     uint32_t mem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     WAH_ASSERT(mem_idx < ctx->memory_count && "validation didn't catch out-of-bound memory index");
-    (*sp++).i64 = (int64_t)(fctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE);
+    (*sp++).i64 = (int64_t)(fctx->memories[mem_idx].size / WAH_WASM_PAGE_SIZE);
     WAH_NEXT();
 }
 
@@ -10839,39 +10816,39 @@ WAH_RUN(MEMORY_GROW_i64) {
         WAH_NEXT();
     }
 
-    uint64_t old_pages = fctx->memory_sizes[mem_idx] / WAH_WASM_PAGE_SIZE;
+    uint64_t old_pages = fctx->memories[mem_idx].size / WAH_WASM_PAGE_SIZE;
     uint64_t new_pages = old_pages + (uint64_t)pages_to_grow;
 
-    if (new_pages > ctx->memory_max_pages[mem_idx] || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
+    if (new_pages > ctx->memories[mem_idx].max_pages || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
         (*sp++).i64 = -1;
         WAH_NEXT();
     }
 
     size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
-    WAH_REALLOC_ARRAY_GOTO(fctx->memories[mem_idx], new_memory_size, grow_i64_oom);
+    WAH_REALLOC_ARRAY_GOTO(fctx->memories[mem_idx].data, new_memory_size, grow_i64_oom);
 
-    if (new_memory_size > fctx->memory_sizes[mem_idx]) {
-        memset(fctx->memories[mem_idx] + fctx->memory_sizes[mem_idx], 0, new_memory_size - fctx->memory_sizes[mem_idx]);
+    if (new_memory_size > fctx->memories[mem_idx].size) {
+        memset(fctx->memories[mem_idx].data + fctx->memories[mem_idx].size, 0, new_memory_size - fctx->memories[mem_idx].size);
     }
 
-    fctx->memory_sizes[mem_idx] = (uint64_t)new_memory_size;
-    if (ctx->memory_import_ctx && ctx->memory_import_ctx[mem_idx]) {
-        wah_exec_context_t *src = ctx->memory_import_ctx[mem_idx];
-        uint32_t src_idx = ctx->memory_import_idx[mem_idx];
-        if (ctx->memory_is_imported && ctx->memory_is_imported[mem_idx]) {
-            src->memory_is_imported[src_idx] = true;
+    fctx->memories[mem_idx].size = (uint64_t)new_memory_size;
+    if (ctx->memories[mem_idx].import_ctx) {
+        wah_exec_context_t *src = ctx->memories[mem_idx].import_ctx;
+        uint32_t src_idx = ctx->memories[mem_idx].import_idx;
+        if (ctx->memories[mem_idx].is_imported) {
+            src->memories[src_idx].is_imported = true;
         }
-        src->memories[src_idx] = fctx->memories[mem_idx];
-        src->memory_sizes[src_idx] = fctx->memory_sizes[mem_idx];
+        src->memories[src_idx].data = fctx->memories[mem_idx].data;
+        src->memories[src_idx].size = fctx->memories[mem_idx].size;
         if (src_idx == 0) {
-            src->memory_base = src->memories[0];
-            src->memory_size = src->memory_sizes[0];
+            src->memory_base = src->memories[0].data;
+            src->memory_size = src->memories[0].size;
         }
     }
-    if (ctx->memory_is_imported) ctx->memory_is_imported[mem_idx] = false;
+    if (ctx->memories) ctx->memories[mem_idx].is_imported = false;
     if (mem_idx == 0) {
-        fctx->memory_base = fctx->memories[0];
-        fctx->memory_size = fctx->memory_sizes[0];
+        fctx->memory_base = fctx->memories[0].data;
+        fctx->memory_size = fctx->memories[0].size;
     }
     (*sp++).i64 = (int64_t)old_pages;
     WAH_NEXT();
@@ -10889,8 +10866,8 @@ WAH_RUN(MEMORY_FILL_i64) {
     uint8_t val = (uint8_t)(*--sp).i32;
     uint64_t dst = (uint64_t)(*--sp).i64;
 
-    WAH_ENSURE_GOTO(dst + size <= fctx->memory_sizes[mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-    memset(fctx->memories[mem_idx] + dst, val, size);
+    WAH_ENSURE_GOTO(dst + size <= fctx->memories[mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    memset(fctx->memories[mem_idx].data + dst, val, size);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10910,11 +10887,11 @@ WAH_RUN(MEMORY_INIT_i64) {
 
     const wah_data_segment_t *segment = &ctx->module->data_segments[data_idx];
 
-    WAH_ENSURE_GOTO(dest_offset + size <= fctx->memory_sizes[mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO(dest_offset + size <= fctx->memories[mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->data_len, WAH_ERROR_TRAP, cleanup);
     WAH_ENSURE_GOTO(size <= segment->data_len, WAH_ERROR_TRAP, cleanup);
 
-    memcpy(fctx->memories[mem_idx] + dest_offset, segment->data + src_offset, size);
+    memcpy(fctx->memories[mem_idx].data + dest_offset, segment->data + src_offset, size);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10934,10 +10911,10 @@ WAH_RUN(MEMORY_COPY_i64) {
     uint64_t src = src_i64 ? (uint64_t)(*--sp).i64 : (uint32_t)(*--sp).i32;
     uint64_t dest = dest_i64 ? (uint64_t)(*--sp).i64 : (uint32_t)(*--sp).i32;
 
-    WAH_ENSURE_GOTO(dest + size <= fctx->memory_sizes[dest_mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-    WAH_ENSURE_GOTO(src + size <= fctx->memory_sizes[src_mem_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO(dest + size <= fctx->memories[dest_mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO(src + size <= fctx->memories[src_mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
 
-    memmove(fctx->memories[dest_mem_idx] + dest, fctx->memories[src_mem_idx] + src, size);
+    memmove(fctx->memories[dest_mem_idx].data + dest, fctx->memories[src_mem_idx].data + src, size);
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -11026,13 +11003,13 @@ WAH_RUN(UNREACHABLE) {
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK(wah_check_effective_addr(addr, offset, (read_size), fctx->memory_sizes[memidx], &effective_addr))
+    WAH_CHECK(wah_check_effective_addr(addr, offset, (read_size), fctx->memories[memidx].size, &effective_addr))
 
 #define V128_LOAD_HALF_OP(addr_expr, N, elem_ty, cast) { \
     V128_LOAD_COMMON(0, 8, addr_expr); \
     wah_v128_t *v = &(*sp++).v128; \
     for (int i = 0; i < 64/N; ++i) { \
-        v->elem_ty[i] = cast(wah_read_u##N##_le(fctx->memories[memidx] + effective_addr + i * (N/8))); \
+        v->elem_ty[i] = cast(wah_read_u##N##_le(fctx->memories[memidx].data + effective_addr + i * (N/8))); \
     } \
     WAH_NEXT(); \
 }
@@ -11049,7 +11026,7 @@ WAH_RUN(UNREACHABLE) {
 #define V128_LOAD_SPLAT_OP(addr_expr, N) { \
     V128_LOAD_COMMON(0, N/8, addr_expr); \
     wah_v128_t *v = &(*sp++).v128; \
-    uint##N##_t val = wah_read_u##N##_le(fctx->memories[memidx] + effective_addr); \
+    uint##N##_t val = wah_read_u##N##_le(fctx->memories[memidx].data + effective_addr); \
     for (int i = 0; i < 128/N; ++i) v->u##N[i] = val; \
     WAH_NEXT(); \
 }
@@ -11073,9 +11050,9 @@ WAH_RUN(UNREACHABLE) {
     uint64_t effective_addr; \
     \
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_sizes[memidx], &effective_addr), cleanup); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memories[memidx].size, &effective_addr), cleanup); \
     WAH_ASSERT(lane_idx < 128/N && "validation didn't catch out-of-bound lane index"); \
-    val.u##N[lane_idx] = wah_read_u##N##_le(fctx->memories[memidx] + effective_addr); \
+    val.u##N[lane_idx] = wah_read_u##N##_le(fctx->memories[memidx].data + effective_addr); \
     (*sp++).v128 = val; \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
@@ -11099,7 +11076,7 @@ WAH_RUN(UNREACHABLE) {
 
 WAH_RUN(V128_LOAD) {
     V128_LOAD_COMMON(0, sizeof(wah_v128_t), WAH_SP_ADDR_I32);
-    memcpy(&(*sp++).v128, fctx->memories[memidx] + effective_addr, sizeof(wah_v128_t));
+    memcpy(&(*sp++).v128, fctx->memories[memidx].data + effective_addr, sizeof(wah_v128_t));
     WAH_NEXT();
 }
 
@@ -11136,13 +11113,13 @@ WAH_RUN(V128_LOAD64_SPLAT_i32_mem0) V128_LOAD_SPLAT_OP_MEM0(WAH_SP_ADDR_I32, 64)
 WAH_RUN(V128_LOAD32_ZERO) {
     V128_LOAD_COMMON(0, 4, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u32_le(fctx->memories[memidx] + effective_addr), 0}};
+    *v = (wah_v128_t){.u64 = {wah_read_u32_le(fctx->memories[memidx].data + effective_addr), 0}};
     WAH_NEXT();
 }
 WAH_RUN(V128_LOAD64_ZERO) {
     V128_LOAD_COMMON(0, 8, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u64_le(fctx->memories[memidx] + effective_addr), 0}};
+    *v = (wah_v128_t){.u64 = {wah_read_u64_le(fctx->memories[memidx].data + effective_addr), 0}};
     WAH_NEXT();
 }
 
@@ -11180,9 +11157,9 @@ WAH_RUN(V128_LOAD64_LANE_i32_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I32, 64)
     uint64_t effective_addr; \
     \
     WAH_ASSERT(memidx < ctx->memory_count); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_sizes[memidx], &effective_addr), cleanup); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memories[memidx].size, &effective_addr), cleanup); \
     WAH_ASSERT(lane_idx < 128/N); \
-    wah_write_u##N##_le(fctx->memories[memidx] + effective_addr, val.u##N[lane_idx]); \
+    wah_write_u##N##_le(fctx->memories[memidx].data + effective_addr, val.u##N[lane_idx]); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -11221,8 +11198,8 @@ WAH_RUN(V128_STORE) {
     uint32_t addr = (uint32_t)(*--sp).i32;
     uint64_t effective_addr;
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index");
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memory_sizes[memidx], &effective_addr), cleanup);
-    memcpy(fctx->memories[memidx] + effective_addr, &val, sizeof(wah_v128_t));
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memories[memidx].size, &effective_addr), cleanup);
+    memcpy(fctx->memories[memidx].data + effective_addr, &val, sizeof(wah_v128_t));
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -11243,7 +11220,7 @@ WAH_RUN(V128_STORE_i32_mem0) {
 
 WAH_RUN(V128_LOAD_i64) {
     V128_LOAD_COMMON(0, sizeof(wah_v128_t), WAH_SP_ADDR_I64);
-    memcpy(&(*sp++).v128, fctx->memories[memidx] + effective_addr, sizeof(wah_v128_t));
+    memcpy(&(*sp++).v128, fctx->memories[memidx].data + effective_addr, sizeof(wah_v128_t));
     WAH_NEXT();
 }
 
@@ -11280,13 +11257,13 @@ WAH_RUN(V128_LOAD64_SPLAT_i64_mem0) V128_LOAD_SPLAT_OP_MEM0(WAH_SP_ADDR_I64, 64)
 WAH_RUN(V128_LOAD32_ZERO_i64) {
     V128_LOAD_COMMON(0, 4, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u32_le(fctx->memories[memidx] + effective_addr), 0}};
+    *v = (wah_v128_t){.u64 = {wah_read_u32_le(fctx->memories[memidx].data + effective_addr), 0}};
     WAH_NEXT();
 }
 WAH_RUN(V128_LOAD64_ZERO_i64) {
     V128_LOAD_COMMON(0, 8, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){.u64 = {wah_read_u64_le(fctx->memories[memidx] + effective_addr), 0}};
+    *v = (wah_v128_t){.u64 = {wah_read_u64_le(fctx->memories[memidx].data + effective_addr), 0}};
     WAH_NEXT();
 }
 
@@ -11332,8 +11309,8 @@ WAH_RUN(V128_STORE_i64) {
     uint64_t addr = (uint64_t)(*--sp).i64;
     uint64_t effective_addr;
     WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index");
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memory_sizes[memidx], &effective_addr), cleanup);
-    memcpy(fctx->memories[memidx] + effective_addr, &val, sizeof(wah_v128_t));
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memories[memidx].size, &effective_addr), cleanup);
+    memcpy(fctx->memories[memidx].data + effective_addr, &val, sizeof(wah_v128_t));
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -13601,18 +13578,18 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 WAH_ENSURE_GOTO(exp_tt->elem_type == ti->type.elem_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
                 WAH_ENSURE_GOTO(exp_tt->elem_type_flags == ti->type.elem_type_flags, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
                 WAH_ENSURE_GOTO(exp_tt->addr_type == ti->type.addr_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-                WAH_ENSURE_GOTO(linked_ctx->table_sizes[linked_table_idx] >= ti->type.min_elements, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                WAH_ENSURE_GOTO(linked_ctx->tables[linked_table_idx].size >= ti->type.min_elements, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
                 if (ti->type.max_elements != UINT64_MAX) {
                     WAH_ENSURE_GOTO(exp_tt->max_elements != UINT64_MAX, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
                     WAH_ENSURE_GOTO(exp_tt->max_elements <= ti->type.max_elements, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
                 }
             }
-            ctx->tables[i] = linked_ctx->tables[linked_table_idx];
-            ctx->table_sizes[i] = linked_ctx->table_sizes[linked_table_idx];
-            ctx->table_max_sizes[i] = linked_ctx->table_max_sizes[linked_table_idx];
-            ctx->table_is_imported[i] = true;
-            ctx->table_import_ctx[i] = linked_ctx;
-            ctx->table_import_idx[i] = linked_table_idx;
+            ctx->tables[i].entries = linked_ctx->tables[linked_table_idx].entries;
+            ctx->tables[i].size = linked_ctx->tables[linked_table_idx].size;
+            ctx->tables[i].max_size = linked_ctx->tables[linked_table_idx].max_size;
+            ctx->tables[i].is_imported = true;
+            ctx->tables[i].import_ctx = linked_ctx;
+            ctx->tables[i].import_idx = linked_table_idx;
         } else if (linked_table_idx >= linked->import_table_count) {
             uint32_t local_table_idx = linked_table_idx - linked->import_table_count;
             wah_table_type_t *exp_tt = &linked->tables[local_table_idx];
@@ -13625,11 +13602,11 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 WAH_ENSURE_GOTO(exp_tt->max_elements <= ti->type.max_elements, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             }
             uint32_t min_elements = exp_tt->min_elements;
-            ctx->table_is_imported[i] = false;
-            ctx->table_sizes[i] = min_elements;
-            ctx->table_max_sizes[i] = exp_tt->max_elements;
-            WAH_MALLOC_ARRAY_GOTO(ctx->tables[i], min_elements > 0 ? min_elements : 1, cleanup);
-            memset(ctx->tables[i], 0, sizeof(wah_value_t) * min_elements);
+            ctx->tables[i].is_imported = false;
+            ctx->tables[i].size = min_elements;
+            ctx->tables[i].max_size = exp_tt->max_elements;
+            WAH_MALLOC_ARRAY_GOTO(ctx->tables[i].entries, min_elements > 0 ? min_elements : 1, cleanup);
+            memset(ctx->tables[i].entries, 0, sizeof(wah_value_t) * min_elements);
         }
     }
 
@@ -13669,19 +13646,19 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 uint32_t local_mem_idx = linked_mem_idx - linked->import_memory_count;
                 wah_memory_type_t *exp_mt = &linked->memories[local_mem_idx];
                 WAH_ENSURE_GOTO(exp_mt->addr_type == mi->type.addr_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-                uint64_t cur_pages = linked_ctx->memory_sizes[linked_mem_idx] / WAH_WASM_PAGE_SIZE;
+                uint64_t cur_pages = linked_ctx->memories[linked_mem_idx].size / WAH_WASM_PAGE_SIZE;
                 WAH_ENSURE_GOTO(cur_pages >= mi->type.min_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
                 if (mi->type.max_pages != UINT64_MAX) {
                     WAH_ENSURE_GOTO(exp_mt->max_pages != UINT64_MAX, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
                     WAH_ENSURE_GOTO(exp_mt->max_pages <= mi->type.max_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
                 }
             }
-            ctx->memories[i] = linked_ctx->memories[linked_mem_idx];
-            ctx->memory_sizes[i] = linked_ctx->memory_sizes[linked_mem_idx];
-            ctx->memory_max_pages[i] = linked_ctx->memory_max_pages[linked_mem_idx];
-            ctx->memory_is_imported[i] = true;
-            ctx->memory_import_ctx[i] = linked_ctx;
-            ctx->memory_import_idx[i] = linked_mem_idx;
+            ctx->memories[i].data = linked_ctx->memories[linked_mem_idx].data;
+            ctx->memories[i].size = linked_ctx->memories[linked_mem_idx].size;
+            ctx->memories[i].max_pages = linked_ctx->memories[linked_mem_idx].max_pages;
+            ctx->memories[i].is_imported = true;
+            ctx->memories[i].import_ctx = linked_ctx;
+            ctx->memories[i].import_idx = linked_mem_idx;
         } else if (linked_mem_idx >= linked->import_memory_count) {
             uint32_t local_mem_idx = linked_mem_idx - linked->import_memory_count;
             wah_memory_type_t *exp_mt = &linked->memories[local_mem_idx];
@@ -13691,21 +13668,21 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 WAH_ENSURE_GOTO(exp_mt->max_pages != UINT64_MAX, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
                 WAH_ENSURE_GOTO(exp_mt->max_pages <= mi->type.max_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             }
-            ctx->memory_max_pages[i] = exp_mt->max_pages;
+            ctx->memories[i].max_pages = exp_mt->max_pages;
             uint64_t min_pages = exp_mt->min_pages;
             uint64_t byte_size = min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
-            ctx->memory_is_imported[i] = false;
-            ctx->memory_sizes[i] = byte_size;
+            ctx->memories[i].is_imported = false;
+            ctx->memories[i].size = byte_size;
             if (byte_size > 0) {
-                WAH_MALLOC_ARRAY_GOTO(ctx->memories[i], byte_size, cleanup);
-                memset(ctx->memories[i], 0, byte_size);
+                WAH_MALLOC_ARRAY_GOTO(ctx->memories[i].data, byte_size, cleanup);
+                memset(ctx->memories[i].data, 0, byte_size);
             }
         }
 
         // Update fast-path aliases if memory 0 was just resolved
         if (i == 0) {
-            ctx->memory_base = ctx->memories[0];
-            ctx->memory_size = ctx->memory_sizes[0];
+            ctx->memory_base = ctx->memories[0].data;
+            ctx->memory_size = ctx->memories[0].size;
         }
     }
 
@@ -13795,8 +13772,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 WAH_ENSURE_GOTO(func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
                 init_val.ref = &ctx->function_table[func_idx];
             }
-            for (uint64_t j = 0; j < ctx->table_sizes[slot]; ++j) {
-                ctx->tables[slot][j] = init_val;
+            for (uint64_t j = 0; j < ctx->tables[slot].size; ++j) {
+                ctx->tables[slot].entries[j] = init_val;
             }
         }
     }
@@ -13823,7 +13800,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             offset = (uint32_t)offset_val.i32;
         }
 
-        WAH_ENSURE_GOTO(offset + segment->num_elems <= ctx->table_sizes[segment->table_idx], WAH_ERROR_TRAP, cleanup);
+        WAH_ENSURE_GOTO(offset + segment->num_elems <= ctx->tables[segment->table_idx].size, WAH_ERROR_TRAP, cleanup);
 
         for (uint32_t j = 0; j < segment->num_elems; ++j) {
             if (!segment->is_expr_elem) {
@@ -13831,7 +13808,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 WAH_ENSURE_GOTO(global_func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
                 wah_function_t *fn = &ctx->function_table[global_func_idx];
                 if (!fn->is_host && fn->fn_module == NULL) { fn->fn_module = module; fn->fn_ctx = ctx; }
-                ctx->tables[segment->table_idx][offset + j].ref = fn;
+                ctx->tables[segment->table_idx].entries[offset + j].ref = fn;
             } else {
                 wah_value_t elem_val;
                 WAH_CHECK_GOTO(wah_eval_const_expr(ctx,
@@ -13843,9 +13820,9 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     WAH_ENSURE_GOTO(global_func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
                     wah_function_t *fn = &ctx->function_table[global_func_idx];
                     if (!fn->is_host && fn->fn_module == NULL) { fn->fn_module = module; fn->fn_ctx = ctx; }
-                    ctx->tables[segment->table_idx][offset + j].ref = fn;
+                    ctx->tables[segment->table_idx].entries[offset + j].ref = fn;
                 } else {
-                    ctx->tables[segment->table_idx][offset + j] = elem_val;
+                    ctx->tables[segment->table_idx].entries[offset + j] = elem_val;
                 }
             }
         }
@@ -13867,8 +13844,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             } else {
                 offset = (uint32_t)offset_val.i32;
             }
-            WAH_ENSURE_GOTO(offset + segment->data_len <= ctx->memory_sizes[segment->memory_idx], WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-            memcpy(ctx->memories[segment->memory_idx] + offset, segment->data, segment->data_len);
+            WAH_ENSURE_GOTO(offset + segment->data_len <= ctx->memories[segment->memory_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+            memcpy(ctx->memories[segment->memory_idx].data + offset, segment->data, segment->data_len);
         }
     }
 

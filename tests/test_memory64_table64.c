@@ -211,13 +211,13 @@ static void test_memory64_basic() {
     assert_eq_u64(module.memories[0].min_pages, 1);
 
     assert_ok(wah_exec_context_create(&ctx, &module));
-    assert_true(ctx.memories[0] != NULL);
+    assert_true(ctx.memories[0].data != NULL);
 
     params[0].i64 = 1024LL;
     params[1].i32 = (int32_t)0xDEADBEEF;
     assert_ok(wah_call(&ctx, 0, params, 2, NULL));
 
-    int32_t *mem_ptr = (int32_t*)(ctx.memories[0] + 1024);
+    int32_t *mem_ptr = (int32_t*)(ctx.memories[0].data + 1024);
     assert_eq_i32(*mem_ptr, (int32_t)0xDEADBEEF);
 
     params[0].i64 = 1024LL;
@@ -307,10 +307,10 @@ static void test_memory64_data_segment() {
     assert_ok(wah_exec_context_create(&ctx, &module));
     assert_ok(wah_instantiate(&ctx));
 
-    assert_eq_u32(ctx.memories[0][0], 0x01);
-    assert_eq_u32(ctx.memories[0][1], 0x02);
-    assert_eq_u32(ctx.memories[0][2], 0x03);
-    assert_eq_u32(ctx.memories[0][3], 0x04);
+    assert_eq_u32(ctx.memories[0].data[0], 0x01);
+    assert_eq_u32(ctx.memories[0].data[1], 0x02);
+    assert_eq_u32(ctx.memories[0].data[2], 0x03);
+    assert_eq_u32(ctx.memories[0].data[3], 0x04);
 
     params[0].i64 = 0;
     assert_ok(wah_call(&ctx, 0, params, 1, &result));
