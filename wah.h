@@ -5561,11 +5561,25 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_BR_ON_NULL: {
             uint32_t label_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
+            WAH_ENSURE(label_idx <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
             wah_type_t ref_type;
             wah_type_flags_t ref_flags;
             WAH_CHECK(wah_validation_pop_type_with_flags(vctx, &ref_type, &ref_flags));
             WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_ANY, WAH_ERROR_VALIDATION_FAILED);
+
+            uint32_t br_result_count;
+            const wah_type_t *br_result_types;
+            const wah_type_flags_t *br_result_type_flags;
+            wah_validation_resolve_br_target(vctx, label_idx,
+                &br_result_count, &br_result_types, &br_result_type_flags, NULL);
+
+            for (int32_t i = br_result_count - 1; i >= 0; --i) {
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, br_result_types[i], br_result_type_flags[i]));
+            }
             RECORD_BRANCH_ADJ(0, 0);
+            for (uint32_t i = 0; i < br_result_count; ++i) {
+                WAH_CHECK(wah_validation_push_type_with_flags(vctx, br_result_types[i], br_result_type_flags[i]));
+            }
             WAH_CHECK(wah_validation_push_type_with_flags(vctx, ref_type, ref_flags & ~WAH_TYPE_FLAG_NULLABLE));
             EMIT_INSTR_EX(opcode_val, WAH_IMM_BRANCH,
                 _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0;
@@ -5575,11 +5589,31 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_BR_ON_NON_NULL: {
             uint32_t label_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
+            WAH_ENSURE(label_idx <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
             wah_type_t ref_type;
             wah_type_flags_t ref_flags;
             WAH_CHECK(wah_validation_pop_type_with_flags(vctx, &ref_type, &ref_flags));
             WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_ANY, WAH_ERROR_VALIDATION_FAILED);
+
+            uint32_t br_result_count;
+            const wah_type_t *br_result_types;
+            const wah_type_flags_t *br_result_type_flags;
+            wah_validation_resolve_br_target(vctx, label_idx,
+                &br_result_count, &br_result_types, &br_result_type_flags, NULL);
+
+            WAH_ENSURE(br_result_count >= 1, WAH_ERROR_VALIDATION_FAILED);
+            wah_type_t non_null_type = ref_type;
+            wah_type_flags_t non_null_flags = ref_flags & ~WAH_TYPE_FLAG_NULLABLE;
+            WAH_ENSURE(wah_type_is_subtype(non_null_type, br_result_types[br_result_count - 1], vctx->module),
+                       WAH_ERROR_VALIDATION_FAILED);
+
+            for (int32_t i = (int32_t)br_result_count - 2; i >= 0; --i) {
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, br_result_types[i], br_result_type_flags[i]));
+            }
             RECORD_BRANCH_ADJ(0, 0);
+            for (uint32_t i = 0; i < br_result_count - 1; ++i) {
+                WAH_CHECK(wah_validation_push_type_with_flags(vctx, br_result_types[i], br_result_type_flags[i]));
+            }
             EMIT_INSTR_EX(opcode_val, WAH_IMM_BRANCH,
                 _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0;
                 _di->imm.branch.keep = 0; _di->imm.branch.drop = 0);
