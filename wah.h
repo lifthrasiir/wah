@@ -8616,9 +8616,9 @@ WAH_RUN(END_TRY_TABLE) {
 WAH_RUN(THROW) {
     uint32_t tag_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    WAH_ASSERT(tag_idx < ctx->tag_instance_count);
+    WAH_ASSERT(tag_idx < fctx->tag_instance_count);
 
-    const wah_tag_instance_t *tag_inst = &ctx->tag_instances[tag_idx];
+    const wah_tag_instance_t *tag_inst = &fctx->tag_instances[tag_idx];
     const wah_module_t *cur_module = frame->module ? frame->module : ctx->module;
     uint32_t type_idx = tag_inst->type_index;
     const wah_func_type_t *tag_type = &cur_module->types[type_idx];
