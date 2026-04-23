@@ -97,9 +97,68 @@ static void test_catch_all() {
     wah_free_module(&module);
 }
 
+// 084715d: Fix cross-module throw using wrong tag instance context.
+static void test_cross_module_throw_tag_context() {
+    printf("Testing cross-module throw tag context (084715d)...\n");
+
+    // Provider: defines tag 0 (fn [i32] -> []) and exports a function that throws it,
+    // plus exports the tag itself.
+    const char *provider_spec = "wasm \
+        types {[ fn [i32] [], fn [] [] ]} \
+        funcs {[ 1 ]} \
+        tags {[ tag.type# 0 ]} \
+        exports {[ {'thrower'} fn# 0, {'tag'} export.tag 0 ]} \
+        code {[ {[] i32.const 55 throw 0 end } ]}";
+
+    // Consumer: imports the provider's tag and throwing function.
+    // Also has its OWN local tag (different type: fn [i64] -> []) at tag index 1.
+    // The imported tag is at tag index 0.
+    // If throw uses the wrong tag table (ctx instead of fctx),
+    // it would pick up the consumer's tag layout, causing mismatch.
+    const char *consumer_spec = "wasm \
+        types {[ fn [i32] [], fn [] [], fn [] [i32], fn [i64] [] ]} \
+        imports {[ {'provider'} {'thrower'} fn# 1, {'provider'} {'tag'} tag# tag.type# 0 ]} \
+        funcs {[ 2 ]} \
+        tags {[ tag.type# 3 ]} \
+        code {[ {[] \
+            block i32 \
+                try_table void [catch 0 1] \
+                    call 0 \
+                end \
+                i32.const 0 \
+            end \
+        end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    // Tag imports require a linked context (not just module), because tag instances
+    // are created at instantiation time.
+    wah_exec_context_t provider_ctx = {0};
+    assert_ok(wah_exec_context_create(&provider_ctx, &provider));
+    assert_ok(wah_instantiate(&provider_ctx));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_context(&ctx, "provider", &provider_ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    // Consumer's func 1 calls thrower (import), catches the thrown tag 0 value.
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 55);
+
+    wah_exec_context_destroy(&ctx);
+    wah_exec_context_destroy(&provider_ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
 int main() {
     test_try_table_catch_label_types();
     test_catch_all();
+    test_cross_module_throw_tag_context();
     printf("All exception tests passed!\n");
     return 0;
 }

@@ -296,6 +296,134 @@ static void test_call_indirect_subtype_dispatch() {
     wah_free_module(&module);
 }
 
+// 47386ae: Fix rec-group canonicalization and add canonical equivalence to subtype checks.
+static void test_rec_group_canonicalization() {
+    printf("Testing rec-group canonicalization (47386ae)...\n");
+
+    // Two modules define equivalent recursive function types in separate rec groups.
+    // Each rec group has: type 0 = fn [] -> [ref null 1], type 1 = fn [] -> [ref null 0].
+    // Canonicalization should recognize these as equivalent across modules,
+    // allowing import linking to succeed.
+
+    // Provider: defines rec group and exports a function of type 1 (fn [] -> [ref null 0]).
+    const char *provider_spec = "wasm \
+        types {[ rec [ sub [] fn [] [type.ref.null 1], sub [] fn [] [type.ref.null 0] ] ]} \
+        funcs {[ 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[] ref.null 0 end } ]}";
+
+    // Consumer: defines the SAME rec group shape, imports f using local type 1.
+    // Then has a wrapper function (type 1) that calls the import and drops the result.
+    const char *consumer_spec = "wasm \
+        types {[ rec [ sub [] fn [] [type.ref.null 1], sub [] fn [] [type.ref.null 0] ], \
+                 sub.final [] fn [] [i32] ]} \
+        imports {[ {'provider'} {'f'} fn# 1 ]} \
+        funcs {[ 2 ]} \
+        code {[ {[] call 0 ref.is_null end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_module(&ctx, "provider", &provider));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 1);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
+// 47386ae: Subtype check through canonical equivalence in supertype chain.
+static void test_rec_group_canon_subtype() {
+    printf("Testing rec-group canonical subtype chain (47386ae)...\n");
+
+    // Single module with two rec groups that define equivalent types,
+    // plus a subtype relationship referencing one of them.
+    // rec group 0: type 0 = struct { i32 }
+    // rec group 1: type 1 = struct { i32 }    (canonically == type 0)
+    // type 2 = sub type 0 struct { i32, i32 }  (subtype of type 0)
+    //
+    // call_indirect with type index for the canonical equivalent should
+    // succeed via canonical subtype check.
+
+    // We test via call_indirect: function declared with type 2 (sub of 0),
+    // call_indirect expects type 1 (canonically == type 0, supertype of 2).
+    // This should succeed because: type 2 <: type 0, and type 0 == type 1 canonically.
+
+    // But call_indirect operates on func types, not struct types. Let's use func types instead.
+    // rec group 0: type 0 = non-final fn [] -> [i32]
+    // rec group 1: type 1 = non-final fn [] -> [i32]  (canonically == type 0)
+    // type 2 = sub type 0 fn [] -> [i32]              (subtype of type 0)
+    // Function of type 2 in table, call_indirect with type 1.
+
+    const char *spec = "wasm \
+        types {[ rec [ sub [] fn [] [i32] ], \
+                 rec [ sub [] fn [] [i32] ], \
+                 sub [0] fn [] [i32] ]} \
+        funcs {[ 2, 1 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        elements {[ elem.active.table#0 i32.const 0 end [ 0 ] ]} \
+        code {[ \
+            {[] i32.const 99 end }, \
+            {[] i32.const 0 call_indirect 1 0 end } \
+        ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    // func 0 (type 2, sub of 0) is in table[0].
+    // call_indirect expects type 1 (canonically == type 0).
+    // type 2 <: type 0 == type 1, so this should succeed.
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 99);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// b2d1a8b: Compare full type identity in call_indirect/call_ref dispatch.
+static void test_call_indirect_non_identical_type() {
+    printf("Testing call_indirect rejects same-shape non-identical types (b2d1a8b)...\n");
+
+    // Type 0 = sub.final [] fn [] -> [i32]  (final, the default)
+    // Type 1 = sub [] fn [] -> [i32]         (non-final)
+    // These have the same shape but different finality, so they are canonically distinct.
+    // Function 0 has type 1 (non-final). call_indirect with type 0 (final) must trap.
+    const char *spec = "wasm \
+        types {[ sub.final [] fn [] [i32], sub [] fn [] [i32], sub.final [] fn [] [i32] ]} \
+        funcs {[ 1, 2 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        elements {[ elem.active.table#0 i32.const 0 end [ 0 ] ]} \
+        code {[ \
+            {[] i32.const 42 end }, \
+            {[] i32.const 0 call_indirect 0 0 end } \
+        ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_err(wah_call(&ctx, 1, NULL, 0, &result), WAH_ERROR_TRAP);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 // f20a450: Add ref.test/ref.cast support for concrete func types with subtyping.
 static void test_ref_test_concrete_func_subtype() {
     printf("Testing ref.test/ref.cast concrete func subtyping (f20a450)...\n");
@@ -343,6 +471,9 @@ int main() {
     test_cross_module_type_canon();
     test_cross_module_call_indirect_type_equiv();
     test_call_indirect_subtype_dispatch();
+    test_rec_group_canonicalization();
+    test_rec_group_canon_subtype();
+    test_call_indirect_non_identical_type();
     test_ref_test_concrete_func_subtype();
     printf("All linkage_types tests passed!\n");
     return 0;
