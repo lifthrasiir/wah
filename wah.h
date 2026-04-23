@@ -4191,10 +4191,12 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
         }
     }
 
-    #define WAH_VALIDATE_HEAP_TYPE_IDX(t) do { \
-        if ((t) >= 0 && (uint32_t)(t) >= module->type_count) return WAH_ERROR_VALIDATION_FAILED; \
-    } while (0)
     for (uint32_t i = 0; i < module->type_count; ++i) {
+        wah_type_def_t *td_scope = &module->type_defs[i];
+        uint32_t scope_limit = td_scope->rec_group_start + td_scope->rec_group_size;
+        #define WAH_VALIDATE_HEAP_TYPE_IDX(t) do { \
+            if ((t) >= 0 && (uint32_t)(t) >= scope_limit) return WAH_ERROR_VALIDATION_FAILED; \
+        } while (0)
         wah_func_type_t *ft = &module->types[i];
         for (uint32_t j = 0; j < ft->param_count; ++j) WAH_VALIDATE_HEAP_TYPE_IDX(ft->param_types[j]);
         for (uint32_t j = 0; j < ft->result_count; ++j) WAH_VALIDATE_HEAP_TYPE_IDX(ft->result_types[j]);
