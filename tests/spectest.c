@@ -567,7 +567,7 @@ static int execute_action(const wast_node_t *action_node,
     return 0;
 }
 
-static int add_table_export(wah_module_t *mod, const char *name, uint32_t min, uint32_t max) {
+static int add_table_export_ex(wah_module_t *mod, const char *name, uint32_t min, uint32_t max, wah_type_t addr_type) {
     char *name_copy;
     wah_table_type_t *new_tables = (wah_table_type_t *)realloc(
         mod->tables, (mod->table_count + 1) * sizeof(*mod->tables));
@@ -576,7 +576,7 @@ static int add_table_export(wah_module_t *mod, const char *name, uint32_t min, u
     mod->tables[mod->table_count] = (wah_table_type_t){0};
     mod->tables[mod->table_count].elem_type = WAH_TYPE_FUNCREF;
     mod->tables[mod->table_count].elem_type_flags = WAH_TYPE_FLAG_NULLABLE;
-    mod->tables[mod->table_count].addr_type = WAH_TYPE_I32;
+    mod->tables[mod->table_count].addr_type = addr_type;
     mod->tables[mod->table_count].min_elements = min;
     mod->tables[mod->table_count].max_elements = max;
 
@@ -607,7 +607,8 @@ static int setup_spectest_host(spectest_env_t *env) {
     if (wah_module_export_global_f32(&env->spectest_host, "global_f32", 0, 666.6f) != WAH_OK) return 0;
     if (wah_module_export_global_f64(&env->spectest_host, "global_f64", 0, 666.6) != WAH_OK) return 0;
     if (wah_module_export_memory(&env->spectest_host, "memory", 1, 2) != WAH_OK) return 0;
-    if (!add_table_export(&env->spectest_host, "table", 10, 20)) return 0;
+    if (!add_table_export_ex(&env->spectest_host, "table", 10, 20, WAH_TYPE_I32)) return 0;
+    if (!add_table_export_ex(&env->spectest_host, "table64", 10, 20, WAH_TYPE_I64)) return 0;
     if (wah_module_export_func(&env->spectest_host, "print", "->", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
     if (wah_module_export_func(&env->spectest_host, "print_i32", "i32->", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
     if (wah_module_export_func(&env->spectest_host, "print_i64", "i64->", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
