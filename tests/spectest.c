@@ -69,8 +69,6 @@ typedef struct {
     host_ref_t *host_refs;
     size_t host_ref_count;
     size_t host_ref_capacity;
-
-    int skip_file;
 } spectest_env_t;
 
 
@@ -789,9 +787,6 @@ static int eval_module_command(const wast_node_t *node, spectest_env_t *env, spe
             def->valid = 1;
             env->current_def = def;
             *out_def = def;
-        } else if (parse_err == WAH_ERROR_UNIMPLEMENTED) {
-            fprintf(stderr, "[SKIP] %s:%u: %s\n", env->path, node->line, wah_strerror(parse_err));
-            env->skip_file = 1;
         } else {
             fprintf(stderr, "[DEBUG] parse failed in %s:%u: %s\n", env->path, node->line, wah_strerror(parse_err));
         }
@@ -806,7 +801,6 @@ static int expect_malformed(wah_error_t err) {
            err == WAH_ERROR_INVALID_VERSION ||
            err == WAH_ERROR_UNEXPECTED_EOF ||
            err == WAH_ERROR_TOO_LARGE ||
-           err == WAH_ERROR_MALFORMED_UTF8 ||
            err == WAH_ERROR_MALFORMED;
 }
 
@@ -1078,10 +1072,6 @@ static int execute_command(const wast_node_t *node, spectest_env_t *env) {
             err = wah_parse_module(bytes, bytes_len, &mod);
             wah_free_module(&mod);
             free(bytes);
-            if (err == WAH_ERROR_UNIMPLEMENTED) {
-                env->skip_file = 1;
-                return 1;
-            }
             if (wast_atom_eq(node->children[0], "assert_invalid")) {
                 if (err == WAH_ERROR_VALIDATION_FAILED || err == WAH_ERROR_TOO_LARGE) {
                     pass_check(env);
@@ -1178,21 +1168,12 @@ static int run_file(const char *path, tally_t *grand_total) {
     }
     wast_parser_init(&parser, source, source_len);
     while ((node = wast_parse_next(&parser)) != NULL) {
-        if (!env.skip_file) {
-            execute_command(node, &env);
-        }
+        execute_command(node, &env);
         wast_node_free(node);
     }
-    if (parser.error[0] != '\0' && !env.skip_file) {
+    if (parser.error[0] != '\0') {
         env.current_line = parser.line;
         fail_check(&env, "parse error: %s", parser.error);
-    }
-    if (env.skip_file) {
-        printf("%s: SKIPPED (unimplemented feature)\n", path);
-        grand_total->files_skipped++;
-        free_env(&env);
-        free(source);
-        return 1;
     }
     printf("%s: %u passed, %u failed\n", path, env.tally.passed_checks, env.tally.failed_checks);
     grand_total->total_checks += env.tally.total_checks;

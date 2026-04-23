@@ -1125,7 +1125,7 @@ int main() {
         info->typeidx = 0;
         info->size = 2 * sizeof(void *);
         info->count = 2;
-        info->fields[0] = (wah_repr_field_t){.offset = 0, .repr_id = WAH_REPR_I31};
+        info->fields[0] = (wah_repr_field_t){.offset = 0, .repr_id = WAH_REPR_REF};
         info->fields[1] = (wah_repr_field_t){.offset = sizeof(void *), .repr_id = WAH_REPR_NONE};
 
         wah_repr_t repr_id;
@@ -1134,10 +1134,10 @@ int main() {
         wah_gc_object_t *obj = wah_gc_alloc_struct(&ctx5, repr_id, mod.repr_infos[repr_id]);
         assert_not_null(obj);
         void **payload = (void **)wah_gc_payload(obj);
-        payload[0] = (void *)(uintptr_t)0xDEADBEEF;
+        payload[0] = wah_ref_make_i31(0xDEADBEEF);
         payload[1] = (void *)(uintptr_t)0xCAFEBABE;
 
-        // GC scan should not crash - neither field is a ref
+        // GC scan should not crash
         wah_gc_step(&ctx5);
         assert_eq_u32(ctx5.gc->object_count, 0);
 
