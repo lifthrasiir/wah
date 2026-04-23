@@ -6859,9 +6859,6 @@ static wah_error_t wah_lower_analyzed_code(
         func_end_patches[func_end_patch_count++] = buf_size; \
     } while (0)
 
-    // Macro to resolve a branch target: if LOOP write continuation_offset,
-    // if function scope add to func_end_patches, otherwise add to target frame's patch list.
-    // In all cases, writes a u32 at current position and advances buf_size.
     #define WAH_LOWER_RESOLVE_BRANCH(relative_depth) do { \
         uint32_t _rd = (relative_depth); \
         if (_rd == control_sp) { \
@@ -6877,6 +6874,28 @@ static wah_error_t wah_lower_analyzed_code(
                 WAH_LOWER_U32(0); \
             } \
         } \
+    } while (0)
+
+    #define WAH_LOWER_PUSH_FRAME(op) do { \
+        WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size"); \
+        wah_lower_cf_t _cf = {0}; \
+        _cf.opcode = (op); \
+        _cf.continuation_offset = buf_size; \
+        control_stack[control_sp++] = _cf; \
+    } while (0)
+
+    #define WAH_LOWER_FINISH_FRAME() do { \
+        WAH_ASSERT(control_sp > 0); \
+        wah_lower_cf_t *_cf = &control_stack[--control_sp]; \
+        uint32_t _end_pos = buf_size; \
+        for (uint32_t _pi = 0; _pi < _cf->patch_count; _pi++) { \
+            WAH_LOWER_PATCH_U32(_cf->patch_offsets[_pi], _end_pos); \
+        } \
+        if (_cf->opcode == WAH_OP_IF) { \
+            WAH_LOWER_PATCH_U32(_cf->if_false_patch, _end_pos); \
+        } \
+        free(_cf->patch_offsets); \
+        *_cf = (wah_lower_cf_t){0}; \
     } while (0)
 
     #ifdef WAH_X86_64
@@ -6907,14 +6926,10 @@ static wah_error_t wah_lower_analyzed_code(
         uint16_t opcode = instr->opcode;
 
         if (opcode == WAH_OP_BLOCK || opcode == WAH_OP_LOOP) {
-            WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
-            wah_lower_cf_t cf = {0};
-            cf.opcode = (wah_opcode_t)opcode;
             if (emit_poll && (instr->flags & WAH_INSTR_FLAG_POLL)) {
                 WAH_EMIT_POLL();
             }
-            cf.continuation_offset = buf_size;
-            control_stack[control_sp++] = cf;
+            WAH_LOWER_PUSH_FRAME((wah_opcode_t)opcode);
             continue;
         }
         if (opcode == WAH_OP_TRY_TABLE) {
@@ -6924,11 +6939,6 @@ static wah_error_t wah_lower_analyzed_code(
             WAH_LOWER_U16(WAH_OP_TRY_TABLE);
             WAH_LOWER_U32(try_catch_count);
 
-            // We need to push the frame BEFORE resolving catch targets so that
-            // we can add patches to it, but we also need control_sp to reflect
-            // the state before pushing. Push after emitting catches.
-            // Actually catch targets reference the OUTER control stack, not this
-            // TRY_TABLE's own frame, so we resolve before pushing.
             for (uint32_t ci = 0; ci < try_catch_count; ci++) {
                 uint8_t catch_kind = instr->imm.try_table.catches[ci].kind;
                 WAH_LOWER_U8(catch_kind);
@@ -6939,36 +6949,18 @@ static wah_error_t wah_lower_analyzed_code(
                 WAH_LOWER_RESOLVE_BRANCH(label_depth);
             }
 
-            WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH);
-            wah_lower_cf_t cf = {0};
-            cf.opcode = WAH_OP_TRY_TABLE;
-            control_stack[control_sp++] = cf;
+            WAH_LOWER_PUSH_FRAME(WAH_OP_TRY_TABLE);
             continue;
         }
         if (opcode == WAH_OP_END) {
             if (control_sp > 0) {
-                wah_lower_cf_t *cf = &control_stack[--control_sp];
-                if (cf->opcode == WAH_OP_TRY_TABLE) {
+                if (control_stack[control_sp - 1].opcode == WAH_OP_TRY_TABLE) {
                     WAH_LOWER_U16(WAH_OP_END_TRY_TABLE);
                 }
-                // Resolve all end-patches to current position
-                uint32_t end_pos = buf_size;
-                for (uint32_t pi = 0; pi < cf->patch_count; pi++) {
-                    WAH_LOWER_PATCH_U32(cf->patch_offsets[pi], end_pos);
-                }
-                // For IF without ELSE, also patch the false-branch to END
-                if (cf->opcode == WAH_OP_IF) {
-                    WAH_LOWER_PATCH_U32(cf->if_false_patch, end_pos);
-                }
-                free(cf->patch_offsets);
-                cf->patch_offsets = NULL;
-                cf->patch_count = 0;
-                cf->patch_capacity = 0;
+                WAH_LOWER_FINISH_FRAME();
                 continue;
             }
-            // Final END: emit WAH_OP_END and resolve function-end patches
             WAH_LOWER_U16(WAH_OP_END);
-            // Function-end branches target buf_size - sizeof(uint16_t), i.e. the END opcode position
             uint32_t func_end_pos = buf_size - sizeof(uint16_t);
             for (uint32_t pi = 0; pi < func_end_patch_count; pi++) {
                 WAH_LOWER_PATCH_U32(func_end_patches[pi], func_end_pos);
@@ -7111,12 +7103,10 @@ static wah_error_t wah_lower_analyzed_code(
             }
             default: switch (opcode) {
                 case WAH_OP_IF: {
-                    WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size");
-                    wah_lower_cf_t cf = {0};
-                    cf.opcode = WAH_OP_IF;
-                    cf.if_false_patch = buf_size; // record position of placeholder
-                    WAH_LOWER_U32(0); // placeholder for false-branch offset
-                    control_stack[control_sp++] = cf;
+                    uint32_t false_patch_pos = buf_size;
+                    WAH_LOWER_U32(0);
+                    WAH_LOWER_PUSH_FRAME(WAH_OP_IF);
+                    control_stack[control_sp - 1].if_false_patch = false_patch_pos;
                     break;
                 }
                 case WAH_OP_ELSE: {
@@ -7258,6 +7248,8 @@ static wah_error_t wah_lower_analyzed_code(
     }
 
     #undef WAH_EMIT_POLL
+    #undef WAH_LOWER_FINISH_FRAME
+    #undef WAH_LOWER_PUSH_FRAME
     #undef WAH_LOWER_RESOLVE_BRANCH
     #undef WAH_LOWER_ADD_FUNC_END_PATCH
     #undef WAH_LOWER_ADD_PATCH
