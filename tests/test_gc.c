@@ -720,21 +720,24 @@ int main() {
             for (uint32_t i = 0; i < length; i++) assert(elems[i] == (int32_t)(i * 10));
         }
 
-        printf("Testing wah_gc_alloc_i31...\n");
+        printf("Testing i31 tagged pointers...\n");
         {
-            wah_gc_object_t *obj = wah_gc_alloc_i31(&ctx3, 12345);
-            assert_not_null(obj);
-            assert_eq_u32((uint32_t)obj->repr_id, (uint32_t)WAH_REPR_I31);
-            assert_eq_u32(obj->size_bytes, wah_gc_i31_alloc_size());
+            void *ref = wah_ref_make_i31(12345);
+            assert(wah_ref_is_i31(ref));
+            assert(wah_ref_i31_get_u(ref) == 12345);
+            assert(wah_ref_i31_get_s(ref) == 12345);
 
-            wah_gc_i31_body_t *body = (wah_gc_i31_body_t *)wah_gc_payload(obj);
-            assert(body->value == 12345);
+            void *ref2 = wah_ref_make_i31(-42);
+            assert(wah_ref_is_i31(ref2));
+            assert(wah_ref_i31_get_u(ref2) == (-42 & 0x7FFFFFFF));
+            assert(wah_ref_i31_get_s(ref2) == -42);
 
-            // Negative value
-            wah_gc_object_t *obj2 = wah_gc_alloc_i31(&ctx3, -42);
-            assert_not_null(obj2);
-            wah_gc_i31_body_t *body2 = (wah_gc_i31_body_t *)wah_gc_payload(obj2);
-            assert(body2->value == (-42 & 0x7FFFFFFF));
+            // Same value produces same tagged pointer
+            void *ref3 = wah_ref_make_i31(12345);
+            assert(ref == ref3);
+
+            // NULL is not i31
+            assert(!wah_ref_is_i31(NULL));
         }
 
         printf("Testing wah_gc_alloc_array overflow protection...\n");
