@@ -6060,8 +6060,8 @@ cleanup:
 
 static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t count;
-    // A global entry requires at least 5 bytes (type, is_mutable, init_expr (min 3 bytes)).
-    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 5));
+    // A global entry requires at least 3 bytes (type, is_mutable, init_expr end).
+    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 3));
 
     module->global_count = 0;
     WAH_MALLOC_ARRAY(module->globals, count);
@@ -6169,6 +6169,8 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
 
             WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
             uint8_t flags = *(*ptr)++;
+            WAH_ENSURE(flags == 0x00 || flags == 0x01 || flags == 0x04 || flags == 0x05,
+                       WAH_ERROR_MALFORMED);
 
             if (flags & 0x04) {
                 module->tables[i].addr_type = WAH_TYPE_I64;
@@ -6391,7 +6393,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
         } else {
             free(imp_name.module);
             free(imp_name.field);
-            err = WAH_ERROR_VALIDATION_FAILED;
+            err = WAH_ERROR_MALFORMED;
             WAH_LOG("Unknown import kind=%u", kind);
             goto cleanup;
         }
@@ -7459,11 +7461,14 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
     WAH_ENSURE_GOTO(module->wasm_function_count == module->code_count, WAH_ERROR_MALFORMED, cleanup_parse);
 
     // Validate data segment references
+    if (module->min_data_segment_count_required > 0) {
+        WAH_ENSURE_GOTO(module->has_data_count_section, WAH_ERROR_MALFORMED, cleanup_parse);
+    }
     WAH_ENSURE_GOTO(module->data_segment_count >= module->min_data_segment_count_required, WAH_ERROR_VALIDATION_FAILED, cleanup_parse);
 
     // If a data count section was present, ensure data segments were actually allocated.
     if (module->has_data_count_section && module->data_segment_count > 0) {
-        WAH_ENSURE_GOTO(module->data_segments != NULL, WAH_ERROR_VALIDATION_FAILED, cleanup_parse);
+        WAH_ENSURE_GOTO(module->data_segments != NULL, WAH_ERROR_MALFORMED, cleanup_parse);
     }
 
     // Validate heap type indices across all sections
