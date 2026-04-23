@@ -6208,6 +6208,8 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
 
             if (has_init_expr) {
                 WAH_CHECK(wah_compile_const_expr(ptr, section_end, elem_type, module, wah_global_index_limit(module), &module->tables[i].init_expr));
+            } else if (!(elem_type_flags & WAH_TYPE_FLAG_NULLABLE)) {
+                return WAH_ERROR_VALIDATION_FAILED;
             }
         }
     }
