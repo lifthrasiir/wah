@@ -1149,6 +1149,118 @@ int main() {
         wah_free_module(&mod);
     }
 
+    printf("Testing GC mark: struct inside exnref survives collection...\n");
+    {
+        // Throw exception carrying a (ref null $0) struct, catch with catch,
+        // store the struct ref in a local, trigger GC via host call, then
+        // struct.get the field to verify the struct survived collection.
+        // The exception's value_types metadata allows GC to trace the ref
+        // inside the pending exception during collection.
+        //
+        // types:
+        //   0: struct [i32 mut]
+        //   1: fn [type.ref.null 0] []   -- tag: carries (ref null $0)
+        //   2: fn [] [i32]               -- main func
+        //   3: fn [] []                  -- host gc
+        wah_module_t env_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t ctx5 = {0};
+
+        assert_ok(wah_new_module(&env_mod));
+        assert_ok(wah_module_export_funcv(&env_mod, "gc", 0, NULL, 0, NULL, host_trigger_gc, NULL, NULL));
+
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [type.ref.null 0] [], fn [] [i32], fn [] [], fn [] [type.ref.null 0] ]} \
+            imports {[ {'env'} {'gc'} fn# 3 ]} \
+            funcs {[ 2 ]} \
+            tags {[ tag.type# 1 ]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ {[1 type.ref.null 0] \
+                block 4 \
+                    try_table void [catch 0 0] \
+                        i32.const 42 struct.new 0 \
+                        throw 0 \
+                    end \
+                    ref.null 0 \
+                end \
+                local.set 0 \
+                call 0 \
+                local.get 0 \
+                struct.get 0 0 \
+            end } ]}";
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        assert_ok(wah_exec_context_create(&ctx5, &wasm_mod));
+        assert_ok(wah_link_module(&ctx5, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx5));
+        assert_ok(wah_instantiate(&ctx5));
+
+        ctx5.gc->allocation_threshold = 1;
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx5, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_exec_context_destroy(&ctx5);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
+    printf("Testing GC mark: pending exception refs survive collection...\n");
+    {
+        // Throw exception carrying a GC struct from a callee function.
+        // The exception propagates through the call stack as pending_exception.
+        // The outer catch catches it and reads the struct field.
+        // GC is triggered via low threshold during the call sequence.
+        //
+        // types:
+        //   0: struct [i32 mut]
+        //   1: fn [type.ref.null 0] []   -- tag: carries (ref null $0)
+        //   2: fn [] [i32]               -- main func
+        //   3: fn [] []                  -- host gc / thrower
+        //   4: fn [] [type.ref.null 0]   -- block type for catch
+        wah_module_t env_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t ctx5 = {0};
+
+        assert_ok(wah_new_module(&env_mod));
+        assert_ok(wah_module_export_funcv(&env_mod, "gc", 0, NULL, 0, NULL, host_trigger_gc, NULL, NULL));
+
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [type.ref.null 0] [], fn [] [i32], fn [] [], fn [] [type.ref.null 0] ]} \
+            imports {[ {'env'} {'gc'} fn# 3 ]} \
+            funcs {[ 2, 3 ]} \
+            tags {[ tag.type# 1 ]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ \
+                {[] \
+                    block 4 \
+                        try_table void [catch 0 0] \
+                            call 2 \
+                        end \
+                        ref.null 0 \
+                    end \
+                    struct.get 0 0 \
+                end }, \
+                {[] \
+                    i32.const 99 struct.new 0 \
+                    throw 0 \
+                end } \
+            ]}";
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        assert_ok(wah_exec_context_create(&ctx5, &wasm_mod));
+        assert_ok(wah_link_module(&ctx5, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx5));
+        assert_ok(wah_instantiate(&ctx5));
+
+        ctx5.gc->allocation_threshold = 1;
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx5, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 99);
+
+        wah_exec_context_destroy(&ctx5);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }

@@ -1675,6 +1675,7 @@ typedef struct wah_exception_s {
     uint32_t tag_index;
     uint32_t value_count;
     wah_value_t *values;
+    wah_type_t *value_types;
 } wah_exception_t;
 
 #define WAH_CATCH_KIND_CATCH     0
@@ -7957,6 +7958,7 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
     free(exec_ctx->tag_instances);
     if (exec_ctx->pending_exception) {
         free(exec_ctx->pending_exception->values);
+        free(exec_ctx->pending_exception->value_types);
         free(exec_ctx->pending_exception);
     }
 
@@ -8201,6 +8203,13 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
             }
         }
     }
+
+    // 4. Pending exception (in-flight between throw and catch)
+    if (ctx->pending_exception) {
+        wah_value_t exc_val;
+        exc_val.ref = ctx->pending_exception;
+        visitor(&exc_val, WAH_TYPE_EXNREF, userdata);
+    }
 }
 
 static void wah_gc_scan_object(wah_gc_object_t *obj, const wah_module_t *module);
@@ -8243,12 +8252,29 @@ static void wah_gc_scan_object(wah_gc_object_t *obj, const wah_module_t *module)
     }
 }
 
+static void wah_gc_mark_exception(wah_exception_t *exc, const wah_module_t *module) {
+    if (!exc || !exc->values || !exc->value_types) return;
+    for (uint32_t i = 0; i < exc->value_count; i++) {
+        if (!WAH_TYPE_IS_REF(exc->value_types[i])) continue;
+        void *ref = exc->values[i].ref;
+        if (!ref || wah_ref_is_i31(ref)) continue;
+        if (exc->value_types[i] == WAH_TYPE_EXNREF || exc->value_types[i] == WAH_TYPE_NULLEXNREF) {
+            wah_gc_mark_exception((wah_exception_t *)ref, module);
+            continue;
+        }
+        wah_gc_mark_object(wah_gc_header(ref), module);
+    }
+}
+
 static void wah_gc_mark_visitor(wah_value_t *slot, wah_type_t type, void *userdata) {
-    if (type == WAH_TYPE_EXNREF || type == WAH_TYPE_NULLEXNREF) return;
+    const wah_module_t *module = (const wah_module_t *)userdata;
+    if (type == WAH_TYPE_EXNREF || type == WAH_TYPE_NULLEXNREF) {
+        wah_gc_mark_exception((wah_exception_t *)slot->ref, module);
+        return;
+    }
     void *ref = slot->ref;
     if (!ref || wah_ref_is_i31(ref)) return;
     wah_gc_object_t *obj = wah_gc_header(ref);
-    const wah_module_t *module = (const wah_module_t *)userdata;
     wah_gc_mark_object(obj, module);
 }
 
@@ -8449,6 +8475,7 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, const wah_module_t *f
 static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t *exc) {
     if (ctx->pending_exception) {
         free(ctx->pending_exception->values);
+        free(ctx->pending_exception->value_types);
         free(ctx->pending_exception);
     }
     ctx->pending_exception = exc;
@@ -8490,6 +8517,7 @@ static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t 
                     ctx->pending_exception = NULL;
                 } else {
                     free(exc->values);
+                    free(exc->value_types);
                     free(exc);
                     ctx->pending_exception = NULL;
                 }
@@ -8804,11 +8832,15 @@ WAH_RUN(THROW) {
     exc->tag_index = tag_idx;
     exc->value_count = value_count;
     exc->values = NULL;
+    exc->value_types = NULL;
     if (value_count > 0) {
         exc->values = malloc(sizeof(wah_value_t) * value_count);
         if (!exc->values) { free(exc); err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
+        exc->value_types = malloc(sizeof(wah_type_t) * value_count);
+        if (!exc->value_types) { free(exc->values); free(exc); err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
         for (uint32_t i = 0; i < value_count; i++) {
             exc->values[i] = sp[-(int32_t)value_count + (int32_t)i];
+            exc->value_types[i] = tag_type->param_types[i];
         }
         sp -= value_count;
     }
@@ -8835,6 +8867,9 @@ WAH_RUN(THROW_REF) {
         copy->values = malloc(sizeof(wah_value_t) * exc->value_count);
         if (!copy->values) { free(copy); err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
         memcpy(copy->values, exc->values, sizeof(wah_value_t) * exc->value_count);
+        copy->value_types = malloc(sizeof(wah_type_t) * exc->value_count);
+        if (!copy->value_types) { free(copy->values); free(copy); err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
+        memcpy(copy->value_types, exc->value_types, sizeof(wah_type_t) * exc->value_count);
     }
 
     frame->bytecode_ip = bytecode_ip;
