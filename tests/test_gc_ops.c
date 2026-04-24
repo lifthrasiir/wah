@@ -516,6 +516,266 @@ static void test_struct_null_trap() {
     wah_free_module(&module);
 }
 
+// Cross-module GC opcodes: fctx->module must be used instead of ctx->module
+// for typeidx_to_repr, repr_infos, and type_defs lookups.
+
+static void test_cross_module_struct_new_get_set() {
+    printf("Testing cross-module struct.new / struct.get / struct.set...\n");
+
+    const char *provider_spec = "wasm \
+        types {[ struct [i32 mut], fn [i32] [type.ref.null 0], fn [type.ref.null 0] [i32], \
+                 fn [type.ref.null 0, i32] [type.ref.null 0] ]} \
+        funcs {[ 1, 2, 3 ]} \
+        exports {[ {'make'} fn# 0, {'read'} fn# 1, {'write'} fn# 2 ]} \
+        code {[ \
+            {[] local.get 0 struct.new 0 end }, \
+            {[] local.get 0 struct.get 0 0 end }, \
+            {[] local.get 0 local.get 1 struct.set 0 0 local.get 0 end } \
+        ]}";
+
+    // Consumer defines the same struct type for cross-module type matching
+    const char *consumer_spec = "wasm \
+        types {[ struct [i32 mut], fn [i32] [type.ref.null 0], fn [type.ref.null 0] [i32], \
+                 fn [type.ref.null 0, i32] [type.ref.null 0], fn [] [i32] ]} \
+        imports {[ \
+            {'p'} {'make'} fn# 1, \
+            {'p'} {'read'} fn# 2, \
+            {'p'} {'write'} fn# 3 \
+        ]} \
+        funcs {[ 4 ]} \
+        code {[ {[] \
+            i32.const 10 call 0 \
+            i32.const 20 call 2 \
+            call 1 \
+        end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_module(&ctx, "p", &provider));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 3, NULL, 0, &result));
+    assert_eq_i32(result.i32, 20);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
+static void test_cross_module_struct_new_default() {
+    printf("Testing cross-module struct.new_default...\n");
+
+    const char *provider_spec = "wasm \
+        types {[ struct [i32 mut], fn [] [type.ref.null 0] ]} \
+        funcs {[ 1 ]} \
+        exports {[ {'make'} fn# 0 ]} \
+        code {[ {[] struct.new_default 0 end } ]}";
+
+    const char *consumer_spec = "wasm \
+        types {[ struct [i32 mut], fn [] [type.ref.null 0], fn [] [i32] ]} \
+        imports {[ {'p'} {'make'} fn# 1 ]} \
+        funcs {[ 2 ]} \
+        code {[ {[] call 0 ref.is_null end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_module(&ctx, "p", &provider));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 0);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
+static void test_cross_module_array_new_get_set_len() {
+    printf("Testing cross-module array.new / array.get / array.set / array.len...\n");
+
+    // Provider: type 0 = array mut i32
+    const char *provider_spec = "wasm \
+        types {[ array i32 mut, \
+                 fn [i32, i32] [type.ref.null 0], \
+                 fn [type.ref.null 0] [i32], \
+                 fn [type.ref.null 0, i32, i32] [], \
+                 fn [type.ref.null 0, i32] [i32] ]} \
+        funcs {[ 1, 2, 3, 4 ]} \
+        exports {[ {'make'} fn# 0, {'len'} fn# 1, {'set'} fn# 2, {'get'} fn# 3 ]} \
+        code {[ \
+            {[] local.get 0 local.get 1 array.new 0 end }, \
+            {[] local.get 0 array.len end }, \
+            {[] local.get 0 local.get 1 local.get 2 array.set 0 end }, \
+            {[] local.get 0 local.get 1 array.get 0 end } \
+        ]}";
+
+    const char *consumer_spec = "wasm \
+        types {[ array i32 mut, \
+                 fn [i32, i32] [type.ref.null 0], fn [type.ref.null 0] [i32], \
+                 fn [type.ref.null 0, i32, i32] [], fn [type.ref.null 0, i32] [i32], fn [] [i32] ]} \
+        imports {[ \
+            {'p'} {'make'} fn# 1, {'p'} {'len'} fn# 2, \
+            {'p'} {'set'} fn# 3, {'p'} {'get'} fn# 4 \
+        ]} \
+        funcs {[ 5 ]} \
+        code {[ {[1 type.ref.null 0] \
+            i32.const 0 i32.const 3 call 0 local.set 0 \
+            local.get 0 i32.const 1 i32.const 42 call 2 \
+            local.get 0 call 1 \
+            local.get 0 i32.const 1 call 3 \
+            i32.add \
+        end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_module(&ctx, "p", &provider));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 4, NULL, 0, &result));
+    // len=3, get[1]=42, result = 3+42 = 45
+    assert_eq_i32(result.i32, 45);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
+static void test_cross_module_array_new_fixed() {
+    printf("Testing cross-module array.new_fixed...\n");
+
+    const char *provider_spec = "wasm \
+        types {[ array i32 mut, fn [i32, i32, i32] [type.ref.null 0], fn [type.ref.null 0, i32] [i32] ]} \
+        funcs {[ 1, 2 ]} \
+        exports {[ {'make3'} fn# 0, {'get'} fn# 1 ]} \
+        code {[ \
+            {[] local.get 0 local.get 1 local.get 2 array.new_fixed 0 3 end }, \
+            {[] local.get 0 local.get 1 array.get 0 end } \
+        ]}";
+
+    const char *consumer_spec = "wasm \
+        types {[ array i32 mut, fn [i32, i32, i32] [type.ref.null 0], fn [type.ref.null 0, i32] [i32], fn [] [i32] ]} \
+        imports {[ {'p'} {'make3'} fn# 1, {'p'} {'get'} fn# 2 ]} \
+        funcs {[ 3 ]} \
+        code {[ {[] \
+            i32.const 10 i32.const 20 i32.const 30 call 0 \
+            i32.const 2 call 1 \
+        end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_module(&ctx, "p", &provider));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+    assert_eq_i32(result.i32, 30);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
+static void test_cross_module_array_new_default() {
+    printf("Testing cross-module array.new_default...\n");
+
+    const char *provider_spec = "wasm \
+        types {[ array i32 mut, fn [i32] [type.ref.null 0], fn [type.ref.null 0, i32] [i32] ]} \
+        funcs {[ 1, 2 ]} \
+        exports {[ {'make'} fn# 0, {'get'} fn# 1 ]} \
+        code {[ \
+            {[] local.get 0 array.new_default 0 end }, \
+            {[] local.get 0 local.get 1 array.get 0 end } \
+        ]}";
+
+    const char *consumer_spec = "wasm \
+        types {[ array i32 mut, fn [i32] [type.ref.null 0], fn [type.ref.null 0, i32] [i32], fn [] [i32] ]} \
+        imports {[ {'p'} {'make'} fn# 1, {'p'} {'get'} fn# 2 ]} \
+        funcs {[ 3 ]} \
+        code {[ {[] i32.const 3 call 0 i32.const 0 call 1 end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_module(&ctx, "p", &provider));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+    assert_eq_i32(result.i32, 0);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
+static void test_cross_module_array_fill() {
+    printf("Testing cross-module array.fill...\n");
+
+    // make_and_fill(val): creates array[3], fills all with val, returns array
+    const char *provider_spec = "wasm \
+        types {[ array i32 mut, fn [i32] [type.ref.null 0], fn [type.ref.null 0, i32] [i32] ]} \
+        funcs {[ 1, 2 ]} \
+        exports {[ {'make'} fn# 0, {'get'} fn# 1 ]} \
+        code {[ \
+            {[1 type.ref.null 0] \
+                i32.const 0 i32.const 3 array.new 0 local.set 1 \
+                local.get 1 i32.const 0 local.get 0 i32.const 3 array.fill 0 \
+                local.get 1 end }, \
+            {[] local.get 0 local.get 1 array.get 0 end } \
+        ]}";
+
+    const char *consumer_spec = "wasm \
+        types {[ array i32 mut, fn [i32] [type.ref.null 0], fn [type.ref.null 0, i32] [i32], fn [] [i32] ]} \
+        imports {[ {'p'} {'make'} fn# 1, {'p'} {'get'} fn# 2 ]} \
+        funcs {[ 3 ]} \
+        code {[ {[] i32.const 77 call 0 i32.const 1 call 1 end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_module(&ctx, "p", &provider));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+    assert_eq_i32(result.i32, 77);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
 int main() {
     test_i31_ops();
     test_extern_convert();
@@ -530,6 +790,12 @@ int main() {
     test_array_new_get_set_len();
     test_array_oob_trap();
     test_struct_null_trap();
+    test_cross_module_struct_new_get_set();
+    test_cross_module_struct_new_default();
+    test_cross_module_array_new_get_set_len();
+    test_cross_module_array_new_fixed();
+    test_cross_module_array_new_default();
+    test_cross_module_array_fill();
     printf("All GC ops tests passed!\n");
     return 0;
 }

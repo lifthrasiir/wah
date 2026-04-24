@@ -8915,7 +8915,7 @@ WAH_RUN(REF_TEST) {
     wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(int32_t);
     wah_value_t ref_val = *--sp;
-    bool result = wah_ref_test_heap_type(ctx, ref_val, heap_type);
+    bool result = wah_ref_test_heap_type(fctx, ref_val, heap_type);
     (*sp++).i32 = result ? 1 : 0;
     WAH_NEXT();
 }
@@ -8924,7 +8924,7 @@ WAH_RUN(REF_TEST_NULL) {
     wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(int32_t);
     wah_value_t ref_val = *--sp;
-    bool result = (ref_val.ref == NULL) || wah_ref_test_heap_type(ctx, ref_val, heap_type);
+    bool result = (ref_val.ref == NULL) || wah_ref_test_heap_type(fctx, ref_val, heap_type);
     (*sp++).i32 = result ? 1 : 0;
     WAH_NEXT();
 }
@@ -8933,7 +8933,7 @@ WAH_RUN(REF_CAST) {
     wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(int32_t);
     wah_value_t ref_val = sp[-1];
-    WAH_ENSURE_GOTO(ref_val.ref != NULL && wah_ref_test_heap_type(ctx, ref_val, heap_type),
+    WAH_ENSURE_GOTO(ref_val.ref != NULL && wah_ref_test_heap_type(fctx, ref_val, heap_type),
                      WAH_ERROR_TRAP, cleanup);
     WAH_NEXT();
     WAH_CLEANUP();
@@ -8943,7 +8943,7 @@ WAH_RUN(REF_CAST_NULL) {
     wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(int32_t);
     wah_value_t ref_val = sp[-1];
-    WAH_ENSURE_GOTO(ref_val.ref == NULL || wah_ref_test_heap_type(ctx, ref_val, heap_type),
+    WAH_ENSURE_GOTO(ref_val.ref == NULL || wah_ref_test_heap_type(fctx, ref_val, heap_type),
                      WAH_ERROR_TRAP, cleanup);
     WAH_NEXT();
     WAH_CLEANUP();
@@ -9011,7 +9011,7 @@ WAH_RUN(BR_ON_CAST) {
     if (ref_val.ref == NULL) {
         matches = (cast_flags & 0x02) != 0;
     } else {
-        matches = wah_ref_test_heap_type(ctx, ref_val, target_ht);
+        matches = wah_ref_test_heap_type(fctx, ref_val, target_ht);
     }
     if (matches) {
         bytecode_ip = bytecode_base + offset;
@@ -9029,7 +9029,7 @@ WAH_RUN(BR_ON_CAST_FAIL) {
     if (ref_val.ref == NULL) {
         matches = (cast_flags & 0x02) != 0;
     } else {
-        matches = wah_ref_test_heap_type(ctx, ref_val, target_ht);
+        matches = wah_ref_test_heap_type(fctx, ref_val, target_ht);
     }
     if (!matches) {
         bytecode_ip = bytecode_base + offset;
@@ -9039,12 +9039,12 @@ WAH_RUN(BR_ON_CAST_FAIL) {
 
 WAH_RUN(STRUCT_NEW) {
     uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
-    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
-    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_struct(ctx, repr_id, info);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     uint8_t *payload = (uint8_t *)obj;
-    const wah_type_def_t *td = &ctx->module->type_defs[typeidx];
+    const wah_type_def_t *td = &fctx->module->type_defs[typeidx];
     for (uint32_t i = td->field_count; i > 0; --i) {
         wah_value_t val = *--sp;
         wah_gc_store_field(td->field_types[i - 1], payload + info->fields[i - 1].offset, &val, 0);
@@ -9056,8 +9056,8 @@ WAH_RUN(STRUCT_NEW) {
 
 WAH_RUN(STRUCT_NEW_DEFAULT) {
     uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
-    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
-    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_struct(ctx, repr_id, info);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     (*sp++).ref = obj;
@@ -9070,10 +9070,10 @@ WAH_RUN(STRUCT_GET) {
     uint32_t fieldidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     void *obj = (--sp)->ref;
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
-    const wah_repr_info_t *info = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]];
+    const wah_repr_info_t *info = fctx->module->repr_infos[fctx->module->typeidx_to_repr[typeidx]];
     uint8_t *payload = (uint8_t *)obj;
     wah_value_t val;
-    wah_gc_load_field(ctx->module->type_defs[typeidx].field_types[fieldidx],
+    wah_gc_load_field(fctx->module->type_defs[typeidx].field_types[fieldidx],
                       payload + info->fields[fieldidx].offset, &val, 0);
     *sp++ = val;
     WAH_NEXT();
@@ -9085,10 +9085,10 @@ WAH_RUN(STRUCT_GET_S) {
     uint32_t fieldidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     void *obj = (--sp)->ref;
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
-    const wah_repr_info_t *info = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]];
+    const wah_repr_info_t *info = fctx->module->repr_infos[fctx->module->typeidx_to_repr[typeidx]];
     uint8_t *payload = (uint8_t *)obj;
     wah_value_t val = {0};
-    val.i32 = wah_gc_load_packed(ctx->module->type_defs[typeidx].field_types[fieldidx],
+    val.i32 = wah_gc_load_packed(fctx->module->type_defs[typeidx].field_types[fieldidx],
                                   payload + info->fields[fieldidx].offset, true);
     *sp++ = val;
     WAH_NEXT();
@@ -9100,10 +9100,10 @@ WAH_RUN(STRUCT_GET_U) {
     uint32_t fieldidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     void *obj = (--sp)->ref;
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
-    const wah_repr_info_t *info = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]];
+    const wah_repr_info_t *info = fctx->module->repr_infos[fctx->module->typeidx_to_repr[typeidx]];
     uint8_t *payload = (uint8_t *)obj;
     wah_value_t val = {0};
-    val.i32 = wah_gc_load_packed(ctx->module->type_defs[typeidx].field_types[fieldidx],
+    val.i32 = wah_gc_load_packed(fctx->module->type_defs[typeidx].field_types[fieldidx],
                                   payload + info->fields[fieldidx].offset, false);
     *sp++ = val;
     WAH_NEXT();
@@ -9116,9 +9116,9 @@ WAH_RUN(STRUCT_SET) {
     wah_value_t val = *--sp;
     void *obj = (--sp)->ref;
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
-    const wah_repr_info_t *info = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]];
+    const wah_repr_info_t *info = fctx->module->repr_infos[fctx->module->typeidx_to_repr[typeidx]];
     uint8_t *payload = (uint8_t *)obj;
-    wah_gc_store_field(ctx->module->type_defs[typeidx].field_types[fieldidx],
+    wah_gc_store_field(fctx->module->type_defs[typeidx].field_types[fieldidx],
                        payload + info->fields[fieldidx].offset, &val, 0);
     WAH_NEXT();
     WAH_CLEANUP();
@@ -9128,12 +9128,12 @@ WAH_RUN(ARRAY_NEW) {
     uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     uint32_t length = (uint32_t)(--sp)->i32;
     wah_value_t init_val = *--sp;
-    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
-    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_array(ctx, repr_id, info, length);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)obj + sizeof(wah_gc_array_body_t);
-    wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
+    wah_type_t et = fctx->module->type_defs[typeidx].field_types[0];
     for (uint32_t i = 0; i < length; i++)
         wah_gc_store_field(et, elems + i * info->size, &init_val, info->size);
     (*sp++).ref = obj;
@@ -9144,8 +9144,8 @@ WAH_RUN(ARRAY_NEW) {
 WAH_RUN(ARRAY_NEW_DEFAULT) {
     uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     uint32_t length = (uint32_t)(--sp)->i32;
-    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
-    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_array(ctx, repr_id, info, length);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     (*sp++).ref = obj;
@@ -9156,12 +9156,12 @@ WAH_RUN(ARRAY_NEW_DEFAULT) {
 WAH_RUN(ARRAY_NEW_FIXED) {
     uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     uint32_t length = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
-    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
-    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_array(ctx, repr_id, info, length);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)obj + sizeof(wah_gc_array_body_t);
-    wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
+    wah_type_t et = fctx->module->type_defs[typeidx].field_types[0];
     for (uint32_t i = length; i > 0; --i) {
         wah_value_t val = *--sp;
         wah_gc_store_field(et, elems + (i - 1) * info->size, &val, info->size);
@@ -9178,10 +9178,10 @@ WAH_RUN(ARRAY_GET) {
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     wah_gc_array_body_t *body = (wah_gc_array_body_t *)obj;
     WAH_ENSURE_GOTO(idx < body->length, WAH_ERROR_TRAP, cleanup);
-    const wah_repr_info_t *info = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]];
+    const wah_repr_info_t *info = fctx->module->repr_infos[fctx->module->typeidx_to_repr[typeidx]];
     uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
     wah_value_t val;
-    wah_gc_load_field(ctx->module->type_defs[typeidx].field_types[0],
+    wah_gc_load_field(fctx->module->type_defs[typeidx].field_types[0],
                       elems + idx * info->size, &val, info->size);
     *sp++ = val;
     WAH_NEXT();
@@ -9196,8 +9196,8 @@ WAH_RUN(ARRAY_GET_S) {
     wah_gc_array_body_t *body = (wah_gc_array_body_t *)obj;
     WAH_ENSURE_GOTO(idx < body->length, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
-    wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
-    uint32_t esz = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]]->size;
+    wah_type_t et = fctx->module->type_defs[typeidx].field_types[0];
+    uint32_t esz = fctx->module->repr_infos[fctx->module->typeidx_to_repr[typeidx]]->size;
     wah_value_t val = {0};
     val.i32 = wah_gc_load_packed(et, elems + idx * esz, true);
     *sp++ = val;
@@ -9213,8 +9213,8 @@ WAH_RUN(ARRAY_GET_U) {
     wah_gc_array_body_t *body = (wah_gc_array_body_t *)obj;
     WAH_ENSURE_GOTO(idx < body->length, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
-    wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
-    uint32_t esz = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]]->size;
+    wah_type_t et = fctx->module->type_defs[typeidx].field_types[0];
+    uint32_t esz = fctx->module->repr_infos[fctx->module->typeidx_to_repr[typeidx]]->size;
     wah_value_t val = {0};
     val.i32 = wah_gc_load_packed(et, elems + idx * esz, false);
     *sp++ = val;
@@ -9230,9 +9230,9 @@ WAH_RUN(ARRAY_SET) {
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     wah_gc_array_body_t *body = (wah_gc_array_body_t *)obj;
     WAH_ENSURE_GOTO(idx < body->length, WAH_ERROR_TRAP, cleanup);
-    const wah_repr_info_t *info = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]];
+    const wah_repr_info_t *info = fctx->module->repr_infos[fctx->module->typeidx_to_repr[typeidx]];
     uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
-    wah_gc_store_field(ctx->module->type_defs[typeidx].field_types[0],
+    wah_gc_store_field(fctx->module->type_defs[typeidx].field_types[0],
                        elems + idx * info->size, &val, info->size);
     WAH_NEXT();
     WAH_CLEANUP();
@@ -9252,10 +9252,10 @@ WAH_RUN(ARRAY_NEW_DATA) {
     uint32_t dataidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t offset = (uint32_t)(--sp)->i32;
-    WAH_ASSERT(dataidx < ctx->module->data_segment_count);
-    const wah_data_segment_t *seg = &ctx->module->data_segments[dataidx];
-    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
-    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    WAH_ASSERT(dataidx < fctx->module->data_segment_count);
+    const wah_data_segment_t *seg = &fctx->module->data_segments[dataidx];
+    wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     uint32_t esz = info->size;
     WAH_ENSURE_GOTO((uint64_t)offset + (uint64_t)size * esz <= seg->data_len, WAH_ERROR_TRAP, cleanup);
     void *obj = wah_gc_alloc_array(ctx, repr_id, info, size);
@@ -9272,12 +9272,12 @@ WAH_RUN(ARRAY_NEW_ELEM) {
     uint32_t elemidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t offset = (uint32_t)(--sp)->i32;
-    WAH_ASSERT(elemidx < ctx->module->element_segment_count);
-    const wah_element_segment_t *seg = &ctx->module->element_segments[elemidx];
+    WAH_ASSERT(elemidx < fctx->module->element_segment_count);
+    const wah_element_segment_t *seg = &fctx->module->element_segments[elemidx];
     WAH_ENSURE_GOTO(!seg->is_dropped, WAH_ERROR_TRAP, cleanup);
     WAH_ENSURE_GOTO((uint64_t)offset + size <= seg->num_elems, WAH_ERROR_TRAP, cleanup);
-    wah_repr_t repr_id = ctx->module->typeidx_to_repr[typeidx];
-    const wah_repr_info_t *info = ctx->module->repr_infos[repr_id];
+    wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_array(ctx, repr_id, info, size);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)obj + sizeof(wah_gc_array_body_t);
@@ -9308,9 +9308,9 @@ WAH_RUN(ARRAY_FILL) {
     wah_gc_array_body_t *body = (wah_gc_array_body_t *)obj;
     WAH_ENSURE_GOTO((uint64_t)offset + size <= body->length, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
-    const wah_repr_info_t *info = ctx->module->repr_infos[wah_gc_header(obj)->repr_id];
+    const wah_repr_info_t *info = fctx->module->repr_infos[wah_gc_header(obj)->repr_id];
     uint32_t esz = info->size;
-    wah_type_t et = ctx->module->type_defs[typeidx].field_types[0];
+    wah_type_t et = fctx->module->type_defs[typeidx].field_types[0];
     for (uint32_t i = 0; i < size; i++)
         wah_gc_store_field(et, elems + (offset + i) * esz, &fill_val, esz);
     WAH_NEXT();
@@ -9331,8 +9331,8 @@ WAH_RUN(ARRAY_COPY) {
     wah_gc_array_body_t *dst_body = (wah_gc_array_body_t *)dst_obj;
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= src_body->length, WAH_ERROR_TRAP, cleanup);
     WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= dst_body->length, WAH_ERROR_TRAP, cleanup);
-    const wah_repr_info_t *src_info = ctx->module->repr_infos[wah_gc_header(src_obj)->repr_id];
-    const wah_repr_info_t *dst_info = ctx->module->repr_infos[wah_gc_header(dst_obj)->repr_id];
+    const wah_repr_info_t *src_info = fctx->module->repr_infos[wah_gc_header(src_obj)->repr_id];
+    const wah_repr_info_t *dst_info = fctx->module->repr_infos[wah_gc_header(dst_obj)->repr_id];
     uint32_t src_esz = src_info->size;
     uint32_t dst_esz = dst_info->size;
     (void)src_typeidx;
@@ -9352,11 +9352,11 @@ WAH_RUN(ARRAY_INIT_DATA) {
     uint32_t dst_offset = (uint32_t)(--sp)->i32;
     void *obj = (--sp)->ref;
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
-    WAH_ASSERT(dataidx < ctx->module->data_segment_count);
-    const wah_data_segment_t *seg = &ctx->module->data_segments[dataidx];
+    WAH_ASSERT(dataidx < fctx->module->data_segment_count);
+    const wah_data_segment_t *seg = &fctx->module->data_segments[dataidx];
     wah_gc_array_body_t *body = (wah_gc_array_body_t *)obj;
     WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= body->length, WAH_ERROR_TRAP, cleanup);
-    const wah_repr_info_t *info = ctx->module->repr_infos[ctx->module->typeidx_to_repr[typeidx]];
+    const wah_repr_info_t *info = fctx->module->repr_infos[fctx->module->typeidx_to_repr[typeidx]];
     uint32_t esz = info->size;
     WAH_ENSURE_GOTO((uint64_t)src_offset + (uint64_t)size * esz <= seg->data_len, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
@@ -9374,8 +9374,8 @@ WAH_RUN(ARRAY_INIT_ELEM) {
     uint32_t dst_offset = (uint32_t)(--sp)->i32;
     void *obj = (--sp)->ref;
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
-    WAH_ASSERT(elemidx < ctx->module->element_segment_count);
-    const wah_element_segment_t *seg = &ctx->module->element_segments[elemidx];
+    WAH_ASSERT(elemidx < fctx->module->element_segment_count);
+    const wah_element_segment_t *seg = &fctx->module->element_segments[elemidx];
     uint32_t seg_len = seg->is_dropped ? 0 : seg->num_elems;
     wah_gc_array_body_t *body = (wah_gc_array_body_t *)obj;
     WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= body->length, WAH_ERROR_TRAP, cleanup);
@@ -13133,6 +13133,7 @@ static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, const uint8_t *b
     wah_exec_context_t cctx = { .module = ctx->module, .globals = ctx->globals, .global_count = ctx->global_count,
                                 .value_stack = local_stack, .value_stack_capacity = sizeof(local_stack) / sizeof(wah_value_t),
                                 .sp = 0, .call_stack = &local_frame, .max_call_depth = 1, .call_depth = 1, .gc = ctx->gc };
+    local_frame.frame_ctx = &cctx;
 
     wah_error_t err = wah_run_interpreter(&cctx);
     if (err != WAH_OK) return err;
