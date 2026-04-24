@@ -776,6 +776,105 @@ static void test_cross_module_array_fill() {
     wah_free_module(&provider);
 }
 
+static void test_array_copy() {
+    printf("Testing array.copy...\n");
+
+    // Create two arrays, fill src with values, copy a range to dst, verify
+    const char *spec = "wasm \
+        types {[ array i32 mut, fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[2 type.ref.null 0] \
+            i32.const 0 i32.const 4 array.new 0 local.set 0 \
+            i32.const 0 i32.const 4 array.new 0 local.set 1 \
+            local.get 0 i32.const 0 i32.const 10 array.set 0 \
+            local.get 0 i32.const 1 i32.const 20 array.set 0 \
+            local.get 0 i32.const 2 i32.const 30 array.set 0 \
+            local.get 0 i32.const 3 i32.const 40 array.set 0 \
+            local.get 1 i32.const 1 local.get 0 i32.const 0 i32.const 3 array.copy 0 0 \
+            local.get 1 i32.const 1 array.get 0 \
+            local.get 1 i32.const 2 array.get 0 i32.add \
+            local.get 1 i32.const 3 array.get 0 i32.add \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 60);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_array_new_data() {
+    printf("Testing array.new_data...\n");
+
+    // Passive data segment with bytes [0x0A, 0x14, 0x1E, 0x28] (10, 20, 30, 40)
+    // array.new_data creates an i8 array from data segment
+    const char *spec = "wasm \
+        types {[ array i8 mut, fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        datacount { 1 } \
+        code {[ {[] \
+            i32.const 0 i32.const 4 array.new_data 0 0 \
+            i32.const 0 array.get_u 0 \
+            i32.const 10 i32.eq \
+        end } ]} \
+        data {[ data.passive {%'0A141E28'} ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 1);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_array_init_data() {
+    printf("Testing array.init_data...\n");
+
+    // Create array with default values, then init from passive data segment
+    const char *spec = "wasm \
+        types {[ array i8 mut, fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        datacount { 1 } \
+        code {[ {[1 type.ref.null 0] \
+            i32.const 0 i32.const 4 array.new 0 local.set 0 \
+            local.get 0 i32.const 1 i32.const 0 i32.const 2 array.init_data 0 0 \
+            local.get 0 i32.const 0 array.get_u 0 \
+            local.get 0 i32.const 1 array.get_u 0 i32.add \
+            local.get 0 i32.const 2 array.get_u 0 i32.add \
+        end } ]} \
+        data {[ data.passive {%'0A141E28'} ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    // array[0] = 0 (default), array[1] = 0x0A (10), array[2] = 0x14 (20)
+    assert_eq_i32(result.i32, 30);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 int main() {
     test_i31_ops();
     test_extern_convert();
@@ -796,6 +895,9 @@ int main() {
     test_cross_module_array_new_fixed();
     test_cross_module_array_new_default();
     test_cross_module_array_fill();
+    test_array_copy();
+    test_array_new_data();
+    test_array_init_data();
     printf("All GC ops tests passed!\n");
     return 0;
 }
