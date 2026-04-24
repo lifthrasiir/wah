@@ -5226,7 +5226,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         }
 
         // Control flow operations
-        case WAH_OP_NOP: EMIT_SIMPLE(); break;
+        case WAH_OP_NOP: break; // No opcode emitted
         case WAH_OP_UNREACHABLE: {
             wah_validation_mark_unreachable(vctx);
             EMIT_SIMPLE();
@@ -5959,16 +5959,14 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             wah_type_flags_t ref_flags;
             WAH_CHECK(wah_validation_pop_type_with_flags(vctx, &ref_type, &ref_flags));
             WAH_CHECK(wah_validation_push_type_with_flags(vctx, WAH_TYPE_ANYREF, ref_flags));
-            EMIT_SIMPLE();
-            break;
+            break; // No opcode emitted
         }
         case WAH_OP_EXTERN_CONVERT_ANY: {
             wah_type_t ref_type;
             wah_type_flags_t ref_flags;
             WAH_CHECK(wah_validation_pop_type_with_flags(vctx, &ref_type, &ref_flags));
             WAH_CHECK(wah_validation_push_type_with_flags(vctx, WAH_TYPE_EXTERNREF, ref_flags));
-            EMIT_SIMPLE();
-            break;
+            break; // No opcode emitted
         }
         case WAH_OP_REF_I31: {
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_I32, 0));
@@ -7515,7 +7513,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                 case WAH_OP_STRUCT_NEW: case WAH_OP_STRUCT_NEW_DEFAULT:
                 case WAH_OP_ARRAY_NEW: case WAH_OP_ARRAY_NEW_DEFAULT:
                 case WAH_OP_ARRAY_GET: case WAH_OP_ARRAY_GET_S: case WAH_OP_ARRAY_GET_U:
-                case WAH_OP_ARRAY_SET: {
+                case WAH_OP_ARRAY_SET: case WAH_OP_ARRAY_FILL: {
                     WAH_LOWER_U32(instr->imm.u32);
                     break;
                 }
@@ -7533,16 +7531,6 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                     WAH_LOWER_U32(instr->imm.type_length.length);
                     break;
                 }
-                case WAH_OP_ARRAY_FILL: {
-                    WAH_LOWER_U32(instr->imm.u32);
-                    break;
-                }
-                case WAH_OP_ARRAY_LEN: break;
-                case WAH_OP_ANY_CONVERT_EXTERN: break;
-                case WAH_OP_EXTERN_CONVERT_ANY: break;
-                case WAH_OP_REF_I31: break;
-                case WAH_OP_I31_GET_S: break;
-                case WAH_OP_I31_GET_U: break;
             }
         }
     }
@@ -8674,6 +8662,15 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 #endif
 
 //------------------------------------------------------------------------------
+#define WAH_NEVER_RUN(opcode) WAH_RUN(opcode) { (void)bytecode_base; WAH_UNREACHABLE(); WAH_NEXT(); }
+
+WAH_NEVER_RUN(NOP) // Removed by preparser
+WAH_NEVER_RUN(BLOCK) // Converted to bytecode offsets
+WAH_NEVER_RUN(LOOP) // Converted to bytecode offsets
+WAH_NEVER_RUN(SELECT_T) // Identical to WAH_RUN(SELECT) in run time
+WAH_NEVER_RUN(ANY_CONVERT_EXTERN) // Two hierarchies share the same representation so this is a no-op
+WAH_NEVER_RUN(EXTERN_CONVERT_ANY) // (ditto)
+
 WAH_RUN(POLL) {
     frame->ref_map_offset = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
@@ -8691,18 +8688,6 @@ WAH_RUN(POLL) {
     }
     WAH_NEXT();
     WAH_CLEANUP();
-}
-
-WAH_RUN(BLOCK) { // Should not appear in preparsed code
-    (void)bytecode_base;
-    WAH_UNREACHABLE();
-    WAH_NEXT();
-}
-
-WAH_RUN(LOOP) { // Should not appear in preparsed code
-    (void)bytecode_base;
-    WAH_UNREACHABLE();
-    WAH_NEXT();
 }
 
 WAH_RUN(IF) {
@@ -9410,14 +9395,6 @@ WAH_RUN(ARRAY_INIT_ELEM) {
     }
     WAH_NEXT();
     WAH_CLEANUP();
-}
-
-WAH_RUN(ANY_CONVERT_EXTERN) {
-    WAH_NEXT();
-}
-
-WAH_RUN(EXTERN_CONVERT_ANY) {
-    WAH_NEXT();
 }
 
 WAH_RUN(REF_I31) {
@@ -10825,14 +10802,6 @@ WAH_RUN(SELECT) {
     *sp++ = c.i32 ? a : b;
     WAH_NEXT();
 }
-
-WAH_RUN(SELECT_T) { // Should not appear in preparsed code
-    (void)bytecode_base;
-    WAH_UNREACHABLE();
-    WAH_NEXT();
-}
-
-WAH_RUN(NOP) { WAH_NEXT(); }
 
 WAH_RUN(UNREACHABLE) {
     (void)bytecode_base;
