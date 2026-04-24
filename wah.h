@@ -7146,21 +7146,30 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
         wah_write_u32_le(buf + (off), (v)); \
     } while (0)
 
-    #define WAH_LOWER_ADD_PATCH(cf_ptr) do { \
-        wah_lower_cf_t *_cf = (cf_ptr); \
-        if (_cf->patch_count >= _cf->patch_capacity) { \
-            _cf->patch_capacity = _cf->patch_capacity == 0 ? 4 : _cf->patch_capacity * 2; \
-            WAH_REALLOC_ARRAY_GOTO(_cf->patch_offsets, _cf->patch_capacity, cleanup); \
+    #define WAH_LOWER_GROW_U32_ARRAY(arr, count, capacity) do { \
+        if ((count) >= (capacity)) { \
+            (capacity) = (capacity) == 0 ? 4 : (capacity) * 2; \
+            WAH_REALLOC_ARRAY_GOTO((arr), (capacity), cleanup); \
         } \
-        _cf->patch_offsets[_cf->patch_count++] = buf_size; \
     } while (0)
 
+    #define WAH_LOWER_ADD_PATCH_AT(cf_ptr, pos) do { \
+        wah_lower_cf_t *_cf = (cf_ptr); \
+        WAH_LOWER_GROW_U32_ARRAY(_cf->patch_offsets, _cf->patch_count, _cf->patch_capacity); \
+        _cf->patch_offsets[_cf->patch_count++] = (pos); \
+    } while (0)
+
+    #define WAH_LOWER_ADD_PATCH(cf_ptr) WAH_LOWER_ADD_PATCH_AT(cf_ptr, buf_size)
+
     #define WAH_LOWER_ADD_FUNC_END_PATCH() do { \
-        if (func_end_patch_count >= func_end_patch_capacity) { \
-            func_end_patch_capacity = func_end_patch_capacity == 0 ? 4 : func_end_patch_capacity * 2; \
-            WAH_REALLOC_ARRAY_GOTO(func_end_patches, func_end_patch_capacity, cleanup); \
-        } \
+        WAH_LOWER_GROW_U32_ARRAY(func_end_patches, func_end_patch_count, func_end_patch_capacity); \
         func_end_patches[func_end_patch_count++] = buf_size; \
+    } while (0)
+
+    #define WAH_LOWER_APPLY_PATCHES(offsets, count, target) do { \
+        for (uint32_t _pi = 0; _pi < (count); _pi++) { \
+            WAH_LOWER_PATCH_U32((offsets)[_pi], (target)); \
+        } \
     } while (0)
 
     #define WAH_LOWER_RESOLVE_BRANCH(relative_depth) do { \
@@ -7189,9 +7198,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
         WAH_ASSERT(control_sp > 0); \
         wah_lower_cf_t *_cf = &control_stack[--control_sp]; \
         uint32_t _end_pos = buf_size; \
-        for (uint32_t _pi = 0; _pi < _cf->patch_count; _pi++) { \
-            WAH_LOWER_PATCH_U32(_cf->patch_offsets[_pi], _end_pos); \
-        } \
+        WAH_LOWER_APPLY_PATCHES(_cf->patch_offsets, _cf->patch_count, _end_pos); \
         if (_cf->opcode == WAH_OP_IF) { \
             WAH_LOWER_PATCH_U32(_cf->if_false_patch, _end_pos); \
         } \
@@ -7263,9 +7270,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
             }
             WAH_LOWER_U16(WAH_OP_END);
             uint32_t func_end_pos = buf_size - sizeof(uint16_t);
-            for (uint32_t pi = 0; pi < func_end_patch_count; pi++) {
-                WAH_LOWER_PATCH_U32(func_end_patches[pi], func_end_pos);
-            }
+            WAH_LOWER_APPLY_PATCHES(func_end_patches, func_end_patch_count, func_end_pos);
             continue;
         }
 
@@ -7322,40 +7327,21 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
             case WAH_OPCLASS_II: {
                 uint32_t a = instr->imm.u32_u32.a;
                 uint32_t b = instr->imm.u32_u32.b;
-                // Redirect memory.init/memory.copy to i64 variants when needed
-                if (opcode == WAH_OP_MEMORY_INIT && b < wah_memory_index_limit(module) && wah_memory_type(module, b)->addr_type == WAH_TYPE_I64) {
-                    wah_write_u16_le(buf + buf_size - sizeof(uint16_t), WAH_OP_MEMORY_INIT_i64);
+                #define WAH_LOWER_MEM_I64(idx) ((idx) < wah_memory_index_limit(module) && wah_memory_type(module, (idx))->addr_type == WAH_TYPE_I64)
+                #define WAH_LOWER_TAB_I64(idx) ((idx) < wah_table_index_limit(module) && wah_table_type(module, (idx))->addr_type == WAH_TYPE_I64)
+                #define WAH_LOWER_REWRITE_IF(cond, new_op) do { if (cond) wah_write_u16_le(buf + buf_size - sizeof(uint16_t), (new_op)); } while (0)
+                switch (opcode) {
+                    case WAH_OP_MEMORY_INIT:   WAH_LOWER_REWRITE_IF(WAH_LOWER_MEM_I64(b), WAH_OP_MEMORY_INIT_i64); break;
+                    case WAH_OP_MEMORY_COPY:   WAH_LOWER_REWRITE_IF(WAH_LOWER_MEM_I64(a) || WAH_LOWER_MEM_I64(b), WAH_OP_MEMORY_COPY_i64); break;
+                    case WAH_OP_TABLE_COPY:    WAH_LOWER_REWRITE_IF(WAH_LOWER_TAB_I64(a) || WAH_LOWER_TAB_I64(b), WAH_OP_TABLE_COPY_i64); break;
+                    case WAH_OP_TABLE_INIT:    WAH_LOWER_REWRITE_IF(WAH_LOWER_TAB_I64(b), WAH_OP_TABLE_INIT_i64); break;
+                    case WAH_OP_CALL_INDIRECT: WAH_LOWER_REWRITE_IF(WAH_LOWER_TAB_I64(b), WAH_OP_CALL_INDIRECT_i64); break;
+                    case WAH_OP_RETURN_CALL_INDIRECT: WAH_LOWER_REWRITE_IF(WAH_LOWER_TAB_I64(b), WAH_OP_RETURN_CALL_INDIRECT_i64); break;
+                    default: break;
                 }
-                if (opcode == WAH_OP_MEMORY_COPY) {
-                    if ((a < wah_memory_index_limit(module) && wah_memory_type(module, a)->addr_type == WAH_TYPE_I64)
-                        || (b < wah_memory_index_limit(module) && wah_memory_type(module, b)->addr_type == WAH_TYPE_I64)) {
-                        wah_write_u16_le(buf + buf_size - sizeof(uint16_t), WAH_OP_MEMORY_COPY_i64);
-                    }
-                }
-                // TABLE_COPY: a=dst_table, b=src_table
-                if (opcode == WAH_OP_TABLE_COPY) {
-                    if ((a < wah_table_index_limit(module) && wah_table_type(module, a)->addr_type == WAH_TYPE_I64)
-                        || (b < wah_table_index_limit(module) && wah_table_type(module, b)->addr_type == WAH_TYPE_I64)) {
-                        wah_write_u16_le(buf + buf_size - sizeof(uint16_t), WAH_OP_TABLE_COPY_i64);
-                    }
-                }
-                // TABLE_INIT: a=elem_idx, b=table_idx
-                if (opcode == WAH_OP_TABLE_INIT) {
-                    if (b < wah_table_index_limit(module) && wah_table_type(module, b)->addr_type == WAH_TYPE_I64) {
-                        wah_write_u16_le(buf + buf_size - sizeof(uint16_t), WAH_OP_TABLE_INIT_i64);
-                    }
-                }
-                // CALL_INDIRECT: a=type_idx, b=table_idx
-                if (opcode == WAH_OP_CALL_INDIRECT) {
-                    if (b < wah_table_index_limit(module) && wah_table_type(module, b)->addr_type == WAH_TYPE_I64) {
-                        wah_write_u16_le(buf + buf_size - sizeof(uint16_t), WAH_OP_CALL_INDIRECT_i64);
-                    }
-                }
-                if (opcode == WAH_OP_RETURN_CALL_INDIRECT) {
-                    if (b < wah_table_index_limit(module) && wah_table_type(module, b)->addr_type == WAH_TYPE_I64) {
-                        wah_write_u16_le(buf + buf_size - sizeof(uint16_t), WAH_OP_RETURN_CALL_INDIRECT_i64);
-                    }
-                }
+                #undef WAH_LOWER_REWRITE_IF
+                #undef WAH_LOWER_TAB_I64
+                #undef WAH_LOWER_MEM_I64
                 WAH_LOWER_U32(a);
                 WAH_LOWER_U32(b);
                 break;
@@ -7413,21 +7399,12 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                 case WAH_OP_ELSE: {
                     WAH_ASSERT(control_sp > 0 && control_stack[control_sp - 1].opcode == WAH_OP_IF && "validation should have verified ELSE is inside IF");
                     wah_lower_cf_t *cf = &control_stack[control_sp - 1];
-                    // The ELSE opcode + end-offset placeholder is emitted as part of ELSE
-                    uint32_t else_end_patch = buf_size; // record position for end-offset placeholder
-                    WAH_LOWER_U32(0); // placeholder for end offset
-                    // Patch the IF's false-branch to point here (after the ELSE header)
+                    uint32_t else_end_patch = buf_size;
+                    WAH_LOWER_U32(0);
                     WAH_LOWER_PATCH_U32(cf->if_false_patch, buf_size);
-                    // Transfer existing end-patches to the new ELSE frame, add the else-end placeholder
-                    // Actually: the existing patches from BR targeting this block still need to go to END.
-                    // We keep them. Just add the ELSE's own end-offset placeholder.
-                    // Change frame to ELSE and add the else-end placeholder to patch list.
                     cf->opcode = WAH_OP_ELSE;
-                    cf->if_false_patch = 0; // no longer relevant
-                    // Add the ELSE end-offset placeholder to the patch list
-                    WAH_LOWER_ADD_PATCH(cf);
-                    // The patch we just added recorded buf_size (current), but we want else_end_patch
-                    cf->patch_offsets[cf->patch_count - 1] = else_end_patch;
+                    cf->if_false_patch = 0;
+                    WAH_LOWER_ADD_PATCH_AT(cf, else_end_patch);
                     break;
                 }
                 case WAH_OP_BR: case WAH_OP_BR_IF:
@@ -7542,8 +7519,11 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
     #undef WAH_LOWER_FINISH_FRAME
     #undef WAH_LOWER_PUSH_FRAME
     #undef WAH_LOWER_RESOLVE_BRANCH
+    #undef WAH_LOWER_APPLY_PATCHES
     #undef WAH_LOWER_ADD_FUNC_END_PATCH
     #undef WAH_LOWER_ADD_PATCH
+    #undef WAH_LOWER_ADD_PATCH_AT
+    #undef WAH_LOWER_GROW_U32_ARRAY
     #undef WAH_LOWER_PATCH_U32
     #undef WAH_LOWER_MEM
     #undef WAH_LOWER_U64
