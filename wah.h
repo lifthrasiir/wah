@@ -266,7 +266,12 @@ typedef struct wah_exec_context_s {
     uint32_t table_count;
 
     // Linkage support
-    struct wah_linked_modules_s { const char *name; const wah_module_t *module; struct wah_exec_context_s *ctx; } *linked_modules;
+    struct wah_linked_modules_s {
+        const char *name;
+        const wah_module_t *module;
+        struct wah_exec_context_s *ctx;
+        bool owns_ctx;
+    } *linked_modules;
     uint32_t linked_module_count;
     uint32_t linked_module_capacity;
     bool is_instantiated;
@@ -7946,6 +7951,10 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
     if (exec_ctx->linked_modules) {
         for (uint32_t i = 0; i < exec_ctx->linked_module_count; ++i) {
             free((void*)exec_ctx->linked_modules[i].name);
+            if (exec_ctx->linked_modules[i].owns_ctx) {
+                free(exec_ctx->linked_modules[i].ctx->tag_instances);
+                free(exec_ctx->linked_modules[i].ctx);
+            }
         }
         free(exec_ctx->linked_modules);
     }
@@ -13107,6 +13116,7 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
     ctx->linked_modules[ctx->linked_module_count].name = name_copy;
     ctx->linked_modules[ctx->linked_module_count].module = mod;
     ctx->linked_modules[ctx->linked_module_count].ctx = NULL;
+    ctx->linked_modules[ctx->linked_module_count].owns_ctx = false;
     ctx->linked_module_count++;
 
     return WAH_OK;
@@ -13137,6 +13147,7 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
     ctx->linked_modules[ctx->linked_module_count].name = name_copy;
     ctx->linked_modules[ctx->linked_module_count].module = linked_ctx->module;
     ctx->linked_modules[ctx->linked_module_count].ctx = linked_ctx;
+    ctx->linked_modules[ctx->linked_module_count].owns_ctx = false;
     ctx->linked_module_count++;
 
     return WAH_OK;
@@ -13318,6 +13329,46 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         } else {
             ctx->globals[i] = ctx->globals[linked_globals_offset + linked_local_global_idx];
         }
+    }
+
+    // Create lightweight internal contexts for wah_link_module-linked modules
+    // that have tags, so they get their own tag instance space.
+    // These contexts share memories/tables/globals with the primary context but
+    // have independent tag_instances for correct cross-module tag identity.
+    uint32_t g_offset = wah_global_index_limit(module);
+    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+        const wah_module_t *lmod = ctx->linked_modules[j].module;
+        if (ctx->linked_modules[j].ctx == NULL) {
+            uint32_t ltotal_tags = lmod->import_tag_count + lmod->tag_count;
+            if (ltotal_tags > 0) {
+                wah_exec_context_t *ictx = (wah_exec_context_t *)calloc(1, sizeof(wah_exec_context_t));
+                WAH_ENSURE_GOTO(ictx != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+                ictx->module = lmod;
+                ictx->memories = ctx->memories;
+                ictx->memory_count = ctx->memory_count;
+                ictx->tables = ctx->tables;
+                ictx->table_count = ctx->table_count;
+                ictx->globals = ctx->globals + g_offset;
+                ictx->global_count = lmod->global_count;
+                ictx->function_table = ctx->function_table;
+                ictx->function_table_count = ctx->function_table_count;
+                ictx->gc = ctx->gc;
+                WAH_MALLOC_ARRAY_GOTO(ictx->tag_instances, ltotal_tags, cleanup);
+                ictx->tag_instance_count = 0;
+                for (uint32_t t = 0; t < lmod->import_tag_count; t++) {
+                    ictx->tag_instances[ictx->tag_instance_count++] =
+                        (wah_tag_instance_t){ .type_index = lmod->tag_imports[t].type_index };
+                }
+                for (uint32_t t = 0; t < lmod->tag_count; t++) {
+                    ictx->tag_instances[ictx->tag_instance_count++] =
+                        (wah_tag_instance_t){ .type_index = lmod->tags[t].type_index, .unique_id = wah_next_tag_unique_id++ };
+                }
+                ictx->is_instantiated = true;
+                ctx->linked_modules[j].ctx = ictx;
+                ctx->linked_modules[j].owns_ctx = true;
+            }
+        }
+        g_offset += lmod->global_count;
     }
 
     // Resolve tag imports from linked modules
