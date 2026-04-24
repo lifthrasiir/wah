@@ -13,8 +13,7 @@ endif
 
 # List of test source files
 ALL_TEST_SRCS := $(wildcard tests/test_*.c)
-SPECTEST_SRC := tests/test_spectest.c
-TEST_SRCS := $(filter-out $(SPECTEST_SRC),$(ALL_TEST_SRCS))
+TEST_SRCS := $(ALL_TEST_SRCS)
 # List of compiled test executables
 TEST_BINS := $(patsubst %.c, %, $(TEST_SRCS))
 

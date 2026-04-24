@@ -212,7 +212,7 @@ static const char *SPECTEST_FILES[] = {
     "tests/spectest/simd_store32_lane.bin.wast",
     "tests/spectest/simd_store64_lane.bin.wast",
     "tests/spectest/simd_store8_lane.bin.wast",
-    //"tests/spectest/skip-stack-guard-page.bin.wast", // OS stack guard behavior
+    "tests/spectest/skip-stack-guard-page.bin.wast",
     "tests/spectest/stack.bin.wast",
     "tests/spectest/start.bin.wast",
     "tests/spectest/start0.bin.wast",
