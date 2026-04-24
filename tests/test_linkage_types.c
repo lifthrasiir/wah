@@ -463,6 +463,77 @@ static void test_ref_test_concrete_func_subtype() {
     wah_free_module(&module);
 }
 
+static void test_cross_module_type_with_extra_types() {
+    printf("Testing cross-module type identity with extra type defs...\n");
+
+    const char *provider_spec = "wasm \
+        types {[ struct [i32 mut], fn [i32, i32] [i32] ]} \
+        funcs {[ 1 ]} \
+        exports {[ {'add'} fn# 0 ]} \
+        code {[ {[] local.get 0 local.get 1 i32.add end } ]}";
+
+    const char *consumer_spec = "wasm \
+        types {[ fn [i32, i32] [i32], fn [i32] [i32] ]} \
+        imports {[ {'provider'} {'add'} fn# 0 ]} \
+        funcs {[ 1 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        elements {[ elem.active.table#0 i32.const 0 end [ 0 ] ]} \
+        code {[ {[] local.get 0 i32.const 5 i32.const 0 call_indirect 0 0 end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_module(&ctx, "provider", &provider));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    wah_value_t param = {.i32 = 10};
+    assert_ok(wah_call(&ctx, 1, &param, 1, &result));
+    assert_eq_i32(result.i32, 15);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
+static void test_cross_module_subtype_func_ref_test() {
+    printf("Testing cross-module subtype func ref.test...\n");
+
+    const char *provider_spec = "wasm \
+        types {[ sub [] fn [] [i32], sub [0] fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        elements {[ elem.declarative.expr funcref [ ref.func 0 end ] ]} \
+        code {[ {[] i32.const 42 end } ]}";
+
+    const char *consumer_spec = "wasm \
+        types {[ sub [] fn [] [i32], sub [0] fn [] [i32], fn [] [i32] ]} \
+        imports {[ {'provider'} {'f'} fn# 1 ]} \
+        funcs {[ 2 ]} \
+        elements {[ elem.declarative.expr funcref [ ref.func 0 end ] ]} \
+        code {[ {[] ref.func 0 ref.test 0 end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_module(&ctx, "provider", &provider));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 1);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
 int main() {
     test_cross_module_call_indirect();
     test_elem_before_data_order();
@@ -475,6 +546,8 @@ int main() {
     test_rec_group_canon_subtype();
     test_call_indirect_non_identical_type();
     test_ref_test_concrete_func_subtype();
+    test_cross_module_type_with_extra_types();
+    test_cross_module_subtype_func_ref_test();
     printf("All linkage_types tests passed!\n");
     return 0;
 }

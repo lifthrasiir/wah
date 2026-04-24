@@ -155,10 +155,175 @@ static void test_cross_module_throw_tag_context() {
     wah_free_module(&provider);
 }
 
+static void test_catch_ref_and_throw_ref() {
+    printf("Testing catch_ref and throw_ref...\n");
+
+    const char *spec = "wasm \
+        types {[ fn [] [i32], fn [i32] [], fn [] [i32, exnref] ]} \
+        funcs {[ 0 ]} \
+        tags {[ tag.type# 1 ]} \
+        code {[ {[] \
+            block i32 \
+                try_table void [catch 0 1] \
+                    block 2 \
+                        try_table void [catch_ref 0 0] \
+                            i32.const 42 \
+                            throw 0 \
+                        end \
+                        i32.const 0 \
+                        ref.null exnref \
+                    end \
+                    throw_ref \
+                    unreachable \
+                end \
+                i32.const -1 \
+            end \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_nested_try_table() {
+    printf("Testing nested try_table...\n");
+
+    const char *spec = "wasm \
+        types {[ fn [] [i32], fn [i32] [] ]} \
+        funcs {[ 0 ]} \
+        tags {[ tag.type# 1 ]} \
+        code {[ {[] \
+            block i32 \
+                try_table void [catch 0 1] \
+                    block void \
+                        try_table void [catch_all 0] \
+                            i32.const 10 \
+                            throw 0 \
+                        end \
+                    end \
+                    i32.const 20 \
+                    throw 0 \
+                end \
+                i32.const 0 \
+            end \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 20);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_try_table_no_catch_propagates() {
+    printf("Testing try_table uncaught exception propagates...\n");
+
+    const char *spec = "wasm \
+        types {[ fn [] [i32], fn [i32] [] ]} \
+        funcs {[ 0 ]} \
+        tags {[ tag.type# 1, tag.type# 1 ]} \
+        code {[ {[] \
+            block i32 \
+                try_table void [catch 0 0] \
+                    try_table void [catch 1 1] \
+                        i32.const 55 \
+                        throw 0 \
+                    end \
+                end \
+                i32.const -1 \
+            end \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 55);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_cross_module_exception_tag_identity() {
+    printf("Testing cross-module exception tag identity...\n");
+
+    const char *provider_spec = "wasm \
+        types {[ fn [i32] [], fn [] [] ]} \
+        funcs {[ 1 ]} \
+        tags {[ tag.type# 0 ]} \
+        exports {[ {'thrower'} fn# 0, {'tag'} export.tag 0 ]} \
+        code {[ {[] i32.const 42 throw 0 end } ]}";
+
+    const char *consumer_spec = "wasm \
+        types {[ fn [i32] [], fn [] [], fn [] [i32] ]} \
+        imports {[ \
+            {'provider'} {'thrower'} fn# 1, \
+            {'provider'} {'tag'} tag# tag.type# 0 \
+        ]} \
+        funcs {[ 2 ]} \
+        code {[ {[] \
+            block i32 \
+                try_table void [catch 0 1] \
+                    call 0 \
+                end \
+                i32.const -1 \
+            end \
+        end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t provider_ctx = {0};
+    assert_ok(wah_exec_context_create(&provider_ctx, &provider));
+    assert_ok(wah_instantiate(&provider_ctx));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_context(&ctx, "provider", &provider_ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+
+    wah_exec_context_destroy(&ctx);
+    wah_exec_context_destroy(&provider_ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
 int main() {
     test_try_table_catch_label_types();
     test_catch_all();
     test_cross_module_throw_tag_context();
+    test_catch_ref_and_throw_ref();
+    test_nested_try_table();
+    test_try_table_no_catch_propagates();
+    test_cross_module_exception_tag_identity();
     printf("All exception tests passed!\n");
     return 0;
 }

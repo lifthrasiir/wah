@@ -518,6 +518,84 @@ int main() {
         wah_free_module(&provider_b);
     }
 
+    printf("Testing cross-module funcref table roundtrip...\n");
+    {
+        const char *provider_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0, 0 ]} \
+            exports {[ {'f10'} fn# 0, {'f20'} fn# 1 ]} \
+            code {[ {[] i32.const 10 end }, {[] i32.const 20 end } ]}";
+
+        const char *consumer_spec = "wasm \
+            types {[ fn [] [i32], fn [i32] [i32] ]} \
+            imports {[ {'provider'} {'f10'} fn# 0, {'provider'} {'f20'} fn# 0 ]} \
+            funcs {[ 1 ]} \
+            tables {[ funcref limits.i32/1 2 ]} \
+            elements {[ elem.active.table#0 i32.const 0 end [ 0, 1 ] ]} \
+            code {[ {[] local.get 0 call_indirect 0 0 end } ]}";
+
+        wah_module_t provider = {0}, consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_exec_context_create(&ctx, &consumer));
+        assert_ok(wah_link_module(&ctx, "provider", &provider));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        wah_value_t param;
+
+        param.i32 = 0;
+        assert_ok(wah_call(&ctx, 2, &param, 1, &result));
+        assert_eq_i32(result.i32, 10);
+
+        param.i32 = 1;
+        assert_ok(wah_call(&ctx, 2, &param, 1, &result));
+        assert_eq_i32(result.i32, 20);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&consumer);
+        wah_free_module(&provider);
+    }
+
+    printf("Testing cross-module funcref global call...\n");
+    {
+        const char *provider_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] i32.const 99 end } ]}";
+
+        const char *consumer_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'provider'} {'f'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            globals {[ funcref mut ref.func 0 end ]} \
+            code {[ {[] \
+                i32.const 0 global.get 0 table.set 0 \
+                i32.const 0 call_indirect 0 0 \
+            end } ]}";
+
+        wah_module_t provider = {0}, consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_exec_context_create(&ctx, &consumer));
+        assert_ok(wah_link_module(&ctx, "provider", &provider));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 99);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&consumer);
+        wah_free_module(&provider);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
