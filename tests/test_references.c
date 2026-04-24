@@ -392,6 +392,160 @@ static void test_externref_global_host_boundary() {
     wah_free_module(&host_mod);
 }
 
+static void test_externref_ref_test() {
+    printf("Running test_externref_ref_test...\n");
+
+    // non-null externref, ref.test externref -> 1
+    {
+        wah_module_t host_mod = {0};
+        assert_ok(wah_new_module(&host_mod));
+        assert_ok(wah_module_export_funcv(&host_mod, "make",
+            0, NULL, 1, (wah_type_t[]){WAH_TYPE_EXTERNREF},
+            host_return_externref, NULL, NULL));
+
+        const char *spec = "wasm \
+            types {[ fn [] [externref], fn [] [i32] ]} \
+            imports {[ {'host'} {'make'} fn# 0 ]} \
+            funcs {[ 1 ]} \
+            code {[ {[] call 0 ref.test externref end } ]}";
+        wah_module_t wasm_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+        assert_ok(wah_link_module(&ctx, "host", &host_mod));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&host_mod);
+    }
+
+    // null externref, ref.test externref -> 0
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] ref.null externref ref.test externref end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 0);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    // null externref, ref.test.null externref -> 1
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] ref.null externref ref.test.null externref end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+}
+
+static void test_externref_ref_cast() {
+    printf("Running test_externref_ref_cast...\n");
+
+    // non-null externref, ref.cast externref -> should succeed
+    {
+        wah_module_t host_mod = {0};
+        assert_ok(wah_new_module(&host_mod));
+        assert_ok(wah_module_export_funcv(&host_mod, "make",
+            0, NULL, 1, (wah_type_t[]){WAH_TYPE_EXTERNREF},
+            host_return_externref, NULL, NULL));
+        assert_ok(wah_module_export_funcv(&host_mod, "isNull",
+            1, (wah_type_t[]){WAH_TYPE_EXTERNREF}, 1, (wah_type_t[]){WAH_TYPE_I32},
+            host_externref_is_null, NULL, NULL));
+
+        const char *spec = "wasm \
+            types {[ fn [] [externref], fn [externref] [i32], fn [] [i32] ]} \
+            imports {[ {'host'} {'make'} fn# 0, {'host'} {'isNull'} fn# 1 ]} \
+            funcs {[ 2 ]} \
+            code {[ {[] call 0 ref.cast externref call 1 end } ]}";
+        wah_module_t wasm_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+        assert_ok(wah_link_module(&ctx, "host", &host_mod));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+        assert_eq_i32(result.i32, 0);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&host_mod);
+    }
+
+    // null externref, ref.cast externref -> should trap
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [externref] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] ref.null externref ref.cast externref end } ]}";
+        wah_module_t module;
+        assert_ok(wah_parse_module_from_spec(&module, spec));
+        wah_exec_context_t ctx;
+        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_TRAP);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    // br_on_cast.null.null with externref (extern > noextern hierarchy)
+    {
+        wah_module_t host_mod = {0};
+        assert_ok(wah_new_module(&host_mod));
+        assert_ok(wah_module_export_funcv(&host_mod, "make",
+            0, NULL, 1, (wah_type_t[]){WAH_TYPE_EXTERNREF},
+            host_return_externref, NULL, NULL));
+
+        const char *spec = "wasm \
+            types {[ fn [] [externref], fn [] [i32] ]} \
+            imports {[ {'host'} {'make'} fn# 0 ]} \
+            funcs {[ 1 ]} \
+            code {[ {[] \
+                block externref \
+                    call 0 \
+                    br_on_cast.null.null 0 externref externref \
+                    drop \
+                    ref.null externref \
+                end \
+                ref.is_null \
+                i32.const 1 i32.xor \
+            end } ]}";
+        wah_module_t wasm_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+        assert_ok(wah_link_module(&ctx, "host", &host_mod));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&host_mod);
+    }
+}
+
 // Regression: ref.func in an expr-style element segment must use the global function index
 // (which already includes imports). The const_expr evaluator must NOT add import_function_count.
 static void host_return42(wah_call_context_t *ctx, void *userdata) {
@@ -1608,6 +1762,9 @@ int main() {
     test_externref_host_roundtrip();
     test_externref_table_host_boundary();
     test_externref_global_host_boundary();
+
+    test_externref_ref_test();
+    test_externref_ref_cast();
 
     printf("\nAll Reference Types tests passed!\n");
     return 0;
