@@ -208,9 +208,9 @@ static int is_func_ref_in_table(const wah_exec_context_t *ctx, void *ref) {
 
 static int is_func_ref_in_module(const wah_module_t *m, void *ref) {
     uintptr_t start, end, ptr;
-    if (!m || !m->functions || m->total_function_count == 0) return 0;
+    if (!m || !m->functions || m->local_function_count == 0) return 0;
     start = (uintptr_t)&m->functions[0];
-    end = (uintptr_t)(&m->functions[m->total_function_count]);
+    end = (uintptr_t)(&m->functions[m->local_function_count]);
     ptr = (uintptr_t)ref;
     return ptr >= start && ptr < end;
 }

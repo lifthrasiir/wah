@@ -194,8 +194,8 @@ typedef struct wah_module_s {
     struct wah_export_s *exports;
 
     // Unified function table: functions[0..wasm_function_count) are WASM functions,
-    // functions[wasm_function_count..total_function_count) are host functions.
-    uint32_t total_function_count; // wasm_function_count + number of host functions
+    // functions[wasm_function_count..local_function_count) are host functions.
+    uint32_t local_function_count;
     uint32_t function_capacity;    // allocated capacity of functions[]
     struct wah_function_s *functions; // unified function array
 
@@ -7790,7 +7790,7 @@ wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah
         }
         module->function_capacity = module->wasm_function_count;
     }
-    module->total_function_count = module->wasm_function_count;
+    module->local_function_count = module->wasm_function_count;
 
     return WAH_OK;
 
@@ -7890,7 +7890,7 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
     // Build the runtime function_table (global index space: imports + locals + hosts).
     // Import slots are zero-initialized here; wah_instantiate() fills them in.
     uint32_t import_count = module->import_function_count;
-    uint32_t table_size = import_count + module->total_function_count;
+    uint32_t table_size = import_count + module->local_function_count;
     exec_ctx->function_table_count = table_size;
     if (table_size > 0) {
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->function_table, table_size, cleanup);
@@ -7899,7 +7899,7 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
             exec_ctx->function_table[i] = (wah_function_t){ .fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER };
         }
         // Copy local/host functions at offset import_count
-        for (uint32_t i = 0; i < module->total_function_count; i++) {
+        for (uint32_t i = 0; i < module->local_function_count; i++) {
             if (!module->functions[i].is_host) {
                 module->functions[i].local_idx = i;
             }
@@ -12515,7 +12515,7 @@ void wah_free_module(wah_module_t *module) {
             uint32_t idx = module->exports[i].index;
             bool is_host_export = (module->exports[i].kind == 0 &&
                                    module->functions &&
-                                   idx < module->total_function_count &&
+                                   idx < module->local_function_count &&
                                    module->functions[idx].is_host);
             // For memory (kind 2) and global (kind 3) exports from programmatically created modules,
             // the name is owned by the export entry itself, not by another structure.
@@ -12529,7 +12529,7 @@ void wah_free_module(wah_module_t *module) {
 
     // Free host function resources stored in the unified functions[] array.
     if (module->functions) {
-        for (uint32_t i = module->wasm_function_count; i < module->total_function_count; ++i) {
+        for (uint32_t i = module->wasm_function_count; i < module->local_function_count; ++i) {
             wah_function_t *fn = &module->functions[i];
             if (fn->is_host) {
                 if (fn->finalize && fn->userdata) {
@@ -12594,7 +12594,7 @@ static wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx,
 wah_error_t wah_new_module(wah_module_t *mod) {
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
 
-    *mod = (wah_module_t){ .function_capacity = 16, .total_function_count = 0, .capacity_exports = 16 };
+    *mod = (wah_module_t){ .function_capacity = 16, .local_function_count = 0, .capacity_exports = 16 };
 
     // Allocate initial unified functions[] array (all host functions for a new module)
     WAH_MALLOC_ARRAY(mod->functions, mod->function_capacity);
@@ -12639,7 +12639,7 @@ wah_error_t wah_module_export_funcv(
     }
 
     // Grow functions[] array if needed
-    if (mod->total_function_count >= mod->function_capacity) {
+    if (mod->local_function_count >= mod->function_capacity) {
         uint32_t new_capacity = mod->function_capacity * 2;
         WAH_REALLOC_ARRAY_GOTO(mod->functions, new_capacity, cleanup);
         mod->function_capacity = new_capacity;
@@ -12666,7 +12666,7 @@ wah_error_t wah_module_export_funcv(
     }
 
     // Fill in the unified function entry
-    uint32_t new_func_idx = mod->total_function_count;
+    uint32_t new_func_idx = mod->local_function_count;
     wah_function_t *fn = &mod->functions[new_func_idx];
     memset(fn, 0, sizeof(wah_function_t));
     fn->fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER;
@@ -12681,7 +12681,7 @@ wah_error_t wah_module_export_funcv(
     fn->nresults = nresults;
     fn->result_types = result_types_copy;
     fn->result_type_flags = result_flags_copy;
-    mod->total_function_count++;
+    mod->local_function_count++;
 
     // Fill in export entry
     struct wah_export_s *export_entry = &mod->exports[mod->export_count];
@@ -13243,7 +13243,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         uint32_t linked_import_count = linked->import_function_count;
         WAH_ENSURE_GOTO(exp->index >= linked_import_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
         uint32_t linked_local_idx = exp->index - linked_import_count;
-        WAH_ENSURE_GOTO(linked_local_idx < linked->total_function_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(linked_local_idx < linked->local_function_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
 
         const wah_function_t *src = &linked->functions[linked_local_idx];
 
@@ -13587,7 +13587,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     uint32_t provider_import_count = provider->import_function_count;
                     WAH_ENSURE_GOTO(exp->index >= provider_import_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
                     uint32_t provider_local_idx = exp->index - provider_import_count;
-                    WAH_ENSURE_GOTO(provider_local_idx < provider->total_function_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                    WAH_ENSURE_GOTO(provider_local_idx < provider->local_function_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
                     ctx->globals[lg_offset + k].ref = wah_func_to_ref(&provider->functions[provider_local_idx]);
                 }
             }
@@ -13717,7 +13717,7 @@ wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_entry_
     if (export_entry->kind == 0 &&
         module->functions &&
         export_entry->index >= module->import_function_count &&
-        exp_local_idx < module->total_function_count &&
+        exp_local_idx < module->local_function_count &&
         module->functions[exp_local_idx].is_host) {
         const wah_function_t *fn = &module->functions[exp_local_idx];
 
@@ -13813,7 +13813,7 @@ wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id
             } else {
                 // Local/host range: index into functions[] is (index - import_count)
                 uint32_t local_fn_idx = index - import_count;
-                WAH_ENSURE(module->functions && local_fn_idx < module->total_function_count, WAH_ERROR_NOT_FOUND);
+                WAH_ENSURE(module->functions && local_fn_idx < module->local_function_count, WAH_ERROR_NOT_FOUND);
                 if (module->functions[local_fn_idx].is_host) {
                     const wah_function_t *fn = &module->functions[local_fn_idx];
                     out->type = WAH_TYPE_HOST_FUNCTION;
