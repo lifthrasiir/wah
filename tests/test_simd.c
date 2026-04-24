@@ -1085,6 +1085,47 @@ void test_i16x8_relaxed_q15mulr_s() {
     run_simd_binary_op_test("i16x8.relaxed_q15mulr_s", binary_op_wasm_spec, &v1, &v2, &expected);
 }
 
+void test_simd_fp_nan_canonicalization() {
+    wah_v128_t nan32 = { .u32 = {0x7fa00000, 0x7fa00000, 0x7fa00000, 0x7fa00000} };
+    wah_v128_t one32 = { .f32 = {1.0f, 1.0f, 1.0f, 1.0f} };
+    wah_v128_t canon32 = { .u32 = {0x7fc00000, 0x7fc00000, 0x7fc00000, 0x7fc00000} };
+
+    wah_v128_t nan64 = { .u64 = {0x7ff0000000000001ULL, 0x7ff4000000000000ULL} };
+    wah_v128_t one64 = { .u64 = {0x3ff0000000000000ULL, 0x3ff0000000000000ULL} };
+    wah_v128_t canon64 = { .u64 = {0x7ff8000000000000ULL, 0x7ff8000000000000ULL} };
+
+    run_simd_binary_op_test("f32x4.sub (nan canonicalization)", binary_op_wasm_spec, &nan32, &one32, &canon32);
+    run_simd_binary_op_test("f32x4.mul (nan canonicalization)", binary_op_wasm_spec, &nan32, &one32, &canon32);
+    run_simd_binary_op_test("f32x4.div (nan canonicalization)", binary_op_wasm_spec, &nan32, &one32, &canon32);
+    run_simd_unary_op_test("f32x4.sqrt (nan canonicalization)", unary_op_wasm_spec, &nan32, &canon32);
+    run_simd_binary_op_test("f32x4.max (nan canonicalization)", binary_op_wasm_spec, &nan32, &one32, &canon32);
+
+    run_simd_binary_op_test("f64x2.add (nan canonicalization)", binary_op_wasm_spec, &nan64, &one64, &canon64);
+    run_simd_binary_op_test("f64x2.sub (nan canonicalization)", binary_op_wasm_spec, &nan64, &one64, &canon64);
+    run_simd_binary_op_test("f64x2.mul (nan canonicalization)", binary_op_wasm_spec, &nan64, &one64, &canon64);
+    run_simd_binary_op_test("f64x2.div (nan canonicalization)", binary_op_wasm_spec, &nan64, &one64, &canon64);
+    run_simd_binary_op_test("f64x2.min (nan canonicalization)", binary_op_wasm_spec, &nan64, &one64, &canon64);
+    run_simd_binary_op_test("f64x2.max (nan canonicalization)", binary_op_wasm_spec, &nan64, &one64, &canon64);
+
+    run_simd_unary_op_test("f32x4.ceil (nan canonicalization)", unary_op_wasm_spec, &nan32, &canon32);
+    run_simd_unary_op_test("f32x4.floor (nan canonicalization)", unary_op_wasm_spec, &nan32, &canon32);
+    run_simd_unary_op_test("f32x4.trunc (nan canonicalization)", unary_op_wasm_spec, &nan32, &canon32);
+    run_simd_unary_op_test("f32x4.nearest (nan canonicalization)", unary_op_wasm_spec, &nan32, &canon32);
+    run_simd_unary_op_test("f64x2.ceil (nan canonicalization)", unary_op_wasm_spec, &nan64, &canon64);
+    run_simd_unary_op_test("f64x2.floor (nan canonicalization)", unary_op_wasm_spec, &nan64, &canon64);
+    run_simd_unary_op_test("f64x2.trunc (nan canonicalization)", unary_op_wasm_spec, &nan64, &canon64);
+    run_simd_unary_op_test("f64x2.nearest (nan canonicalization)", unary_op_wasm_spec, &nan64, &canon64);
+
+    run_simd_binary_op_test("f32x4.relaxed_max (nan canonicalization)", binary_op_wasm_spec, &nan32, &one32, &canon32);
+    run_simd_binary_op_test("f64x2.relaxed_min (nan canonicalization)", binary_op_wasm_spec, &nan64, &one64, &canon64);
+    run_simd_binary_op_test("f64x2.relaxed_max (nan canonicalization)", binary_op_wasm_spec, &nan64, &one64, &canon64);
+
+    wah_v128_t nan_c32 = { .u32 = {0x3f800000, 0x3f800000, 0x3f800000, 0x3f800000} };
+    run_simd_ternary_op_test("f64x2.relaxed_madd (nan canonicalization)", ternary_op_wasm_spec, &nan64, &one64, &one64, &canon64);
+    run_simd_ternary_op_test("f32x4.relaxed_nmadd (nan canonicalization)", ternary_op_wasm_spec, &nan32, &one32, &nan_c32, &canon32);
+    run_simd_ternary_op_test("f64x2.relaxed_nmadd (nan canonicalization)", ternary_op_wasm_spec, &nan64, &one64, &one64, &canon64);
+}
+
 void test_f32x4_pmax_nan_handling() {
     wah_v128_t operand1 = { .f32 = {1.0f, NAN, 3.0f, NAN} };
     wah_v128_t operand2 = { .f32 = {2.0f, 2.0f, NAN, NAN} };
@@ -1250,6 +1291,7 @@ int main() {
     test_f64x2_neg();
     test_f64x2_sqrt();
     test_f32x4_pmax_nan_handling();
+    test_simd_fp_nan_canonicalization();
 
     // Relaxed SIMD operations
     test_i8x16_relaxed_swizzle();
