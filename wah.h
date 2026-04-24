@@ -235,6 +235,8 @@ typedef struct {
     const uint8_t *catch_table;
     uint32_t catch_count;
     const uint8_t *bytecode_base;
+    struct wah_tag_instance_s *handler_tag_instances;
+    uint32_t handler_tag_instance_count;
 } wah_exception_handler_t;
 
 typedef struct wah_exec_context_s {
@@ -8466,8 +8468,8 @@ static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t 
 
             bool match = false;
             if (catch_kind == WAH_CATCH_KIND_CATCH || catch_kind == WAH_CATCH_KIND_CATCH_REF) {
-                if (catch_tag_idx < ctx->tag_instance_count &&
-                    ctx->tag_instances[catch_tag_idx].unique_id == exc->tag_unique_id) {
+                if (catch_tag_idx < handler->handler_tag_instance_count &&
+                    handler->handler_tag_instances[catch_tag_idx].unique_id == exc->tag_unique_id) {
                     match = true;
                 }
             } else {
@@ -8769,6 +8771,8 @@ WAH_RUN(TRY_TABLE) {
     handler->catch_table = bytecode_ip;
     handler->catch_count = catch_count_val;
     handler->bytecode_base = bytecode_base;
+    handler->handler_tag_instances = fctx->tag_instances;
+    handler->handler_tag_instance_count = fctx->tag_instance_count;
     for (uint32_t ci = 0; ci < catch_count_val; ci++) {
         bytecode_ip += 1; // catch_kind
         bytecode_ip += sizeof(uint32_t); // tag_idx

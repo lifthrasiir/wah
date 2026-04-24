@@ -316,6 +316,56 @@ static void test_cross_module_exception_tag_identity() {
     wah_free_module(&provider);
 }
 
+static void test_exception_tag_mismatch_no_catch() {
+    printf("Testing exception tag mismatch does not catch...\n");
+
+    const char *provider_spec = "wasm \
+        types {[ fn [i32] [], fn [] [] ]} \
+        funcs {[ 1 ]} \
+        tags {[ tag.type# 0 ]} \
+        exports {[ {'thrower'} fn# 0 ]} \
+        code {[ {[] i32.const 42 throw 0 end } ]}";
+
+    const char *consumer_spec = "wasm \
+        types {[ fn [i32] [], fn [] [], fn [] [i32] ]} \
+        imports {[ {'provider'} {'thrower'} fn# 1 ]} \
+        funcs {[ 2 ]} \
+        tags {[ tag.type# 0 ]} \
+        code {[ {[] \
+            block i32 \
+                block void \
+                    try_table void [catch 0 1, catch_all 0] \
+                        call 0 \
+                    end \
+                end \
+                i32.const -1 \
+                br 0 \
+            end \
+        end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t provider_ctx = {0};
+    assert_ok(wah_exec_context_create(&provider_ctx, &provider));
+    assert_ok(wah_instantiate(&provider_ctx));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_context(&ctx, "provider", &provider_ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, -1);
+
+    wah_exec_context_destroy(&ctx);
+    wah_exec_context_destroy(&provider_ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
 int main() {
     test_try_table_catch_label_types();
     test_catch_all();
@@ -324,6 +374,7 @@ int main() {
     test_nested_try_table();
     test_try_table_no_catch_propagates();
     test_cross_module_exception_tag_identity();
+    test_exception_tag_mismatch_no_catch();
     printf("All exception tests passed!\n");
     return 0;
 }
