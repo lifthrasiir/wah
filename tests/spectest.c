@@ -116,17 +116,7 @@ static int ensure_capacity(void **items, size_t *capacity, size_t elem_size, siz
     return 1;
 }
 
-typedef struct {
-    wah_gc_object_t header;
-    uint32_t id;
-} host_ref_obj_t;
-
-typedef struct {
-    wah_gc_object_t header;
-    wah_gc_extern_body_t body;
-} host_extern_wrapper_t;
-
-static void *host_ref_for_id(spectest_env_t *env, uint32_t id) {
+static void *host_ref_for_id(spectest_env_t *env, wah_exec_context_t *ctx, uint32_t id) {
     size_t i;
     for (i = 0; i < env->host_ref_count; ++i) {
         if (env->host_refs[i].id == id) {
@@ -137,22 +127,13 @@ static void *host_ref_for_id(spectest_env_t *env, uint32_t id) {
                          sizeof(*env->host_refs), env->host_ref_count + 1)) {
         return NULL;
     }
-    host_ref_obj_t *inner = (host_ref_obj_t *)malloc(sizeof(*inner));
-    if (!inner) return NULL;
-    inner->header = (wah_gc_object_t){.next_tagged = NULL, .repr_id = WAH_REPR_NONE, .size_bytes = 0};
-    inner->id = id;
-    host_extern_wrapper_t *wrapper = (host_extern_wrapper_t *)malloc(sizeof(*wrapper));
-    if (!wrapper) { free(inner); return NULL; }
-    wrapper->header = (wah_gc_object_t){
-        .next_tagged = NULL,
-        .repr_id = WAH_REPR_EXTERN,
-        .size_bytes = (uint32_t)sizeof(wah_gc_extern_body_t)
-    };
-    wrapper->body.inner = &inner->id; // payload pointer (after header)
+    void *ptr = wah_gc_alloc_host(ctx, sizeof(uint32_t));
+    if (!ptr) return NULL;
+    *(uint32_t *)ptr = id;
     env->host_refs[env->host_ref_count].id = id;
-    env->host_refs[env->host_ref_count].ptr = &wrapper->body;
+    env->host_refs[env->host_ref_count].ptr = ptr;
     env->host_ref_count++;
-    return &wrapper->body;
+    return ptr;
 }
 
 static spectest_module_def_t *find_def_by_name(spectest_env_t *env, const char *name) {
@@ -206,8 +187,14 @@ static spectest_module_def_t *resolve_def(spectest_env_t *env, const wast_node_t
     return def;
 }
 
+typedef struct {
+    spectest_env_t *env;
+    wah_exec_context_t *ctx;
+} resolve_ref_ctx_t;
+
 static void *spectest_resolve_ref(void *userdata, uint32_t id) {
-    return host_ref_for_id((spectest_env_t *)userdata, id);
+    resolve_ref_ctx_t *rctx = (resolve_ref_ctx_t *)userdata;
+    return host_ref_for_id(rctx->env, rctx->ctx, id);
 }
 
 static int is_func_ref_in_table(const wah_exec_context_t *ctx, void *ref) {
@@ -279,8 +266,8 @@ static int match_num_pat_f64(uint64_t bits, const wast_num_pat_t *pat) {
     return (bits & UINT64_C(0x0008000000000000)) != 0;
 }
 
-static int match_single_pattern(const spectest_env_t *env,
-                                const spectest_instance_t *instance,
+static int match_single_pattern(spectest_env_t *env,
+                                spectest_instance_t *instance,
                                 const wast_const_value_t *actual,
                                 const wast_result_pat_t *pat) {
     (void)env;
@@ -367,10 +354,8 @@ static int match_single_pattern(const spectest_env_t *env,
         case WAST_PAT_REF_HOST: {
             if (actual->value.ref == NULL) return 0;
             if (pat->host_ref_id == 0 && !pat->ref_kind_name) return 1;
-            void *expected = host_ref_for_id((spectest_env_t *)env, pat->host_ref_id);
-            if (actual->value.ref == expected) return 1;
-            wah_gc_extern_body_t *body = (wah_gc_extern_body_t *)expected;
-            return actual->value.ref == body->inner;
+            void *expected = host_ref_for_id(env, &instance->exec, pat->host_ref_id);
+            return actual->value.ref == expected;
         }
         case WAST_PAT_REF_OTHER:
             if (!strcmp(pat->ref_kind_name, "ref.array") ||
@@ -469,13 +454,14 @@ static int execute_action(const wast_node_t *action_node,
             free(field_name);
             return 0;
         }
+        resolve_ref_ctx_t rctx = { env, &instance->exec };
         for (++arg_index; arg_index < action_node->child_count; ++arg_index) {
             if (param_count >= sizeof(params) / sizeof(params[0])) {
                 snprintf(error_buf, error_buf_size, "too many invoke arguments");
                 free(field_name);
                 return 0;
             }
-            if (!wast_parse_const(action_node->children[arg_index], &parsed_values[param_count], spectest_resolve_ref, env)) {
+            if (!wast_parse_const(action_node->children[arg_index], &parsed_values[param_count], spectest_resolve_ref, &rctx)) {
                 snprintf(error_buf, error_buf_size, "unsupported invoke argument");
                 free(field_name);
                 return 0;
@@ -1108,14 +1094,6 @@ static void free_env(spectest_env_t *env) {
     }
     for (i = 0; i < env->registered_count; ++i) {
         free(env->registered[i].name);
-    }
-    for (i = 0; i < env->host_ref_count; ++i) {
-        void *payload = env->host_refs[i].ptr;
-        wah_gc_extern_body_t *body = (wah_gc_extern_body_t *)payload;
-        // body->inner points to payload of host_ref_obj_t; recover malloc pointer
-        free((uint8_t *)body->inner - sizeof(wah_gc_object_t));
-        // payload points to wrapper->body; recover malloc pointer
-        free((uint8_t *)payload - sizeof(wah_gc_object_t));
     }
     if (env->host_ready) {
         wah_free_module(&env->spectest_host);

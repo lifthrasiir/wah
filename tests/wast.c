@@ -865,12 +865,7 @@ static int wast_parse_const(const wast_node_t *node, wast_const_value_t *out,
         out->type = WAH_TYPE_ANYREF;
         void *wrapper = resolve_ref(ref_userdata, (uint32_t)u64);
         if (!wrapper) return 0;
-        wah_gc_object_t *hdr = (wah_gc_object_t *)((uint8_t *)wrapper - sizeof(wah_gc_object_t));
-        if (hdr->repr_id == WAH_REPR_EXTERN) {
-            out->value.ref = ((wah_gc_extern_body_t *)wrapper)->inner;
-        } else {
-            out->value.ref = wrapper;
-        }
+        out->value.ref = wrapper;
         return out->value.ref != NULL;
     }
     if (wast_atom_eq(node->children[0], "v128.const") && node->child_count >= 3) {

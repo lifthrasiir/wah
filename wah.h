@@ -410,6 +410,8 @@ void wah_gc_step(wah_exec_context_t *ctx);
 void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats);
 // Verifies GC heap consistency. Returns true if valid. Logs errors via WAH_LOG in debug builds.
 bool wah_gc_verify_heap(const wah_exec_context_t *ctx);
+// Allocates an opaque host object on the GC heap. Returns a pointer to the payload of the given size, or NULL on failure.
+void *wah_gc_alloc_host(wah_exec_context_t *ctx, size_t size);
 
 wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id, wah_entry_t *out);
 
@@ -1331,14 +1333,10 @@ typedef struct wah_repr_info_s {
 
 #define WAH_REPR_NONE   ((wah_repr_t)-0x40)
 #define WAH_REPR_REF    ((wah_repr_t)-0x41)
-#define WAH_REPR_EXTERN ((wah_repr_t)-0x42)
+#define WAH_REPR_HOST   ((wah_repr_t)-0x42)
 
 static inline bool wah_repr_is_positive(wah_repr_t id) { return id >= 0; }
 static inline bool wah_repr_is_builtin(wah_repr_t id) { return id < 0; }
-
-typedef struct {
-    void *inner;
-} wah_gc_extern_body_t;
 
 typedef struct {
     uint32_t length;
@@ -8071,13 +8069,9 @@ static void *wah_gc_alloc_array(wah_exec_context_t *ctx, wah_repr_t repr_id, con
     return payload;
 }
 
-static void *wah_gc_alloc_extern(wah_exec_context_t *ctx, void *inner) {
-    void *payload = wah_gc_alloc(ctx, WAH_REPR_EXTERN, (uint32_t)sizeof(wah_gc_extern_body_t));
-    if (payload) {
-        wah_gc_extern_body_t *body = (wah_gc_extern_body_t *)payload;
-        body->inner = inner;
-    }
-    return payload;
+void *wah_gc_alloc_host(wah_exec_context_t *ctx, size_t size) {
+    if (size > UINT32_MAX) return NULL;
+    return wah_gc_alloc(ctx, WAH_REPR_HOST, (uint32_t)size);
 }
 
 static inline void wah_gc_store_field(wah_type_t ft, uint8_t *addr, const wah_value_t *val, uint32_t size) {
@@ -8260,16 +8254,12 @@ static void wah_gc_scan_object(wah_gc_object_t *obj, const wah_module_t *module)
 }
 
 static void wah_gc_mark_visitor(wah_value_t *slot, wah_type_t type, void *userdata) {
-    if (type == WAH_TYPE_EXTERNREF || type == WAH_TYPE_NULLEXTERNREF ||
-        type == WAH_TYPE_EXNREF || type == WAH_TYPE_NULLEXNREF) return;
+    if (type == WAH_TYPE_EXNREF || type == WAH_TYPE_NULLEXNREF) return;
     void *ref = slot->ref;
     if (!ref || wah_ref_is_i31(ref)) return;
     wah_gc_object_t *obj = wah_gc_header(ref);
-    wah_repr_t repr_id = obj->repr_id;
-    if (wah_repr_is_positive(repr_id)) {
-        const wah_module_t *module = (const wah_module_t *)userdata;
-        wah_gc_mark_object(obj, module);
-    }
+    const wah_module_t *module = (const wah_module_t *)userdata;
+    wah_gc_mark_object(obj, module);
 }
 
 static void wah_gc_step_mark(wah_exec_context_t *ctx) {
@@ -8533,7 +8523,8 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
     if (ref == NULL) return false;
 
     if (wah_ref_is_i31(ref)) {
-        return target == WAH_TYPE_ANYREF || target == WAH_TYPE_EQREF || target == WAH_TYPE_I31REF;
+        return target == WAH_TYPE_ANYREF || target == WAH_TYPE_EXTERNREF ||
+               target == WAH_TYPE_EQREF || target == WAH_TYPE_I31REF;
     }
 
     wah_gc_object_t *hdr = wah_gc_header(ref);
@@ -8558,7 +8549,8 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
 
     switch (target) {
         case WAH_TYPE_ANYREF:
-            return repr_id != WAH_TYPE_FUNCTION && repr_id != WAH_REPR_EXTERN;
+        case WAH_TYPE_EXTERNREF:
+            return repr_id != WAH_TYPE_FUNCTION;
         case WAH_TYPE_EQREF:
             return wah_repr_is_positive(repr_id);
         case WAH_TYPE_I31REF:
@@ -8571,8 +8563,6 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
                    ctx->module->repr_infos[repr_id]->type == WAH_REPR_ARRAY;
         case WAH_TYPE_FUNCREF:
             return repr_id == WAH_TYPE_FUNCTION;
-        case WAH_TYPE_EXTERNREF:
-            return repr_id == WAH_REPR_EXTERN;
         default:
             return false;
     }
@@ -9423,25 +9413,11 @@ WAH_RUN(ARRAY_INIT_ELEM) {
 }
 
 WAH_RUN(ANY_CONVERT_EXTERN) {
-    void *ref = sp[-1].ref;
-    if (ref != NULL && !wah_ref_is_i31(ref)) {
-        wah_gc_object_t *hdr = wah_gc_header(ref);
-        if (hdr->repr_id == WAH_REPR_EXTERN) {
-            sp[-1].ref = ((wah_gc_extern_body_t *)ref)->inner;
-        }
-    }
     WAH_NEXT();
 }
 
 WAH_RUN(EXTERN_CONVERT_ANY) {
-    void *ref = sp[-1].ref;
-    if (ref != NULL) {
-        void *obj = wah_gc_alloc_extern(ctx, ref);
-        WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
-        sp[-1].ref = obj;
-    }
     WAH_NEXT();
-    WAH_CLEANUP();
 }
 
 WAH_RUN(REF_I31) {
