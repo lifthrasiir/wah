@@ -952,6 +952,11 @@ void test_f32x4_min() {
     wah_v128_t nan_v2 = { .u32 = {0x3f800000, 0x7fa00000, 0x7fa00000, 0x3f800000} };
     wah_v128_t nan_expected = { .u32 = {0x7fc00000, 0x7fc00000, 0x7fc00000, 0x7fc00000} };
     run_simd_binary_op_test("f32x4.min (nan canonicalization)", binary_op_wasm_spec, &nan_v1, &nan_v2, &nan_expected);
+
+    wah_v128_t pos_zero = { .f32 = {0.0f, -0.0f, 0.0f, -0.0f} };
+    wah_v128_t neg_zero = { .f32 = {-0.0f, 0.0f, -0.0f, 0.0f} };
+    wah_v128_t sz_expected = { .f32 = {-0.0f, -0.0f, -0.0f, -0.0f} };
+    run_simd_binary_op_test("f32x4.min (signed zero)", binary_op_wasm_spec, &pos_zero, &neg_zero, &sz_expected);
 }
 
 void test_f64x2_neg() {
@@ -1030,6 +1035,17 @@ void test_f32x4_relaxed_madd_determinism() {
     wah_v128_t expected = { .f32 = {0.0f, 0.0f, 0.0f, 0.0f} };
 
     run_simd_ternary_op_test("f32x4.relaxed_madd (determinism)", ternary_op_wasm_spec, &a, &b, &c, &expected);
+
+    // NMADD determinism: c - a*b, non-FMA behavior
+    // Same values: c - a*b = -(1+2^-19) - (1+2^-20)*(1+2^-20)
+    // Non-FMA: fl(a*b) = 1 + 2^-19, c - fl(a*b) = -(1+2^-19) - (1+2^-19) = -(2+2^-18)
+    // FMA would differ
+    float nmadd_expected = val_c - (float)(val_a * val_a);
+    wah_v128_t nmadd_a = { .f32 = {val_a, val_a, val_a, val_a} };
+    wah_v128_t nmadd_b = { .f32 = {val_a, val_a, val_a, val_a} };
+    wah_v128_t nmadd_c = { .f32 = {val_c, val_c, val_c, val_c} };
+    wah_v128_t nmadd_exp = { .f32 = {nmadd_expected, nmadd_expected, nmadd_expected, nmadd_expected} };
+    run_simd_ternary_op_test("f32x4.relaxed_nmadd (determinism)", ternary_op_wasm_spec, &nmadd_a, &nmadd_b, &nmadd_c, &nmadd_exp);
 }
 
 void test_i8x16_relaxed_laneselect() {
@@ -1050,6 +1066,11 @@ void test_f32x4_relaxed_min() {
     wah_v128_t nan_v2 = { .u32 = {0x3f800000, 0x7fa00000, 0x3f800000, 0x7fa00000} };
     wah_v128_t nan_expected = { .u32 = {0x7fc00000, 0x7fc00000, 0x7fc00000, 0x7fc00000} };
     run_simd_binary_op_test("f32x4.relaxed_min (nan canonicalization)", binary_op_wasm_spec, &nan_v1, &nan_v2, &nan_expected);
+
+    wah_v128_t pos_zero = { .f32 = {0.0f, -0.0f, 0.0f, -0.0f} };
+    wah_v128_t neg_zero = { .f32 = {-0.0f, 0.0f, -0.0f, 0.0f} };
+    wah_v128_t sz_expected = { .f32 = {-0.0f, -0.0f, -0.0f, -0.0f} };
+    run_simd_binary_op_test("f32x4.relaxed_min (signed zero)", binary_op_wasm_spec, &pos_zero, &neg_zero, &sz_expected);
 }
 
 void test_i16x8_relaxed_q15mulr_s() {
