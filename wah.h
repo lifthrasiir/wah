@@ -163,72 +163,6 @@ typedef struct {
     } u;
 } wah_entry_t;
 
-// --- Repr Metadata ---
-typedef int32_t wah_repr_t;
-
-typedef enum {
-    WAH_REPR_STRUCT = 1,
-    WAH_REPR_ARRAY,
-} wah_repr_type_t;
-
-typedef struct {
-    uint32_t offset;
-    wah_repr_t repr_id;
-} wah_repr_field_t;
-
-typedef struct {
-    wah_repr_type_t type;
-    uint32_t typeidx;
-    uint32_t size;
-    uint32_t count;
-    wah_repr_field_t fields[];
-} wah_repr_info_t;
-
-#define WAH_REPR_NONE   ((wah_repr_t)-0x40)
-#define WAH_REPR_REF    ((wah_repr_t)-0x41)
-#define WAH_REPR_EXTERN ((wah_repr_t)-0x42)
-
-static inline bool wah_repr_is_positive(wah_repr_t id) { return id >= 0; }
-static inline bool wah_repr_is_builtin(wah_repr_t id) { return id < 0; }
-
-typedef struct {
-    void *inner;
-} wah_gc_extern_body_t;
-
-typedef struct {
-    uint32_t length;
-} wah_gc_array_body_t;
-
-static inline bool wah_repr_field_is_ref(const wah_repr_field_t *f) {
-    return f->repr_id == WAH_REPR_REF || wah_repr_is_positive(f->repr_id);
-}
-
-typedef struct {
-    uint32_t count;
-    wah_repr_t *ids;
-    bool accepts_i31;
-} wah_repr_set_t;
-
-typedef enum {
-    WAH_COMP_FUNC   = 0x60,
-    WAH_COMP_STRUCT = 0x5F,
-    WAH_COMP_ARRAY  = 0x5E,
-} wah_comp_type_kind_t;
-
-#define WAH_NO_SUPERTYPE UINT32_MAX
-
-typedef struct {
-    wah_comp_type_kind_t kind;
-    bool is_final;
-    uint32_t supertype;
-    uint32_t field_count;
-    wah_type_t *field_types;
-    wah_type_flags_t *field_type_flags;
-    bool *field_mutables;
-    uint32_t rec_group_start;
-    uint32_t rec_group_size;
-} wah_type_def_t;
-
 typedef struct wah_module_s {
     uint32_t type_count;
     uint32_t wasm_function_count;
@@ -247,7 +181,7 @@ typedef struct wah_module_s {
     uint32_t min_data_segment_count_required;
 
     struct wah_func_type_s *types;
-    wah_type_def_t *type_defs;
+    struct wah_type_def_s *type_defs;
     uint32_t type_capacity;
     uint32_t *function_type_indices; // Index into the types array
     struct wah_code_body_s *code_bodies;
@@ -283,9 +217,9 @@ typedef struct wah_module_s {
 
     // Repr metadata for GC types
     uint32_t repr_count;
-    wah_repr_info_t **repr_infos;
-    wah_repr_t *typeidx_to_repr;
-    wah_repr_set_t *type_cast_sets;
+    struct wah_repr_info_s **repr_infos;
+    int32_t *typeidx_to_repr; // int32_t = wah_repr_t (private)
+    struct wah_repr_set_s *type_cast_sets;
 
     // Canonical type map: canonical_map[i] = j means type i is canonically equal to type j
     uint32_t *canonical_map;
@@ -293,117 +227,15 @@ typedef struct wah_module_s {
     // Bitmap of "declared" function indices (for ref.func validation).
     // Built at code-section parse time from exports, element segments, and global init exprs.
     uint8_t *declared_funcs;
-
 } wah_module_t;
 
-// --- GC State ---
-typedef enum {
-    WAH_GC_PHASE_IDLE = 0,
-    WAH_GC_PHASE_MARK,
-    WAH_GC_PHASE_SWEEP,
-} wah_gc_phase_t;
-
-#define WAH_GC_TAG_MARK ((uintptr_t)0x1)
-#define WAH_GC_TAG_AUX  ((uintptr_t)0x2)
-#define WAH_GC_TAG_MASK ((uintptr_t)0x3)
-
-#define WAH_I31_TAG     ((uintptr_t)0x1)
-static inline bool wah_ref_is_i31(const void *ref) {
-    return ((uintptr_t)ref & WAH_I31_TAG) != 0;
-}
-static inline void *wah_ref_make_i31(int32_t value) {
-    return (void *)(((uintptr_t)(uint32_t)(value & 0x7FFFFFFF) << 1) | WAH_I31_TAG);
-}
-static inline int32_t wah_ref_i31_get_u(const void *ref) {
-    return (int32_t)((uintptr_t)ref >> 1) & 0x7FFFFFFF;
-}
-static inline int32_t wah_ref_i31_get_s(const void *ref) {
-    int32_t val = wah_ref_i31_get_u(ref);
-    return (val & 0x40000000) ? (int32_t)(val | 0x80000000u) : val;
-}
-
-typedef struct wah_gc_object_s {
-    struct wah_gc_object_s *next_tagged;
-    wah_repr_t repr_id;
-    uint32_t size_bytes;
-} wah_gc_object_t;
-
-static inline wah_gc_object_t *wah_gc_next(const wah_gc_object_t *obj) {
-    return (wah_gc_object_t *)((uintptr_t)obj->next_tagged & ~WAH_GC_TAG_MASK);
-}
-
-static inline void wah_gc_set_next(wah_gc_object_t *obj, wah_gc_object_t *next) {
-    obj->next_tagged = (struct wah_gc_object_s *)((uintptr_t)next | ((uintptr_t)obj->next_tagged & WAH_GC_TAG_MASK));
-}
-
-static inline bool wah_gc_marked(const wah_gc_object_t *obj) {
-    return ((uintptr_t)obj->next_tagged & WAH_GC_TAG_MARK) != 0;
-}
-
-static inline void wah_gc_set_mark(wah_gc_object_t *obj, bool marked) {
-    if (marked)
-        obj->next_tagged = (struct wah_gc_object_s *)((uintptr_t)obj->next_tagged | WAH_GC_TAG_MARK);
-    else
-        obj->next_tagged = (struct wah_gc_object_s *)((uintptr_t)obj->next_tagged & ~WAH_GC_TAG_MARK);
-}
-
-typedef struct wah_gc_state_s {
-    wah_gc_object_t *all_objects;
-    wah_gc_object_t *sweep_cursor;
-    wah_gc_phase_t phase;
-    uint32_t object_count;
-    size_t allocated_bytes;
-    size_t allocation_threshold;
-    bool gc_pending;
-    bool interrupt_pending;
-#ifdef WAH_DEBUG
-    uint32_t total_collections;
-    uint32_t total_allocations;
-    uint32_t total_frees;
-    uint32_t total_polls;
-#endif
-} wah_gc_state_t;
-
-typedef struct wah_gc_heap_stats_s {
-    uint32_t object_count;
-    size_t allocated_bytes;
-    size_t allocation_threshold;
-    wah_gc_phase_t phase;
-#ifdef WAH_DEBUG
-    uint32_t total_collections;
-    uint32_t total_allocations;
-    uint32_t total_frees;
-    uint32_t total_polls;
-#endif
-} wah_gc_heap_stats_t;
-
-#define WAH_MAX_EXCEPTION_HANDLER_DEPTH 64
-
-typedef struct wah_exception_handler_s {
+typedef struct {
     uint32_t call_depth;
     uint32_t sp_base;
     const uint8_t *catch_table;
     uint32_t catch_count;
     const uint8_t *bytecode_base;
 } wah_exception_handler_t;
-
-typedef struct wah_memory_inst_s {
-    uint8_t *data;
-    uint64_t size;
-    uint64_t max_pages;
-    bool is_imported;
-    struct wah_exec_context_s *import_ctx;
-    uint32_t import_idx;
-} wah_memory_inst_t;
-
-typedef struct wah_table_inst_s {
-    wah_value_t *entries;
-    uint32_t size;
-    uint32_t max_size;
-    bool is_imported;
-    struct wah_exec_context_s *import_ctx;
-    uint32_t import_idx;
-} wah_table_inst_t;
 
 typedef struct wah_exec_context_s {
     wah_value_t *value_stack;       // A single, large stack for operands and locals
@@ -425,10 +257,10 @@ typedef struct wah_exec_context_s {
     uint8_t *memory_base; // Pointer to memory 0 (for i32_i32_mem0 ops; will be moved to register)
     uint64_t memory_size; // Size of memory 0 in bytes
 
-    wah_memory_inst_t *memories; // Array[memory_count], memories[0].data kept in sync with memory_base/memory_size
+    struct wah_memory_inst_s *memories; // Array[memory_count], memories[0].data kept in sync with memory_base/memory_size
     uint32_t memory_count;
 
-    wah_table_inst_t *tables; // Array[table_count]
+    struct wah_table_inst_s *tables; // Array[table_count]
     uint32_t table_count;
 
     // Linkage support
@@ -449,11 +281,12 @@ typedef struct wah_exec_context_s {
     struct wah_exception_s *pending_exception;
 
     // Exception handler stack (try_table frames)
-    struct wah_exception_handler_s exception_handlers[WAH_MAX_EXCEPTION_HANDLER_DEPTH];
+#define WAH_MAX_EXCEPTION_HANDLER_DEPTH 64
+    wah_exception_handler_t exception_handlers[WAH_MAX_EXCEPTION_HANDLER_DEPTH];
     uint32_t exception_handler_depth;
 
     // GC heap state (NULL when GC is not enabled)
-    wah_gc_state_t *gc;
+    struct wah_gc_state_s *gc;
 } wah_exec_context_t;
 
 // Convert error code to human-readable string
@@ -545,12 +378,26 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
 // Any `wah_link_*` calls are now invalid. Any `wah_call` call will implicitly call this function.
 wah_error_t wah_instantiate(wah_exec_context_t *ctx);
 
-// --- Repr Allocation ---
-// Allocates a fresh repr id for a concrete typeidx. Each typeidx gets its own
-// unique repr_id; layout-identical types are never merged.
-wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx, const wah_repr_info_t *info, wah_repr_t *out_repr_id);
-
 // --- GC Management ---
+typedef enum {
+    WAH_GC_PHASE_IDLE = 0,
+    WAH_GC_PHASE_MARK,
+    WAH_GC_PHASE_SWEEP,
+} wah_gc_phase_t;
+
+typedef struct wah_gc_heap_stats_s {
+    uint32_t object_count;
+    size_t allocated_bytes;
+    size_t allocation_threshold;
+    wah_gc_phase_t phase;
+#ifdef WAH_DEBUG
+    uint32_t total_collections;
+    uint32_t total_allocations;
+    uint32_t total_frees;
+    uint32_t total_polls;
+#endif
+} wah_gc_heap_stats_t;
+
 // Enables GC on the execution context. Idempotent.
 wah_error_t wah_gc_start(wah_exec_context_t *ctx);
 // Resets the GC heap: frees all managed objects and resets counters.
@@ -563,60 +410,6 @@ void wah_gc_step(wah_exec_context_t *ctx);
 void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats);
 // Verifies GC heap consistency. Returns true if valid. Logs errors via WAH_LOG in debug builds.
 bool wah_gc_verify_heap(const wah_exec_context_t *ctx);
-// Allocates a GC-managed object. Returns pointer to the payload (after the header).
-void *wah_gc_alloc(wah_exec_context_t *ctx, wah_repr_t repr_id, uint32_t payload_size);
-// Returns the object header from a payload pointer.
-static inline wah_gc_object_t *wah_gc_header(void *payload) {
-    return (wah_gc_object_t *)((uint8_t *)payload - sizeof(wah_gc_object_t));
-}
-// Returns the payload pointer from an object header.
-static inline void *wah_gc_payload(wah_gc_object_t *obj) {
-    return (uint8_t *)obj + sizeof(wah_gc_object_t);
-}
-static inline uint32_t wah_gc_struct_alloc_size(const wah_repr_info_t *info) {
-    return (uint32_t)(sizeof(wah_gc_object_t) + info->size);
-}
-static inline uint32_t wah_gc_array_alloc_size(const wah_repr_info_t *info, uint32_t length) {
-    return (uint32_t)(sizeof(wah_gc_object_t) + sizeof(wah_gc_array_body_t) + info->size * length);
-}
-void *wah_gc_alloc_struct(wah_exec_context_t *ctx, wah_repr_t repr_id, const wah_repr_info_t *info);
-void *wah_gc_alloc_array(wah_exec_context_t *ctx, wah_repr_t repr_id, const wah_repr_info_t *info, uint32_t length);
-
-// Visitor callback for root enumeration. Called once per live reference slot.
-// slot points to the wah_value_t containing the reference; type is its declared type.
-typedef void (*wah_gc_ref_visitor_t)(wah_value_t *slot, wah_type_t type, void *userdata);
-// Enumerates all live GC root slots reachable from the execution context.
-void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visitor, void *userdata);
-
-// --- Repr Lookup ---
-static inline wah_repr_t wah_module_typeidx_to_repr(const wah_module_t *module, uint32_t typeidx) {
-    if (!module->typeidx_to_repr || typeidx >= module->type_count) return WAH_REPR_NONE;
-    return module->typeidx_to_repr[typeidx];
-}
-
-static inline const wah_repr_info_t *wah_repr_info_get(const wah_module_t *module, wah_repr_t repr_id) {
-    if (!wah_repr_is_positive(repr_id) || (uint32_t)repr_id >= module->repr_count) return NULL;
-    return module->repr_infos[repr_id];
-}
-
-static inline uint32_t wah_repr_info_typeidx(const wah_module_t *module, wah_repr_t repr_id) {
-    const wah_repr_info_t *info = wah_repr_info_get(module, repr_id);
-    return info ? info->typeidx : (uint32_t)-1;
-}
-
-static inline bool wah_repr_set_contains(const wah_repr_set_t *set, wah_repr_t repr_id) {
-    if (!set) return false;
-    if (!wah_repr_is_positive(repr_id)) return false;
-    for (uint32_t i = 0; i < set->count; ++i) {
-        if (set->ids[i] == repr_id) return true;
-    }
-    return false;
-}
-
-static inline bool wah_type_accepts_repr(const wah_module_t *module, uint32_t typeidx, wah_repr_t repr_id) {
-    if (!module->type_cast_sets || typeidx >= module->type_count) return false;
-    return wah_repr_set_contains(&module->type_cast_sets[typeidx], repr_id);
-}
 
 wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id, wah_entry_t *out);
 
@@ -1514,6 +1307,213 @@ static wah_opcode_t wah_x86_64_opcode(wah_opcode_t opcode, wah_x86_64_features_t
 }
 
 #endif
+
+// --- Repr Metadata ---
+typedef int32_t wah_repr_t;
+
+typedef enum {
+    WAH_REPR_STRUCT = 1,
+    WAH_REPR_ARRAY,
+} wah_repr_type_t;
+
+typedef struct {
+    uint32_t offset;
+    wah_repr_t repr_id;
+} wah_repr_field_t;
+
+typedef struct wah_repr_info_s {
+    wah_repr_type_t type;
+    uint32_t typeidx;
+    uint32_t size;
+    uint32_t count;
+    wah_repr_field_t fields[];
+} wah_repr_info_t;
+
+#define WAH_REPR_NONE   ((wah_repr_t)-0x40)
+#define WAH_REPR_REF    ((wah_repr_t)-0x41)
+#define WAH_REPR_EXTERN ((wah_repr_t)-0x42)
+
+static inline bool wah_repr_is_positive(wah_repr_t id) { return id >= 0; }
+static inline bool wah_repr_is_builtin(wah_repr_t id) { return id < 0; }
+
+typedef struct {
+    void *inner;
+} wah_gc_extern_body_t;
+
+typedef struct {
+    uint32_t length;
+} wah_gc_array_body_t;
+
+static inline bool wah_repr_field_is_ref(const wah_repr_field_t *f) {
+    return f->repr_id == WAH_REPR_REF || wah_repr_is_positive(f->repr_id);
+}
+
+typedef struct wah_repr_set_s {
+    uint32_t count;
+    wah_repr_t *ids;
+    bool accepts_i31;
+} wah_repr_set_t;
+
+typedef enum {
+    WAH_COMP_FUNC   = 0x60,
+    WAH_COMP_STRUCT = 0x5F,
+    WAH_COMP_ARRAY  = 0x5E,
+} wah_comp_type_kind_t;
+
+#define WAH_NO_SUPERTYPE UINT32_MAX
+
+typedef struct wah_type_def_s {
+    wah_comp_type_kind_t kind;
+    bool is_final;
+    uint32_t supertype;
+    uint32_t field_count;
+    wah_type_t *field_types;
+    wah_type_flags_t *field_type_flags;
+    bool *field_mutables;
+    uint32_t rec_group_start;
+    uint32_t rec_group_size;
+} wah_type_def_t;
+
+// --- Repr Allocation ---
+// Allocates a fresh repr id for a concrete typeidx. Each typeidx gets its own
+// unique repr_id; layout-identical types are never merged.
+static wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx, const wah_repr_info_t *info, wah_repr_t *out_repr_id);
+
+// --- GC State ---
+#define WAH_GC_TAG_MARK ((uintptr_t)0x1)
+#define WAH_GC_TAG_AUX  ((uintptr_t)0x2)
+#define WAH_GC_TAG_MASK ((uintptr_t)0x3)
+
+#define WAH_I31_TAG     ((uintptr_t)0x1)
+static inline bool wah_ref_is_i31(const void *ref) {
+    return ((uintptr_t)ref & WAH_I31_TAG) != 0;
+}
+static inline void *wah_ref_make_i31(int32_t value) {
+    return (void *)(((uintptr_t)(uint32_t)(value & 0x7FFFFFFF) << 1) | WAH_I31_TAG);
+}
+static inline int32_t wah_ref_i31_get_u(const void *ref) {
+    return (int32_t)((uintptr_t)ref >> 1) & 0x7FFFFFFF;
+}
+static inline int32_t wah_ref_i31_get_s(const void *ref) {
+    int32_t val = wah_ref_i31_get_u(ref);
+    return (val & 0x40000000) ? (int32_t)(val | 0x80000000u) : val;
+}
+
+typedef struct wah_gc_object_s {
+    struct wah_gc_object_s *next_tagged;
+    wah_repr_t repr_id;
+    uint32_t size_bytes;
+} wah_gc_object_t;
+
+static inline wah_gc_object_t *wah_gc_next(const wah_gc_object_t *obj) {
+    return (wah_gc_object_t *)((uintptr_t)obj->next_tagged & ~WAH_GC_TAG_MASK);
+}
+
+static inline void wah_gc_set_next(wah_gc_object_t *obj, wah_gc_object_t *next) {
+    obj->next_tagged = (struct wah_gc_object_s *)((uintptr_t)next | ((uintptr_t)obj->next_tagged & WAH_GC_TAG_MASK));
+}
+
+static inline bool wah_gc_marked(const wah_gc_object_t *obj) {
+    return ((uintptr_t)obj->next_tagged & WAH_GC_TAG_MARK) != 0;
+}
+
+static inline void wah_gc_set_mark(wah_gc_object_t *obj, bool marked) {
+    if (marked)
+        obj->next_tagged = (struct wah_gc_object_s *)((uintptr_t)obj->next_tagged | WAH_GC_TAG_MARK);
+    else
+        obj->next_tagged = (struct wah_gc_object_s *)((uintptr_t)obj->next_tagged & ~WAH_GC_TAG_MARK);
+}
+
+typedef struct wah_gc_state_s {
+    wah_gc_object_t *all_objects;
+    wah_gc_object_t *sweep_cursor;
+    wah_gc_phase_t phase;
+    uint32_t object_count;
+    size_t allocated_bytes;
+    size_t allocation_threshold;
+    bool gc_pending;
+    bool interrupt_pending;
+#ifdef WAH_DEBUG
+    uint32_t total_collections;
+    uint32_t total_allocations;
+    uint32_t total_frees;
+    uint32_t total_polls;
+#endif
+} wah_gc_state_t;
+
+typedef struct wah_memory_inst_s {
+    uint8_t *data;
+    uint64_t size;
+    uint64_t max_pages;
+    bool is_imported;
+    struct wah_exec_context_s *import_ctx;
+    uint32_t import_idx;
+} wah_memory_inst_t;
+
+typedef struct wah_table_inst_s {
+    wah_value_t *entries;
+    uint32_t size;
+    uint32_t max_size;
+    bool is_imported;
+    struct wah_exec_context_s *import_ctx;
+    uint32_t import_idx;
+} wah_table_inst_t;
+
+// Allocates a GC-managed object. Returns pointer to the payload (after the header).
+static void *wah_gc_alloc(wah_exec_context_t *ctx, wah_repr_t repr_id, uint32_t payload_size);
+
+// Returns the object header from a payload pointer.
+static inline wah_gc_object_t *wah_gc_header(void *payload) {
+    return (wah_gc_object_t *)((uint8_t *)payload - sizeof(wah_gc_object_t));
+}
+// Returns the payload pointer from an object header.
+static inline void *wah_gc_payload(wah_gc_object_t *obj) {
+    return (uint8_t *)obj + sizeof(wah_gc_object_t);
+}
+static inline uint32_t wah_gc_struct_alloc_size(const wah_repr_info_t *info) {
+    return (uint32_t)(sizeof(wah_gc_object_t) + info->size);
+}
+static inline uint32_t wah_gc_array_alloc_size(const wah_repr_info_t *info, uint32_t length) {
+    return (uint32_t)(sizeof(wah_gc_object_t) + sizeof(wah_gc_array_body_t) + info->size * length);
+}
+static void *wah_gc_alloc_struct(wah_exec_context_t *ctx, wah_repr_t repr_id, const wah_repr_info_t *info);
+static void *wah_gc_alloc_array(wah_exec_context_t *ctx, wah_repr_t repr_id, const wah_repr_info_t *info, uint32_t length);
+
+// Visitor callback for root enumeration. Called once per live reference slot.
+// slot points to the wah_value_t containing the reference; type is its declared type.
+typedef void (*wah_gc_ref_visitor_t)(wah_value_t *slot, wah_type_t type, void *userdata);
+// Enumerates all live GC root slots reachable from the execution context.
+static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visitor, void *userdata);
+
+// --- Repr Lookup ---
+static inline wah_repr_t wah_module_typeidx_to_repr(const wah_module_t *module, uint32_t typeidx) {
+    if (!module->typeidx_to_repr || typeidx >= module->type_count) return WAH_REPR_NONE;
+    return module->typeidx_to_repr[typeidx];
+}
+
+static inline const wah_repr_info_t *wah_repr_info_get(const wah_module_t *module, wah_repr_t repr_id) {
+    if (!wah_repr_is_positive(repr_id) || (uint32_t)repr_id >= module->repr_count) return NULL;
+    return module->repr_infos[repr_id];
+}
+
+static inline uint32_t wah_repr_info_typeidx(const wah_module_t *module, wah_repr_t repr_id) {
+    const wah_repr_info_t *info = wah_repr_info_get(module, repr_id);
+    return info ? info->typeidx : (uint32_t)-1;
+}
+
+static inline bool wah_repr_set_contains(const wah_repr_set_t *set, wah_repr_t repr_id) {
+    if (!set) return false;
+    if (!wah_repr_is_positive(repr_id)) return false;
+    for (uint32_t i = 0; i < set->count; ++i) {
+        if (set->ids[i] == repr_id) return true;
+    }
+    return false;
+}
+
+static inline bool wah_type_accepts_repr(const wah_module_t *module, uint32_t typeidx, wah_repr_t repr_id) {
+    if (!module->type_cast_sets || typeidx >= module->type_count) return false;
+    return wah_repr_set_contains(&module->type_cast_sets[typeidx], repr_id);
+}
 
 // --- Memory Structure ---
 #define WAH_WASM_PAGE_SIZE 65536 // 64 KB
@@ -8026,7 +8026,7 @@ void wah_gc_destroy(wah_exec_context_t *ctx) {
 
 typedef char wah_gc_align_check_[(sizeof(wah_gc_object_t) % 2 == 0) ? 1 : -1];
 
-void *wah_gc_alloc(wah_exec_context_t *ctx, wah_repr_t repr_id, uint32_t payload_size) {
+static void *wah_gc_alloc(wah_exec_context_t *ctx, wah_repr_t repr_id, uint32_t payload_size) {
     wah_gc_state_t *gc = ctx->gc;
     if (!gc) return NULL;
 
@@ -8053,12 +8053,12 @@ void *wah_gc_alloc(wah_exec_context_t *ctx, wah_repr_t repr_id, uint32_t payload
     return wah_gc_payload(obj);
 }
 
-void *wah_gc_alloc_struct(wah_exec_context_t *ctx, wah_repr_t repr_id, const wah_repr_info_t *info) {
+static void *wah_gc_alloc_struct(wah_exec_context_t *ctx, wah_repr_t repr_id, const wah_repr_info_t *info) {
     WAH_ASSERT(info && info->type == WAH_REPR_STRUCT);
     return wah_gc_alloc(ctx, repr_id, info->size);
 }
 
-void *wah_gc_alloc_array(wah_exec_context_t *ctx, wah_repr_t repr_id, const wah_repr_info_t *info, uint32_t length) {
+static void *wah_gc_alloc_array(wah_exec_context_t *ctx, wah_repr_t repr_id, const wah_repr_info_t *info, uint32_t length) {
     WAH_ASSERT(info && info->type == WAH_REPR_ARRAY);
     uint32_t elem_size = info->size;
     uint64_t payload64 = (uint64_t)sizeof(wah_gc_array_body_t) + (uint64_t)elem_size * length;
@@ -8125,7 +8125,7 @@ static inline void wah_ref_store_table(wah_exec_context_t *ctx, uint32_t table_i
     ctx->tables[table_idx].entries[elem_idx] = val;
 }
 
-void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visitor, void *userdata) {
+static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visitor, void *userdata) {
     if (!visitor) return;
 
     // 1. Parameters and locals in each call frame
@@ -12558,7 +12558,7 @@ void wah_free_module(wah_module_t *module) {
 
 // --- Repr Allocation ---
 
-wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx, const wah_repr_info_t *info, wah_repr_t *out_repr_id) {
+static wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx, const wah_repr_info_t *info, wah_repr_t *out_repr_id) {
     WAH_ENSURE(module && info && out_repr_id, WAH_ERROR_MISUSE);
     WAH_ENSURE(typeidx < module->type_count, WAH_ERROR_MISUSE);
     WAH_ENSURE(module->typeidx_to_repr[typeidx] == WAH_REPR_NONE, WAH_ERROR_MISUSE);
