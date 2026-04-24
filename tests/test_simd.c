@@ -296,6 +296,11 @@ void test_f32x4_add() {
     wah_v128_t operand1 = { .f32 = {1.0f, 2.0f, 3.0f, 4.0f} }, operand2 = { .f32 = {5.0, 6.0, 7.0, 8.0} };
     wah_v128_t expected = { .f32 = {6.0f, 8.0f, 10.0f, 12.0f} };
     run_simd_binary_op_test("f32x4.add", binary_op_wasm_spec, &operand1, &operand2, &expected);
+
+    wah_v128_t nan_op1 = { .u32 = {0x7fa00000, 0x7fa00000, 0x3f800000, 0x7fa00000} };
+    wah_v128_t nan_op2 = { .u32 = {0x7fa00000, 0x3f800000, 0x7fa00000, 0x7fa00000} };
+    wah_v128_t nan_expected = { .u32 = {0x7fc00000, 0x7fc00000, 0x7fc00000, 0x7fc00000} };
+    run_simd_binary_op_test("f32x4.add (nan canonicalization)", binary_op_wasm_spec, &nan_op1, &nan_op2, &nan_expected);
 }
 
 void test_v128_and() {
@@ -942,6 +947,11 @@ void test_f32x4_min() {
     wah_v128_t v2 = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x3F, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // f32: 0.0, 1.0, 0.0
     wah_v128_t expected = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // f32: 0.0, 0.0, 0.0
     run_simd_binary_op_test("f32x4.min", binary_op_wasm_spec, &v1, &v2, &expected);
+
+    wah_v128_t nan_v1 = { .u32 = {0x7fa00000, 0x3f800000, 0x7fa00000, 0x7fa00000} };
+    wah_v128_t nan_v2 = { .u32 = {0x3f800000, 0x7fa00000, 0x7fa00000, 0x3f800000} };
+    wah_v128_t nan_expected = { .u32 = {0x7fc00000, 0x7fc00000, 0x7fc00000, 0x7fc00000} };
+    run_simd_binary_op_test("f32x4.min (nan canonicalization)", binary_op_wasm_spec, &nan_v1, &nan_v2, &nan_expected);
 }
 
 void test_f64x2_neg() {
@@ -954,6 +964,10 @@ void test_f64x2_sqrt() {
     wah_v128_t v = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x10, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // f64: 4.0, 0.0
     wah_v128_t expected = {{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}}; // f64: 2.0, 0.0
     run_simd_unary_op_test("f64x2.sqrt", unary_op_wasm_spec, &v, &expected);
+
+    wah_v128_t nan_v = { .u64 = {0x7ff0000000000001ULL, 0x7ff4000000000000ULL} };
+    wah_v128_t nan_expected = { .u64 = {0x7ff8000000000000ULL, 0x7ff8000000000000ULL} };
+    run_simd_unary_op_test("f64x2.sqrt (nan canonicalization)", unary_op_wasm_spec, &nan_v, &nan_expected);
 }
 
 void test_i8x16_relaxed_swizzle() {
@@ -986,6 +1000,12 @@ void test_f32x4_relaxed_madd() {
     wah_v128_t c = { .f32 = {0.5f, 1.0f, 1.5f, 2.0f} };
     wah_v128_t expected = { .f32 = {2.5f, 7.0f, 13.5f, 22.0f} }; // (a*b)+c
     run_simd_ternary_op_test("f32x4.relaxed_madd", ternary_op_wasm_spec, &a, &b, &c, &expected);
+
+    wah_v128_t nan_a = { .u32 = {0x7fa00000, 0x3f800000, 0x7fa00000, 0x3f800000} };
+    wah_v128_t nan_b = { .u32 = {0x3f800000, 0x7fa00000, 0x3f800000, 0x3f800000} };
+    wah_v128_t nan_c = { .u32 = {0x3f800000, 0x3f800000, 0x3f800000, 0x7fa00000} };
+    wah_v128_t nan_expected = { .u32 = {0x7fc00000, 0x7fc00000, 0x7fc00000, 0x7fc00000} };
+    run_simd_ternary_op_test("f32x4.relaxed_madd (nan canonicalization)", ternary_op_wasm_spec, &nan_a, &nan_b, &nan_c, &nan_expected);
 }
 
 // Test case for f32x4.relaxed_madd determinism (non-FMA behavior)
@@ -1025,6 +1045,11 @@ void test_f32x4_relaxed_min() {
     wah_v128_t v2 = { .f32 = {2.0f, 3.0f, 3.0f, 7.0f} };
     wah_v128_t expected = { .f32 = {1.0f, 3.0f, 3.0f, 7.0f} };
     run_simd_binary_op_test("f32x4.relaxed_min", binary_op_wasm_spec, &v1, &v2, &expected);
+
+    wah_v128_t nan_v1 = { .u32 = {0x7fa00000, 0x3f800000, 0x7fa00000, 0x3f800000} };
+    wah_v128_t nan_v2 = { .u32 = {0x3f800000, 0x7fa00000, 0x3f800000, 0x7fa00000} };
+    wah_v128_t nan_expected = { .u32 = {0x7fc00000, 0x7fc00000, 0x7fc00000, 0x7fc00000} };
+    run_simd_binary_op_test("f32x4.relaxed_min (nan canonicalization)", binary_op_wasm_spec, &nan_v1, &nan_v2, &nan_expected);
 }
 
 void test_i16x8_relaxed_q15mulr_s() {
