@@ -13346,7 +13346,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         uint32_t linked_table_idx = exp->index;
         WAH_ENSURE_GOTO(linked_table_idx < wah_table_index_limit(linked), WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
         uint32_t local_table_idx;
-        wah_table_type_t *exp_tt;
+        wah_table_type_t *exp_tt = NULL;
 
         if (linked_table_idx >= linked->import_table_count) {
             local_table_idx = linked_table_idx - linked->import_table_count;

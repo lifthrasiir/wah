@@ -1044,7 +1044,10 @@ wah_error_t wah_parse_module_from_specv(wah_module_t *module, const char *fmt, v
     buffer_init(&buf);
 
     bool error = false;
-    parse_tokens(&buf, fmt, &args, &error);
+    va_list args_copy;
+    va_copy(args_copy, args);
+    parse_tokens(&buf, fmt, &args_copy, &error);
+    va_end(args_copy);
 
     if (error) {
         buffer_free(&buf);
