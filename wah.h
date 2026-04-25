@@ -270,12 +270,7 @@ typedef struct wah_exec_context_s {
     uint32_t table_count;
 
     // Linkage support
-    struct wah_linked_modules_s {
-        const char *name;
-        const wah_module_t *module;
-        struct wah_exec_context_s *ctx;
-        bool owns_ctx;
-    } *linked_modules;
+    struct wah_linked_module_s *linked_modules;
     uint32_t linked_module_count;
     uint32_t linked_module_capacity;
     bool is_instantiated;
@@ -1468,6 +1463,13 @@ typedef struct wah_table_inst_s {
     uint32_t import_idx;
 } wah_table_inst_t;
 
+typedef struct wah_linked_module_s {
+    const char *name;
+    const wah_module_t *module;
+    struct wah_exec_context_s *ctx;
+    bool owns_ctx;
+} wah_linked_module_t;
+
 // Returns the object header from a payload pointer.
 static inline wah_gc_object_t *wah_gc_header(void *payload) {
     return (wah_gc_object_t *)((uint8_t *)payload - sizeof(wah_gc_object_t));
@@ -1877,25 +1879,6 @@ typedef struct {
 
     uint32_t max_stack_depth;
 } wah_analyzed_code_t;
-
-static void wah_free_analyzed_code(wah_analyzed_code_t *ac) {
-    if (!ac) return;
-    if (ac->instrs) {
-        for (uint32_t i = 0; i < ac->instr_count; i++) {
-            wah_decoded_instr_t *instr = &ac->instrs[i];
-            if (instr->imm_kind == WAH_IMM_BR_TABLE) {
-                free(instr->imm.br_table.target_symbols);
-                free(instr->imm.br_table.drops);
-            } else if (instr->imm_kind == WAH_IMM_TRY_TABLE) {
-                free(instr->imm.try_table.catches);
-            }
-        }
-        free(ac->instrs);
-    }
-    free(ac->symbols);
-    if (ac->operand_ref_map) free(ac->operand_ref_map);
-    *ac = (wah_analyzed_code_t){0};
-}
 
 #define WAH_FUNCREF_FAKE_HEADER { .next_tagged = NULL, .repr_id = WAH_TYPE_FUNCTION, .size_bytes = 0 }
 
@@ -4144,11 +4127,8 @@ static wah_error_t wah_validation_push_func_results(wah_validation_context_t *vc
 static wah_error_t wah_validation_check_return_types(const wah_validation_context_t *vctx, const wah_func_type_t *ft) {
     WAH_ENSURE(ft->result_count == vctx->func_type->result_count, WAH_ERROR_VALIDATION_FAILED);
     for (uint32_t j = 0; j < ft->result_count; ++j) {
-        WAH_CHECK(wah_validate_type_match(ft->result_types[j],
-            ft->result_type_flags ? ft->result_type_flags[j] : 0,
-            vctx->func_type->result_types[j],
-            vctx->func_type->result_type_flags ? vctx->func_type->result_type_flags[j] : 0,
-            vctx->module));
+        WAH_CHECK(wah_validate_type_match(ft->result_types[j], ft->result_type_flags[j],
+                                          vctx->func_type->result_types[j], vctx->func_type->result_type_flags[j], vctx->module));
     }
     return WAH_OK;
 }
@@ -4243,11 +4223,6 @@ static void wah_validation_resolve_br_target(const wah_validation_context_t *vct
         }
         if (out_stack_height) *out_stack_height = frame->stack_height;
     }
-}
-
-static inline wah_type_flags_t wah_type_flags_at(const wah_type_flags_t *flags, const wah_type_t *types, uint32_t idx) {
-    if (flags) return flags[idx];
-    return WAH_TYPE_IS_REF(types[idx]) ? WAH_TYPE_FLAG_NULLABLE : 0;
 }
 
 static wah_error_t wah_declare_func(wah_module_t *m, uint32_t func_idx) {
@@ -5138,11 +5113,10 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 const wah_type_t *cur_result_types;
                 const wah_type_flags_t *cur_result_type_flags;
                 wah_validation_resolve_br_target(vctx, label_indices[i],
-                                                  &cur_result_count, &cur_result_types, &cur_result_type_flags, NULL);
+                                                 &cur_result_count, &cur_result_types, &cur_result_type_flags, NULL);
                 for (uint32_t j = 0; j < default_result_count; ++j) {
                     WAH_CHECK_GOTO(wah_validate_type_match(popped_types[j], popped_flags[j],
-                        cur_result_types[j], wah_type_flags_at(cur_result_type_flags, cur_result_types, j),
-                        vctx->module), cleanup_br_table_popped);
+                        cur_result_types[j], cur_result_type_flags[j], vctx->module), cleanup_br_table_popped);
                 }
             }
             err = WAH_OK;
@@ -6369,6 +6343,25 @@ cleanup:
     #undef WAH_CAPTURE_REF_MAP
     free(ref_map);
     return err;
+}
+
+static void wah_free_analyzed_code(wah_analyzed_code_t *ac) {
+    if (!ac) return;
+    if (ac->instrs) {
+        for (uint32_t i = 0; i < ac->instr_count; i++) {
+            wah_decoded_instr_t *instr = &ac->instrs[i];
+            if (instr->imm_kind == WAH_IMM_BR_TABLE) {
+                free(instr->imm.br_table.target_symbols);
+                free(instr->imm.br_table.drops);
+            } else if (instr->imm_kind == WAH_IMM_TRY_TABLE) {
+                free(instr->imm.try_table.catches);
+            }
+        }
+        free(ac->instrs);
+    }
+    free(ac->symbols);
+    if (ac->operand_ref_map) free(ac->operand_ref_map);
+    *ac = (wah_analyzed_code_t){0};
 }
 
 // Validates, analyzes, and lowers a const expression in one call.
@@ -8206,18 +8199,18 @@ void wah_gc_step(wah_exec_context_t *ctx) {
 }
 
 void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats) {
-    memset(stats, 0, sizeof(*stats));
-    if (!ctx->gc) return;
-    stats->object_count = ctx->gc->object_count;
-    stats->allocated_bytes = ctx->gc->allocated_bytes;
-    stats->allocation_threshold = ctx->gc->allocation_threshold;
-    stats->phase = ctx->gc->phase;
+    if (!ctx->gc) {
+        *stats = (wah_gc_heap_stats_t){0};
+        return;
+    }
+    *stats = (wah_gc_heap_stats_t){
+        .object_count = ctx->gc->object_count, .allocated_bytes = ctx->gc->allocated_bytes,
+        .allocation_threshold = ctx->gc->allocation_threshold, .phase = ctx->gc->phase,
 #ifdef WAH_DEBUG
-    stats->total_collections = ctx->gc->total_collections;
-    stats->total_allocations = ctx->gc->total_allocations;
-    stats->total_frees = ctx->gc->total_frees;
-    stats->total_polls = ctx->gc->total_polls;
+        .total_collections = ctx->gc->total_collections, .total_allocations = ctx->gc->total_allocations,
+        .total_frees = ctx->gc->total_frees, .total_polls = ctx->gc->total_polls,
 #endif
+    };
 }
 
 bool wah_gc_verify_heap(const wah_exec_context_t *ctx) {
@@ -8593,22 +8586,17 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
     }
 
     switch (target) {
-        case WAH_TYPE_ANYREF:
-        case WAH_TYPE_EXTERNREF:
+        case WAH_TYPE_ANYREF: case WAH_TYPE_EXTERNREF:
             return repr_id != WAH_TYPE_FUNCTION;
         case WAH_TYPE_EQREF:
             return wah_repr_is_positive(repr_id);
-        case WAH_TYPE_I31REF:
-            return false;
         case WAH_TYPE_STRUCTREF:
-            return wah_repr_is_positive(repr_id) &&
-                   ctx->module->repr_infos[repr_id]->type == WAH_REPR_STRUCT;
+            return wah_repr_is_positive(repr_id) && ctx->module->repr_infos[repr_id]->type == WAH_REPR_STRUCT;
         case WAH_TYPE_ARRAYREF:
-            return wah_repr_is_positive(repr_id) &&
-                   ctx->module->repr_infos[repr_id]->type == WAH_REPR_ARRAY;
+            return wah_repr_is_positive(repr_id) && ctx->module->repr_infos[repr_id]->type == WAH_REPR_ARRAY;
         case WAH_TYPE_FUNCREF:
             return repr_id == WAH_TYPE_FUNCTION;
-        default:
+        case WAH_TYPE_I31REF: default:
             return false;
     }
 }
@@ -12648,6 +12636,20 @@ wah_error_t wah_new_module(wah_module_t *mod) {
     return WAH_OK;
 }
 
+static wah_error_t wah_module_ensure_export(wah_module_t *mod, const char *name) {
+    for (uint32_t i = 0; i < mod->export_count; ++i) {
+        if (mod->exports[i].name && strcmp(mod->exports[i].name, name) == 0) {
+            return WAH_ERROR_VALIDATION_FAILED;
+        }
+    }
+    if (mod->export_count >= mod->capacity_exports) {
+        uint32_t new_capacity = mod->capacity_exports * 2;
+        WAH_REALLOC_ARRAY(mod->exports, new_capacity);
+        mod->capacity_exports = new_capacity;
+    }
+    return WAH_OK;
+}
+
 wah_error_t wah_module_export_funcv(
     wah_module_t *mod, const char *name,
     size_t nparams, const wah_type_t *param_types,
@@ -12667,19 +12669,7 @@ wah_error_t wah_module_export_funcv(
     WAH_ENSURE(nparams == 0 || param_types, WAH_ERROR_MISUSE);
     WAH_ENSURE(nresults == 0 || result_types, WAH_ERROR_MISUSE);
 
-    // Check for duplicate export name
-    for (uint32_t i = 0; i < mod->export_count; ++i) {
-        if (mod->exports[i].name && strcmp(mod->exports[i].name, name) == 0) {
-            return WAH_ERROR_VALIDATION_FAILED;  // Duplicate export name
-        }
-    }
-
-    // Grow export array if needed
-    if (mod->export_count >= mod->capacity_exports) {
-        uint32_t new_capacity = mod->capacity_exports * 2;
-        WAH_REALLOC_ARRAY_GOTO(mod->exports, new_capacity, cleanup);
-        mod->capacity_exports = new_capacity;
-    }
+    WAH_CHECK_GOTO(wah_module_ensure_export(mod, name), cleanup);
 
     // Grow functions[] array if needed
     if (mod->local_function_count >= mod->function_capacity) {
@@ -12708,32 +12698,16 @@ wah_error_t wah_module_export_funcv(
             result_flags_copy[i] = WAH_TYPE_IS_REF(result_types[i]) ? WAH_TYPE_FLAG_NULLABLE : 0;
     }
 
-    // Fill in the unified function entry
     uint32_t new_func_idx = mod->local_function_count;
-    wah_function_t *fn = &mod->functions[new_func_idx];
-    memset(fn, 0, sizeof(wah_function_t));
-    fn->fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER;
-    fn->is_host = true;
-    fn->name = name_copy;
-    fn->func = func;
-    fn->userdata = userdata;
-    fn->finalize = finalize;
-    fn->nparams = nparams;
-    fn->param_types = param_types_copy;
-    fn->param_type_flags = param_flags_copy;
-    fn->nresults = nresults;
-    fn->result_types = result_types_copy;
-    fn->result_type_flags = result_flags_copy;
+    mod->functions[new_func_idx] = (wah_function_t){
+        .fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER, .is_host = true,
+        .name = name_copy, .func = func, .userdata = userdata, .finalize = finalize,
+        .nparams = nparams, .param_types = param_types_copy, .param_type_flags = param_flags_copy,
+        .nresults = nresults, .result_types = result_types_copy, .result_type_flags = result_flags_copy,
+    };
     mod->local_function_count++;
-
-    // Fill in export entry
-    struct wah_export_s *export_entry = &mod->exports[mod->export_count];
-    export_entry->name = name_copy;
-    export_entry->name_len = strlen(name_copy);
-    export_entry->kind = 0;  // FUNCTION
-    export_entry->index = new_func_idx;
-
-    mod->export_count++;
+    mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
+                                                        .kind = 0 /*FUNCTION*/, .index = new_func_idx };
     return WAH_OK;
 
 cleanup:
@@ -12945,19 +12919,7 @@ static wah_error_t wah_module_export_global_internal(wah_module_t *mod, const ch
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
 
-    // Check for duplicate export name
-    for (uint32_t i = 0; i < mod->export_count; ++i) {
-        if (mod->exports[i].name && strcmp(mod->exports[i].name, name) == 0) {
-            return WAH_ERROR_VALIDATION_FAILED;  // Duplicate export name
-        }
-    }
-
-    // Grow export array if needed
-    if (mod->export_count >= mod->capacity_exports) {
-        uint32_t new_capacity = mod->capacity_exports * 2;
-        WAH_REALLOC_ARRAY_GOTO(mod->exports, new_capacity, cleanup);
-        mod->capacity_exports = new_capacity;
-    }
+    WAH_CHECK_GOTO(wah_module_ensure_export(mod, name), cleanup);
 
     // Reallocate globals array
     uint32_t new_global_count = mod->global_count + 1;
@@ -12967,24 +12929,11 @@ static wah_error_t wah_module_export_global_internal(wah_module_t *mod, const ch
     name_copy = wah_strdup(name);
     WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
 
-    // Fill in the global entry
-    wah_global_t *global = &mod->globals[mod->global_count];
-    global->type = type;
-    global->type_flags = 0;
-    global->is_mutable = is_mutable;
-    global->init_expr = (wah_parsed_code_t){0};
-    // Create a const expression for the initial value
-    WAH_CHECK_GOTO(wah_create_const_expr(type, init_value, &global->init_expr), cleanup);
-
-    // Fill in export entry
-    wah_export_t *export_entry = &mod->exports[mod->export_count];
-    export_entry->name = name_copy;
-    export_entry->name_len = strlen(name_copy);
-    export_entry->kind = 3;  // GLOBAL
-    export_entry->index = mod->global_count;
-
+    mod->globals[mod->global_count] = (wah_global_t){ .type = type, .type_flags = 0, .is_mutable = is_mutable };
+    WAH_CHECK_GOTO(wah_create_const_expr(type, init_value, &mod->globals[mod->global_count].init_expr), cleanup);
+    mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
+                                                        .kind = 3 /*GLOBAL*/, .index = mod->global_count };
     mod->global_count++;
-    mod->export_count++;
     return WAH_OK;
 
 cleanup:
@@ -13003,19 +12952,7 @@ wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64
     WAH_ENSURE(min_pages > 0, WAH_ERROR_MISUSE);
     WAH_ENSURE(max_pages >= min_pages, WAH_ERROR_MISUSE);
 
-    // Check for duplicate export name
-    for (uint32_t i = 0; i < mod->export_count; ++i) {
-        if (mod->exports[i].name && strcmp(mod->exports[i].name, name) == 0) {
-            return WAH_ERROR_VALIDATION_FAILED;  // Duplicate export name
-        }
-    }
-
-    // Grow export array if needed
-    if (mod->export_count >= mod->capacity_exports) {
-        uint32_t new_capacity = mod->capacity_exports * 2;
-        WAH_REALLOC_ARRAY_GOTO(mod->exports, new_capacity, cleanup);
-        mod->capacity_exports = new_capacity;
-    }
+    WAH_CHECK_GOTO(wah_module_ensure_export(mod, name), cleanup);
 
     // Reallocate memories array
     uint32_t new_memory_count = mod->memory_count + 1;
@@ -13025,21 +12962,10 @@ wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64
     name_copy = wah_strdup(name);
     WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
 
-    // Fill in the memory entry
-    wah_memory_type_t *mem = &mod->memories[mod->memory_count];
-    mem->addr_type = WAH_TYPE_I32;
-    mem->min_pages = min_pages;
-    mem->max_pages = max_pages;
-
-    // Fill in export entry
-    wah_export_t *export_entry = &mod->exports[mod->export_count];
-    export_entry->name = name_copy;
-    export_entry->name_len = strlen(name_copy);
-    export_entry->kind = 2;  // MEMORY
-    export_entry->index = mod->memory_count;
-
+    mod->memories[mod->memory_count] = (wah_memory_type_t){ .addr_type = WAH_TYPE_I32, .min_pages = min_pages, .max_pages = max_pages };
+    mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
+                                                        .kind = 2 /*MEMORY*/, .index = mod->memory_count };
     mod->memory_count++;
-    mod->export_count++;
     return WAH_OK;
 
 cleanup:
@@ -13104,17 +13030,11 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
         ctx->linked_module_capacity = new_capacity;
     }
 
-    // Duplicate module name
     char *name_copy = wah_strdup(name);
     WAH_ENSURE(name_copy, WAH_ERROR_OUT_OF_MEMORY);
 
-    // Add to linked modules
-    ctx->linked_modules[ctx->linked_module_count].name = name_copy;
-    ctx->linked_modules[ctx->linked_module_count].module = mod;
-    ctx->linked_modules[ctx->linked_module_count].ctx = NULL;
-    ctx->linked_modules[ctx->linked_module_count].owns_ctx = false;
-    ctx->linked_module_count++;
-
+    ctx->linked_modules[ctx->linked_module_count++] =
+        (wah_linked_module_t){ .name = name_copy, .module = mod, .ctx = NULL, .owns_ctx = false };
     return WAH_OK;
 }
 
@@ -13140,12 +13060,8 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
     char *name_copy = wah_strdup(name);
     WAH_ENSURE(name_copy, WAH_ERROR_OUT_OF_MEMORY);
 
-    ctx->linked_modules[ctx->linked_module_count].name = name_copy;
-    ctx->linked_modules[ctx->linked_module_count].module = linked_ctx->module;
-    ctx->linked_modules[ctx->linked_module_count].ctx = linked_ctx;
-    ctx->linked_modules[ctx->linked_module_count].owns_ctx = false;
-    ctx->linked_module_count++;
-
+    ctx->linked_modules[ctx->linked_module_count++] =
+        (wah_linked_module_t){ .name = name_copy, .module = linked_ctx->module, .ctx = linked_ctx, .owns_ctx = false };
     return WAH_OK;
 }
 
