@@ -1487,6 +1487,7 @@ static inline uint32_t wah_gc_array_alloc_size(const wah_repr_info_t *info, uint
 // Visitor callback for root enumeration. Called once per live reference slot.
 // slot points to the wah_value_t containing the reference; type is its declared type.
 typedef void (*wah_gc_ref_visitor_t)(wah_value_t *slot, wah_type_t type, void *userdata);
+
 // --- Repr Lookup ---
 static inline wah_repr_t wah_module_typeidx_to_repr(const wah_module_t *module, uint32_t typeidx) {
     if (!module->typeidx_to_repr || typeidx >= module->type_count) return WAH_REPR_NONE;
@@ -1669,11 +1670,11 @@ typedef struct wah_tag_s {
 
 typedef struct wah_tag_instance_s {
     uint32_t type_index;
-    uint32_t unique_id;
+    const struct wah_tag_instance_s *identity;
 } wah_tag_instance_t;
 
 typedef struct wah_exception_s {
-    uint32_t tag_unique_id;
+    const wah_tag_instance_t *tag_identity;
     uint32_t tag_index;
     uint32_t value_count;
     wah_value_t *values;
@@ -1893,8 +1894,6 @@ static inline void *wah_func_to_ref(wah_function_t *fn) {
 static inline wah_function_t *wah_ref_to_func(void *ref) {
     return (wah_function_t *)wah_gc_header(ref);
 }
-
-static uint32_t wah_next_tag_unique_id = 1;
 
 // Const expression functions
 static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, const uint8_t *bytecode, uint32_t bytecode_size, wah_value_t *result);
@@ -8315,8 +8314,9 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
                 (wah_tag_instance_t){ .type_index = module->tag_imports[i].type_index };
         }
         for (uint32_t i = 0; i < module->tag_count; i++) {
-            exec_ctx->tag_instances[exec_ctx->tag_instance_count++] =
-                (wah_tag_instance_t){ .type_index = module->tags[i].type_index, .unique_id = wah_next_tag_unique_id++ };
+            uint32_t slot = exec_ctx->tag_instance_count++;
+            exec_ctx->tag_instances[slot] =
+                (wah_tag_instance_t){ .type_index = module->tags[i].type_index, .identity = &exec_ctx->tag_instances[slot] };
         }
     }
 
@@ -8508,7 +8508,7 @@ static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t 
             bool match = false;
             if (catch_kind == WAH_CATCH_KIND_CATCH || catch_kind == WAH_CATCH_KIND_CATCH_REF) {
                 if (catch_tag_idx < handler->handler_tag_instance_count &&
-                    handler->handler_tag_instances[catch_tag_idx].unique_id == exc->tag_unique_id) {
+                    handler->handler_tag_instances[catch_tag_idx].identity == exc->tag_identity) {
                     match = true;
                 }
             } else {
@@ -8861,7 +8861,7 @@ WAH_RUN(THROW) {
 
     wah_exception_t *exc;
     WAH_MALLOC_GOTO(exc, cleanup);
-    exc->tag_unique_id = tag_inst->unique_id;
+    exc->tag_identity = tag_inst->identity;
     exc->tag_index = tag_idx;
     exc->value_count = value_count;
     exc->values = NULL;
@@ -13273,8 +13273,9 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                         (wah_tag_instance_t){ .type_index = lmod->tag_imports[t].type_index };
                 }
                 for (uint32_t t = 0; t < lmod->tag_count; t++) {
-                    ictx->tag_instances[ictx->tag_instance_count++] =
-                        (wah_tag_instance_t){ .type_index = lmod->tags[t].type_index, .unique_id = wah_next_tag_unique_id++ };
+                    uint32_t slot = ictx->tag_instance_count++;
+                    ictx->tag_instances[slot] =
+                        (wah_tag_instance_t){ .type_index = lmod->tags[t].type_index, .identity = &ictx->tag_instances[slot] };
                 }
                 ictx->is_instantiated = true;
                 ctx->linked_modules[j].ctx = ictx;
