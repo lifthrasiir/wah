@@ -12,6 +12,24 @@ if ($Remaining.Count -gt 0) { $filter = $Remaining[0] }
 $projDir = $PSScriptRoot
 if (-not $projDir) { $projDir = Get-Location }
 
+# --- Bench command ---
+if ($filter -eq 'bench') {
+    $benchSrc = "$projDir\bench\bench_coremark.c"
+    $benchExe = "$projDir\bench\bench_coremark.exe"
+    $benchCflags = @('-W', '-Wall', '-Wextra', '-DWAH_ASSERT=assert', '-O3')
+    Write-Host '## Compiling bench_coremark...'
+    & clang @benchCflags $benchSrc -o $benchExe
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host '## Bench compilation failed.'
+        exit 1
+    }
+    Write-Host '## Running CoreMark benchmark...'
+    & $benchExe
+    $benchExit = $LASTEXITCODE
+    Remove-Item $benchExe -ErrorAction SilentlyContinue
+    exit $benchExit
+}
+
 $cflags = @('-W', '-Wall', '-Wextra')
 if ($g) {
     $cflags += '-DWAH_DEBUG', '-g'

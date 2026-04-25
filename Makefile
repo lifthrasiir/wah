@@ -76,6 +76,19 @@ test_$(1): tests/test_$(1)
 endef
 $(foreach t,$(ALL_TEST_NAMES),$(eval $(call MAKE_SINGLE_TEST,$(t))))
 
+# --- Benchmark ---
+
+.PHONY: bench
+bench: bench/bench_coremark
+	@echo "## Running CoreMark benchmark..."
+	@./bench/bench_coremark
+
+bench/bench_coremark: bench/bench_coremark.c wah.h
+	@echo "## Compiling bench_coremark..."
+	@$(CC) -W -Wall -Wextra -DWAH_ASSERT=assert -O3 -c $< -o bench/bench_coremark.o
+	@$(CC) bench/bench_coremark.o -o $@ $(LDFLAGS)
+	@rm -f bench/bench_coremark.o
+
 # --- Fuzzing ---
 
 FUZZ_HARNESS_SRC := fuzz/fuzz_afl.c
@@ -145,5 +158,6 @@ clean:
 	@rm -f $(patsubst %.c, %, $(ALL_TEST_SRCS)) $(patsubst %.c, %_cov, $(ALL_TEST_SRCS))
 	@rm -f tests/*.o tests/_wah_impl.c
 	@rm -f $(FUZZ_HARNESS_BIN)
+	@rm -f bench/bench_coremark
 	@rm -f *.gcda *.gcno tests/*.gcda tests/*.gcno fuzz/*.gcda fuzz/*.gcno coverage.info
 	@rm -rf cov/ coverage_report/

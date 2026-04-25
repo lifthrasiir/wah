@@ -37,6 +37,7 @@ tests/test_tail_call
 tests/test_traps
 tests/test_types
 tests/test_validation
+bench/bench_coremark
 wah_fuzz_afl
 fuzz
 *.gcda
