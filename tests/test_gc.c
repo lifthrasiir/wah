@@ -1261,6 +1261,73 @@ int main() {
         wah_free_module(&env_mod);
     }
 
+    printf("Testing GC sweep unlink (dead object from middle of list)...\n");
+    {
+        wah_module_t env_mod = {0}, wasm_mod = {0};
+        assert_ok(wah_new_module(&env_mod));
+        assert_ok(wah_module_export_funcv(&env_mod, "gc", 0, NULL, 0, NULL, host_trigger_gc, NULL, NULL));
+        assert_ok(wah_module_export_funcv(&env_mod, "count", 0, NULL, 1, (wah_type_t[]){WAH_TYPE_I32}, host_gc_object_count, NULL, NULL));
+
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [], fn [] [i32] ]} \
+            imports {[ {'env'} {'gc'} fn# 1, {'env'} {'count'} fn# 2 ]} \
+            funcs {[ 2 ]} \
+            code {[ {[1 type.ref.null 0] \
+                i32.const 10 struct.new 0 \
+                local.set 0 \
+                i32.const 20 struct.new 0 \
+                drop \
+                call 0 \
+                local.get 0 struct.get 0 0 \
+            end } ]}";
+
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+        assert_ok(wah_link_module(&ctx, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+
+        ctx.gc->allocation_threshold = 1;
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+        assert_eq_i32(result.i32, 10);
+
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
+    printf("Testing GC phase transitions (MARK -> SWEEP -> IDLE)...\n");
+    {
+        wah_module_t wasm_mod = {0};
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32] ]} \
+            funcs {[ 1 ]} \
+            code {[ {[] i32.const 42 struct.new 0 struct.get 0 0 end } ]}";
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        assert_not_null(ctx.gc);
+        assert_true(ctx.gc->phase == WAH_GC_PHASE_IDLE);
+        wah_gc_step(&ctx);
+        assert_true(ctx.gc->phase == WAH_GC_PHASE_IDLE);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&wasm_mod);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }

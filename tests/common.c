@@ -547,6 +547,8 @@ static const token_entry_t token_table[] = {
     TOKEN("i8x16.relaxed_swizzle", 0xfd, 0x80, 0x02),
     TOKEN("i32x4.relaxed_trunc_f32x4_s", 0xfd, 0x81, 0x02),
     TOKEN("i32x4.relaxed_trunc_f32x4_u", 0xfd, 0x82, 0x02),
+    TOKEN("i32x4.relaxed_trunc_f64x2_s", 0xfd, 0x83, 0x02),
+    TOKEN("i32x4.relaxed_trunc_f64x2_u", 0xfd, 0x84, 0x02),
     TOKEN("f32x4.relaxed_madd", 0xfd, 0x85, 0x02),
     TOKEN("f32x4.relaxed_nmadd", 0xfd, 0x86, 0x02),
     TOKEN("f64x2.relaxed_madd", 0xfd, 0x87, 0x02),

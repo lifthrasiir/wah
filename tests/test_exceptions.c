@@ -460,6 +460,78 @@ static void test_link_module_tag_mismatch() {
     wah_free_module(&provider);
 }
 
+static void test_return_inside_try_table() {
+    printf("Testing return inside try_table (exception handler unwinding)...\n");
+
+    // Function with try_table, uses return to exit directly.
+    // The exception handler should be unwound by return.
+    const char *spec = "wasm \
+        types {[ fn [] [i32], fn [i32] [] ]} \
+        funcs {[ 0 ]} \
+        tags {[ tag.type# 1 ]} \
+        code {[ {[] \
+            block void \
+                try_table void [catch_all 0] \
+                    i32.const 42 \
+                    return \
+                end \
+            end \
+            i32.const 0 \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// Note: return_call_ref/return_call inside try_table are rejected by validation
+// (tail calls inside try_table are disallowed per spec). The exception handler
+// unwinding for RETURN_CALL_REF (lines 10182-10183) is covered when a callee
+// function (called normally from inside try_table) itself does return_call_ref.
+
+static void test_end_inside_try_table() {
+    printf("Testing function END with exception handler unwinding...\n");
+
+    // func 0 (callee): called from within try_table; returns normally via END.
+    // func 1 (caller): has try_table, calls func 0 which returns normally.
+    // When func 0's END executes, the caller's exception handler is on the stack
+    // but at a higher call_depth, so it shouldn't be unwound by func 0.
+    // Then func 1 ends normally, and its own handler gets unwound.
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0, 0 ]} \
+        code {[ \
+            {[] i32.const 55 end }, \
+            {[] \
+                block void \
+                    try_table i32 [catch_all 0] \
+                        call 0 \
+                    end \
+                    return \
+                end \
+                i32.const -1 \
+            end } \
+        ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 55);
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 int main() {
     test_try_table_catch_label_types();
     test_catch_all();
@@ -471,6 +543,8 @@ int main() {
     test_exception_tag_mismatch_no_catch();
     test_link_module_tag_identity();
     test_link_module_tag_mismatch();
+    test_return_inside_try_table();
+    test_end_inside_try_table();
     printf("All exception tests passed!\n");
     return 0;
 }

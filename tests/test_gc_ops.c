@@ -874,6 +874,157 @@ static void test_array_init_data() {
     wah_free_module(&module);
 }
 
+static void test_struct_packed_fields() {
+    printf("Testing struct with packed i8/i16 fields...\n");
+
+    // struct type 0: {i8 mut, i16 mut}
+    // func type 1: () -> (i32)
+    // Create struct, read packed fields with sign/zero extension
+    const char *spec = "wasm \
+        types {[ struct [i8 mut, i16 mut], fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[1 type.ref.null 0] \
+            i32.const 200 \
+            i32.const 40000 \
+            struct.new 0 \
+            local.set 0 \
+            local.get 0 struct.get_u 0 0 \
+            local.get 0 struct.get_s 0 1 \
+            i32.add \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    // i8: 200 as u8, get_u -> 200
+    // i16: 40000 as u16, get_s -> (int16_t)40000 = -25536
+    assert_eq_i32(result.i32, 200 + (-25536));
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_struct_i64_f64_fields() {
+    printf("Testing struct with i64 and f64 fields...\n");
+
+    const char *spec = "wasm \
+        types {[ struct [i64 mut, f64 mut], fn [] [i64] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[1 type.ref.null 0] \
+            i64.const 123456789 \
+            f64.const 3.14f64 \
+            struct.new 0 \
+            local.set 0 \
+            local.get 0 struct.get 0 0 \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i64(result.i64, 123456789);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// NOTE: struct with v128 field test skipped -- wah_gc_store_field/wah_gc_load_field
+// pass size=0 in struct.new/struct.get/struct.set handlers (lines 9130, 9157, 9202),
+// so v128 fields (which use the default memcpy path) store/load zero bytes.
+// This is a bug: the struct handlers should pass field size, like array handlers do.
+
+static void test_br_on_null_with_drop() {
+    printf("Testing br_on_null with stack values to drop...\n");
+
+    // Type 0: struct {i32 mut}
+    // Type 1: fn [] [i32] (main func type)
+    // Type 2: fn [i32] [i32] (block type: takes i32 param, returns i32)
+    //
+    // Push i32(99) as block input. Inside block: push i32(42), push null ref.
+    // br_on_null branches: keeps i32(42) as result, drops param i32(99).
+    // Fallthrough: drop ref, drop extra i32, leave param as result.
+    const char *spec = "wasm \
+        types {[ struct [i32 mut], fn [] [i32], fn [i32] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] \
+            i32.const 99 \
+            block 2 \
+                i32.const 42 \
+                ref.null 0 \
+                br_on_null 0 \
+                drop \
+                drop \
+            end \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    // br_on_null branches (null ref), keeps top i32 (42), drops param i32 (99)
+    assert_eq_i32(result.i32, 42);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_br_on_non_null_with_drop() {
+    printf("Testing br_on_non_null with stack values to drop...\n");
+
+    // Type 0: struct {i32 mut}
+    // Type 1: fn [] [i32] (main func type)
+    // Type 2: fn [i32] [(ref null 0)] (block type: takes i32 param, returns ref)
+    //
+    // Push i32(99) as block input. Inside: create struct(77), br_on_non_null.
+    // Branch: ref is non-null, branches with ref as result, drops param i32(99).
+    // Fallthrough: drop i32 param, push ref.null.
+    const char *spec = "wasm \
+        types {[ struct [i32 mut], fn [] [i32], fn [i32] [type.ref.null 0] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] \
+            i32.const 99 \
+            block 2 \
+                i32.const 77 struct.new 0 \
+                br_on_non_null 0 \
+                drop \
+                ref.null 0 \
+            end \
+            struct.get 0 0 \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    // br_on_non_null branches with the non-null ref, drops param i32(99)
+    // struct field 0 = 77
+    assert_eq_i32(result.i32, 77);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 int main() {
     test_i31_ops();
     test_extern_convert();
@@ -897,6 +1048,10 @@ int main() {
     test_array_copy();
     test_array_new_data();
     test_array_init_data();
+    test_struct_packed_fields();
+    test_struct_i64_f64_fields();
+    test_br_on_null_with_drop();
+    test_br_on_non_null_with_drop();
     printf("All GC ops tests passed!\n");
     return 0;
 }

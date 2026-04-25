@@ -204,6 +204,20 @@ int main() {
         free(result_types);
     }
 
+    // Test: Invalid type spec character (not matching known prefixes)
+    printf("Test: Invalid type spec character\n");
+    {
+        size_t nparams, nresults;
+        wah_type_t *param_types = NULL, *result_types = NULL;
+        assert_err(wah_parse_func_spec("x32 -> i32", &nparams, &param_types, &nresults, &result_types), WAH_ERROR_BAD_SPEC);
+        free(param_types);
+        free(result_types);
+        param_types = NULL; result_types = NULL;
+        assert_err(wah_parse_func_spec("i32 -> z64", &nparams, &param_types, &nresults, &result_types), WAH_ERROR_BAD_SPEC);
+        free(param_types);
+        free(result_types);
+    }
+
     printf("\nAll tests passed!\n");
     return 0;
 }

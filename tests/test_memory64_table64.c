@@ -382,6 +382,175 @@ static void test_memory64_large_limits() {
     wah_free_module(&module);
 }
 
+static void test_memory64_grow_negative_pages() {
+    printf("Testing memory64 grow with negative pages...\n");
+
+    const char *spec = "wasm \
+        types {[ fn [i64] [i64] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i64/2 1 10 ]} \
+        code {[ {[] local.get 0 memory.grow 0 end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t params[1], result;
+
+    params[0].i64 = -1;
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i64(result.i64, -1);
+
+    params[0].i64 = -1000;
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i64(result.i64, -1);
+
+    params[0].i64 = 0;
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i64(result.i64, 1);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_memory64_grow_propagation() {
+    printf("Testing memory64 grow propagation to imported context...\n");
+
+    const char *provider_spec = "wasm \
+        types {[ fn [] [i64] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i64/2 1 10 ]} \
+        exports {[ {'mem'} mem# 0, {'size'} fn# 0 ]} \
+        code {[ {[] memory.size 0 end } ]}";
+
+    const char *consumer_spec = "wasm \
+        types {[ fn [i64] [i64], fn [] [i64] ]} \
+        imports {[ {'provider'} {'mem'} export.memory limits.i64/2 1 10, \
+                   {'provider'} {'size'} fn# 1 ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] local.get 0 memory.grow 0 end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t pctx = {0};
+    assert_ok(wah_exec_context_create(&pctx, &provider));
+    assert_ok(wah_instantiate(&pctx));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_context(&ctx, "provider", &pctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t params[1], result;
+
+    // func index: 0 = import 'size', 1 = local grow func
+    params[0].i64 = 2;
+    assert_ok(wah_call(&ctx, 1, params, 1, &result));
+    assert_eq_i64(result.i64, 1);
+
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i64(result.i64, 3);
+
+    wah_exec_context_destroy(&ctx);
+    wah_exec_context_destroy(&pctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
+static void test_table64_grow_negative_delta() {
+    printf("Testing table64 grow with negative delta...\n");
+
+    const char *spec = "wasm \
+        types {[ fn [i64] [i64], fn [] [i64] ]} \
+        funcs {[ 0, 1 ]} \
+        tables {[ funcref limits.i64/2 2 10 ]} \
+        code {[ \
+            {[] ref.null funcref local.get 0 table.grow 0 end }, \
+            {[] table.size 0 end } \
+        ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t params[1], result;
+
+    params[0].i64 = -1;
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i64(result.i64, -1);
+
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i64(result.i64, 2);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_table64_grow_propagation() {
+    printf("Testing table64 grow propagation to imported context...\n");
+
+    const char *provider_spec = "wasm \
+        types {[ fn [] [i64], fn [i64] [i64] ]} \
+        funcs {[ 0, 1 ]} \
+        tables {[ funcref limits.i64/2 2 10 ]} \
+        exports {[ {'tab'} table# 0, {'size'} fn# 0, {'grow'} fn# 1 ]} \
+        code {[ \
+            {[] table.size 0 end }, \
+            {[] ref.null funcref local.get 0 table.grow 0 end } \
+        ]}";
+
+    const char *consumer_spec = "wasm \
+        types {[ fn [] [i64], fn [i64] [i64] ]} \
+        imports {[ {'provider'} {'tab'} export.table funcref limits.i64/2 2 10, \
+                   {'provider'} {'size'} fn# 0, \
+                   {'provider'} {'grow'} fn# 1 ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] ref.null funcref local.get 0 table.grow 0 end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t pctx = {0};
+    assert_ok(wah_exec_context_create(&pctx, &provider));
+    assert_ok(wah_instantiate(&pctx));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_link_context(&ctx, "provider", &pctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t params[1], result;
+
+    // func index: 0 = import 'size', 1 = import 'grow', 2 = local grow func
+    params[0].i64 = 3;
+    assert_ok(wah_call(&ctx, 2, params, 1, &result));
+    assert_eq_i64(result.i64, 2);
+
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i64(result.i64, 5);
+
+    wah_exec_context_destroy(&ctx);
+    wah_exec_context_destroy(&pctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
+static void test_memory_invalid_flags() {
+    printf("Testing memory section with invalid flags...\n");
+
+    wah_module_t module = {0};
+    assert_err(wah_parse_module_from_spec(&module, "wasm memories {[ %'06 01' ]}"),
+               WAH_ERROR_MALFORMED);
+    wah_free_module(&module);
+}
+
 int main() {
     test_memory_grow_clamp();
     test_memory64_large_limits_parsing();
@@ -393,6 +562,11 @@ int main() {
     test_memory64_data_segment();
     test_memory64_validation();
     test_memory64_large_limits();
+    test_memory64_grow_negative_pages();
+    test_memory64_grow_propagation();
+    test_table64_grow_negative_delta();
+    test_table64_grow_propagation();
+    test_memory_invalid_flags();
     printf("All memory64/table64 tests passed!\n");
     return 0;
 }

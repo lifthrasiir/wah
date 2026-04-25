@@ -498,6 +498,89 @@ static void test_else_stack_height() {
     wah_free_module(&good);
 }
 
+static void test_function_end_with_results() {
+    printf("Testing function END with results validation...\n");
+    // Positive: function returns i32, stack has exactly one i32 at END
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] i32.const 42 end } ]}";
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+
+    // Negative: function returns i32 but stack has two i32s at END
+    const char *bad_spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] i32.const 1 i32.const 2 end } ]}";
+    wah_module_t bad = {0};
+    assert_err(wah_parse_module_from_spec(&bad, bad_spec), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad);
+}
+
+static void test_unknown_opcode() {
+    printf("Testing unknown opcode validation...\n");
+    wah_module_t module = {0};
+    // Use raw hex for code body: 0x06 is an unrecognized opcode
+    assert_err(wah_parse_module_from_spec(&module,
+        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} "
+        "code {[ {[] %'06' end } ]}"),
+        WAH_ERROR_MALFORMED);
+    wah_free_module(&module);
+}
+
+static void test_ref_test_concrete_heap_type() {
+    printf("Testing ref.test with concrete heap type...\n");
+    // ref.test checks if a structref is actually type $0 (a struct type)
+    const char *spec = "wasm \
+        types {[ struct [i32 mut], fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] \
+            ref.null structref \
+            ref.test 0 \
+        end } ]}";
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 0); // null ref fails ref.test
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_nullref_subtype_check() {
+    printf("Testing nullref subtype of struct type...\n");
+    // A block expects structref on input, but we pass nullref (which is a subtype of struct types)
+    // This exercises the NULLREF subtype path
+    const char *spec = "wasm \
+        types {[ struct [i32 mut], fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] \
+            ref.null nullref \
+            ref.test 0 \
+        end } ]}";
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 0);
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 int main() {
     test_block_type_not_skipped();
     test_if_complex_block_type();
@@ -510,6 +593,10 @@ int main() {
     test_unreachable_stack_height();
     test_br_block_floor();
     test_else_stack_height();
+    test_function_end_with_results();
+    test_unknown_opcode();
+    test_ref_test_concrete_heap_type();
+    test_nullref_subtype_check();
     printf("All validation tests passed!\n");
     return 0;
 }

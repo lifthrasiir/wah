@@ -215,6 +215,45 @@ int main(void) {
         wah_free_module(&host_mod);
     }
 
+    printf("Testing wah_strerror for all error codes...\n");
+    {
+        assert_not_null(wah_strerror(WAH_OK));
+        assert_not_null(wah_strerror(WAH_ERROR_INVALID_MAGIC_NUMBER));
+        assert_not_null(wah_strerror(WAH_ERROR_INVALID_VERSION));
+        assert_not_null(wah_strerror(WAH_ERROR_NOT_FOUND));
+        assert_not_null(wah_strerror(WAH_ERROR_MISUSE));
+        assert_not_null(wah_strerror(WAH_ERROR_IMPORT_NOT_FOUND));
+        assert_not_null(wah_strerror(WAH_ERROR_EXCEPTION));
+        assert_not_null(wah_strerror(WAH_OK_BUT_MULTI_RETURN));
+        assert_not_null(wah_strerror((wah_error_t)9999));
+        assert_eq_str(wah_strerror(WAH_OK), "Success");
+        assert_eq_str(wah_strerror(WAH_ERROR_MISUSE), "API misused: invalid arguments");
+    }
+
+    printf("Testing wah_free_module(NULL)...\n");
+    {
+        wah_free_module(NULL);
+    }
+
+    printf("Testing wah_module_export_by_name for host function...\n");
+    {
+        wah_module_t mod = {0};
+        assert_ok(wah_new_module(&mod));
+        assert_ok(wah_module_export_funcv(&mod, "hfunc",
+            1, (wah_type_t[]){WAH_TYPE_I32}, 1, (wah_type_t[]){WAH_TYPE_I32},
+            check_flags_host, NULL, NULL));
+
+        wah_entry_t entry;
+        assert_ok(wah_module_export_by_name(&mod, "hfunc", &entry));
+        assert_eq_i32(entry.type, WAH_TYPE_HOST_FUNCTION);
+        assert_eq_u32(entry.u.func.param_count, 1);
+        assert_eq_i32(entry.u.func.param_types[0], WAH_TYPE_I32);
+        assert_eq_u32(entry.u.func.result_count, 1);
+        assert_eq_i32(entry.u.func.result_types[0], WAH_TYPE_I32);
+
+        wah_free_module(&mod);
+    }
+
     printf("\n--- ALL TESTS PASSED ---\n");
     return 0;
 }

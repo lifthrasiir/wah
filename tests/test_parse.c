@@ -786,6 +786,35 @@ static void test_elem_oob_table_idx() {
     wah_free_module(&m2);
 }
 
+static void test_unknown_export_kind() {
+    printf("Running test_unknown_export_kind...\n");
+    wah_module_t module = {0};
+    assert_err(wah_parse_module_from_spec(&module,
+        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} code {[ {[] end} ]} "
+        "exports {%'01 01 78 05 00'}"),
+        WAH_ERROR_MALFORMED);
+    wah_free_module(&module);
+}
+
+static void test_unknown_data_segment_flags() {
+    printf("Running test_unknown_data_segment_flags...\n");
+    wah_module_t module = {0};
+    assert_err(wah_parse_module_from_spec(&module,
+        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} memories {[ limits.i32/1 1 ]} "
+        "code {[ {[] end} ]} datacount { 1 } data {%'01 03 00'}"),
+        WAH_ERROR_MALFORMED);
+    wah_free_module(&module);
+}
+
+static void test_count_overflow() {
+    printf("Running test_count_overflow...\n");
+    wah_module_t module = {0};
+    assert_err(wah_parse_module_from_spec(&module,
+        "wasm types {%'80 80 80 80 08'}"),
+        WAH_ERROR_MALFORMED);
+    wah_free_module(&module);
+}
+
 int main(void) {
     test_zero_params_zero_results_func_type();
     test_invalid_section_order_mem_table();
@@ -827,6 +856,9 @@ int main(void) {
     test_overlong_sleb128_i64();
     test_start_function_type();
     test_elem_oob_table_idx();
+    test_unknown_export_kind();
+    test_unknown_data_segment_flags();
+    test_count_overflow();
 
     printf("All parser tests passed!\n");
     return 0;

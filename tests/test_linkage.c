@@ -595,6 +595,79 @@ int main() {
         wah_free_module(&provider);
     }
 
+    printf("Testing duplicate module name...\n");
+    {
+        wah_module_t mod = {0};
+        assert_ok(wah_new_module(&mod));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_exec_context_create(&ctx, &mod));
+        assert_ok(wah_link_module(&ctx, "mymod", &mod));
+        assert_err(wah_link_module(&ctx, "mymod", &mod), WAH_ERROR_VALIDATION_FAILED);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&mod);
+    }
+
+    printf("Testing duplicate name in wah_link_context...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] i32.const 1 end } ]}";
+
+        wah_module_t pmod = {0};
+        assert_ok(wah_parse_module_from_spec(&pmod, spec));
+        wah_exec_context_t pctx = {0};
+        assert_ok(wah_exec_context_create(&pctx, &pmod));
+        assert_ok(wah_instantiate(&pctx));
+
+        wah_module_t cmod = {0};
+        assert_ok(wah_new_module(&cmod));
+        wah_exec_context_t cctx = {0};
+        assert_ok(wah_exec_context_create(&cctx, &cmod));
+
+        assert_ok(wah_link_context(&cctx, "provider", &pctx));
+        assert_err(wah_link_context(&cctx, "provider", &pctx), WAH_ERROR_VALIDATION_FAILED);
+
+        wah_exec_context_destroy(&cctx);
+        wah_exec_context_destroy(&pctx);
+        wah_free_module(&cmod);
+        wah_free_module(&pmod);
+    }
+
+    printf("Testing immutable global import type match...\n");
+    {
+        const char *provider_spec = "wasm \
+            types {[]} \
+            globals {[ funcref immut ref.null funcref end ]} \
+            exports {[ {'g'} global# 0 ]}";
+
+        const char *consumer_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'provider'} {'g'} global# funcref immut ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] global.get 0 ref.is_null end } ]}";
+
+        wah_module_t provider = {0}, consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_exec_context_create(&ctx, &consumer));
+        assert_ok(wah_link_module(&ctx, "provider", &provider));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&consumer);
+        wah_free_module(&provider);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

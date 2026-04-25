@@ -1183,6 +1183,48 @@ void test_i32x4_relaxed_dot_i8x16_i7x16_add_s() {
     run_simd_ternary_op_test("i32x4.relaxed_dot_i8x16_i7x16_add_s (zero acc)", ternary_op_wasm_spec, &a, &b, &c, &expected);
 }
 
+void test_v128_multi_memory() {
+    printf("Testing v128 load/store on non-zero memory index...\n");
+
+    const char *spec = "wasm \
+        types {[ fn [] [v128] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1, limits.i32/1 1 ]} \
+        code {[ {[] \
+            i32.const 0 \
+            v128.const %'0102030405060708090a0b0c0d0e0f10' \
+            v128.store align=1.mem# 1 offset=0 \
+            i32.const 0 \
+            v128.load align=1.mem# 1 offset=0 \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    wah_v128_t expected = {{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10}};
+    compare_and_print_v128_result("v128 multi-memory load/store", &result.v128, &expected);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+void test_i32x4_relaxed_trunc_f64x2_s() {
+    wah_v128_t op = { .f64 = {3.14, -2.7} };
+    wah_v128_t expected = { .i32 = {3, -2, 0, 0} };
+    run_simd_unary_op_test("i32x4.relaxed_trunc_f64x2_s (zero)", unary_op_wasm_spec, &op, &expected);
+}
+
+void test_i32x4_relaxed_trunc_f64x2_u() {
+    wah_v128_t op = { .f64 = {3.14, 100.5} };
+    wah_v128_t expected = { .u32 = {3, 100, 0, 0} };
+    run_simd_unary_op_test("i32x4.relaxed_trunc_f64x2_u (zero)", unary_op_wasm_spec, &op, &expected);
+}
+
 int main() {
     test_v128_const();
     test_v128_load_store();
@@ -1304,6 +1346,9 @@ int main() {
     test_i16x8_relaxed_q15mulr_s();
     test_i16x8_relaxed_dot_i8x16_i7x16_s();
     test_i32x4_relaxed_dot_i8x16_i7x16_add_s();
+    test_v128_multi_memory();
+    test_i32x4_relaxed_trunc_f64x2_s();
+    test_i32x4_relaxed_trunc_f64x2_u();
 
     fprintf(stderr, "All tests passed.\n");
     return 0;
