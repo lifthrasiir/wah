@@ -182,9 +182,10 @@ for ($i = 0; $i -lt $testQueue.Count; $i++) {
 
     # Run current test.
     Write-Host "## Running $($test.File.Name)..."
+    $saved = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
     & $currentExe
     $testExit = $LASTEXITCODE
-    Remove-Item $currentExe -ErrorAction SilentlyContinue
+    $ErrorActionPreference = $saved
     $ran++
 
     if ($testExit -ne 0) {
@@ -197,6 +198,7 @@ for ($i = 0; $i -lt $testQueue.Count; $i++) {
         $failed = $true
         break
     }
+    Remove-Item $currentExe -ErrorAction SilentlyContinue
     Write-Host ''
 
     # Wait for next compilation.

@@ -112,7 +112,7 @@ Internal error propagation uses helper macros:
 
 ## Testing
 
-- **Windows:** Run `./test.bat` for all tests. Run `./test.bat <prefix>` for specific tests (e.g., `./test.bat linkage`).
+- **Windows:** Run `./test.ps1` for all tests. Run `./test.ps1 <prefix>` for specific tests (e.g., `./test.ps1 linkage`).
     - Uses `clang` compiler. Successful test binaries get automatically removed. Consider using `gdb` on failed tests.
 - **POSIX:** Run `make test` for all tests. Run `make test_<prefix>` for specific tests.
     - Uses `gcc` compiler. Set `DEBUG=1` for debug builds.
