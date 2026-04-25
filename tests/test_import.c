@@ -396,7 +396,7 @@ static void test_table_import(void) {
     provider.exports[provider.export_count].kind = 1;
     provider.exports[provider.export_count].index = provider.table_count;
     provider.export_count++;
-    provider.capacity_exports = provider.export_count;
+    provider.exports_cap = provider.export_count;
     provider.table_count++;
 
     const char *spec = "wasm \

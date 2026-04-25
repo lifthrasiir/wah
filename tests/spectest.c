@@ -564,9 +564,13 @@ static int add_table_export_ex(wah_module_t *mod, const char *name, uint32_t min
     mod->tables[mod->table_count].min_elements = min;
     mod->tables[mod->table_count].max_elements = max;
 
-    if (!ensure_capacity((void **)&mod->exports, (size_t *)&mod->capacity_exports,
-                         sizeof(*mod->exports), mod->export_count + 1)) {
-        return 0;
+    {
+        size_t cap = mod->exports_cap;
+        if (!ensure_capacity((void **)&mod->exports, &cap,
+                             sizeof(*mod->exports), mod->export_count + 1)) {
+            return 0;
+        }
+        mod->exports_cap = (uint32_t)cap;
     }
     name_copy = strdup(name);
     if (!name_copy) {
