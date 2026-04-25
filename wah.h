@@ -1998,8 +1998,10 @@ static inline wah_error_t wah_realloc(size_t count, size_t elemsize, void** p_pt
     return WAH_OK;
 }
 
-#define WAH_MALLOC_ARRAY(ptr, count) \
-    do { \
+#define WAH_MALLOC(ptr) WAH_MALLOC_ARRAY(ptr, 1)
+#define WAH_MALLOC_GOTO(ptr, label) WAH_MALLOC_ARRAY_GOTO(ptr, 1, label)
+
+#define WAH_MALLOC_ARRAY(ptr, count) do { \
         void *_alloc_ptr; \
         wah_error_t _alloc_err = wah_malloc((count), sizeof(*(ptr)), &_alloc_ptr); \
         if (_alloc_err != WAH_OK) { \
@@ -2009,8 +2011,7 @@ static inline wah_error_t wah_realloc(size_t count, size_t elemsize, void** p_pt
         (ptr) = _alloc_ptr; \
     } while (0)
 
-#define WAH_REALLOC_ARRAY(ptr, count) \
-    do { \
+#define WAH_REALLOC_ARRAY(ptr, count) do { \
         void *_alloc_ptr = (ptr); \
         wah_error_t _alloc_err = wah_realloc((count), sizeof(*(ptr)), &_alloc_ptr); \
         if (_alloc_err != WAH_OK) { \
@@ -2020,8 +2021,7 @@ static inline wah_error_t wah_realloc(size_t count, size_t elemsize, void** p_pt
         (ptr) = _alloc_ptr; \
     } while (0)
 
-#define WAH_MALLOC_ARRAY_GOTO(ptr, count, label) \
-    do { \
+#define WAH_MALLOC_ARRAY_GOTO(ptr, count, label) do { \
         void* _alloc_ptr; \
         err = wah_malloc((count), sizeof(*(ptr)), &_alloc_ptr); \
         if (err != WAH_OK) { \
@@ -2031,8 +2031,7 @@ static inline wah_error_t wah_realloc(size_t count, size_t elemsize, void** p_pt
         (ptr) = _alloc_ptr; \
     } while (0)
 
-#define WAH_REALLOC_ARRAY_GOTO(ptr, count, label) \
-    do { \
+#define WAH_REALLOC_ARRAY_GOTO(ptr, count, label) do { \
         void* _alloc_ptr = ptr; \
         err = wah_realloc((count), sizeof(*(ptr)), &_alloc_ptr); \
         if (err != WAH_OK) { \
@@ -3638,8 +3637,9 @@ static wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx,
     WAH_CHECK(wah_realloc(new_count, sizeof(wah_repr_info_t *), (void **)&module->repr_infos));
 
     size_t info_size = sizeof(wah_repr_info_t) + info->count * sizeof(wah_repr_field_t);
-    wah_repr_info_t *copy = (wah_repr_info_t *)malloc(info_size);
-    WAH_ENSURE(copy, WAH_ERROR_OUT_OF_MEMORY);
+    uint8_t *_alloc_bytes;
+    WAH_MALLOC_ARRAY(_alloc_bytes, info_size);
+    wah_repr_info_t *copy = (wah_repr_info_t *)_alloc_bytes;
     memcpy(copy, info, info_size);
     copy->typeidx = typeidx;
 
@@ -4190,9 +4190,8 @@ static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, co
 static wah_error_t wah_analyzed_append_end(wah_analyzed_code_t *ac) {
     if (ac->instr_count >= ac->instr_capacity) {
         uint32_t nc = ac->instr_capacity == 0 ? 64 : ac->instr_capacity * 2;
-        wah_decoded_instr_t *ni = (wah_decoded_instr_t *)realloc(ac->instrs, nc * sizeof(wah_decoded_instr_t));
-        WAH_ENSURE(ni != NULL, WAH_ERROR_OUT_OF_MEMORY);
-        ac->instrs = ni; ac->instr_capacity = nc;
+        WAH_REALLOC_ARRAY(ac->instrs, nc);
+        ac->instr_capacity = nc;
     }
     ac->instrs[ac->instr_count] = (wah_decoded_instr_t){ .opcode = WAH_OP_END, .imm_kind = WAH_IMM_NONE };
     ac->instr_count++;
@@ -4259,9 +4258,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
     if (ac) { \
         if (ac->instr_count >= ac->instr_capacity) { \
             uint32_t _nc = ac->instr_capacity == 0 ? 64 : ac->instr_capacity * 2; \
-            wah_decoded_instr_t *_ni = (wah_decoded_instr_t *)realloc(ac->instrs, _nc * sizeof(wah_decoded_instr_t)); \
-            WAH_ENSURE(_ni != NULL, WAH_ERROR_OUT_OF_MEMORY); \
-            ac->instrs = _ni; \
+            WAH_REALLOC_ARRAY(ac->instrs, _nc); \
             ac->instr_capacity = _nc; \
         } \
         wah_decoded_instr_t *_di = &ac->instrs[ac->instr_count++]; \
@@ -5134,8 +5131,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 _di->imm.br_table.drops = bt_drops;
                 bt_drops = NULL;
                 if (num_targets > 0) {
-                    _di->imm.br_table.target_symbols = (uint32_t *)malloc(num_targets * sizeof(uint32_t));
-                    if (!_di->imm.br_table.target_symbols) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup_br_table; }
+                    WAH_MALLOC_ARRAY_GOTO(_di->imm.br_table.target_symbols, num_targets, cleanup_br_table);
                     for (uint32_t _k = 0; _k < num_targets; _k++) _di->imm.br_table.target_symbols[_k] = label_indices[_k];
                 }
             });
@@ -5711,8 +5707,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 _di->imm.try_table.catch_count = catch_count;
                 _di->imm.try_table.catches = NULL;
                 if (catch_count > 0) {
-                    _di->imm.try_table.catches = malloc(catch_count * sizeof(*_di->imm.try_table.catches));
-                    if (!_di->imm.try_table.catches) { free(catch_entries); return WAH_ERROR_OUT_OF_MEMORY; }
+                    WAH_MALLOC_ARRAY(_di->imm.try_table.catches, catch_count);
                     for (uint32_t ci = 0; ci < catch_count; ci++) {
                         _di->imm.try_table.catches[ci].kind = catch_entries[ci].kind;
                         _di->imm.try_table.catches[ci].tag_idx = catch_entries[ci].tag_idx;
@@ -6244,9 +6239,7 @@ static wah_error_t wah_analyze_stream(
         uint32_t needed = ref_map_size + _entry_bytes; \
         if (needed > ref_map_capacity) { \
             ref_map_capacity = needed < 64 ? 64 : needed * 2; \
-            uint8_t *tmp = (uint8_t *)realloc(ref_map, ref_map_capacity); \
-            if (!tmp) { free(ref_map); ref_map = NULL; err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; } \
-            ref_map = tmp; \
+            WAH_REALLOC_ARRAY_GOTO(ref_map, ref_map_capacity, cleanup); \
         } \
         wah_write_u16_le(ref_map + ref_map_size, (uint16_t)depth); \
         memset(ref_map + ref_map_size + sizeof(uint16_t), 0, _words * sizeof(uint16_t)); \
@@ -6424,8 +6417,7 @@ static wah_error_t wah_parse_name(const uint8_t **ptr, const uint8_t *section_en
     WAH_ENSURE(*ptr + name_len <= section_end, WAH_ERROR_UNEXPECTED_EOF);
     WAH_ENSURE(wah_is_valid_utf8((const char *)*ptr, name_len), WAH_ERROR_MALFORMED);
 
-    name_copy = (char *)malloc((size_t)name_len + 1);
-    WAH_ENSURE(name_copy, WAH_ERROR_OUT_OF_MEMORY);
+    WAH_MALLOC_ARRAY(name_copy, (size_t)name_len + 1);
     memcpy(name_copy, *ptr, name_len);
     name_copy[name_len] = '\0';
 
@@ -7845,10 +7837,8 @@ static void wah_gc_free_all_objects(wah_gc_state_t *gc) {
 
 wah_error_t wah_gc_start(wah_exec_context_t *ctx) {
     if (ctx->gc) return WAH_OK;
-    wah_gc_state_t *gc = (wah_gc_state_t *)malloc(sizeof(wah_gc_state_t));
-    if (!gc) return WAH_ERROR_OUT_OF_MEMORY;
-    *gc = (wah_gc_state_t){ .allocation_threshold = WAH_GC_DEFAULT_THRESHOLD };
-    ctx->gc = gc;
+    WAH_MALLOC(ctx->gc);
+    *ctx->gc = (wah_gc_state_t){ .allocation_threshold = WAH_GC_DEFAULT_THRESHOLD };
     return WAH_OK;
 }
 
@@ -8867,18 +8857,16 @@ WAH_RUN(THROW) {
     const wah_func_type_t *tag_type = &cur_module->types[type_idx];
     uint32_t value_count = tag_type->param_count;
 
-    wah_exception_t *exc = malloc(sizeof(wah_exception_t));
-    WAH_ENSURE_GOTO(exc != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+    wah_exception_t *exc;
+    WAH_MALLOC_GOTO(exc, cleanup);
     exc->tag_unique_id = tag_inst->unique_id;
     exc->tag_index = tag_idx;
     exc->value_count = value_count;
     exc->values = NULL;
     exc->value_types = NULL;
     if (value_count > 0) {
-        exc->values = malloc(sizeof(wah_value_t) * value_count);
-        if (!exc->values) { free(exc); err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
-        exc->value_types = malloc(sizeof(wah_type_t) * value_count);
-        if (!exc->value_types) { free(exc->values); free(exc); err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
+        WAH_MALLOC_ARRAY_GOTO(exc->values, value_count, cleanup_exc);
+        WAH_MALLOC_ARRAY_GOTO(exc->value_types, value_count, cleanup_exc);
         for (uint32_t i = 0; i < value_count; i++) {
             exc->values[i] = sp[-(int32_t)value_count + (int32_t)i];
             exc->value_types[i] = tag_type->param_types[i];
@@ -8888,11 +8876,17 @@ WAH_RUN(THROW) {
 
     frame->bytecode_ip = bytecode_ip;
     ctx->sp = (uint32_t)(sp - ctx->value_stack);
+    // exc is no longer owned. Also it returns WAH_THROW_EXCEPTION which should be propagated.
     err = wah_throw_exception(ctx, exc);
     if (err != WAH_OK) goto cleanup;
     sp = ctx->value_stack + ctx->sp;
     RELOAD_FRAME();
     WAH_NEXT();
+
+cleanup_exc:
+    free(exc->values);
+    free(exc->value_types);
+    free(exc);
     WAH_CLEANUP();
 }
 
@@ -8901,25 +8895,31 @@ WAH_RUN(THROW_REF) {
     WAH_ENSURE_GOTO(exnref_val.ref != NULL, WAH_ERROR_TRAP, cleanup);
 
     wah_exception_t *exc = (wah_exception_t *)exnref_val.ref;
-    wah_exception_t *copy = malloc(sizeof(wah_exception_t));
-    WAH_ENSURE_GOTO(copy != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+    wah_exception_t *copy;
+    WAH_MALLOC_GOTO(copy, cleanup);
     *copy = *exc;
+    copy->values = NULL;
+    copy->value_types = NULL;
     if (exc->value_count > 0) {
-        copy->values = malloc(sizeof(wah_value_t) * exc->value_count);
-        if (!copy->values) { free(copy); err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
+        WAH_MALLOC_ARRAY_GOTO(copy->values, exc->value_count, cleanup_copy);
+        WAH_MALLOC_ARRAY_GOTO(copy->value_types, exc->value_count, cleanup_copy);
         memcpy(copy->values, exc->values, sizeof(wah_value_t) * exc->value_count);
-        copy->value_types = malloc(sizeof(wah_type_t) * exc->value_count);
-        if (!copy->value_types) { free(copy->values); free(copy); err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
         memcpy(copy->value_types, exc->value_types, sizeof(wah_type_t) * exc->value_count);
     }
 
     frame->bytecode_ip = bytecode_ip;
     ctx->sp = (uint32_t)(sp - ctx->value_stack);
+    // copy is no longer owned. Also it returns WAH_THROW_EXCEPTION which should be propagated.
     err = wah_throw_exception(ctx, copy);
     if (err != WAH_OK) goto cleanup;
     sp = ctx->value_stack + ctx->sp;
     RELOAD_FRAME();
     WAH_NEXT();
+
+cleanup_copy:
+    free(copy->values);
+    free(copy->value_types);
+    free(copy);
     WAH_CLEANUP();
 }
 
