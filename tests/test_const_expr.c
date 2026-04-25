@@ -2,9 +2,8 @@
 #include <string.h>
 #include <assert.h>
 
-#define WAH_IMPLEMENTATION
 #include "../wah.h"
-#include "common.c"
+#include "common.h"
 
 // Test 1: Simple const expression (i32.const)
 void test_simple_const(void) {

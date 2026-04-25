@@ -1,8 +1,7 @@
 // Test for linkage
 
-#define WAH_IMPLEMENTATION
 #include "../wah.h"
-#include "common.c"
+#include "common.h"
 #include <stdio.h>
 #include <string.h>
 

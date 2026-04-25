@@ -1,8 +1,7 @@
-#define WAH_IMPLEMENTATION
 #include <stdio.h>
 #include <stdlib.h>
 #include "../wah.h"
-#include "common.c"
+#include "common.h"
 
 // --- Test 1: Function returning two i32 values ---
 static void test_multi_return_i32_pair() {

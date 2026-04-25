@@ -3,7 +3,7 @@
 #include <stdlib.h>
 #include <string.h> // For memcmp
 #include "../wah.h"
-#include "common.c"
+#include "common.h"
 
 // Helper to compare v128 results and print byte-by-byte if they don't match.
 static void compare_and_print_v128_result(const char* test_name, const wah_v128_t* actual, const wah_v128_t* expected) {

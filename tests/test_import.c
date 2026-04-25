@@ -2,7 +2,7 @@
 #define WAH_IMPLEMENTATION
 #include <stdio.h>
 #include "../wah.h"
-#include "common.c"
+#include "common.h"
 
 static int g_add_called = 0;
 

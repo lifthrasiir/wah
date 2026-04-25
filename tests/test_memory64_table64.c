@@ -1,6 +1,6 @@
 #define WAH_IMPLEMENTATION
 #include "../wah.h"
-#include "common.c"
+#include "common.h"
 #include <stdio.h>
 
 // fbee5c2: Clamp runtime memory max_pages to spec page limit.

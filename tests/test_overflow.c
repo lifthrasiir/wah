@@ -2,9 +2,8 @@
 #include <string.h>
 #include <assert.h>
 
-#define WAH_IMPLEMENTATION
 #include "../wah.h"
-#include "common.c"
+#include "common.h"
 
 int main(void) {
     wah_module_t module;

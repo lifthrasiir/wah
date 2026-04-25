@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../wah.h"
-#include "common.c"
+#include "common.h"
 
 static void count_roots_visitor(wah_value_t *slot, wah_type_t type, void *ud) {
     (void)slot; (void)type;

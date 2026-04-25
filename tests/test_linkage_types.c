@@ -1,6 +1,5 @@
-#define WAH_IMPLEMENTATION
 #include "../wah.h"
-#include "common.c"
+#include "common.h"
 #include <stdio.h>
 
 // a70aac0: Support cross-module call_indirect through imported tables.

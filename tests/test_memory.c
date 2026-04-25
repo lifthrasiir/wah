@@ -1,11 +1,11 @@
+#define WAH_IMPLEMENTATION
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 
-#define WAH_IMPLEMENTATION
 #include "../wah.h"
-#include "common.c"
+#include "common.h"
 
 void wah_test_data_and_bulk_memory_ops() {
     wah_module_t module;

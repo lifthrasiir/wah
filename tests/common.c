@@ -29,13 +29,14 @@
 // `%v128` expects a const uint8_t* value and emits 16 bytes.
 // `%t` expects a const char* value and recursively interprets it as a DSL specification string.
 
-#include "../wah.h"
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
 #include <stdarg.h>
+#include <stdbool.h>
+#include <math.h>
 
 // Token entry for the keyword mapping table
 typedef struct {
@@ -1034,10 +1035,9 @@ static size_t parse_tokens(buffer_t *buf, const char *fmt, va_list *args, bool *
     return fmt - start;
 }
 
-// Main function
-wah_error_t wah_parse_module_from_specv(wah_module_t *module, const char *fmt, va_list args) {
-    if (!module || !fmt) {
-        return WAH_ERROR_BAD_SPEC;
+int wah_build_spec_binaryv(uint8_t **out_data, size_t *out_size, const char *fmt, va_list args) {
+    if (!fmt || !out_data || !out_size) {
+        return 0;
     }
 
     buffer_t buf;
@@ -1051,7 +1051,7 @@ wah_error_t wah_parse_module_from_specv(wah_module_t *module, const char *fmt, v
 
     if (error) {
         buffer_free(&buf);
-        return WAH_ERROR_BAD_SPEC;
+        return 0;
     }
 
 #ifdef WAH_DEBUG
@@ -1063,21 +1063,17 @@ wah_error_t wah_parse_module_from_specv(wah_module_t *module, const char *fmt, v
     if (buf.size % 16 != 0) printf("\n");
 #endif
 
-    // Parse the module
-    wah_error_t err = wah_parse_module(buf.data, buf.size, module);
-
-    buffer_free(&buf);
-    return err;
+    *out_data = buf.data;
+    *out_size = buf.size;
+    return 1;
 }
 
-wah_error_t wah_parse_module_from_spec(wah_module_t *module, const char *fmt, ...) {
+int wah_build_spec_binary(uint8_t **out_data, size_t *out_size, const char *fmt, ...) {
     va_list args;
     va_start(args, fmt);
-
-    wah_error_t err = wah_parse_module_from_specv(module, fmt, args);
-
+    int ok = wah_build_spec_binaryv(out_data, out_size, fmt, args);
     va_end(args);
-    return err;
+    return ok;
 }
 
 // ---------------------------------------------------------------------------
@@ -1143,22 +1139,6 @@ void assert_eq_str(const char *file, int line, const char *actual, const char *e
     }
 }
 
-void assert_err(const char *file, int line, wah_error_t actual, wah_error_t expected, const char *expr) {
-    if (actual != expected) {
-        fprintf(stderr, "%s:%d: Assertion failed: %s (expected %s, got %s)\n",
-                file, line, expr, wah_strerror(expected), wah_strerror(actual));
-        exit(1);
-    }
-}
-
-void assert_ok(const char *file, int line, wah_error_t err, const char *expr) {
-    if (err != WAH_OK) {
-        fprintf(stderr, "%s:%d: Assertion failed: %s (expected WAH_OK, got %s)\n",
-                file, line, expr, wah_strerror(err));
-        exit(1);
-    }
-}
-
 void assert_true(const char *file, int line, bool condition, const char *expr) {
     if (!condition) {
         fprintf(stderr, "%s:%d: Assertion failed: %s (expected true)\n",
@@ -1199,18 +1179,3 @@ void assert_eq_ptr(const char *file, int line, const void *actual, const void *e
     }
 }
 
-// Public macros that inject __FILE__ and __LINE__
-#define assert_eq_i32(actual, expected) assert_eq_i32(__FILE__, __LINE__, (actual), (expected), #actual " == " #expected)
-#define assert_eq_u32(actual, expected) assert_eq_u32(__FILE__, __LINE__, (actual), (expected), #actual " == " #expected)
-#define assert_eq_i64(actual, expected) assert_eq_i64(__FILE__, __LINE__, (actual), (expected), #actual " == " #expected)
-#define assert_eq_u64(actual, expected) assert_eq_u64(__FILE__, __LINE__, (actual), (expected), #actual " == " #expected)
-#define assert_eq_f32(actual, expected, epsilon) assert_eq_f32(__FILE__, __LINE__, (actual), (expected), (epsilon), #actual " == " #expected " within " #epsilon)
-#define assert_eq_f64(actual, expected, epsilon) assert_eq_f64(__FILE__, __LINE__, (actual), (expected), (epsilon), #actual " == " #expected " within " #epsilon)
-#define assert_eq_str(actual, expected) assert_eq_str(__FILE__, __LINE__, (actual), (expected), #actual " == " #expected)
-#define assert_err(actual, expected) assert_err(__FILE__, __LINE__, (actual), (expected), #actual " == " #expected)
-#define assert_ok(err) assert_ok(__FILE__, __LINE__, (err), #err " == WAH_OK")
-#define assert_true(condition) assert_true(__FILE__, __LINE__, (condition), #condition)
-#define assert_false(condition) assert_false(__FILE__, __LINE__, (condition), #condition)
-#define assert_null(ptr) assert_null(__FILE__, __LINE__, (ptr), #ptr " == NULL")
-#define assert_not_null(ptr) assert_not_null(__FILE__, __LINE__, (ptr), #ptr " != NULL")
-#define assert_eq_ptr(actual, expected) assert_eq_ptr(__FILE__, __LINE__, (actual), (expected), #actual " == " #expected)

@@ -1,6 +1,5 @@
-#define WAH_IMPLEMENTATION
 #include "../wah.h"
-#include "common.c"
+#include "common.h"
 #include <stdio.h>
 
 // d39a915: Add i31 and extern conversion GC opcodes.

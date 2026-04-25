@@ -1,6 +1,5 @@
-#define WAH_IMPLEMENTATION
 #include "../wah.h"
-#include "common.c"
+#include "common.h"
 #include <stdio.h>
 
 // b13c680: Fix a validation bug where some block types are entirely skipped.

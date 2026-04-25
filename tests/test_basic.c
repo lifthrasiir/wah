@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include "../wah.h"
-#include "common.c"
+#include "common.h"
 
 int main() {
     wah_module_t module;

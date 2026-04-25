@@ -1,4 +1,7 @@
+*.o
 *.exe
+tests/_wah_impl.c
+tests/test_*_cov
 tests/test_basic
 tests/test_call_context
 tests/test_const_expr

@@ -1,5 +1,4 @@
-#define WAH_IMPLEMENTATION
-#include "common.c"
+#include "common.h"
 #include <assert.h>
 
 // return_call: func 0 (entry) calls func 1 via return_call

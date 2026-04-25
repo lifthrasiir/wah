@@ -1,6 +1,5 @@
-#define WAH_IMPLEMENTATION
 #include "../wah.h"
-#include "common.c"
+#include "common.h"
 #include <stdio.h>
 
 // 27d668b: Validate try_table catch handler types against target label types.

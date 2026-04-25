@@ -1,7 +1,6 @@
-#define WAH_IMPLEMENTATION
 #include "../wah.h"
 // Include wah_testutils.c for wah_parse_module_from_spec
-#include "common.c"
+#include "common.h"
 #include <stdio.h>
 #include <string.h>
 #include <math.h> // For isnan, though we'll use bit patterns for comparison

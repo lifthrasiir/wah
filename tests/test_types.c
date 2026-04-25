@@ -1,11 +1,10 @@
-#define WAH_IMPLEMENTATION
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <stdbool.h>
 #include "../wah.h"
-#include "common.c"
+#include "common.h"
 
 static const char *memory_access_spec = "wasm \
     types {[ \
