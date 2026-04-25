@@ -939,10 +939,34 @@ static void test_struct_i64_f64_fields() {
     wah_free_module(&module);
 }
 
-// NOTE: struct with v128 field test skipped -- wah_gc_store_field/wah_gc_load_field
-// pass size=0 in struct.new/struct.get/struct.set handlers (lines 9130, 9157, 9202),
-// so v128 fields (which use the default memcpy path) store/load zero bytes.
-// This is a bug: the struct handlers should pass field size, like array handlers do.
+static void test_struct_v128_field() {
+    printf("Testing struct with v128 field (regression: size=0 in struct handlers)...\n");
+
+    const char *spec = "wasm \
+        types {[ struct [v128 mut], fn [] [v128] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[1 type.ref.null 0] \
+            v128.const %'0102030405060708090a0b0c0d0e0f10' \
+            struct.new 0 \
+            local.set 0 \
+            local.get 0 struct.get 0 0 \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    wah_v128_t expected = {{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10}};
+    assert_true(memcmp(&result.v128, &expected, sizeof(wah_v128_t)) == 0);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
 
 static void test_br_on_null_with_drop() {
     printf("Testing br_on_null with stack values to drop...\n");
@@ -1050,6 +1074,7 @@ int main() {
     test_array_init_data();
     test_struct_packed_fields();
     test_struct_i64_f64_fields();
+    test_struct_v128_field();
     test_br_on_null_with_drop();
     test_br_on_non_null_with_drop();
     printf("All GC ops tests passed!\n");
