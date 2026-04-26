@@ -264,6 +264,7 @@ int main(int argc, char **argv) {
     size_t i;
     const char *filter = argc > 1 ? argv[1] : NULL;
     tally_t tally = {0};
+    wah_debug_print_platform_features();
     if (!run_parser_sanity()) {
         return 1;
     }

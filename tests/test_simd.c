@@ -3,6 +3,7 @@
 #include <string.h> // For memcmp
 #include "../wah.h"
 #include "common.h"
+#include "wah_impl.h"
 
 // Helper to compare v128 results and print byte-by-byte if they don't match.
 static void compare_and_print_v128_result(const char* test_name, const wah_v128_t* actual, const wah_v128_t* expected) {
@@ -1225,6 +1226,7 @@ void test_i32x4_relaxed_trunc_f64x2_u() {
 }
 
 int main() {
+    wah_debug_print_platform_features();
     test_v128_const();
     test_v128_load_store();
     test_all_v128_loads();

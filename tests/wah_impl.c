@@ -1,6 +1,7 @@
 #define WAH_IMPLEMENTATION
 #include "../wah.h"
 #include "wah_impl.h"
+#include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -170,6 +171,26 @@ void wah_debug_set_linked_module(wah_exec_context_t *ctx, uint32_t i, const wah_
 }
 void wah_debug_set_linked_ctx(wah_exec_context_t *ctx, uint32_t i, wah_exec_context_t *lctx) {
     if (i < ctx->linked_module_count) ctx->linked_modules[i].ctx = lctx;
+}
+
+void wah_debug_print_platform_features(void) {
+#if defined(WAH_X86_64) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
+    wah_x86_64_features_t f = wah_x86_64_features();
+    printf("CPU features: x86-64 sse2");
+    if (f.ssse3) printf(" ssse3");
+    if (f.sse41) printf(" sse4.1");
+    if (f.sse42) printf(" sse4.2");
+    if (f.avx2) printf(" avx2");
+    if (f.avx512f_vl) printf(" avx512f+vl");
+    if (f.avx512dq_vl) printf(" avx512dq+vl");
+    if (f.avx512bw_vl) printf(" avx512bw+vl");
+    if (f.avx512bitalg_vl) printf(" avx512bitalg+vl");
+    printf("\n");
+#elif defined(WAH_AARCH64)
+    printf("CPU features: aarch64 neon\n");
+#else
+    printf("CPU features: portable\n");
+#endif
 }
 
 wah_error_t wah_debug_parse_func_spec(const char *types,

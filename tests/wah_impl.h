@@ -71,6 +71,9 @@ const wah_exec_context_t *wah_debug_linked_ctx(const wah_exec_context_t *ctx, ui
 void wah_debug_set_linked_module(wah_exec_context_t *ctx, uint32_t i, const wah_module_t *mod);
 void wah_debug_set_linked_ctx(wah_exec_context_t *ctx, uint32_t i, wah_exec_context_t *lctx);
 
+// --- Platform feature detection ---
+void wah_debug_print_platform_features(void);
+
 // --- parse_func_spec ---
 wah_error_t wah_debug_parse_func_spec(const char *types,
     size_t *out_nparams, wah_type_t **out_param_types,
