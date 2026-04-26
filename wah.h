@@ -3226,7 +3226,7 @@ static WAH_ALWAYS_INLINE int32_t wah_bitmask_i8x16_neon(uint8x16_t a) {
     uint8x16_t bits = vshrq_n_u8(a, 7);
     uint8x16_t weights = vld1q_u8(lut);
     uint8x16_t weighted = vandq_u8(bits, weights);
-    uint8x16_t lo = vpaddlq_u16(vpaddlq_u8(weighted));
+    uint32x4_t lo = vpaddlq_u16(vpaddlq_u8(weighted));
     return (int32_t)vgetq_lane_u32(lo, 0) | ((int32_t)vgetq_lane_u32(lo, 1) << 8);
 }
 static WAH_ALWAYS_INLINE int32_t wah_bitmask_i16x8_neon(uint8x16_t a) {
@@ -3342,7 +3342,7 @@ static WAH_ALWAYS_INLINE uint8x16_t wah_i16x8_narrow_i32x4_u_neon(uint8x16_t a, 
     va = vminq_s32(va, vdupq_n_s32(0xFFFF));
     vb = vmaxq_s32(vb, vdupq_n_s32(0));
     vb = vminq_s32(vb, vdupq_n_s32(0xFFFF));
-    return vreinterpretq_u8_u16(vcombine_u16(vreinterpret_u16_s32(vmovn_s32(va)), vreinterpret_u16_s32(vmovn_s32(vb))));
+    return vreinterpretq_u8_u16(vcombine_u16(vreinterpret_u16_s16(vmovn_s32(va)), vreinterpret_u16_s16(vmovn_s32(vb))));
 }
 
 // Extend operations
