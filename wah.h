@@ -3483,18 +3483,23 @@ static WAH_ALWAYS_INLINE uint8x16_t wah_f64x2_max_neon(uint8x16_t va, uint8x16_t
     return vreinterpretq_u8_f64(vbslq_f64(not_nan, result, vdupq_n_f64(WAH_CANONICAL_NAN64.f)));
 }
 
-// pmin/pmax: IEEE 754 minNum/maxNum - no NaN canonicalization
-static WAH_ALWAYS_INLINE uint8x16_t wah_f32x4_pmin_neon(uint8x16_t a, uint8x16_t b) {
-    return vreinterpretq_u8_f32(vminnmq_f32(vreinterpretq_f32_u8(a), vreinterpretq_f32_u8(b)));
+// pmin(a, b) = b < a ? b : a;  pmax(a, b) = a < b ? b : a
+// NaN comparisons are false, so NaN operands pass through as `a`.
+static WAH_ALWAYS_INLINE uint8x16_t wah_f32x4_pmin_neon(uint8x16_t va, uint8x16_t vb) {
+    float32x4_t a = vreinterpretq_f32_u8(va), b = vreinterpretq_f32_u8(vb);
+    return vreinterpretq_u8_f32(vbslq_f32(vcltq_f32(b, a), b, a));
 }
-static WAH_ALWAYS_INLINE uint8x16_t wah_f32x4_pmax_neon(uint8x16_t a, uint8x16_t b) {
-    return vreinterpretq_u8_f32(vmaxnmq_f32(vreinterpretq_f32_u8(a), vreinterpretq_f32_u8(b)));
+static WAH_ALWAYS_INLINE uint8x16_t wah_f32x4_pmax_neon(uint8x16_t va, uint8x16_t vb) {
+    float32x4_t a = vreinterpretq_f32_u8(va), b = vreinterpretq_f32_u8(vb);
+    return vreinterpretq_u8_f32(vbslq_f32(vcltq_f32(a, b), b, a));
 }
-static WAH_ALWAYS_INLINE uint8x16_t wah_f64x2_pmin_neon(uint8x16_t a, uint8x16_t b) {
-    return vreinterpretq_u8_f64(vminnmq_f64(vreinterpretq_f64_u8(a), vreinterpretq_f64_u8(b)));
+static WAH_ALWAYS_INLINE uint8x16_t wah_f64x2_pmin_neon(uint8x16_t va, uint8x16_t vb) {
+    float64x2_t a = vreinterpretq_f64_u8(va), b = vreinterpretq_f64_u8(vb);
+    return vreinterpretq_u8_f64(vbslq_f64(vcltq_f64(b, a), b, a));
 }
-static WAH_ALWAYS_INLINE uint8x16_t wah_f64x2_pmax_neon(uint8x16_t a, uint8x16_t b) {
-    return vreinterpretq_u8_f64(vmaxnmq_f64(vreinterpretq_f64_u8(a), vreinterpretq_f64_u8(b)));
+static WAH_ALWAYS_INLINE uint8x16_t wah_f64x2_pmax_neon(uint8x16_t va, uint8x16_t vb) {
+    float64x2_t a = vreinterpretq_f64_u8(va), b = vreinterpretq_f64_u8(vb);
+    return vreinterpretq_u8_f64(vbslq_f64(vcltq_f64(a, b), b, a));
 }
 
 // Float convert i32x4 signed
