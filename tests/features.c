@@ -1,7 +1,8 @@
-#define WAH_IMPLEMENTATION
-#include <stdio.h>
-#include <stdlib.h>
-#include "../wah.h"
+// Compile-time feature flag tests.
+// This file is included by test_feature_*.c after defining WAH_COMPILED_FEATURES
+// and including wah.h. It tests that runtime feature detection behaves correctly
+// when certain features are compiled out.
+
 #include "common.h"
 
 static const char detect_bulk_memory[] = "wasm \
@@ -63,42 +64,49 @@ static const char detect_typed_funcref[] = "wasm \
         {[] ref.func 1 call 0 end}, \
     ]}";
 
-// --------------------------------------------------------------------------
+static const char detect_mvp_add[] = "wasm \
+    types {[fn [i32, i32] [i32]]} funcs {[0]} \
+    code {[{[] local.get 0 local.get 1 i32.add end}]}";
 
 struct feature_detect_test {
     const char *name;
     wah_features_t feature;
-    wah_features_t also_disable; // additional features to disable (for dependency chains)
+    wah_features_t also_disable;
     const char *spec;
 };
 
 static const struct feature_detect_test detect_tests[] = {
-    { .name = "bulk-memory",             .spec = detect_bulk_memory,     .feature = WAH_FEATURE_BULK_MEMORY },
-    { .name = "multi-value",             .spec = detect_multi_value,     .feature = WAH_FEATURE_MULTI_VALUE },
-    { .name = "mutable-globals",         .spec = detect_mutable_globals, .feature = WAH_FEATURE_MUTABLE_GLOBALS },
-    { .name = "reference-types",         .spec = detect_reference_types, .feature = WAH_FEATURE_REF_TYPES,
-                                                                         .also_disable = WAH_FEATURE_GC | WAH_FEATURE_TYPED_FUNCREF },
-    { .name = "relaxed-simd",            .spec = detect_relaxed_simd,    .feature = WAH_FEATURE_RELAXED_SIMD },
-    { .name = "saturated-float-to-int",  .spec = detect_nontrapping_f2i, .feature = WAH_FEATURE_NONTRAPPING_F2I },
-    { .name = "sign-extensions",         .spec = detect_sign_ext,        .feature = WAH_FEATURE_SIGN_EXT },
-    { .name = "simd",                    .spec = detect_simd,            .feature = WAH_FEATURE_SIMD,
-                                                                         .also_disable = WAH_FEATURE_RELAXED_SIMD },
-    { .name = "tail-call",               .spec = detect_tail_call,       .feature = WAH_FEATURE_TAIL_CALL },
-    { .name = "memory64",                .spec = detect_memory64,        .feature = WAH_FEATURE_MEMORY64 },
-    { .name = "exceptions-final",        .spec = detect_exception,       .feature = WAH_FEATURE_EXCEPTION },
-    { .name = "gc",                      .spec = detect_gc,              .feature = WAH_FEATURE_GC },
-    { .name = "typed-function-references", .spec = detect_typed_funcref, .feature = WAH_FEATURE_TYPED_FUNCREF },
+    { "bulk-memory",             WAH_FEATURE_BULK_MEMORY,     0, detect_bulk_memory },
+    { "multi-value",             WAH_FEATURE_MULTI_VALUE,     0, detect_multi_value },
+    { "mutable-globals",         WAH_FEATURE_MUTABLE_GLOBALS, 0, detect_mutable_globals },
+    { "reference-types",         WAH_FEATURE_REF_TYPES,       WAH_FEATURE_GC | WAH_FEATURE_TYPED_FUNCREF, detect_reference_types },
+    { "relaxed-simd",            WAH_FEATURE_RELAXED_SIMD,    0, detect_relaxed_simd },
+    { "saturated-float-to-int",  WAH_FEATURE_NONTRAPPING_F2I, 0, detect_nontrapping_f2i },
+    { "sign-extensions",         WAH_FEATURE_SIGN_EXT,        0, detect_sign_ext },
+    { "simd",                    WAH_FEATURE_SIMD,            WAH_FEATURE_RELAXED_SIMD, detect_simd },
+    { "tail-call",               WAH_FEATURE_TAIL_CALL,       0, detect_tail_call },
+    { "memory64",                WAH_FEATURE_MEMORY64,        0, detect_memory64 },
+    { "exceptions-final",        WAH_FEATURE_EXCEPTION,       0, detect_exception },
+    { "gc",                      WAH_FEATURE_GC,              0, detect_gc },
+    { "typed-function-references", WAH_FEATURE_TYPED_FUNCREF, 0, detect_typed_funcref },
 };
 #define NUM_DETECT_TESTS (sizeof(detect_tests) / sizeof(detect_tests[0]))
 
-int main(void) {
+static int run_feature_tests(void) {
     wah_module_t mod;
     wah_error_t err;
 
-    // --- wasm-feature-detect: each proposal parses OK with all features ---
+    printf("WAH_COMPILED_FEATURES = 0x%llx\n", (unsigned long long)WAH_COMPILED_FEATURES);
+
+    // Test 1: features within WAH_COMPILED_FEATURES parse OK at runtime
     for (size_t i = 0; i < NUM_DETECT_TESTS; i++) {
         const struct feature_detect_test *t = &detect_tests[i];
-        printf("Testing %s: parses with all features...\n", t->name);
+        wah_features_t compiled = WAH_COMPILED_FEATURES;
+        // Skip if this feature is not compiled in
+        wah_features_t needed = wah_feature_closure(t->feature);
+        if ((needed & compiled) != needed) continue;
+
+        printf("Testing %s: parses with compiled features...\n", t->name);
         err = wah_parse_module_from_spec_ex(&mod, NULL, t->spec);
         if (err != WAH_OK) {
             fprintf(stderr, "  FAIL: expected WAH_OK, got %s\n", wah_strerror(err));
@@ -108,11 +116,15 @@ int main(void) {
         wah_free_module(&mod);
     }
 
-    // --- wasm-feature-detect: each proposal fails when its feature is disabled ---
+    // Test 2: features within WAH_COMPILED_FEATURES can be disabled at runtime
     for (size_t i = 0; i < NUM_DETECT_TESTS; i++) {
         const struct feature_detect_test *t = &detect_tests[i];
-        printf("Testing %s: rejected when disabled...\n", t->name);
-        wah_features_t disabled = WAH_FEATURE_ALL & ~(t->feature | t->also_disable);
+        wah_features_t compiled = WAH_COMPILED_FEATURES;
+        wah_features_t needed = wah_feature_closure(t->feature);
+        if ((needed & compiled) != needed) continue;
+
+        printf("Testing %s: rejected when runtime-disabled...\n", t->name);
+        wah_features_t disabled = compiled & ~(t->feature | t->also_disable);
         wah_parse_options_t opts = { .features = disabled };
         err = wah_parse_module_from_spec_ex(&mod, &opts, t->spec);
         if (err != WAH_ERROR_DISABLED_FEATURE) {
@@ -121,32 +133,40 @@ int main(void) {
         }
     }
 
-    // --- MVP module with zero optional features ---
+    // Test 3: features NOT in WAH_COMPILED_FEATURES always fail,
+    // even when explicitly requested at runtime
+    for (size_t i = 0; i < NUM_DETECT_TESTS; i++) {
+        const struct feature_detect_test *t = &detect_tests[i];
+        wah_features_t compiled = WAH_COMPILED_FEATURES;
+        wah_features_t needed = wah_feature_closure(t->feature);
+        if ((needed & compiled) == needed) continue;
+
+        printf("Testing %s: rejected when compiled out (even if runtime-enabled)...\n", t->name);
+        wah_parse_options_t opts = { .features = WAH_FEATURE_ALL };
+        err = wah_parse_module_from_spec_ex(&mod, &opts, t->spec);
+        if (err != WAH_ERROR_DISABLED_FEATURE) {
+            fprintf(stderr, "  FAIL: expected WAH_ERROR_DISABLED_FEATURE, got %s\n", wah_strerror(err));
+            return 1;
+        }
+    }
+
+    // Test 4: MVP module always works regardless of compiled features
     printf("Testing MVP module with zero optional features...\n");
     {
-        const char *mvp_add =
-            "wasm types {[fn [i32, i32] [i32]]} funcs {[0]} "
-            "code {[{[] local.get 0 local.get 1 i32.add end}]}";
         wah_parse_options_t opts = { .features = 0 };
-        assert_ok(wah_parse_module_from_spec_ex(&mod, &opts, mvp_add));
+        assert_ok(wah_parse_module_from_spec_ex(&mod, &opts, detect_mvp_add));
         assert_eq_u64(mod.required_features, 0);
         wah_free_module(&mod);
     }
 
-    // --- Feature closure tests ---
+    // Test 5: feature closure
     printf("Testing feature closure: RELAXED_SIMD implies SIMD...\n");
-    {
-        wah_features_t closed = wah_feature_closure(WAH_FEATURE_RELAXED_SIMD);
-        assert_true(closed & WAH_FEATURE_SIMD);
-    }
+    assert_true(wah_feature_closure(WAH_FEATURE_RELAXED_SIMD) & WAH_FEATURE_SIMD);
 
     printf("Testing feature closure: GC implies REF_TYPES...\n");
-    {
-        wah_features_t closed = wah_feature_closure(WAH_FEATURE_GC);
-        assert_true(closed & WAH_FEATURE_REF_TYPES);
-    }
+    assert_true(wah_feature_closure(WAH_FEATURE_GC) & WAH_FEATURE_REF_TYPES);
 
-    // --- wah_strerror ---
+    // Test 6: strerror
     printf("Testing wah_strerror(WAH_ERROR_DISABLED_FEATURE)...\n");
     assert_eq_str(wah_strerror(WAH_ERROR_DISABLED_FEATURE), "Feature not enabled");
 

@@ -71,7 +71,7 @@ typedef union {
     void* ref;  // Unified reference type (externref or funcref as wah_function_t*)
     struct { void *sentinel; uint32_t func_idx; } prefuncref; // const_expr funcref intermediate
 
-    // Internal fields
+    // Internal fields (visible from public API because of alignments)
 #ifdef WAH_X86_64
     __m128i _m128i;    // For integer SIMD operations
     __m128 _m128;      // For float SIMD operations
@@ -651,14 +651,38 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
 #define WAH_DEFAULT_FEATURES WAH_COMPILED_FEATURES
 #endif
 
-#if (WAH_COMPILED_FEATURES & WAH_FEATURE_RELAXED_SIMD) && !(WAH_COMPILED_FEATURES & WAH_FEATURE_SIMD)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_RELAXED_SIMD) && !((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
 #error "WAH_FEATURE_RELAXED_SIMD requires WAH_FEATURE_SIMD"
 #endif
-#if (WAH_COMPILED_FEATURES & WAH_FEATURE_GC) && !(WAH_COMPILED_FEATURES & WAH_FEATURE_REF_TYPES)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC) && !((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
 #error "WAH_FEATURE_GC requires WAH_FEATURE_REF_TYPES"
 #endif
-#if (WAH_COMPILED_FEATURES & WAH_FEATURE_TYPED_FUNCREF) && !(WAH_COMPILED_FEATURES & WAH_FEATURE_REF_TYPES)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF) && !((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
 #error "WAH_FEATURE_TYPED_FUNCREF requires WAH_FEATURE_REF_TYPES"
+#endif
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+#define WAH_IF_GC(...) __VA_ARGS__
+#else
+#define WAH_IF_GC(...)
+#endif
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
+#define WAH_IF_SIMD(...) __VA_ARGS__
+#else
+#define WAH_IF_SIMD(...)
+#endif
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_RELAXED_SIMD)
+#define WAH_IF_RELAXED_SIMD(...) __VA_ARGS__
+#else
+#define WAH_IF_RELAXED_SIMD(...)
+#endif
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
+#define WAH_IF_MEMORY64(...) __VA_ARGS__
+#else
+#define WAH_IF_MEMORY64(...)
 #endif
 
 static inline wah_features_t wah_feature_closure(wah_features_t f) {
@@ -713,7 +737,7 @@ typedef enum {
     WAH_OPCLASS_B, WAH_OPCLASS_I, WAH_OPCLASS_II, WAH_OPCLASS_M, WAH_OPCLASS_MB,
 } wah_opclass_t;
 
-// --- WebAssembly Opcodes (subset) ---
+// --- WebAssembly Opcodes ---
 #define WAH_OPCODES(X) \
     /* Control Flow Operators */ \
     X(UNREACHABLE,, 0x00,) X(NOP,, 0x01,) X(BLOCK,, 0x02,) X(LOOP,, 0x03,) X(IF,, 0x04,) X(ELSE,, 0x05,) X(END,, 0x0B,) \
@@ -746,6 +770,78 @@ typedef enum {
     X(MEMORY_INIT,II, WAH_FC+0x08, BULK_MEMORY) X(DATA_DROP,I, WAH_FC+0x09, BULK_MEMORY) \
     X(MEMORY_COPY,II, WAH_FC+0x0A, BULK_MEMORY) X(MEMORY_FILL,I, WAH_FC+0x0B, BULK_MEMORY) \
     \
+    /* Constants */ \
+    X(I32_CONST,, 0x41,) X(I64_CONST,, 0x42,) X(F32_CONST,, 0x43,) X(F64_CONST,, 0x44,) \
+    \
+    /* Comparison Operators */ \
+    X(I32_EQZ,_I_I, 0x45,) X(I32_EQ,_II_I, 0x46,) X(I32_NE,_II_I, 0x47,) \
+    X(I32_LT_S,_II_I, 0x48,) X(I32_LT_U,_II_I, 0x49,) X(I32_GT_S,_II_I, 0x4A,) X(I32_GT_U,_II_I, 0x4B,) \
+    X(I32_LE_S,_II_I, 0x4C,) X(I32_LE_U,_II_I, 0x4D,) X(I32_GE_S,_II_I, 0x4E,) X(I32_GE_U,_II_I, 0x4F,) \
+    X(I64_EQZ,_L_I, 0x50,) X(I64_EQ,_LL_I, 0x51,) X(I64_NE,_LL_I, 0x52,) \
+    X(I64_LT_S,_LL_I, 0x53,) X(I64_LT_U,_LL_I, 0x54,) X(I64_GT_S,_LL_I, 0x55,) X(I64_GT_U,_LL_I, 0x56,) \
+    X(I64_LE_S,_LL_I, 0x57,) X(I64_LE_U,_LL_I, 0x58,) X(I64_GE_S,_LL_I, 0x59,) X(I64_GE_U,_LL_I, 0x5A,) \
+    X(F32_EQ,_FF_I, 0x5B,) X(F32_NE,_FF_I, 0x5C,) X(F32_LT,_FF_I, 0x5D,) X(F32_GT,_FF_I, 0x5E,) X(F32_LE,_FF_I, 0x5F,) X(F32_GE,_FF_I, 0x60,) \
+    X(F64_EQ,_DD_I, 0x61,) X(F64_NE,_DD_I, 0x62,) X(F64_LT,_DD_I, 0x63,) X(F64_GT,_DD_I, 0x64,) X(F64_LE,_DD_I, 0x65,) X(F64_GE,_DD_I, 0x66,) \
+    \
+    /* Numeric Operators */ \
+    X(I32_CLZ,_I_I, 0x67,) X(I32_CTZ,_I_I, 0x68,) X(I32_POPCNT,_I_I, 0x69,) X(I32_ADD,_II_I, 0x6A,) X(I32_SUB,_II_I, 0x6B,) \
+    X(I32_MUL,_II_I, 0x6C,) X(I32_DIV_S,_II_I, 0x6D,) X(I32_DIV_U,_II_I, 0x6E,) X(I32_REM_S,_II_I, 0x6F,) X(I32_REM_U,_II_I, 0x70,) \
+    X(I32_AND,_II_I, 0x71,) X(I32_OR,_II_I, 0x72,) X(I32_XOR,_II_I, 0x73,) \
+    X(I32_SHL,_II_I, 0x74,) X(I32_SHR_S,_II_I, 0x75,) X(I32_SHR_U,_II_I, 0x76,) X(I32_ROTL,_II_I, 0x77,) X(I32_ROTR,_II_I, 0x78,) \
+    X(I64_CLZ,_L_L, 0x79,) X(I64_CTZ,_L_L, 0x7A,) X(I64_POPCNT,_L_L, 0x7B,) X(I64_ADD,_LL_L, 0x7C,) X(I64_SUB,_LL_L, 0x7D,) \
+    X(I64_MUL,_LL_L, 0x7E,) X(I64_DIV_S,_LL_L, 0x7F,) X(I64_DIV_U,_LL_L, 0x80,) X(I64_REM_S,_LL_L, 0x81,) X(I64_REM_U,_LL_L, 0x82,) \
+    X(I64_AND,_LL_L, 0x83,) X(I64_OR,_LL_L, 0x84,) X(I64_XOR,_LL_L, 0x85,) \
+    X(I64_SHL,_LL_L, 0x86,) X(I64_SHR_S,_LL_L, 0x87,) X(I64_SHR_U,_LL_L, 0x88,) X(I64_ROTL,_LL_L, 0x89,) X(I64_ROTR,_LL_L, 0x8A,) \
+    X(F32_ABS,_F_F, 0x8B,) X(F32_NEG,_F_F, 0x8C,) X(F32_CEIL,_F_F, 0x8D,) X(F32_FLOOR,_F_F, 0x8E,) X(F32_TRUNC,_F_F, 0x8F,) X(F32_NEAREST,_F_F, 0x90,) \
+    X(F32_SQRT,_F_F, 0x91,) X(F32_ADD,_FF_F, 0x92,) X(F32_SUB,_FF_F, 0x93,) X(F32_MUL,_FF_F, 0x94,) X(F32_DIV,_FF_F, 0x95,) \
+    X(F32_MIN,_FF_F, 0x96,) X(F32_MAX,_FF_F, 0x97,) X(F32_COPYSIGN,_FF_F, 0x98,) \
+    X(F64_ABS,_D_D, 0x99,) X(F64_NEG,_D_D, 0x9A,) X(F64_CEIL,_D_D, 0x9B,) X(F64_FLOOR,_D_D, 0x9C,) X(F64_TRUNC,_D_D, 0x9D,) X(F64_NEAREST,_D_D, 0x9E,) \
+    X(F64_SQRT,_D_D, 0x9F,) X(F64_ADD,_DD_D, 0xA0,) X(F64_SUB,_DD_D, 0xA1,) X(F64_MUL,_DD_D, 0xA2,) X(F64_DIV,_DD_D, 0xA3,) \
+    X(F64_MIN,_DD_D, 0xA4,) X(F64_MAX,_DD_D, 0xA5,) X(F64_COPYSIGN,_DD_D, 0xA6,) \
+    \
+    /* Conversion Operators */ \
+    X(I32_WRAP_I64,_L_I, 0xA7,) \
+    X(I32_TRUNC_F32_S,_F_I, 0xA8,) X(I32_TRUNC_F32_U,_F_I, 0xA9,) X(I32_TRUNC_F64_S,_D_I, 0xAA,) X(I32_TRUNC_F64_U,_D_I, 0xAB,) \
+    X(I64_EXTEND_I32_S,_I_L, 0xAC,) X(I64_EXTEND_I32_U,_I_L, 0xAD,) \
+    X(I64_TRUNC_F32_S,_F_L, 0xAE,) X(I64_TRUNC_F32_U,_F_L, 0xAF,) X(I64_TRUNC_F64_S,_D_L, 0xB0,) X(I64_TRUNC_F64_U,_D_L, 0xB1,) \
+    X(F32_CONVERT_I32_S,_I_F, 0xB2,) X(F32_CONVERT_I32_U,_I_F, 0xB3,) \
+    X(F32_CONVERT_I64_S,_L_F, 0xB4,) X(F32_CONVERT_I64_U,_L_F, 0xB5,) X(F32_DEMOTE_F64,, 0xB6,) \
+    X(F64_CONVERT_I32_S,_I_D, 0xB7,) X(F64_CONVERT_I32_U,_I_D, 0xB8,) \
+    X(F64_CONVERT_I64_S,_L_D, 0xB9,) X(F64_CONVERT_I64_U,_L_D, 0xBA,) X(F64_PROMOTE_F32,, 0xBB,) \
+    X(I32_REINTERPRET_F32,_F_I, 0xBC,) X(I64_REINTERPRET_F64,_D_L, 0xBD,) \
+    X(F32_REINTERPRET_I32,_I_F, 0xBE,) X(F64_REINTERPRET_I64,_L_D, 0xBF,) \
+    X(I32_EXTEND8_S,_I_I, 0xC0, SIGN_EXT) X(I32_EXTEND16_S,_I_I, 0xC1, SIGN_EXT) \
+    X(I64_EXTEND8_S,_L_L, 0xC2, SIGN_EXT) X(I64_EXTEND16_S,_L_L, 0xC3, SIGN_EXT) X(I64_EXTEND32_S,_L_L, 0xC4, SIGN_EXT) \
+    X(I32_TRUNC_SAT_F32_S,_F_I, WAH_FC+0x00, NONTRAPPING_F2I) X(I32_TRUNC_SAT_F32_U,_F_I, WAH_FC+0x01, NONTRAPPING_F2I) \
+    X(I32_TRUNC_SAT_F64_S,_D_I, WAH_FC+0x02, NONTRAPPING_F2I) X(I32_TRUNC_SAT_F64_U,_D_I, WAH_FC+0x03, NONTRAPPING_F2I) \
+    X(I64_TRUNC_SAT_F32_S,_F_L, WAH_FC+0x04, NONTRAPPING_F2I) X(I64_TRUNC_SAT_F32_U,_F_L, WAH_FC+0x05, NONTRAPPING_F2I) \
+    X(I64_TRUNC_SAT_F64_S,_D_L, WAH_FC+0x06, NONTRAPPING_F2I) X(I64_TRUNC_SAT_F64_U,_D_L, WAH_FC+0x07, NONTRAPPING_F2I) \
+    \
+    /* Reference Types */ \
+    X(REF_NULL,, 0xD0, REF_TYPES) X(REF_IS_NULL,, 0xD1, REF_TYPES) X(REF_FUNC,, 0xD2, REF_TYPES) \
+    X(REF_AS_NON_NULL,, 0xD4, TYPED_FUNCREF) X(BR_ON_NULL,, 0xD5, TYPED_FUNCREF) X(BR_ON_NON_NULL,, 0xD6, TYPED_FUNCREF) \
+    \
+    WAH_GC_OPCODES(X) WAH_SIMD_OPCODES(X)
+
+#define WAH_GC_OPCODES(X) \
+    X(REF_EQ,, 0xD3, GC) \
+    X(STRUCT_NEW,, WAH_FB+0x00, GC) X(STRUCT_NEW_DEFAULT,, WAH_FB+0x01, GC) \
+    X(STRUCT_GET,, WAH_FB+0x02, GC) X(STRUCT_GET_S,, WAH_FB+0x03, GC) X(STRUCT_GET_U,, WAH_FB+0x04, GC) \
+    X(STRUCT_SET,, WAH_FB+0x05, GC) \
+    X(ARRAY_NEW,, WAH_FB+0x06, GC) X(ARRAY_NEW_DEFAULT,, WAH_FB+0x07, GC) \
+    X(ARRAY_NEW_FIXED,, WAH_FB+0x08, GC) \
+    X(ARRAY_NEW_DATA,II, WAH_FB+0x09, GC) X(ARRAY_NEW_ELEM,II, WAH_FB+0x0A, GC) \
+    X(ARRAY_GET,, WAH_FB+0x0B, GC) X(ARRAY_GET_S,, WAH_FB+0x0C, GC) X(ARRAY_GET_U,, WAH_FB+0x0D, GC) \
+    X(ARRAY_SET,, WAH_FB+0x0E, GC) X(ARRAY_LEN,, WAH_FB+0x0F, GC) \
+    X(ARRAY_FILL,I, WAH_FB+0x10, GC) X(ARRAY_COPY,II, WAH_FB+0x11, GC) \
+    X(ARRAY_INIT_DATA,II, WAH_FB+0x12, GC) X(ARRAY_INIT_ELEM,II, WAH_FB+0x13, GC) \
+    X(REF_TEST,, WAH_FB+0x14, GC) X(REF_TEST_NULL,, WAH_FB+0x15, GC) \
+    X(REF_CAST,, WAH_FB+0x16, GC) X(REF_CAST_NULL,, WAH_FB+0x17, GC) \
+    X(BR_ON_CAST,, WAH_FB+0x18, GC) X(BR_ON_CAST_FAIL,, WAH_FB+0x19, GC) \
+    X(ANY_CONVERT_EXTERN,, WAH_FB+0x1A, GC) X(EXTERN_CONVERT_ANY,, WAH_FB+0x1B, GC) \
+    X(REF_I31,, WAH_FB+0x1C, GC) X(I31_GET_S,, WAH_FB+0x1D, GC) X(I31_GET_U,, WAH_FB+0x1E, GC) \
+
+#define WAH_SIMD_OPCODES(X) \
     /* Vector Memory Operators */ \
     X(V128_LOAD,M, WAH_FD+0x00, SIMD) \
     X(V128_LOAD8X8_S,M, WAH_FD+0x01, SIMD) X(V128_LOAD8X8_U,M, WAH_FD+0x02, SIMD) \
@@ -773,33 +869,7 @@ typedef enum {
     X(F32X4_SPLAT,_F_V, WAH_FD+0x13, SIMD) X(F64X2_SPLAT,_D_V, WAH_FD+0x14, SIMD) \
     \
     /* Constants */ \
-    X(I32_CONST,, 0x41,) X(I64_CONST,, 0x42,) X(F32_CONST,, 0x43,) X(F64_CONST,, 0x44,) X(V128_CONST,, WAH_FD+0x0C, SIMD) \
-    \
-    /* Comparison Operators */ \
-    X(I32_EQZ,_I_I, 0x45,) X(I32_EQ,_II_I, 0x46,) X(I32_NE,_II_I, 0x47,) \
-    X(I32_LT_S,_II_I, 0x48,) X(I32_LT_U,_II_I, 0x49,) X(I32_GT_S,_II_I, 0x4A,) X(I32_GT_U,_II_I, 0x4B,) \
-    X(I32_LE_S,_II_I, 0x4C,) X(I32_LE_U,_II_I, 0x4D,) X(I32_GE_S,_II_I, 0x4E,) X(I32_GE_U,_II_I, 0x4F,) \
-    X(I64_EQZ,_L_I, 0x50,) X(I64_EQ,_LL_I, 0x51,) X(I64_NE,_LL_I, 0x52,) \
-    X(I64_LT_S,_LL_I, 0x53,) X(I64_LT_U,_LL_I, 0x54,) X(I64_GT_S,_LL_I, 0x55,) X(I64_GT_U,_LL_I, 0x56,) \
-    X(I64_LE_S,_LL_I, 0x57,) X(I64_LE_U,_LL_I, 0x58,) X(I64_GE_S,_LL_I, 0x59,) X(I64_GE_U,_LL_I, 0x5A,) \
-    X(F32_EQ,_FF_I, 0x5B,) X(F32_NE,_FF_I, 0x5C,) X(F32_LT,_FF_I, 0x5D,) X(F32_GT,_FF_I, 0x5E,) X(F32_LE,_FF_I, 0x5F,) X(F32_GE,_FF_I, 0x60,) \
-    X(F64_EQ,_DD_I, 0x61,) X(F64_NE,_DD_I, 0x62,) X(F64_LT,_DD_I, 0x63,) X(F64_GT,_DD_I, 0x64,) X(F64_LE,_DD_I, 0x65,) X(F64_GE,_DD_I, 0x66,) \
-    \
-    /* Numeric Operators */ \
-    X(I32_CLZ,_I_I, 0x67,) X(I32_CTZ,_I_I, 0x68,) X(I32_POPCNT,_I_I, 0x69,) X(I32_ADD,_II_I, 0x6A,) X(I32_SUB,_II_I, 0x6B,) \
-    X(I32_MUL,_II_I, 0x6C,) X(I32_DIV_S,_II_I, 0x6D,) X(I32_DIV_U,_II_I, 0x6E,) X(I32_REM_S,_II_I, 0x6F,) X(I32_REM_U,_II_I, 0x70,) \
-    X(I32_AND,_II_I, 0x71,) X(I32_OR,_II_I, 0x72,) X(I32_XOR,_II_I, 0x73,) \
-    X(I32_SHL,_II_I, 0x74,) X(I32_SHR_S,_II_I, 0x75,) X(I32_SHR_U,_II_I, 0x76,) X(I32_ROTL,_II_I, 0x77,) X(I32_ROTR,_II_I, 0x78,) \
-    X(I64_CLZ,_L_L, 0x79,) X(I64_CTZ,_L_L, 0x7A,) X(I64_POPCNT,_L_L, 0x7B,) X(I64_ADD,_LL_L, 0x7C,) X(I64_SUB,_LL_L, 0x7D,) \
-    X(I64_MUL,_LL_L, 0x7E,) X(I64_DIV_S,_LL_L, 0x7F,) X(I64_DIV_U,_LL_L, 0x80,) X(I64_REM_S,_LL_L, 0x81,) X(I64_REM_U,_LL_L, 0x82,) \
-    X(I64_AND,_LL_L, 0x83,) X(I64_OR,_LL_L, 0x84,) X(I64_XOR,_LL_L, 0x85,) \
-    X(I64_SHL,_LL_L, 0x86,) X(I64_SHR_S,_LL_L, 0x87,) X(I64_SHR_U,_LL_L, 0x88,) X(I64_ROTL,_LL_L, 0x89,) X(I64_ROTR,_LL_L, 0x8A,) \
-    X(F32_ABS,_F_F, 0x8B,) X(F32_NEG,_F_F, 0x8C,) X(F32_CEIL,_F_F, 0x8D,) X(F32_FLOOR,_F_F, 0x8E,) X(F32_TRUNC,_F_F, 0x8F,) X(F32_NEAREST,_F_F, 0x90,) \
-    X(F32_SQRT,_F_F, 0x91,) X(F32_ADD,_FF_F, 0x92,) X(F32_SUB,_FF_F, 0x93,) X(F32_MUL,_FF_F, 0x94,) X(F32_DIV,_FF_F, 0x95,) \
-    X(F32_MIN,_FF_F, 0x96,) X(F32_MAX,_FF_F, 0x97,) X(F32_COPYSIGN,_FF_F, 0x98,) \
-    X(F64_ABS,_D_D, 0x99,) X(F64_NEG,_D_D, 0x9A,) X(F64_CEIL,_D_D, 0x9B,) X(F64_FLOOR,_D_D, 0x9C,) X(F64_TRUNC,_D_D, 0x9D,) X(F64_NEAREST,_D_D, 0x9E,) \
-    X(F64_SQRT,_D_D, 0x9F,) X(F64_ADD,_DD_D, 0xA0,) X(F64_SUB,_DD_D, 0xA1,) X(F64_MUL,_DD_D, 0xA2,) X(F64_DIV,_DD_D, 0xA3,) \
-    X(F64_MIN,_DD_D, 0xA4,) X(F64_MAX,_DD_D, 0xA5,) X(F64_COPYSIGN,_DD_D, 0xA6,) \
+    X(V128_CONST,, WAH_FD+0x0C, SIMD) \
     \
     /* Vector Numeric Operators */ \
     X(V128_NOT,_V_V, WAH_FD+0x4D, SIMD) X(V128_AND,_VV_V, WAH_FD+0x4E, SIMD) X(V128_ANDNOT,_VV_V, WAH_FD+0x4F, SIMD) \
@@ -914,46 +984,7 @@ typedef enum {
     X(F32X4_LE,_VV_V, WAH_FD+0x45, SIMD) X(F32X4_GE,_VV_V, WAH_FD+0x46, SIMD) \
     X(F64X2_EQ,_VV_V, WAH_FD+0x47, SIMD) X(F64X2_NE,_VV_V, WAH_FD+0x48, SIMD) \
     X(F64X2_LT,_VV_V, WAH_FD+0x49, SIMD) X(F64X2_GT,_VV_V, WAH_FD+0x4A, SIMD) \
-    X(F64X2_LE,_VV_V, WAH_FD+0x4B, SIMD) X(F64X2_GE,_VV_V, WAH_FD+0x4C, SIMD) \
-    \
-    /* Conversion Operators */ \
-    X(I32_WRAP_I64,_L_I, 0xA7,) \
-    X(I32_TRUNC_F32_S,_F_I, 0xA8,) X(I32_TRUNC_F32_U,_F_I, 0xA9,) X(I32_TRUNC_F64_S,_D_I, 0xAA,) X(I32_TRUNC_F64_U,_D_I, 0xAB,) \
-    X(I64_EXTEND_I32_S,_I_L, 0xAC,) X(I64_EXTEND_I32_U,_I_L, 0xAD,) \
-    X(I64_TRUNC_F32_S,_F_L, 0xAE,) X(I64_TRUNC_F32_U,_F_L, 0xAF,) X(I64_TRUNC_F64_S,_D_L, 0xB0,) X(I64_TRUNC_F64_U,_D_L, 0xB1,) \
-    X(F32_CONVERT_I32_S,_I_F, 0xB2,) X(F32_CONVERT_I32_U,_I_F, 0xB3,) \
-    X(F32_CONVERT_I64_S,_L_F, 0xB4,) X(F32_CONVERT_I64_U,_L_F, 0xB5,) X(F32_DEMOTE_F64,, 0xB6,) \
-    X(F64_CONVERT_I32_S,_I_D, 0xB7,) X(F64_CONVERT_I32_U,_I_D, 0xB8,) \
-    X(F64_CONVERT_I64_S,_L_D, 0xB9,) X(F64_CONVERT_I64_U,_L_D, 0xBA,) X(F64_PROMOTE_F32,, 0xBB,) \
-    X(I32_REINTERPRET_F32,_F_I, 0xBC,) X(I64_REINTERPRET_F64,_D_L, 0xBD,) \
-    X(F32_REINTERPRET_I32,_I_F, 0xBE,) X(F64_REINTERPRET_I64,_L_D, 0xBF,) \
-    X(I32_EXTEND8_S,_I_I, 0xC0, SIGN_EXT) X(I32_EXTEND16_S,_I_I, 0xC1, SIGN_EXT) \
-    X(I64_EXTEND8_S,_L_L, 0xC2, SIGN_EXT) X(I64_EXTEND16_S,_L_L, 0xC3, SIGN_EXT) X(I64_EXTEND32_S,_L_L, 0xC4, SIGN_EXT) \
-    X(I32_TRUNC_SAT_F32_S,_F_I, WAH_FC+0x00, NONTRAPPING_F2I) X(I32_TRUNC_SAT_F32_U,_F_I, WAH_FC+0x01, NONTRAPPING_F2I) \
-    X(I32_TRUNC_SAT_F64_S,_D_I, WAH_FC+0x02, NONTRAPPING_F2I) X(I32_TRUNC_SAT_F64_U,_D_I, WAH_FC+0x03, NONTRAPPING_F2I) \
-    X(I64_TRUNC_SAT_F32_S,_F_L, WAH_FC+0x04, NONTRAPPING_F2I) X(I64_TRUNC_SAT_F32_U,_F_L, WAH_FC+0x05, NONTRAPPING_F2I) \
-    X(I64_TRUNC_SAT_F64_S,_D_L, WAH_FC+0x06, NONTRAPPING_F2I) X(I64_TRUNC_SAT_F64_U,_D_L, WAH_FC+0x07, NONTRAPPING_F2I) \
-    \
-    /* Reference Types */ \
-    X(REF_NULL,, 0xD0, REF_TYPES) X(REF_IS_NULL,, 0xD1, REF_TYPES) X(REF_FUNC,, 0xD2, REF_TYPES) X(REF_EQ,, 0xD3, GC) \
-    X(REF_AS_NON_NULL,, 0xD4, TYPED_FUNCREF) X(BR_ON_NULL,, 0xD5, TYPED_FUNCREF) X(BR_ON_NON_NULL,, 0xD6, TYPED_FUNCREF) \
-    \
-    /* GC opcodes (0xFB prefix) */ \
-    X(STRUCT_NEW,, WAH_FB+0x00, GC) X(STRUCT_NEW_DEFAULT,, WAH_FB+0x01, GC) \
-    X(STRUCT_GET,, WAH_FB+0x02, GC) X(STRUCT_GET_S,, WAH_FB+0x03, GC) X(STRUCT_GET_U,, WAH_FB+0x04, GC) \
-    X(STRUCT_SET,, WAH_FB+0x05, GC) \
-    X(ARRAY_NEW,, WAH_FB+0x06, GC) X(ARRAY_NEW_DEFAULT,, WAH_FB+0x07, GC) \
-    X(ARRAY_NEW_FIXED,, WAH_FB+0x08, GC) \
-    X(ARRAY_NEW_DATA,II, WAH_FB+0x09, GC) X(ARRAY_NEW_ELEM,II, WAH_FB+0x0A, GC) \
-    X(ARRAY_GET,, WAH_FB+0x0B, GC) X(ARRAY_GET_S,, WAH_FB+0x0C, GC) X(ARRAY_GET_U,, WAH_FB+0x0D, GC) \
-    X(ARRAY_SET,, WAH_FB+0x0E, GC) X(ARRAY_LEN,, WAH_FB+0x0F, GC) \
-    X(ARRAY_FILL,I, WAH_FB+0x10, GC) X(ARRAY_COPY,II, WAH_FB+0x11, GC) \
-    X(ARRAY_INIT_DATA,II, WAH_FB+0x12, GC) X(ARRAY_INIT_ELEM,II, WAH_FB+0x13, GC) \
-    X(REF_TEST,, WAH_FB+0x14, GC) X(REF_TEST_NULL,, WAH_FB+0x15, GC) \
-    X(REF_CAST,, WAH_FB+0x16, GC) X(REF_CAST_NULL,, WAH_FB+0x17, GC) \
-    X(BR_ON_CAST,, WAH_FB+0x18, GC) X(BR_ON_CAST_FAIL,, WAH_FB+0x19, GC) \
-    X(ANY_CONVERT_EXTERN,, WAH_FB+0x1A, GC) X(EXTERN_CONVERT_ANY,, WAH_FB+0x1B, GC) \
-    X(REF_I31,, WAH_FB+0x1C, GC) X(I31_GET_S,, WAH_FB+0x1D, GC) X(I31_GET_U,, WAH_FB+0x1E, GC)
+    X(F64X2_LE,_VV_V, WAH_FD+0x4B, SIMD) X(F64X2_GE,_VV_V, WAH_FD+0x4C, SIMD)
 
 #define WAH_I32_MEM0_OPCODES_M(X) \
     X(I32_LOAD,i32_mem0) X(I64_LOAD,i32_mem0) X(F32_LOAD,i32_mem0) X(F64_LOAD,i32_mem0) \
@@ -962,65 +993,85 @@ typedef enum {
     X(I64_LOAD32_S,i32_mem0) X(I64_LOAD32_U,i32_mem0) \
     X(I32_STORE,i32_mem0) X(I64_STORE,i32_mem0) X(F32_STORE,i32_mem0) X(F64_STORE,i32_mem0) \
     X(I32_STORE8,i32_mem0) X(I32_STORE16,i32_mem0) X(I64_STORE8,i32_mem0) X(I64_STORE16,i32_mem0) X(I64_STORE32,i32_mem0) \
-    X(V128_LOAD,i32_mem0) \
-    X(V128_LOAD8X8_S,i32_mem0) X(V128_LOAD8X8_U,i32_mem0) \
-    X(V128_LOAD16X4_S,i32_mem0) X(V128_LOAD16X4_U,i32_mem0) \
-    X(V128_LOAD32X2_S,i32_mem0) X(V128_LOAD32X2_U,i32_mem0) \
-    X(V128_LOAD8_SPLAT,i32_mem0) X(V128_LOAD16_SPLAT,i32_mem0) X(V128_LOAD32_SPLAT,i32_mem0) X(V128_LOAD64_SPLAT,i32_mem0) \
-    X(V128_LOAD32_ZERO,i32_mem0) X(V128_LOAD64_ZERO,i32_mem0) \
-    X(V128_STORE,i32_mem0)
+    WAH_IF_SIMD( \
+        X(V128_LOAD,i32_mem0) \
+        X(V128_LOAD8X8_S,i32_mem0) X(V128_LOAD8X8_U,i32_mem0) \
+        X(V128_LOAD16X4_S,i32_mem0) X(V128_LOAD16X4_U,i32_mem0) \
+        X(V128_LOAD32X2_S,i32_mem0) X(V128_LOAD32X2_U,i32_mem0) \
+        X(V128_LOAD8_SPLAT,i32_mem0) X(V128_LOAD16_SPLAT,i32_mem0) X(V128_LOAD32_SPLAT,i32_mem0) X(V128_LOAD64_SPLAT,i32_mem0) \
+        X(V128_LOAD32_ZERO,i32_mem0) X(V128_LOAD64_ZERO,i32_mem0) \
+        X(V128_STORE,i32_mem0) \
+    )
 #define WAH_I32_MEM0_OPCODES_MB(X) \
-    X(V128_LOAD8_LANE,i32_mem0) X(V128_LOAD16_LANE,i32_mem0) X(V128_LOAD32_LANE,i32_mem0) X(V128_LOAD64_LANE,i32_mem0) \
-    X(V128_STORE8_LANE,i32_mem0) X(V128_STORE16_LANE,i32_mem0) X(V128_STORE32_LANE,i32_mem0) X(V128_STORE64_LANE,i32_mem0)
+    WAH_IF_SIMD( \
+        X(V128_LOAD8_LANE,i32_mem0) X(V128_LOAD16_LANE,i32_mem0) X(V128_LOAD32_LANE,i32_mem0) X(V128_LOAD64_LANE,i32_mem0) \
+        X(V128_STORE8_LANE,i32_mem0) X(V128_STORE16_LANE,i32_mem0) X(V128_STORE32_LANE,i32_mem0) X(V128_STORE64_LANE,i32_mem0) \
+    )
 
 // i64-addressed memory opcodes (non-mem0)
 #define WAH_I64_MEM_OPCODES_M(X) \
-    X(I32_LOAD,i64) X(I64_LOAD,i64) X(F32_LOAD,i64) X(F64_LOAD,i64) \
-    X(I32_LOAD8_S,i64) X(I32_LOAD8_U,i64) X(I32_LOAD16_S,i64) X(I32_LOAD16_U,i64) \
-    X(I64_LOAD8_S,i64) X(I64_LOAD8_U,i64) X(I64_LOAD16_S,i64) X(I64_LOAD16_U,i64) \
-    X(I64_LOAD32_S,i64) X(I64_LOAD32_U,i64) \
-    X(I32_STORE,i64) X(I64_STORE,i64) X(F32_STORE,i64) X(F64_STORE,i64) \
-    X(I32_STORE8,i64) X(I32_STORE16,i64) X(I64_STORE8,i64) X(I64_STORE16,i64) X(I64_STORE32,i64) \
-    X(V128_LOAD,i64) \
-    X(V128_LOAD8X8_S,i64) X(V128_LOAD8X8_U,i64) \
-    X(V128_LOAD16X4_S,i64) X(V128_LOAD16X4_U,i64) \
-    X(V128_LOAD32X2_S,i64) X(V128_LOAD32X2_U,i64) \
-    X(V128_LOAD8_SPLAT,i64) X(V128_LOAD16_SPLAT,i64) X(V128_LOAD32_SPLAT,i64) X(V128_LOAD64_SPLAT,i64) \
-    X(V128_LOAD32_ZERO,i64) X(V128_LOAD64_ZERO,i64) \
-    X(V128_STORE,i64)
+    WAH_IF_MEMORY64( \
+        X(I32_LOAD,i64) X(I64_LOAD,i64) X(F32_LOAD,i64) X(F64_LOAD,i64) \
+        X(I32_LOAD8_S,i64) X(I32_LOAD8_U,i64) X(I32_LOAD16_S,i64) X(I32_LOAD16_U,i64) \
+        X(I64_LOAD8_S,i64) X(I64_LOAD8_U,i64) X(I64_LOAD16_S,i64) X(I64_LOAD16_U,i64) \
+        X(I64_LOAD32_S,i64) X(I64_LOAD32_U,i64) \
+        X(I32_STORE,i64) X(I64_STORE,i64) X(F32_STORE,i64) X(F64_STORE,i64) \
+        X(I32_STORE8,i64) X(I32_STORE16,i64) X(I64_STORE8,i64) X(I64_STORE16,i64) X(I64_STORE32,i64) \
+        WAH_IF_SIMD( \
+            X(V128_LOAD,i64) \
+            X(V128_LOAD8X8_S,i64) X(V128_LOAD8X8_U,i64) \
+            X(V128_LOAD16X4_S,i64) X(V128_LOAD16X4_U,i64) \
+            X(V128_LOAD32X2_S,i64) X(V128_LOAD32X2_U,i64) \
+            X(V128_LOAD8_SPLAT,i64) X(V128_LOAD16_SPLAT,i64) X(V128_LOAD32_SPLAT,i64) X(V128_LOAD64_SPLAT,i64) \
+            X(V128_LOAD32_ZERO,i64) X(V128_LOAD64_ZERO,i64) \
+            X(V128_STORE,i64) \
+        ) \
+    )
 #define WAH_I64_MEM_OPCODES_MB(X) \
-    X(V128_LOAD8_LANE,i64) X(V128_LOAD16_LANE,i64) X(V128_LOAD32_LANE,i64) X(V128_LOAD64_LANE,i64) \
-    X(V128_STORE8_LANE,i64) X(V128_STORE16_LANE,i64) X(V128_STORE32_LANE,i64) X(V128_STORE64_LANE,i64)
+    WAH_IF_MEMORY64(WAH_IF_SIMD( \
+        X(V128_LOAD8_LANE,i64) X(V128_LOAD16_LANE,i64) X(V128_LOAD32_LANE,i64) X(V128_LOAD64_LANE,i64) \
+        X(V128_STORE8_LANE,i64) X(V128_STORE16_LANE,i64) X(V128_STORE32_LANE,i64) X(V128_STORE64_LANE,i64) \
+    ))
 
 // i64-addressed memory 0 fast-path opcodes
 #define WAH_I64_MEM0_OPCODES_M(X) \
-    X(I32_LOAD,i64_mem0) X(I64_LOAD,i64_mem0) X(F32_LOAD,i64_mem0) X(F64_LOAD,i64_mem0) \
-    X(I32_LOAD8_S,i64_mem0) X(I32_LOAD8_U,i64_mem0) X(I32_LOAD16_S,i64_mem0) X(I32_LOAD16_U,i64_mem0) \
-    X(I64_LOAD8_S,i64_mem0) X(I64_LOAD8_U,i64_mem0) X(I64_LOAD16_S,i64_mem0) X(I64_LOAD16_U,i64_mem0) \
-    X(I64_LOAD32_S,i64_mem0) X(I64_LOAD32_U,i64_mem0) \
-    X(I32_STORE,i64_mem0) X(I64_STORE,i64_mem0) X(F32_STORE,i64_mem0) X(F64_STORE,i64_mem0) \
-    X(I32_STORE8,i64_mem0) X(I32_STORE16,i64_mem0) X(I64_STORE8,i64_mem0) X(I64_STORE16,i64_mem0) X(I64_STORE32,i64_mem0) \
-    X(V128_LOAD,i64_mem0) \
-    X(V128_LOAD8X8_S,i64_mem0) X(V128_LOAD8X8_U,i64_mem0) \
-    X(V128_LOAD16X4_S,i64_mem0) X(V128_LOAD16X4_U,i64_mem0) \
-    X(V128_LOAD32X2_S,i64_mem0) X(V128_LOAD32X2_U,i64_mem0) \
-    X(V128_LOAD8_SPLAT,i64_mem0) X(V128_LOAD16_SPLAT,i64_mem0) X(V128_LOAD32_SPLAT,i64_mem0) X(V128_LOAD64_SPLAT,i64_mem0) \
-    X(V128_LOAD32_ZERO,i64_mem0) X(V128_LOAD64_ZERO,i64_mem0) \
-    X(V128_STORE,i64_mem0)
+    WAH_IF_MEMORY64( \
+        X(I32_LOAD,i64_mem0) X(I64_LOAD,i64_mem0) X(F32_LOAD,i64_mem0) X(F64_LOAD,i64_mem0) \
+        X(I32_LOAD8_S,i64_mem0) X(I32_LOAD8_U,i64_mem0) X(I32_LOAD16_S,i64_mem0) X(I32_LOAD16_U,i64_mem0) \
+        X(I64_LOAD8_S,i64_mem0) X(I64_LOAD8_U,i64_mem0) X(I64_LOAD16_S,i64_mem0) X(I64_LOAD16_U,i64_mem0) \
+        X(I64_LOAD32_S,i64_mem0) X(I64_LOAD32_U,i64_mem0) \
+        X(I32_STORE,i64_mem0) X(I64_STORE,i64_mem0) X(F32_STORE,i64_mem0) X(F64_STORE,i64_mem0) \
+        X(I32_STORE8,i64_mem0) X(I32_STORE16,i64_mem0) X(I64_STORE8,i64_mem0) X(I64_STORE16,i64_mem0) X(I64_STORE32,i64_mem0) \
+        WAH_IF_SIMD( \
+            X(V128_LOAD,i64_mem0) \
+            X(V128_LOAD8X8_S,i64_mem0) X(V128_LOAD8X8_U,i64_mem0) \
+            X(V128_LOAD16X4_S,i64_mem0) X(V128_LOAD16X4_U,i64_mem0) \
+            X(V128_LOAD32X2_S,i64_mem0) X(V128_LOAD32X2_U,i64_mem0) \
+            X(V128_LOAD8_SPLAT,i64_mem0) X(V128_LOAD16_SPLAT,i64_mem0) X(V128_LOAD32_SPLAT,i64_mem0) X(V128_LOAD64_SPLAT,i64_mem0) \
+            X(V128_LOAD32_ZERO,i64_mem0) X(V128_LOAD64_ZERO,i64_mem0) \
+            X(V128_STORE,i64_mem0) \
+        ) \
+    )
 #define WAH_I64_MEM0_OPCODES_MB(X) \
-    X(V128_LOAD8_LANE,i64_mem0) X(V128_LOAD16_LANE,i64_mem0) X(V128_LOAD32_LANE,i64_mem0) X(V128_LOAD64_LANE,i64_mem0) \
-    X(V128_STORE8_LANE,i64_mem0) X(V128_STORE16_LANE,i64_mem0) X(V128_STORE32_LANE,i64_mem0) X(V128_STORE64_LANE,i64_mem0)
+    WAH_IF_MEMORY64(WAH_IF_SIMD( \
+        X(V128_LOAD8_LANE,i64_mem0) X(V128_LOAD16_LANE,i64_mem0) X(V128_LOAD32_LANE,i64_mem0) X(V128_LOAD64_LANE,i64_mem0) \
+        X(V128_STORE8_LANE,i64_mem0) X(V128_STORE16_LANE,i64_mem0) X(V128_STORE32_LANE,i64_mem0) X(V128_STORE64_LANE,i64_mem0) \
+    ))
 
 // i64-addressed memory.size/grow/fill/init/copy opcodes (non-mem0 and mem0)
 #define WAH_I64_MEM_SIZE_OPCODES(X) \
-    X(MEMORY_SIZE,i64) X(MEMORY_GROW,i64) \
-    X(MEMORY_FILL,i64) X(MEMORY_INIT,i64) X(MEMORY_COPY,i64)
+    WAH_IF_MEMORY64( \
+        X(MEMORY_SIZE,i64) X(MEMORY_GROW,i64) \
+        X(MEMORY_FILL,i64) X(MEMORY_INIT,i64) X(MEMORY_COPY,i64) \
+    )
 
 // i64-indexed table opcodes
 #define WAH_I64_TABLE_OPCODES(X) \
-    X(TABLE_GET,i64) X(TABLE_SET,i64) X(TABLE_SIZE,i64) \
-    X(TABLE_GROW,i64) X(TABLE_FILL,i64) X(TABLE_COPY,i64) X(TABLE_INIT,i64) \
-    X(CALL_INDIRECT,i64) X(RETURN_CALL_INDIRECT,i64)
+    WAH_IF_MEMORY64( \
+        X(TABLE_GET,i64) X(TABLE_SET,i64) X(TABLE_SIZE,i64) \
+        X(TABLE_GROW,i64) X(TABLE_FILL,i64) X(TABLE_COPY,i64) X(TABLE_INIT,i64) \
+        X(CALL_INDIRECT,i64) X(RETURN_CALL_INDIRECT,i64) \
+    )
 
 #ifdef WAH_X86_64
 
@@ -1068,7 +1119,7 @@ typedef enum {
     WAH_I64_MEM0_OPCODES_M(X) WAH_I64_MEM0_OPCODES_MB(X) \
     WAH_I64_MEM_SIZE_OPCODES(X) \
     WAH_I64_TABLE_OPCODES(X) \
-    WAH_IF_X86_64(WAH_X86_64_EXTRA_OPCODES_SINGLE(X) WAH_X86_64_EXTRA_OPCODES_MULTI(X))
+    WAH_IF_SIMD(WAH_IF_X86_64(WAH_X86_64_EXTRA_OPCODES_SINGLE(X) WAH_X86_64_EXTRA_OPCODES_MULTI(X)))
 
 #define WAH_INTERNAL_OPCODES(X) \
     X(POLL) \
@@ -1299,6 +1350,8 @@ WAH_IF_AVX512(
 #undef WAH_ASM_CONV_M128I_TO_M128D
 #undef WAH_ASM_CONV_M128_TO_M128I
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
+
 typedef struct {
     uint32_t ssse3 : 1, sse41 : 1, sse42 : 1, avx2 : 1;
     uint32_t avx512f_vl : 1, avx512dq_vl : 1, avx512bw_vl : 1, avx512bitalg_vl : 1;
@@ -1386,6 +1439,8 @@ static wah_opcode_t wah_x86_64_opcode(wah_opcode_t opcode, wah_x86_64_features_t
     }
     return opcode;
 }
+
+#endif // WAH_FEATURE_SIMD
 
 #endif
 
@@ -3688,6 +3743,7 @@ static bool wah_cross_module_subtype(const wah_module_t *sub_m, wah_type_t sub_t
     return false;
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 static wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx, const wah_repr_info_t *info, wah_repr_t *out_repr_id) {
     WAH_ENSURE(module && info && out_repr_id, WAH_ERROR_MISUSE);
     WAH_ENSURE(typeidx < module->type_count, WAH_ERROR_MISUSE);
@@ -3711,6 +3767,7 @@ static wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx,
     *out_repr_id = (wah_repr_t)new_id;
     return WAH_OK;
 }
+#endif // WAH_FEATURE_GC
 
 ////////////////////////////////////////////////////////////////////////////////
 // Parsing utilities ///////////////////////////////////////////////////////////
@@ -4027,6 +4084,7 @@ static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, 
     }
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 static wah_error_t wah_decode_storage_type(const uint8_t **ptr, const uint8_t *end,
                                             wah_type_t *out_type, wah_type_flags_t *out_flags) {
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
@@ -4037,6 +4095,7 @@ static wah_error_t wah_decode_storage_type(const uint8_t **ptr, const uint8_t *e
         default: return wah_decode_val_type(ptr, end, out_type, out_flags);
     }
 }
+#endif // WAH_FEATURE_GC
 
 // Helper function to decode a ULEB128 count and validate it against remaining section size
 static inline wah_error_t wah_decode_and_validate_count(const uint8_t **ptr, const uint8_t *section_end, uint32_t *count, uint32_t min_bytes_per_item) {
@@ -5244,6 +5303,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             break;
         }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
         case WAH_OP_STRUCT_NEW:
         case WAH_OP_STRUCT_NEW_DEFAULT: {
             uint32_t typeidx;
@@ -5637,6 +5697,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_SIMPLE();
             break;
         }
+#endif // WAH_FEATURE_GC (validation)
 
         case WAH_OP_THROW: {
             uint32_t tag_idx;
@@ -5911,7 +5972,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
         *_cf = (wah_lower_cf_t){0}; \
     } while (0)
 
-    #ifdef WAH_X86_64
+    #if defined(WAH_X86_64) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
     wah_x86_64_features_t features = wah_x86_64_features();
     #endif
 
@@ -5983,7 +6044,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
             WAH_EMIT_POLL();
         }
 
-        #ifdef WAH_X86_64
+        #if defined(WAH_X86_64) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
         uint16_t native_opcode = wah_x86_64_opcode(opcode, features);
         #else
         uint16_t native_opcode = opcode;
@@ -6005,6 +6066,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                         ? WAH_OP_GLOBAL_GET_INDIRECT : WAH_OP_GLOBAL_SET_INDIRECT;
                     wah_write_u16_le(buf + buf_size - sizeof(uint16_t), new_opcode);
                 }
+                #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
                 // Redirect memory.size/memory.grow/memory.fill to i64 variants when needed
                 if ((opcode == WAH_OP_MEMORY_SIZE || opcode == WAH_OP_MEMORY_GROW || opcode == WAH_OP_MEMORY_FILL)
                     && a < wah_memory_index_limit(module) && wah_memory_type(module, a)->addr_type == WAH_TYPE_I64) {
@@ -6026,12 +6088,14 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                     else new_opcode = WAH_OP_TABLE_FILL_i64;
                     wah_write_u16_le(buf + buf_size - sizeof(uint16_t), new_opcode);
                 }
+                #endif // WAH_FEATURE_MEMORY64
                 WAH_LOWER_U32(a);
                 break;
             }
             case WAH_OPCLASS_II: {
                 uint32_t a = instr->imm.u32_u32.a;
                 uint32_t b = instr->imm.u32_u32.b;
+                #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
                 #define WAH_LOWER_MEM_I64(idx) ((idx) < wah_memory_index_limit(module) && wah_memory_type(module, (idx))->addr_type == WAH_TYPE_I64)
                 #define WAH_LOWER_TAB_I64(idx) ((idx) < wah_table_index_limit(module) && wah_table_type(module, (idx))->addr_type == WAH_TYPE_I64)
                 #define WAH_LOWER_REWRITE_IF(cond, new_op) do { if (cond) wah_write_u16_le(buf + buf_size - sizeof(uint16_t), (new_op)); } while (0)
@@ -6047,6 +6111,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                 #undef WAH_LOWER_REWRITE_IF
                 #undef WAH_LOWER_TAB_I64
                 #undef WAH_LOWER_MEM_I64
+                #endif // WAH_FEATURE_MEMORY64
                 WAH_LOWER_U32(a);
                 WAH_LOWER_U32(b);
                 break;
@@ -6534,6 +6599,7 @@ static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end, 
     return WAH_OK;
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 static wah_error_t wah_parse_struct_type(const uint8_t **ptr, const uint8_t *end, wah_type_def_t *td) {
     uint32_t field_count;
     WAH_CHECK(wah_decode_uleb128(ptr, end, &field_count));
@@ -6569,6 +6635,27 @@ static wah_error_t wah_parse_array_type(const uint8_t **ptr, const uint8_t *end,
     return WAH_OK;
 }
 
+static wah_error_t wah_field_type_layout(wah_type_t ft, uint32_t *out_size, wah_repr_t *out_repr) {
+    *out_repr = WAH_REPR_NONE;
+    switch (ft) {
+        case WAH_TYPE_PACKED_I8:  *out_size = 1; return WAH_OK;
+        case WAH_TYPE_PACKED_I16: *out_size = 2; return WAH_OK;
+        case WAH_TYPE_I32:
+        case WAH_TYPE_F32:        *out_size = 4; return WAH_OK;
+        case WAH_TYPE_I64:
+        case WAH_TYPE_F64:        *out_size = 8; return WAH_OK;
+        case WAH_TYPE_V128:       *out_size = 16; return WAH_OK;
+        default:
+            if (WAH_TYPE_IS_REF(ft)) {
+                *out_size = sizeof(void *);
+                *out_repr = WAH_REPR_REF;
+                return WAH_OK;
+            }
+            return WAH_ERROR_VALIDATION_FAILED;
+    }
+}
+#endif // WAH_FEATURE_GC
+
 static wah_error_t wah_parse_composite_type(const uint8_t **ptr, const uint8_t *end, wah_func_type_t *ft, wah_type_def_t *td) {
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t tag = *(*ptr)++;
@@ -6576,12 +6663,17 @@ static wah_error_t wah_parse_composite_type(const uint8_t **ptr, const uint8_t *
         case 0x60:
             td->kind = WAH_COMP_FUNC;
             return wah_parse_func_type(ptr, end, ft);
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
         case 0x5F:
             td->kind = WAH_COMP_STRUCT;
             return wah_parse_struct_type(ptr, end, td);
         case 0x5E:
             td->kind = WAH_COMP_ARRAY;
             return wah_parse_array_type(ptr, end, td);
+#else
+        case 0x5F: case 0x5E:
+            return WAH_ERROR_DISABLED_FEATURE;
+#endif
         default:
             return WAH_ERROR_MALFORMED;
     }
@@ -6611,26 +6703,6 @@ static wah_error_t wah_parse_sub_type(const uint8_t **ptr, const uint8_t *end, u
     td->is_final = true;
     td->supertype = WAH_NO_SUPERTYPE;
     return wah_parse_composite_type(ptr, end, ft, td);
-}
-
-static wah_error_t wah_field_type_layout(wah_type_t ft, uint32_t *out_size, wah_repr_t *out_repr) {
-    *out_repr = WAH_REPR_NONE;
-    switch (ft) {
-        case WAH_TYPE_PACKED_I8:  *out_size = 1; return WAH_OK;
-        case WAH_TYPE_PACKED_I16: *out_size = 2; return WAH_OK;
-        case WAH_TYPE_I32:
-        case WAH_TYPE_F32:        *out_size = 4; return WAH_OK;
-        case WAH_TYPE_I64:
-        case WAH_TYPE_F64:        *out_size = 8; return WAH_OK;
-        case WAH_TYPE_V128:       *out_size = 16; return WAH_OK;
-        default:
-            if (WAH_TYPE_IS_REF(ft)) {
-                *out_size = sizeof(void *);
-                *out_repr = WAH_REPR_REF;
-                return WAH_OK;
-            }
-            return WAH_ERROR_VALIDATION_FAILED;
-    }
 }
 
 static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
@@ -6799,6 +6871,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
         module->typeidx_to_repr[i] = WAH_REPR_NONE;
     }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     // Build repr metadata for struct and array types
     for (uint32_t i = 0; i < module->type_count; ++i) {
         wah_type_def_t *td = &module->type_defs[i];
@@ -6882,6 +6955,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
             t = module->type_defs[t].supertype;
         }
     }
+#endif // WAH_FEATURE_GC (repr metadata + cast sets)
 
     module->canonical_map = canonical_map;
     return WAH_OK;
@@ -7756,8 +7830,8 @@ wah_error_t wah_parse_module_ex(const uint8_t *wasm_binary, size_t binary_size, 
 
     *module = (wah_module_t){0}; // Initialize module struct
 
-    wah_features_t requested = options ? options->features : WAH_DEFAULT_FEATURES;
-    module->enabled_features = wah_feature_closure(requested) & WAH_COMPILED_FEATURES;
+    wah_features_t requested = options ? options->features : (WAH_DEFAULT_FEATURES);
+    module->enabled_features = wah_feature_closure(requested) & (WAH_COMPILED_FEATURES);
     module->required_features = 0;
 
     const uint8_t *ptr = wasm_binary;
@@ -7893,6 +7967,8 @@ static void wah_free_element_segment_data(wah_element_segment_t *segment) {
 // Garbage collection //////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+
 #define WAH_GC_DEFAULT_THRESHOLD (256 * 1024)
 
 static void wah_gc_free_all_objects(wah_gc_state_t *gc) {
@@ -8017,14 +8093,13 @@ static inline int32_t wah_gc_load_packed(wah_type_t ft, const uint8_t *addr, boo
     return sign_extend ? (int32_t)(int16_t)*(uint16_t *)addr : (int32_t)*(uint16_t *)addr;
 }
 
+// Write barrier stubs.
 static inline void wah_ref_store_global(wah_exec_context_t *ctx, uint32_t idx, wah_value_t val) {
     ctx->globals[idx] = val;
 }
-
 static inline void wah_ref_store_global_slot(wah_value_t *slot, wah_value_t val) {
     *slot = val;
 }
-
 static inline void wah_ref_store_table(wah_exec_context_t *ctx, uint32_t table_idx, uint64_t elem_idx, wah_value_t val) {
     ctx->tables[table_idx].entries[elem_idx] = val;
 }
@@ -8303,6 +8378,29 @@ bool wah_gc_verify_heap(const wah_exec_context_t *ctx) {
     return true;
 }
 
+#else // !WAH_FEATURE_GC
+
+wah_error_t wah_gc_start(wah_exec_context_t *ctx) { (void)ctx; return WAH_OK; }
+void wah_gc_reset(wah_exec_context_t *ctx) { (void)ctx; }
+void wah_gc_destroy(wah_exec_context_t *ctx) { (void)ctx; }
+void wah_gc_step(wah_exec_context_t *ctx) { (void)ctx; }
+void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats) {
+    (void)ctx; *stats = (wah_gc_heap_stats_t){0};
+}
+bool wah_gc_verify_heap(const wah_exec_context_t *ctx) { (void)ctx; return true; }
+
+static inline void wah_ref_store_global(wah_exec_context_t *ctx, uint32_t idx, wah_value_t val) {
+    ctx->globals[idx] = val;
+}
+static inline void wah_ref_store_global_slot(wah_value_t *slot, wah_value_t val) {
+    *slot = val;
+}
+static inline void wah_ref_store_table(wah_exec_context_t *ctx, uint32_t table_idx, uint64_t elem_idx, wah_value_t val) {
+    ctx->tables[table_idx].entries[elem_idx] = val;
+}
+
+#endif // WAH_FEATURE_GC
+
 ////////////////////////////////////////////////////////////////////////////////
 // Interpreter loop ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -8559,6 +8657,7 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, const wah_module_t *f
         fctx = frame->frame_ctx; \
     } while (0)
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
 static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t *exc) {
     if (ctx->pending_exception) {
         free(ctx->pending_exception->values);
@@ -8622,6 +8721,7 @@ static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t 
 
     return WAH_ERROR_EXCEPTION;
 }
+#endif // WAH_FEATURE_EXCEPTION
 
 static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t ref_val, wah_type_t target) {
     void *ref = ref_val.ref;
@@ -8806,8 +8906,6 @@ WAH_NEVER_RUN(NOP) // Removed by preparser
 WAH_NEVER_RUN(BLOCK) // Converted to bytecode offsets
 WAH_NEVER_RUN(LOOP) // Converted to bytecode offsets
 WAH_NEVER_RUN(SELECT_T) // Identical to WAH_RUN(SELECT) in run time
-WAH_NEVER_RUN(ANY_CONVERT_EXTERN) // Two hierarchies share the same representation so this is a no-op
-WAH_NEVER_RUN(EXTERN_CONVERT_ANY) // (ditto)
 
 WAH_RUN(POLL) {
     frame->ref_map_offset = wah_read_u32_le(bytecode_ip);
@@ -8896,6 +8994,8 @@ WAH_RUN(BR_TABLE) {
     bytecode_ip = bytecode_base + target_offset;
     WAH_NEXT();
 }
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
 
 WAH_RUN(TRY_TABLE) {
     uint32_t catch_count_val = wah_read_u32_le(bytecode_ip);
@@ -9000,15 +9100,21 @@ cleanup_copy:
     WAH_CLEANUP();
 }
 
+#else // !WAH_FEATURE_EXCEPTION
+WAH_NEVER_RUN(TRY_TABLE) WAH_NEVER_RUN(END_TRY_TABLE) WAH_NEVER_RUN(THROW) WAH_NEVER_RUN(THROW_REF)
+#endif // WAH_FEATURE_EXCEPTION
+
 WAH_RUN(I32_CONST) { (*sp++).i32 = (int32_t)wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); WAH_NEXT(); }
 WAH_RUN(I64_CONST) { (*sp++).i64 = (int64_t)wah_read_u64_le(bytecode_ip); bytecode_ip += sizeof(uint64_t); WAH_NEXT(); }
 WAH_RUN(F32_CONST) { (*sp++).f32 = wah_read_f32_le(bytecode_ip); bytecode_ip += sizeof(float); WAH_NEXT(); }
 WAH_RUN(F64_CONST) { (*sp++).f64 = wah_read_f64_le(bytecode_ip); bytecode_ip += sizeof(double); WAH_NEXT(); }
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
 WAH_RUN(V128_CONST) {
     memcpy(&(*sp++).v128, bytecode_ip, sizeof(wah_v128_t));
     bytecode_ip += sizeof(wah_v128_t);
     WAH_NEXT();
 }
+#endif
 
 WAH_RUN(REF_NULL) {
     // Read type from bytecode (already parsed as uint32_t)
@@ -9065,51 +9171,6 @@ WAH_RUN(GLOBAL_SET_INDIRECT) {
     WAH_NEXT();
 }
 
-WAH_RUN(REF_TEST) {
-    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(int32_t);
-    wah_value_t ref_val = *--sp;
-    bool result = wah_ref_test_heap_type(fctx, ref_val, heap_type);
-    (*sp++).i32 = result ? 1 : 0;
-    WAH_NEXT();
-}
-
-WAH_RUN(REF_TEST_NULL) {
-    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(int32_t);
-    wah_value_t ref_val = *--sp;
-    bool result = (ref_val.ref == NULL) || wah_ref_test_heap_type(fctx, ref_val, heap_type);
-    (*sp++).i32 = result ? 1 : 0;
-    WAH_NEXT();
-}
-
-WAH_RUN(REF_CAST) {
-    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(int32_t);
-    wah_value_t ref_val = sp[-1];
-    WAH_ENSURE_GOTO(ref_val.ref != NULL && wah_ref_test_heap_type(fctx, ref_val, heap_type),
-                     WAH_ERROR_TRAP, cleanup);
-    WAH_NEXT();
-    WAH_CLEANUP();
-}
-
-WAH_RUN(REF_CAST_NULL) {
-    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(int32_t);
-    wah_value_t ref_val = sp[-1];
-    WAH_ENSURE_GOTO(ref_val.ref == NULL || wah_ref_test_heap_type(fctx, ref_val, heap_type),
-                     WAH_ERROR_TRAP, cleanup);
-    WAH_NEXT();
-    WAH_CLEANUP();
-}
-
-WAH_RUN(REF_EQ) {
-    wah_value_t b = *--sp;
-    wah_value_t a = *--sp;
-    (*sp++).i32 = (a.ref == b.ref) ? 1 : 0;
-    WAH_NEXT();
-}
-
 WAH_RUN(REF_AS_NON_NULL) {
     WAH_ENSURE_GOTO(sp[-1].ref != NULL, WAH_ERROR_TRAP, cleanup);
     WAH_NEXT();
@@ -9152,6 +9213,53 @@ WAH_RUN(BR_ON_NON_NULL) {
     } else {
         --sp;
     }
+    WAH_NEXT();
+}
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+
+WAH_RUN(REF_TEST) {
+    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(int32_t);
+    wah_value_t ref_val = *--sp;
+    bool result = wah_ref_test_heap_type(fctx, ref_val, heap_type);
+    (*sp++).i32 = result ? 1 : 0;
+    WAH_NEXT();
+}
+
+WAH_RUN(REF_TEST_NULL) {
+    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(int32_t);
+    wah_value_t ref_val = *--sp;
+    bool result = (ref_val.ref == NULL) || wah_ref_test_heap_type(fctx, ref_val, heap_type);
+    (*sp++).i32 = result ? 1 : 0;
+    WAH_NEXT();
+}
+
+WAH_RUN(REF_CAST) {
+    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(int32_t);
+    wah_value_t ref_val = sp[-1];
+    WAH_ENSURE_GOTO(ref_val.ref != NULL && wah_ref_test_heap_type(fctx, ref_val, heap_type),
+                     WAH_ERROR_TRAP, cleanup);
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(REF_CAST_NULL) {
+    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(int32_t);
+    wah_value_t ref_val = sp[-1];
+    WAH_ENSURE_GOTO(ref_val.ref == NULL || wah_ref_test_heap_type(fctx, ref_val, heap_type),
+                     WAH_ERROR_TRAP, cleanup);
+    WAH_NEXT();
+    WAH_CLEANUP();
+}
+
+WAH_RUN(REF_EQ) {
+    wah_value_t b = *--sp;
+    wah_value_t a = *--sp;
+    (*sp++).i32 = (a.ref == b.ref) ? 1 : 0;
     WAH_NEXT();
 }
 
@@ -9569,6 +9677,17 @@ WAH_RUN(I31_GET_U) {
     WAH_CLEANUP();
 }
 
+// Two hierarchies share the same representation so these are no-ops
+WAH_NEVER_RUN(ANY_CONVERT_EXTERN) WAH_NEVER_RUN(EXTERN_CONVERT_ANY)
+
+#else // !WAH_FEATURE_GC
+
+#define WAH_GC_NEVER_RUN(name, ...) WAH_NEVER_RUN(name)
+WAH_GC_OPCODES(WAH_GC_NEVER_RUN)
+#undef WAH_GC_NEVER_RUN
+
+#endif // WAH_FEATURE_GC
+
 WAH_RUN(LOCAL_GET) {
     uint32_t local_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
@@ -9788,6 +9907,8 @@ WAH_RUN(TABLE_INIT) {
     WAH_CLEANUP();
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
+
 WAH_RUN(TABLE_GET_i64) {
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
@@ -9914,6 +10035,8 @@ WAH_RUN(TABLE_INIT_i64) {
     WAH_CLEANUP();
 }
 
+#endif // WAH_FEATURE_MEMORY64 (i64 table ops)
+
 WAH_RUN(ELEM_DROP) {
     uint32_t elem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
@@ -10035,6 +10158,7 @@ WAH_RUN(CALL_INDIRECT) {
     WAH_CLEANUP();
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
 WAH_RUN(CALL_INDIRECT_i64) {
     uint32_t type_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
@@ -10049,6 +10173,7 @@ WAH_RUN(CALL_INDIRECT_i64) {
     WAH_NEXT();
     WAH_CLEANUP();
 }
+#endif // WAH_FEATURE_MEMORY64
 
 WAH_RUN(CALL_REF) {
     uint32_t type_idx = wah_read_u32_le(bytecode_ip);
@@ -10063,6 +10188,8 @@ WAH_RUN(CALL_REF) {
     WAH_NEXT();
     WAH_CLEANUP();
 }
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TAIL_CALL)
 
 // Tail-call helper: reuse current frame for a wasm-to-wasm call.
 // Moves params to current frame's locals area, updates frame in-place.
@@ -10201,6 +10328,7 @@ WAH_RUN(RETURN_CALL_INDIRECT) {
     WAH_CLEANUP();
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
 WAH_RUN(RETURN_CALL_INDIRECT_i64) {
     uint32_t type_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
@@ -10219,6 +10347,7 @@ WAH_RUN(RETURN_CALL_INDIRECT_i64) {
     WAH_NEXT();
     WAH_CLEANUP();
 }
+#endif // WAH_FEATURE_MEMORY64
 
 WAH_RUN(RETURN_CALL_REF) {
     uint32_t type_idx = wah_read_u32_le(bytecode_ip);
@@ -10237,6 +10366,12 @@ WAH_RUN(RETURN_CALL_REF) {
     WAH_NEXT();
     WAH_CLEANUP();
 }
+
+#else // !WAH_FEATURE_TAIL_CALL
+WAH_NEVER_RUN(RETURN_CALL) WAH_NEVER_RUN(RETURN_CALL_INDIRECT)
+WAH_IF_MEMORY64(WAH_NEVER_RUN(RETURN_CALL_INDIRECT_i64))
+WAH_NEVER_RUN(RETURN_CALL_REF)
+#endif // WAH_FEATURE_TAIL_CALL
 
 WAH_RUN(RETURN) {
     while (ctx->exception_handler_depth > 0 &&
@@ -10552,6 +10687,7 @@ WAH_RUN(I64_STORE16_i32_mem0) STORE_OP_I32_MEM0(16, u16, i64, int64_t, (uint16_t
 WAH_RUN(I64_STORE32_i32_mem0) STORE_OP_I32_MEM0(32, u32, i64, int64_t, (uint32_t))
 
 // --- i64-addressed memory loads/stores (non-mem0) ---
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
 WAH_RUN(I32_LOAD_i64) LOAD_OP_I64(32, u32, i32, (int32_t))
 WAH_RUN(I64_LOAD_i64) LOAD_OP_I64(64, u64, i64, (int64_t))
 WAH_RUN(F32_LOAD_i64) LOAD_OP_I64(32, f32, f32, )
@@ -10602,6 +10738,7 @@ WAH_RUN(I32_STORE16_i64_mem0) STORE_OP_I64_MEM0(16, u16, i32, int32_t, (uint16_t
 WAH_RUN(I64_STORE8_i64_mem0) STORE_OP_I64_MEM0(8, u8, i64, int64_t, (uint8_t))
 WAH_RUN(I64_STORE16_i64_mem0) STORE_OP_I64_MEM0(16, u16, i64, int64_t, (uint16_t))
 WAH_RUN(I64_STORE32_i64_mem0) STORE_OP_I64_MEM0(32, u32, i64, int64_t, (uint32_t))
+#endif // WAH_FEATURE_MEMORY64 (i64 memory loads/stores)
 
 WAH_RUN(I32_WRAP_I64) CONVERT(i64, (int32_t), i32)
 WAH_RUN(I32_TRUNC_F32_S) CONVERT_CHECK(f32, wah_trunc_f32_to_i32, int32_t, , i32)
@@ -10800,6 +10937,7 @@ WAH_RUN(MEMORY_COPY) {
 }
 
 // --- i64-addressed memory.size/grow ---
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
 WAH_RUN(MEMORY_SIZE_i64) {
     uint32_t mem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
@@ -10921,6 +11059,7 @@ WAH_RUN(MEMORY_COPY_i64) {
     WAH_NEXT();
     WAH_CLEANUP();
 }
+#endif // WAH_FEATURE_MEMORY64 (i64 memory.size/grow/fill/init/copy)
 
 WAH_RUN(DROP) { sp--; WAH_NEXT(); }
 
@@ -10940,6 +11079,7 @@ WAH_RUN(UNREACHABLE) {
 }
 
 // --- Vector instructions ---
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
 
 #define M128I_UNARY_OP(fn, ...) WAH_IF_X86_64({ sp[-1]._m128i = fn(sp[-1]._m128i); WAH_NEXT(); }, __VA_ARGS__)
 #define M128I_UNARY_I32_OP(fn, ...) WAH_IF_X86_64({ sp[-1].i32 = fn(sp[-1]._m128i); WAH_NEXT(); }, __VA_ARGS__)
@@ -11235,6 +11375,7 @@ WAH_RUN(V128_STORE_i32_mem0) {
 }
 
 // --- i64-addressed V128 memory operations ---
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
 
 WAH_RUN(V128_LOAD_i64) {
     V128_LOAD_COMMON(0, sizeof(wah_v128_t), WAH_SP_ADDR_I64);
@@ -11344,6 +11485,8 @@ WAH_RUN(V128_STORE_i64_mem0) {
     WAH_NEXT();
     WAH_CLEANUP();
 }
+
+#endif // WAH_FEATURE_MEMORY64 && WAH_FEATURE_SIMD (i64 V128 memory)
 
 #undef WAH_SP_ADDR_I32
 #undef WAH_SP_ADDR_I64
@@ -12332,6 +12475,14 @@ WAH_IF_X86_64(
 #undef N128_FP_BINARY_OP_F64
 #undef N128_FP_TERNARY_OP_F32
 #undef N128_FP_TERNARY_OP_F64
+
+#else // !WAH_FEATURE_SIMD
+
+#define WAH_SIMD_NEVER_RUN(name, ...) WAH_NEVER_RUN(name)
+WAH_SIMD_OPCODES(WAH_SIMD_NEVER_RUN)
+#undef WAH_SIMD_NEVER_RUN
+
+#endif // WAH_FEATURE_SIMD
 
 //------------------------------------------------------------------------------
 
