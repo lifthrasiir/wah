@@ -3325,7 +3325,7 @@ static WAH_ALWAYS_INLINE uint8x16_t wah_i64x2_shr_u_neon(uint8x16_t a, int32_t c
 // Narrow operations
 static WAH_ALWAYS_INLINE uint8x16_t wah_i8x16_narrow_i16x8_s_neon(uint8x16_t a, uint8x16_t b) {
     int16x8_t va = vreinterpretq_s16_u8(a), vb = vreinterpretq_s16_u8(b);
-    return vreinterpretq_u8_s8(vcombine_s8(vmovn_s16(va), vmovn_s16(vb)));
+    return vreinterpretq_u8_s8(vcombine_s8(vqmovn_s16(va), vqmovn_s16(vb)));
 }
 static WAH_ALWAYS_INLINE uint8x16_t wah_i8x16_narrow_i16x8_u_neon(uint8x16_t a, uint8x16_t b) {
     uint16x8_t va = vreinterpretq_u16_u8(a), vb = vreinterpretq_u16_u8(b);
@@ -3333,7 +3333,7 @@ static WAH_ALWAYS_INLINE uint8x16_t wah_i8x16_narrow_i16x8_u_neon(uint8x16_t a, 
 }
 static WAH_ALWAYS_INLINE uint8x16_t wah_i16x8_narrow_i32x4_s_neon(uint8x16_t a, uint8x16_t b) {
     int32x4_t va = vreinterpretq_s32_u8(a), vb = vreinterpretq_s32_u8(b);
-    return vreinterpretq_u8_s16(vcombine_s16(vmovn_s32(va), vmovn_s32(vb)));
+    return vreinterpretq_u8_s16(vcombine_s16(vqmovn_s32(va), vqmovn_s32(vb)));
 }
 static WAH_ALWAYS_INLINE uint8x16_t wah_i16x8_narrow_i32x4_u_neon(uint8x16_t a, uint8x16_t b) {
     int32x4_t va = vreinterpretq_s32_u8(a), vb = vreinterpretq_s32_u8(b);
