@@ -3456,31 +3456,31 @@ static WAH_ALWAYS_INLINE uint8x16_t wah_i32x4_trunc_sat_f32x4_u_neon(uint8x16_t 
 // Wasm f32x4.min/max: canonical NaN if either is NaN, -0/+0 handling via OR/AND
 static WAH_ALWAYS_INLINE uint8x16_t wah_f32x4_min_neon(uint8x16_t va, uint8x16_t vb) {
     float32x4_t a = vreinterpretq_f32_u8(va), b = vreinterpretq_f32_u8(vb);
-    uint32x4_t nan_mask = vorrq_u32(vmvnq_u32(vceqq_f32(a, a)), vmvnq_u32(vceqq_f32(b, b)));
+    uint32x4_t not_nan = vandq_u32(vceqq_f32(a, a), vceqq_f32(b, b));
     float32x4_t result = vreinterpretq_f32_u32(vorrq_u32(
         vreinterpretq_u32_f32(vminq_f32(a, b)), vreinterpretq_u32_f32(vminq_f32(b, a))));
-    return vreinterpretq_u8_f32(vbslq_f32(nan_mask, vdupq_n_f32(WAH_CANONICAL_NAN32.f), result));
+    return vreinterpretq_u8_f32(vbslq_f32(not_nan, result, vdupq_n_f32(WAH_CANONICAL_NAN32.f)));
 }
 static WAH_ALWAYS_INLINE uint8x16_t wah_f32x4_max_neon(uint8x16_t va, uint8x16_t vb) {
     float32x4_t a = vreinterpretq_f32_u8(va), b = vreinterpretq_f32_u8(vb);
-    uint32x4_t nan_mask = vorrq_u32(vmvnq_u32(vceqq_f32(a, a)), vmvnq_u32(vceqq_f32(b, b)));
+    uint32x4_t not_nan = vandq_u32(vceqq_f32(a, a), vceqq_f32(b, b));
     float32x4_t result = vreinterpretq_f32_u32(vandq_u32(
         vreinterpretq_u32_f32(vmaxq_f32(a, b)), vreinterpretq_u32_f32(vmaxq_f32(b, a))));
-    return vreinterpretq_u8_f32(vbslq_f32(nan_mask, vdupq_n_f32(WAH_CANONICAL_NAN32.f), result));
+    return vreinterpretq_u8_f32(vbslq_f32(not_nan, result, vdupq_n_f32(WAH_CANONICAL_NAN32.f)));
 }
 static WAH_ALWAYS_INLINE uint8x16_t wah_f64x2_min_neon(uint8x16_t va, uint8x16_t vb) {
     float64x2_t a = vreinterpretq_f64_u8(va), b = vreinterpretq_f64_u8(vb);
-    uint64x2_t nan_mask = vorrq_u64(vmvnq_u64(vceqq_f64(a, a)), vmvnq_u64(vceqq_f64(b, b)));
+    uint64x2_t not_nan = vandq_u64(vceqq_f64(a, a), vceqq_f64(b, b));
     float64x2_t result = vreinterpretq_f64_u64(vorrq_u64(
         vreinterpretq_u64_f64(vminq_f64(a, b)), vreinterpretq_u64_f64(vminq_f64(b, a))));
-    return vreinterpretq_u8_f64(vbslq_f64(nan_mask, vdupq_n_f64(WAH_CANONICAL_NAN64.f), result));
+    return vreinterpretq_u8_f64(vbslq_f64(not_nan, result, vdupq_n_f64(WAH_CANONICAL_NAN64.f)));
 }
 static WAH_ALWAYS_INLINE uint8x16_t wah_f64x2_max_neon(uint8x16_t va, uint8x16_t vb) {
     float64x2_t a = vreinterpretq_f64_u8(va), b = vreinterpretq_f64_u8(vb);
-    uint64x2_t nan_mask = vorrq_u64(vmvnq_u64(vceqq_f64(a, a)), vmvnq_u64(vceqq_f64(b, b)));
+    uint64x2_t not_nan = vandq_u64(vceqq_f64(a, a), vceqq_f64(b, b));
     float64x2_t result = vreinterpretq_f64_u64(vandq_u64(
         vreinterpretq_u64_f64(vmaxq_f64(a, b)), vreinterpretq_u64_f64(vmaxq_f64(b, a))));
-    return vreinterpretq_u8_f64(vbslq_f64(nan_mask, vdupq_n_f64(WAH_CANONICAL_NAN64.f), result));
+    return vreinterpretq_u8_f64(vbslq_f64(not_nan, result, vdupq_n_f64(WAH_CANONICAL_NAN64.f)));
 }
 
 // pmin/pmax: IEEE 754 minNum/maxNum - no NaN canonicalization
