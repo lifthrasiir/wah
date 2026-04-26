@@ -1226,7 +1226,10 @@ void test_i32x4_relaxed_trunc_f64x2_u() {
 }
 
 int main() {
+    #ifndef WAH_IMPLEMENTATION // Do not print in test_simd_portable.c (which #includes this file).
     wah_debug_print_platform_features();
+    #endif
+
     test_v128_const();
     test_v128_load_store();
     test_all_v128_loads();
