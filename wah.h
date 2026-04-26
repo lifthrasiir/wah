@@ -3155,6 +3155,11 @@ WAH_IF_AVX512(
     static WAH_ALWAYS_INLINE uint8x16_t wah_##neon_fn##_##lane_t(uint8x16_t a) { \
         return vreinterpretq_u8_##lane_t(neon_fn##_##lane_t(vreinterpretq_##lane_t##_u8(a))); \
     }
+#define WAH_NEON_CMP(neon_fn, lane_t, ret_t) \
+    static WAH_ALWAYS_INLINE uint8x16_t wah_##neon_fn##_##lane_t(uint8x16_t a, uint8x16_t b) { \
+        return vreinterpretq_u8_##ret_t( \
+            neon_fn##_##lane_t(vreinterpretq_##lane_t##_u8(a), vreinterpretq_##lane_t##_u8(b))); \
+    }
 
 // --- Arithmetic ---
 WAH_NEON_BIN(vaddq,  s8) WAH_NEON_BIN(vsubq,  s8) WAH_NEON_BIN(vqaddq,  s8) WAH_NEON_BIN(vqsubq,  s8)
@@ -3166,14 +3171,14 @@ WAH_NEON_BIN(vaddq, u32) WAH_NEON_BIN(vsubq, u32)
 WAH_NEON_BIN(vaddq, s64) WAH_NEON_BIN(vsubq, s64)
 WAH_NEON_BIN(vaddq, u64) WAH_NEON_BIN(vsubq, u64)
 
-// --- Compare (returns all-ones/0 per lane) ---
-WAH_NEON_BIN(vceqq,  s8) WAH_NEON_BIN(vcgtq,  s8) WAH_NEON_BIN(vcltq,  s8)
-WAH_NEON_BIN(vceqq,  u8) WAH_NEON_BIN(vcgtq,  u8) WAH_NEON_BIN(vcltq,  u8)
-WAH_NEON_BIN(vceqq, s16) WAH_NEON_BIN(vcgtq, s16) WAH_NEON_BIN(vcltq, s16)
-WAH_NEON_BIN(vceqq, u16) WAH_NEON_BIN(vcgtq, u16) WAH_NEON_BIN(vcltq, u16)
-WAH_NEON_BIN(vceqq, s32) WAH_NEON_BIN(vcgtq, s32) WAH_NEON_BIN(vcltq, s32)
-WAH_NEON_BIN(vceqq, u32) WAH_NEON_BIN(vcgtq, u32) WAH_NEON_BIN(vcltq, u32)
-WAH_NEON_BIN(vceqq, s64) WAH_NEON_BIN(vcgtq, s64) WAH_NEON_BIN(vcltq, s64)
+// --- Compare (returns unsigned result type, not the input type) ---
+WAH_NEON_CMP(vceqq,  s8,  u8) WAH_NEON_CMP(vcgtq,  s8,  u8) WAH_NEON_CMP(vcltq,  s8,  u8)
+WAH_NEON_CMP(vceqq,  u8,  u8) WAH_NEON_CMP(vcgtq,  u8,  u8) WAH_NEON_CMP(vcltq,  u8,  u8)
+WAH_NEON_CMP(vceqq, s16, u16) WAH_NEON_CMP(vcgtq, s16, u16) WAH_NEON_CMP(vcltq, s16, u16)
+WAH_NEON_CMP(vceqq, u16, u16) WAH_NEON_CMP(vcgtq, u16, u16) WAH_NEON_CMP(vcltq, u16, u16)
+WAH_NEON_CMP(vceqq, s32, u32) WAH_NEON_CMP(vcgtq, s32, u32) WAH_NEON_CMP(vcltq, s32, u32)
+WAH_NEON_CMP(vceqq, u32, u32) WAH_NEON_CMP(vcgtq, u32, u32) WAH_NEON_CMP(vcltq, u32, u32)
+WAH_NEON_CMP(vceqq, s64, u64) WAH_NEON_CMP(vcgtq, s64, u64) WAH_NEON_CMP(vcltq, s64, u64)
 
 // --- Min/max ---
 WAH_NEON_BIN(vminq,  s8) WAH_NEON_BIN(vmaxq,  s8)
@@ -3194,11 +3199,11 @@ WAH_NEON_BIN(vaddq,  f32) WAH_NEON_BIN(vaddq,  f64)
 WAH_NEON_BIN(vsubq,  f32) WAH_NEON_BIN(vsubq,  f64)
 WAH_NEON_BIN(vmulq,  f32) WAH_NEON_BIN(vmulq,  f64)
 WAH_NEON_BIN(vdivq,  f32) WAH_NEON_BIN(vdivq,  f64)
-WAH_NEON_BIN(vceqq,  f32) WAH_NEON_BIN(vceqq,  f64)
-WAH_NEON_BIN(vcltq,  f32) WAH_NEON_BIN(vcltq,  f64)
-WAH_NEON_BIN(vcleq,  f32) WAH_NEON_BIN(vcleq,  f64)
-WAH_NEON_BIN(vcgtq,  f32) WAH_NEON_BIN(vcgtq,  f64)
-WAH_NEON_BIN(vcgeq,  f32) WAH_NEON_BIN(vcgeq,  f64)
+WAH_NEON_CMP(vceqq,  f32, u32) WAH_NEON_CMP(vceqq,  f64, u64)
+WAH_NEON_CMP(vcltq,  f32, u32) WAH_NEON_CMP(vcltq,  f64, u64)
+WAH_NEON_CMP(vcleq,  f32, u32) WAH_NEON_CMP(vcleq,  f64, u64)
+WAH_NEON_CMP(vcgtq,  f32, u32) WAH_NEON_CMP(vcgtq,  f64, u64)
+WAH_NEON_CMP(vcgeq,  f32, u32) WAH_NEON_CMP(vcgeq,  f64, u64)
 WAH_NEON_BIN(vminq,  f32) WAH_NEON_BIN(vminq,  f64)
 WAH_NEON_BIN(vmaxq,  f32) WAH_NEON_BIN(vmaxq,  f64)
 WAH_NEON_UNA(vabsq,  f32) WAH_NEON_UNA(vabsq,  f64)
@@ -3210,6 +3215,7 @@ WAH_NEON_UNA(vrndq,  f32) WAH_NEON_UNA(vrndq,  f64)
 WAH_NEON_UNA(vrndnq, f32) WAH_NEON_UNA(vrndnq, f64)
 
 #undef WAH_NEON_BIN
+#undef WAH_NEON_CMP
 #undef WAH_NEON_UNA
 
 // --- Special-case helpers ---
