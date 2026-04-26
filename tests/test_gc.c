@@ -243,6 +243,7 @@ int main() {
         assert_ok(wah_exec_context_create(&ctx, &module));
         assert_ok(wah_gc_start(&ctx));
         ctx.gc->gc_pending = true;
+        WAH_POLL_FLAG_STORE(ctx.poll_flag, 1);
         wah_value_t r;
         assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
         assert_eq_i32(r.i32, 2);
@@ -260,7 +261,7 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&module, spec));
         assert_ok(wah_exec_context_create(&ctx, &module));
         assert_ok(wah_gc_start(&ctx));
-        ctx.gc->interrupt_pending = true;
+        wah_request_interrupt(&ctx);
         wah_value_t r;
         assert_err(wah_call(&ctx, 0, NULL, 0, &r), WAH_ERROR_TRAP);
         assert_false(ctx.gc->interrupt_pending);
@@ -479,6 +480,7 @@ int main() {
         wah_gc_alloc(&ctx, WAH_REPR_NONE, 16);
         wah_gc_alloc(&ctx, WAH_REPR_NONE, 32);
         ctx.gc->gc_pending = true;
+        WAH_POLL_FLAG_STORE(ctx.poll_flag, 1);
         wah_value_t r;
         assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
         assert_eq_i32(r.i32, 42);

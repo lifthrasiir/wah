@@ -275,6 +275,27 @@ typedef struct {
     uint32_t handler_tag_instance_count;
 } wah_exception_handler_t;
 
+// Atomic flag for fast POLL check. Setters may be called from another thread;
+// the interpreter hot loop only does a relaxed load.
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_ATOMICS__)
+#include <stdatomic.h>
+typedef atomic_int wah_poll_flag_t;
+#define WAH_POLL_FLAG_LOAD(f)       atomic_load_explicit(&(f), memory_order_relaxed)
+#define WAH_POLL_FLAG_STORE(f, v)   atomic_store_explicit(&(f), (v), memory_order_relaxed)
+#elif defined(_MSC_VER)
+typedef volatile long wah_poll_flag_t;
+#define WAH_POLL_FLAG_LOAD(f)       (f)
+#define WAH_POLL_FLAG_STORE(f, v)   _InterlockedExchange(&(f), (v))
+#elif defined(__GNUC__)
+typedef volatile int wah_poll_flag_t;
+#define WAH_POLL_FLAG_LOAD(f)       __atomic_load_n(&(f), __ATOMIC_RELAXED)
+#define WAH_POLL_FLAG_STORE(f, v)   __atomic_store_n(&(f), (v), __ATOMIC_RELAXED)
+#else
+typedef volatile int wah_poll_flag_t;
+#define WAH_POLL_FLAG_LOAD(f)       (f)
+#define WAH_POLL_FLAG_STORE(f, v)   ((f) = (v))
+#endif
+
 typedef struct wah_exec_context_s {
     wah_value_t *value_stack;       // A single, large stack for operands and locals
     uint32_t sp;                    // Stack pointer for the value_stack (points to next free slot)
@@ -283,6 +304,8 @@ typedef struct wah_exec_context_s {
     struct wah_call_frame_s *call_stack; // The call frame stack
     uint32_t call_depth;            // Current call depth (top of the call_stack)
     uint32_t call_stack_cap;
+
+    wah_poll_flag_t poll_flag;      // Fast path: non-zero means slow path needed
 
     uint32_t max_call_depth;        // Configurable max call depth
 
@@ -464,6 +487,11 @@ void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats
 bool wah_gc_verify_heap(const wah_exec_context_t *ctx);
 // Allocates an opaque host object on the GC heap. Returns a pointer to the payload of the given size, or NULL on failure.
 void *wah_gc_alloc_host(wah_exec_context_t *ctx, size_t size);
+
+// Requests an interrupt from the interpreter. Safe to call from another thread.
+// The interpreter will trap (or yield, if fuel metering is enabled) at the next POLL/TICK point.
+// Requires GC to be started on the context (wah_gc_start).
+void wah_request_interrupt(wah_exec_context_t *ctx);
 
 wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id, wah_entry_t *out);
 
@@ -8210,6 +8238,7 @@ void wah_gc_reset(wah_exec_context_t *ctx) {
     ctx->gc->phase = WAH_GC_PHASE_IDLE;
     ctx->gc->gc_pending = false;
     ctx->gc->interrupt_pending = false;
+    WAH_POLL_FLAG_STORE(ctx->poll_flag, 0);
 }
 
 void wah_gc_destroy(wah_exec_context_t *ctx) {
@@ -8243,6 +8272,7 @@ static void *wah_gc_alloc(wah_exec_context_t *ctx, wah_repr_t repr_id, uint32_t 
 
     if (gc->allocated_bytes >= gc->allocation_threshold) {
         gc->gc_pending = true;
+        WAH_POLL_FLAG_STORE(ctx->poll_flag, 1);
     }
 
     return wah_gc_payload(obj);
@@ -8614,6 +8644,11 @@ static inline void wah_ref_store_table(wah_exec_context_t *ctx, uint32_t table_i
 
 #endif // WAH_FEATURE_GC
 
+void wah_request_interrupt(wah_exec_context_t *ctx) {
+    if (ctx->gc) ctx->gc->interrupt_pending = true;
+    WAH_POLL_FLAG_STORE(ctx->poll_flag, 1);
+}
+
 ////////////////////////////////////////////////////////////////////////////////
 // Interpreter loop ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -8794,6 +8829,9 @@ int64_t wah_get_fuel(const wah_exec_context_t *ctx) {
 
 static wah_error_t wah_poll_handler(wah_exec_context_t *ctx) {
     wah_gc_state_t *gc = ctx->gc;
+
+    WAH_POLL_FLAG_STORE(ctx->poll_flag, 0);
+
     if (!gc) return WAH_OK;
 
 #ifdef WAH_DEBUG
@@ -9137,8 +9175,7 @@ WAH_RUN(POLL) {
     frame->ref_map_offset = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
 
-    wah_gc_state_t *gc = ctx->gc;
-    if (gc && (gc->gc_pending || gc->interrupt_pending)) {
+    if (WAH_POLL_FLAG_LOAD(ctx->poll_flag)) {
         frame->bytecode_ip = bytecode_ip;
         ctx->sp = (uint32_t)(sp - ctx->value_stack);
         WAH_CHECK_GOTO(wah_poll_handler(ctx), cleanup);
@@ -9171,8 +9208,9 @@ WAH_RUN(TICK) {
     ctx->fuel--;
     if (ctx->fuel < 0) {
         err = WAH_STATUS_FUEL_EXHAUSTED;
-    } else if (ctx->gc && ctx->gc->interrupt_pending) {
+    } else if (WAH_POLL_FLAG_LOAD(ctx->poll_flag) && ctx->gc && ctx->gc->interrupt_pending) {
         ctx->gc->interrupt_pending = false;
+        WAH_POLL_FLAG_STORE(ctx->poll_flag, 0);
         err = WAH_STATUS_YIELDED;
     }
     if (err != WAH_OK) {
