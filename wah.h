@@ -1320,19 +1320,19 @@ WAH_IF_AVX512(
 )
 
 // AVX-512F+VL ternary logic wrapper (vpternlogd)
-// Specialized for V128_BITSELECT which uses imm8 = 0xD8
+// Specialized for V128_BITSELECT: (a & c) | (b & ~c), imm8 = 0xE4
 #ifdef __GNUC__
 WAH_IF_AVX512(
     static WAH_ALWAYS_INLINE __m128i wah_mm_ternarylogic_epi32_bitselect(__m128i a, __m128i b, __m128i c) {
         __m128i res = a;
-        __asm__("vpternlogd $0xD8, %2, %1, %0" : "+x"(res) : "x"(b), "x"(c));
+        __asm__("vpternlogd $0xE4, %2, %1, %0" : "+x"(res) : "x"(b), "x"(c));
         return res;
     }
 )
 #else
 WAH_IF_AVX512(
     static WAH_ALWAYS_INLINE __m128i wah_mm_ternarylogic_epi32_bitselect(__m128i a, __m128i b, __m128i c) {
-        return _mm_ternarylogic_epi32(a, b, c, 0xD8);
+        return _mm_ternarylogic_epi32(a, b, c, 0xE4);
     }
 )
 #endif
