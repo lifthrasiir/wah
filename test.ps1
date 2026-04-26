@@ -67,7 +67,7 @@ foreach ($f in $testFiles) {
 }
 
 # --- Precompiled objects ---
-$wahObj = "$projDir\tests\wah.o"
+$wahImplObj = "$projDir\tests\wah_impl.o"
 $commonObj = "$projDir\tests\common.o"
 
 function Test-ObjUpToDate($obj, [string[]]$deps) {
@@ -86,30 +86,23 @@ $commonHdr = "$projDir\tests\common.h"
 # Always need common.o (used by both standalone and api-only tests).
 $commonObjOk = Test-ObjUpToDate $commonObj @($wahH, $commonSrc, $commonHdr)
 
-# Need wah.o only if there are api-only tests.
-$wahObjOk = $true
-$wahImplSrc = "$projDir\tests\_wah_impl.c"
+# Need wah_impl.o only if there are api-only tests.
+$wahImplObjOk = $true
+$wahImplSrc = "$projDir\tests\wah_impl.c"
+$wahImplHdr = "$projDir\tests\wah_impl.h"
 if ($apiTests.Count -gt 0) {
-    $implContent = "#define WAH_IMPLEMENTATION`n#include `"../wah.h`"`n"
-    $needsWrite = $true
-    if (Test-Path $wahImplSrc) {
-        $existing = [System.IO.File]::ReadAllText($wahImplSrc)
-        if ($existing -eq $implContent) { $needsWrite = $false }
-    }
-    if ($needsWrite) { [System.IO.File]::WriteAllText($wahImplSrc, $implContent) }
-
-    $wahObjOk = Test-ObjUpToDate $wahObj @($wahH, $wahImplSrc)
+    $wahImplObjOk = Test-ObjUpToDate $wahImplObj @($wahH, $wahImplSrc, $wahImplHdr)
 }
 
 $jobs = @()
-if (-not $wahObjOk) {
-    Write-Host '## Compiling wah.o...'
+if (-not $wahImplObjOk) {
+    Write-Host '## Compiling wah_impl.o...'
     $jobs += Start-Job -ScriptBlock {
         param($cflags, $src, $out, $dir)
         Set-Location $dir
         & clang @cflags -c $src -o $out 2>&1
-        if ($LASTEXITCODE -ne 0) { throw 'wah.o compilation failed' }
-    } -ArgumentList $cflags, $wahImplSrc, $wahObj, $projDir
+        if ($LASTEXITCODE -ne 0) { throw 'wah_impl.o compilation failed' }
+    } -ArgumentList $cflags, $wahImplSrc, $wahImplObj, $projDir
 }
 if (-not $commonObjOk) {
     Write-Host '## Compiling common.o...'
@@ -146,8 +139,8 @@ function Start-Compile($test) {
     $exe = "$projDir\tests\$name.exe"
 
     # standalone: test.o has WAH_IMPLEMENTATION, link with common.o
-    # api-only: test.o has no WAH_IMPLEMENTATION, link with wah.o + common.o
-    $linkObjStr = if ($test.Standalone) { $commonObj } else { "$wahObj|$commonObj" }
+    # api-only: test.o has no WAH_IMPLEMENTATION, link with wah_impl.o + common.o
+    $linkObjStr = if ($test.Standalone) { $commonObj } else { "$wahImplObj|$commonObj" }
 
     return Start-Job -ScriptBlock {
         param($cflags, $src, $exe, $linkObjStr, $dir)

@@ -12,17 +12,14 @@ ALL_TEST_SRCS := $(sort $(wildcard tests/test_*.c))
 ALL_TEST_NAMES := $(patsubst tests/test_%.c, %, $(ALL_TEST_SRCS))
 
 # Classify tests by whether they define WAH_IMPLEMENTATION.
-# Standalone tests embed the wah implementation; API-only tests link against wah.o.
+# Standalone tests embed the wah implementation; API-only tests link against wah_impl.o.
 IMPL_SRCS := $(shell grep -l 'define WAH_IMPLEMENTATION' $(ALL_TEST_SRCS) 2>/dev/null)
 API_SRCS := $(filter-out $(IMPL_SRCS), $(ALL_TEST_SRCS))
 
 # --- Precompiled objects ---
 
-tests/_wah_impl.c:
-	@printf '#define WAH_IMPLEMENTATION\n#include "../wah.h"\n' > $@
-
-tests/wah.o: tests/_wah_impl.c wah.h
-	@echo "## Compiling wah.o..."
+tests/wah_impl.o: tests/wah_impl.c tests/wah_impl.h wah.h
+	@echo "## Compiling wah_impl.o..."
 	@$(CC) $(CFLAGS) -c $< -o $@
 
 tests/common.o: tests/common.c tests/common.h wah.h
@@ -38,11 +35,11 @@ $(patsubst %.c, %, $(IMPL_SRCS)): tests/test_%: tests/test_%.c tests/common.o wa
 	@$(CC) tests/test_$*.o tests/common.o -o $@ $(LDFLAGS)
 	@rm -f tests/test_$*.o
 
-# API-only tests: link with wah.o + common.o
-$(patsubst %.c, %, $(API_SRCS)): tests/test_%: tests/test_%.c tests/wah.o tests/common.o wah.h tests/common.h
+# API-only tests: link with wah_impl.o + common.o
+$(patsubst %.c, %, $(API_SRCS)): tests/test_%: tests/test_%.c tests/wah_impl.o tests/common.o wah.h tests/common.h tests/wah_impl.h
 	@echo "## Compiling test_$*.c..."
 	@$(CC) $(CFLAGS) -c $< -o tests/test_$*.o
-	@$(CC) tests/test_$*.o tests/wah.o tests/common.o -o $@ $(LDFLAGS)
+	@$(CC) tests/test_$*.o tests/wah_impl.o tests/common.o -o $@ $(LDFLAGS)
 	@rm -f tests/test_$*.o
 
 # --- Run targets ---
@@ -109,8 +106,8 @@ $(FUZZ_HARNESS_BIN): $(FUZZ_HARNESS_SRC)
 GCOV_CFLAGS := -fprofile-arcs -ftest-coverage
 GCOV_LDFLAGS := -lgcov
 
-tests/wah_cov.o: tests/_wah_impl.c wah.h
-	@echo "## Compiling wah_cov.o..."
+tests/wah_impl_cov.o: tests/wah_impl.c tests/wah_impl.h wah.h
+	@echo "## Compiling wah_impl_cov.o..."
 	@$(CC) $(CFLAGS) $(GCOV_CFLAGS) -c $< -o $@
 
 tests/common_cov.o: tests/common.c tests/common.h wah.h
@@ -124,11 +121,11 @@ $(patsubst %.c, %_cov, $(IMPL_SRCS)): tests/test_%_cov: tests/test_%.c tests/com
 	@$(CC) tests/test_$*_cov.o tests/common_cov.o -o $@ $(LDFLAGS) $(GCOV_LDFLAGS)
 	@rm -f tests/test_$*_cov.o
 
-# Coverage binaries for API-only tests: link with wah_cov.o + common_cov.o
-$(patsubst %.c, %_cov, $(API_SRCS)): tests/test_%_cov: tests/test_%.c tests/wah_cov.o tests/common_cov.o wah.h tests/common.h
+# Coverage binaries for API-only tests: link with wah_impl_cov.o + common_cov.o
+$(patsubst %.c, %_cov, $(API_SRCS)): tests/test_%_cov: tests/test_%.c tests/wah_impl_cov.o tests/common_cov.o wah.h tests/common.h tests/wah_impl.h
 	@echo "## Compiling test_$*_cov..."
 	@$(CC) $(CFLAGS) $(GCOV_CFLAGS) -c $< -o tests/test_$*_cov.o
-	@$(CC) tests/test_$*_cov.o tests/wah_cov.o tests/common_cov.o -o $@ $(LDFLAGS) $(GCOV_LDFLAGS)
+	@$(CC) tests/test_$*_cov.o tests/wah_impl_cov.o tests/common_cov.o -o $@ $(LDFLAGS) $(GCOV_LDFLAGS)
 	@rm -f tests/test_$*_cov.o
 
 COV_RUN_TARGETS := $(patsubst %, run_%_cov, $(ALL_TEST_NAMES))
@@ -156,7 +153,7 @@ coverage: clean $(COV_RUN_TARGETS)
 clean:
 	@echo "## Cleaning up..."
 	@rm -f $(patsubst %.c, %, $(ALL_TEST_SRCS)) $(patsubst %.c, %_cov, $(ALL_TEST_SRCS))
-	@rm -f tests/*.o tests/_wah_impl.c
+	@rm -f tests/*.o
 	@rm -f $(FUZZ_HARNESS_BIN)
 	@rm -f bench/bench_coremark
 	@rm -f *.gcda *.gcno tests/*.gcda tests/*.gcno fuzz/*.gcda fuzz/*.gcno coverage.info

@@ -1,5 +1,5 @@
-#define WAH_IMPLEMENTATION
 #include "../wah.h"
+#include "wah_impl.h"
 #include "wast.c"
 #include "spectest.c"
 

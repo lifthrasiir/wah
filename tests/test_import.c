@@ -1,7 +1,7 @@
 // Tests for import section parsing and function import resolution
-#define WAH_IMPLEMENTATION
 #include <stdio.h>
 #include "../wah.h"
+#include "wah_impl.h"
 #include "common.h"
 
 static int g_add_called = 0;
@@ -47,7 +47,7 @@ static void test_basic_import_resolution(void) {
 
     wah_entry_t entry;
     assert_ok(wah_module_export_by_name(&wasm_mod, "callAdd", &entry));
-    uint32_t export_idx = WAH_GET_ENTRY_INDEX(entry.id);
+    uint32_t export_idx = wah_debug_get_entry_index(entry.id);
     assert_eq_u32(export_idx, 1);
 
     wah_value_t params[2] = {{ .i32 = 10 }, { .i32 = 20 }};
@@ -111,7 +111,7 @@ static void test_import_index_space(void) {
 
     wah_entry_t entry;
     assert_ok(wah_module_export_by_name(&wasm_mod, "callAdd", &entry));
-    uint32_t idx = WAH_GET_ENTRY_INDEX(entry.id);
+    uint32_t idx = wah_debug_get_entry_index(entry.id);
     assert_eq_u32(idx, 1);
 
     uint32_t nargs, nrets;
@@ -143,7 +143,7 @@ static void test_no_imports_unchanged(void) {
 
     wah_entry_t entry;
     assert_ok(wah_module_export_by_name(&mod, "add", &entry));
-    assert_eq_u32(WAH_GET_ENTRY_INDEX(entry.id), 0);
+    assert_eq_u32(wah_debug_get_entry_index(entry.id), 0);
 
     wah_value_t params[2] = {{ .i32 = 7 }, { .i32 = 8 }};
     wah_value_t result = {0};
@@ -324,11 +324,11 @@ static void test_memory_import(void) {
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_ok(wah_instantiate(&ctx));
 
-    assert_true(ctx.memories[0].data != NULL);
-    assert_true(ctx.memories[0].size == 65536);
+    assert_true(wah_debug_memory_data(&ctx, 0) != NULL);
+    assert_true(wah_debug_memory_size(&ctx, 0) == 65536);
 
     uint32_t val = 0x12345678;
-    memcpy(ctx.memories[0].data, &val, 4);
+    memcpy(wah_debug_memory_data(&ctx, 0), &val, 4);
 
     wah_entry_t entry;
     assert_ok(wah_module_export_by_name(&wasm_mod, "load", &entry));
@@ -375,29 +375,8 @@ static void test_table_import(void) {
 
     wah_module_t provider = {0};
     assert_ok(wah_new_module(&provider));
-
-    wah_table_type_t *new_tables = (wah_table_type_t *)realloc(
-        provider.tables, sizeof(wah_table_type_t));
-    assert_true(new_tables != NULL);
-    memset(&new_tables[0], 0, sizeof(wah_table_type_t));
-    provider.tables = new_tables;
-    provider.tables[0].elem_type = WAH_TYPE_FUNCREF;
-    provider.tables[0].elem_type_flags = WAH_TYPE_FLAG_NULLABLE;
-    provider.tables[0].addr_type = WAH_TYPE_I32;
-    provider.tables[0].min_elements = 1;
-    provider.tables[0].max_elements = 10;
-
-    wah_export_t *new_exports = (wah_export_t *)realloc(
-        provider.exports, (provider.export_count + 1) * sizeof(wah_export_t));
-    assert_true(new_exports != NULL);
-    provider.exports = new_exports;
-    provider.exports[provider.export_count].name = strdup("tbl");
-    provider.exports[provider.export_count].name_len = 3;
-    provider.exports[provider.export_count].kind = 1;
-    provider.exports[provider.export_count].index = provider.table_count;
-    provider.export_count++;
-    provider.exports_cap = provider.export_count;
-    provider.table_count++;
+    assert_ok(wah_debug_module_export_table(&provider, "tbl",
+        WAH_TYPE_FUNCREF, WAH_TYPE_FLAG_NULLABLE, WAH_TYPE_I32, 1, 10));
 
     const char *spec = "wasm \
         types {[ fn [] [i32] ]} \

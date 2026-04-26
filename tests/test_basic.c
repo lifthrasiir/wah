@@ -1,4 +1,3 @@
-#define WAH_IMPLEMENTATION
 #include <stdio.h>
 #include <stdlib.h>
 #include "../wah.h"
@@ -15,8 +14,6 @@ int main() {
         code {[ {[] local.get 0 local.get 1 i32.add end } ]}";
     assert_ok(wah_parse_module_from_spec(&module, simple_add_wasm));
     assert_ok(wah_exec_context_create(&ctx, &module));
-
-    printf("  Function max stack depth: %u\n", module.code_bodies[0].max_stack_depth);
 
     uint32_t func_idx = 0;
     wah_value_t params[2];

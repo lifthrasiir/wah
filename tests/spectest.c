@@ -197,36 +197,16 @@ static void *spectest_resolve_ref(void *userdata, uint32_t id) {
     return host_ref_for_id(rctx->env, rctx->ctx, id);
 }
 
-static int is_func_ref_in_table(const wah_exec_context_t *ctx, void *ref) {
-    uintptr_t start, end, ptr;
-    if (!ctx || !ctx->function_table || ctx->function_table_count == 0) return 0;
-    start = (uintptr_t)&ctx->function_table[0];
-    end = (uintptr_t)(&ctx->function_table[ctx->function_table_count]);
-    ptr = (uintptr_t)ref;
-    return ptr >= start && ptr < end;
-}
-
-static int is_func_ref_in_module(const wah_module_t *m, void *ref) {
-    uintptr_t start, end, ptr;
-    if (!m || !m->functions || m->local_function_count == 0) return 0;
-    start = (uintptr_t)&m->functions[0];
-    end = (uintptr_t)(&m->functions[m->local_function_count]);
-    ptr = (uintptr_t)ref;
-    return ptr >= start && ptr < end;
-}
-
 static int is_func_ref(const spectest_instance_t *instance, void *ref) {
     uint32_t i;
     if (!instance || !instance->live || !ref) return 0;
-    if (is_func_ref_in_table(&instance->exec, ref)) return 1;
-    if (is_func_ref_in_module(instance->exec.module, ref)) return 1;
+    if (wah_debug_is_func_ref_in_ctx(&instance->exec, ref)) return 1;
+    if (wah_debug_is_func_ref_in_module(instance->exec.module, ref)) return 1;
     for (i = 0; i < instance->exec.linked_module_count; i++) {
-        if (instance->exec.linked_modules[i].ctx &&
-            is_func_ref_in_table(instance->exec.linked_modules[i].ctx, ref))
-            return 1;
-        if (instance->exec.linked_modules[i].module &&
-            is_func_ref_in_module(instance->exec.linked_modules[i].module, ref))
-            return 1;
+        const wah_exec_context_t *lctx = wah_debug_linked_ctx(&instance->exec, i);
+        const wah_module_t *lmod = wah_debug_linked_module(&instance->exec, i);
+        if (lctx && wah_debug_is_func_ref_in_ctx(lctx, ref)) return 1;
+        if (lmod && wah_debug_is_func_ref_in_module(lmod, ref)) return 1;
     }
     return 0;
 }
@@ -519,7 +499,7 @@ static int execute_action(const wast_node_t *action_node,
             free(field_name);
             return 0;
         }
-        if (WAH_GET_ENTRY_KIND(entry.id) != WAH_ENTRY_KIND_GLOBAL) {
+        if (wah_debug_get_entry_kind(entry.id) != wah_debug_entry_kind_global()) {
             snprintf(error_buf, error_buf_size, "\"%s\" is not a global export", field_name);
             free(field_name);
             return 0;
@@ -529,19 +509,15 @@ static int execute_action(const wast_node_t *action_node,
             free(field_name);
             return 1;
         }
-        global_idx = WAH_GET_ENTRY_INDEX(entry.id);
+        global_idx = wah_debug_get_entry_index(entry.id);
         if (global_idx >= instance->exec.global_count) {
             snprintf(error_buf, error_buf_size, "global index out of range");
             free(field_name);
             return 0;
         }
         result->values[0].type = entry.type;
-        if (global_idx < instance->exec.module->import_global_count &&
-            instance->exec.module->global_imports[global_idx].is_mutable) {
-            result->values[0].value = *(wah_value_t *)instance->exec.globals[global_idx].ref;
-        } else {
-            result->values[0].value = instance->exec.globals[global_idx];
-        }
+        result->values[0].value = wah_debug_global_value(&instance->exec,
+            instance->exec.module, global_idx);
         result->count = 1;
         if (out_instance) *out_instance = instance;
         free(field_name);
@@ -552,37 +528,8 @@ static int execute_action(const wast_node_t *action_node,
 }
 
 static int add_table_export_ex(wah_module_t *mod, const char *name, uint32_t min, uint32_t max, wah_type_t addr_type) {
-    char *name_copy;
-    wah_table_type_t *new_tables = (wah_table_type_t *)realloc(
-        mod->tables, (mod->table_count + 1) * sizeof(*mod->tables));
-    if (!new_tables) return 0;
-    mod->tables = new_tables;
-    mod->tables[mod->table_count] = (wah_table_type_t){0};
-    mod->tables[mod->table_count].elem_type = WAH_TYPE_FUNCREF;
-    mod->tables[mod->table_count].elem_type_flags = WAH_TYPE_FLAG_NULLABLE;
-    mod->tables[mod->table_count].addr_type = addr_type;
-    mod->tables[mod->table_count].min_elements = min;
-    mod->tables[mod->table_count].max_elements = max;
-
-    {
-        size_t cap = mod->exports_cap;
-        if (!ensure_capacity((void **)&mod->exports, &cap,
-                             sizeof(*mod->exports), mod->export_count + 1)) {
-            return 0;
-        }
-        mod->exports_cap = (uint32_t)cap;
-    }
-    name_copy = strdup(name);
-    if (!name_copy) {
-        return 0;
-    }
-    mod->exports[mod->export_count].name = name_copy;
-    mod->exports[mod->export_count].name_len = strlen(name_copy);
-    mod->exports[mod->export_count].kind = 1;
-    mod->exports[mod->export_count].index = mod->table_count;
-    mod->export_count++;
-    mod->table_count++;
-    return 1;
+    return wah_debug_module_export_table(mod, name,
+        WAH_TYPE_FUNCREF, WAH_TYPE_FLAG_NULLABLE, addr_type, min, max) == WAH_OK;
 }
 
 static int setup_spectest_host(spectest_env_t *env) {
@@ -627,10 +574,10 @@ static spectest_module_def_t *add_module_def(spectest_env_t *env, const char *na
                     ec->module = (const wah_module_t *)(mp + delta);
                 }
                 for (uint32_t j = 0; j < ec->linked_module_count; j++) {
-                    const char *p = (const char *)ec->linked_modules[j].module;
+                    const char *p = (const char *)wah_debug_linked_module(ec, j);
                     if (p >= (const char *)old_base &&
                         p < (const char *)old_base + env->def_count * sizeof(*env->defs)) {
-                        ec->linked_modules[j].module = (const wah_module_t *)(p + delta);
+                        wah_debug_set_linked_module(ec, j, (const wah_module_t *)(p + delta));
                     }
                 }
             }
@@ -672,10 +619,10 @@ static spectest_instance_t *add_instance(spectest_env_t *env, const char *name, 
             if (env->instances[ii].live) {
                 wah_exec_context_t *ec = &env->instances[ii].exec;
                 for (uint32_t j = 0; j < ec->linked_module_count; j++) {
-                    char *p = (char *)ec->linked_modules[j].ctx;
+                    char *p = (char *)wah_debug_linked_ctx(ec, j);
                     if (p >= (char *)old_base &&
                         p < (char *)old_base + env->instance_count * sizeof(*env->instances)) {
-                        ec->linked_modules[j].ctx = (wah_exec_context_t *)(p + delta);
+                        wah_debug_set_linked_ctx(ec, j, (wah_exec_context_t *)(p + delta));
                     }
                 }
             }

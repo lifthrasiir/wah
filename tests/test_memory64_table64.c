@@ -1,5 +1,5 @@
-#define WAH_IMPLEMENTATION
 #include "../wah.h"
+#include "wah_impl.h"
 #include "common.h"
 #include <stdio.h>
 
@@ -207,24 +207,25 @@ static void test_memory64_basic() {
 
     assert_ok(wah_parse_module_from_spec(&module, spec));
     assert_eq_u32(module.memory_count, 1);
-    assert_true(module.memories[0].addr_type == WAH_TYPE_I64);
-    assert_eq_u64(module.memories[0].min_pages, 1);
+    { wah_type_t at; uint64_t mnp;
+      assert_ok(wah_debug_memory_type(&module, 0, &at, &mnp, NULL));
+      assert_true(at == WAH_TYPE_I64); assert_eq_u64(mnp, 1); }
 
     assert_ok(wah_exec_context_create(&ctx, &module));
-    assert_true(ctx.memories[0].data != NULL);
+    assert_true(wah_debug_memory_data(&ctx, 0) != NULL);
 
     params[0].i64 = 1024LL;
     params[1].i32 = (int32_t)0xDEADBEEF;
     assert_ok(wah_call(&ctx, 0, params, 2, NULL));
 
-    int32_t *mem_ptr = (int32_t*)(ctx.memories[0].data + 1024);
+    int32_t *mem_ptr = (int32_t*)(wah_debug_memory_data(&ctx, 0) + 1024);
     assert_eq_i32(*mem_ptr, (int32_t)0xDEADBEEF);
 
     params[0].i64 = 1024LL;
     assert_ok(wah_call(&ctx, 1, params, 1, &result));
     assert_eq_i32(result.i32, (int32_t)0xDEADBEEF);
 
-    params[0].i64 = (int64_t)(WAH_WASM_PAGE_SIZE - 2);
+    params[0].i64 = (int64_t)(wah_debug_wasm_page_size() - 2);
     params[1].i32 = 0x12345678;
     assert_err(wah_call(&ctx, 0, params, 2, NULL), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
 
@@ -257,9 +258,9 @@ static void test_memory64_size_grow() {
         ]}";
 
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_true(module.memories[0].addr_type == WAH_TYPE_I64);
-    assert_eq_u64(module.memories[0].min_pages, 1);
-    assert_eq_u64(module.memories[0].max_pages, 2);
+    { wah_type_t at; uint64_t mnp, mxp;
+      assert_ok(wah_debug_memory_type(&module, 0, &at, &mnp, &mxp));
+      assert_true(at == WAH_TYPE_I64); assert_eq_u64(mnp, 1); assert_eq_u64(mxp, 2); }
 
     assert_ok(wah_exec_context_create(&ctx, &module));
 
@@ -307,10 +308,10 @@ static void test_memory64_data_segment() {
     assert_ok(wah_exec_context_create(&ctx, &module));
     assert_ok(wah_instantiate(&ctx));
 
-    assert_eq_u32(ctx.memories[0].data[0], 0x01);
-    assert_eq_u32(ctx.memories[0].data[1], 0x02);
-    assert_eq_u32(ctx.memories[0].data[2], 0x03);
-    assert_eq_u32(ctx.memories[0].data[3], 0x04);
+    assert_eq_u32(wah_debug_memory_data(&ctx, 0)[0], 0x01);
+    assert_eq_u32(wah_debug_memory_data(&ctx, 0)[1], 0x02);
+    assert_eq_u32(wah_debug_memory_data(&ctx, 0)[2], 0x03);
+    assert_eq_u32(wah_debug_memory_data(&ctx, 0)[3], 0x04);
 
     params[0].i64 = 0;
     assert_ok(wah_call(&ctx, 0, params, 1, &result));
@@ -377,8 +378,8 @@ static void test_memory64_large_limits() {
     wah_module_t module = {0};
     const char *spec = "wasm memories {[ limits.i64/2 1 8589934592 ]}";
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_eq_u64(module.memories[0].min_pages, 1);
-    assert_eq_u64(module.memories[0].max_pages, 8589934592ULL);
+    { uint64_t mnp, mxp; assert_ok(wah_debug_memory_type(&module, 0, NULL, &mnp, &mxp));
+      assert_eq_u64(mnp, 1); assert_eq_u64(mxp, 8589934592ULL); }
     wah_free_module(&module);
 }
 

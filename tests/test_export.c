@@ -1,5 +1,5 @@
-#define WAH_IMPLEMENTATION
 #include "../wah.h"
+#include "wah_impl.h"
 #include "common.h"
 #include <stdio.h>
 #include <string.h>
@@ -34,30 +34,30 @@ void test_basic_exports() {
     // Test export by index
     assert_ok(wah_module_export(&module, 0, &entry));
     assert_true(WAH_TYPE_IS_FUNCTION(entry.type));
-    assert_eq_i32(WAH_GET_ENTRY_KIND(entry.id), WAH_ENTRY_KIND_FUNCTION);
-    assert_eq_i32(WAH_GET_ENTRY_INDEX(entry.id), 0);
+    assert_eq_i32(wah_debug_get_entry_kind(entry.id), wah_debug_entry_kind_function());
+    assert_eq_i32(wah_debug_get_entry_index(entry.id), 0);
     assert_eq_str(entry.name, "add");
     assert_eq_u64(entry.name_len, 3);
 
     assert_ok(wah_module_export(&module, 1, &entry));
     assert_eq_i32(entry.type, WAH_TYPE_I32);
     assert_true(WAH_TYPE_IS_GLOBAL(entry.type));
-    assert_eq_i32(WAH_GET_ENTRY_KIND(entry.id), WAH_ENTRY_KIND_GLOBAL);
-    assert_eq_i32(WAH_GET_ENTRY_INDEX(entry.id), 0);
+    assert_eq_i32(wah_debug_get_entry_kind(entry.id), wah_debug_entry_kind_global());
+    assert_eq_i32(wah_debug_get_entry_index(entry.id), 0);
     assert_eq_str(entry.name, "g");
     assert_eq_u64(entry.name_len, 1);
 
     assert_ok(wah_module_export(&module, 2, &entry));
     assert_true(WAH_TYPE_IS_MEMORY(entry.type));
-    assert_eq_i32(WAH_GET_ENTRY_KIND(entry.id), WAH_ENTRY_KIND_MEMORY);
-    assert_eq_i32(WAH_GET_ENTRY_INDEX(entry.id), 0);
+    assert_eq_i32(wah_debug_get_entry_kind(entry.id), wah_debug_entry_kind_memory());
+    assert_eq_i32(wah_debug_get_entry_index(entry.id), 0);
     assert_eq_str(entry.name, "mem");
     assert_eq_u64(entry.name_len, 3);
 
     assert_ok(wah_module_export(&module, 3, &entry));
     assert_true(WAH_TYPE_IS_TABLE(entry.type));
-    assert_eq_i32(WAH_GET_ENTRY_KIND(entry.id), WAH_ENTRY_KIND_TABLE);
-    assert_eq_i32(WAH_GET_ENTRY_INDEX(entry.id), 0);
+    assert_eq_i32(wah_debug_get_entry_kind(entry.id), wah_debug_entry_kind_table());
+    assert_eq_i32(wah_debug_get_entry_index(entry.id), 0);
     assert_eq_str(entry.name, "tbl");
     assert_eq_u64(entry.name_len, 3);
 
@@ -74,7 +74,7 @@ void test_basic_exports() {
     assert_err(wah_module_export_by_name(&module, "nonexistent", &entry), WAH_ERROR_NOT_FOUND);
 
     // Test wah_module_entry for exported function
-    wah_entry_id_t func_id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_FUNCTION, 0);
+    wah_entry_id_t func_id = wah_debug_make_entry_id(wah_debug_entry_kind_function(), 0);
     assert_ok(wah_module_entry(&module, func_id, &entry));
     assert_true(WAH_TYPE_IS_FUNCTION(entry.type));
     assert_eq_u64(entry.id, func_id);
@@ -173,7 +173,7 @@ void test_wah_module_entry_non_exported() {
     assert_ok(wah_parse_module_from_spec(&module, module_spec_no_exports));
 
     wah_entry_t entry;
-    wah_entry_id_t func_id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_FUNCTION, 0);
+    wah_entry_id_t func_id = wah_debug_make_entry_id(wah_debug_entry_kind_function(), 0);
     assert_ok(wah_module_entry(&module, func_id, &entry));
     assert_true(WAH_TYPE_IS_FUNCTION(entry.type));
     assert_eq_u64(entry.id, func_id);
@@ -198,11 +198,11 @@ void test_wah_module_entry_invalid_id() {
     wah_entry_t entry;
 
     // Invalid function index
-    wah_entry_id_t invalid_func_id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_FUNCTION, 999);
+    wah_entry_id_t invalid_func_id = wah_debug_make_entry_id(wah_debug_entry_kind_function(), 999);
     assert_err(wah_module_entry(&module, invalid_func_id, &entry), WAH_ERROR_NOT_FOUND);
 
     // Invalid kind
-    wah_entry_id_t invalid_kind_id = WAH_MAKE_ENTRY_ID(0xFF, 0); // 0xFF is an unknown kind
+    wah_entry_id_t invalid_kind_id = wah_debug_make_entry_id(0xFF, 0); // 0xFF is an unknown kind
     assert_err(wah_module_entry(&module, invalid_kind_id, &entry), WAH_ERROR_NOT_FOUND);
 
     wah_free_module(&module);
@@ -228,8 +228,8 @@ void test_export_name_with_null_byte() {
     // Verify by index
     assert_ok(wah_module_export(&module, 0, &entry));
     assert_true(WAH_TYPE_IS_FUNCTION(entry.type));
-    assert_eq_i32(WAH_GET_ENTRY_KIND(entry.id), WAH_ENTRY_KIND_FUNCTION);
-    assert_eq_i32(WAH_GET_ENTRY_INDEX(entry.id), 0);
+    assert_eq_i32(wah_debug_get_entry_kind(entry.id), wah_debug_entry_kind_function());
+    assert_eq_i32(wah_debug_get_entry_index(entry.id), 0);
     assert_eq_u64(entry.name_len, 8);
     assert_true(memcmp(entry.name, "bad\0name", 8) == 0);
 

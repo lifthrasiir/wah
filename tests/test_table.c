@@ -1,10 +1,10 @@
-#define WAH_IMPLEMENTATION
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
 
 #include "../wah.h"
+#include "wah_impl.h"
 #include "common.h"
 
 void wah_test_table_indirect_call() {
@@ -596,8 +596,8 @@ void wah_test_table_no_max_is_unbounded() {
             {[] ref.null funcref i32.const 5 table.grow 0 end}, \
         ]}";
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_eq_u32(module.tables[0].min_elements, 3);
-    assert_eq_u32(module.tables[0].max_elements, UINT32_MAX);
+    { uint64_t mn, mx; assert_ok(wah_debug_table_type(&module, 0, NULL, &mn, &mx));
+      assert_eq_u32((uint32_t)mn, 3); assert_eq_u32((uint32_t)mx, UINT32_MAX); }
 
     wah_exec_context_t ctx;
     assert_ok(wah_exec_context_create(&ctx, &module));
@@ -606,7 +606,7 @@ void wah_test_table_no_max_is_unbounded() {
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 3);  // returns old size
-    assert_eq_u32(ctx.tables[0].size, 8);
+    assert_eq_u32(wah_debug_table_size(&ctx, 0), 8);
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
