@@ -53,6 +53,8 @@ typedef enum {
     WAH_ERROR_EXCEPTION = -15,
     WAH_ERROR_DISABLED_FEATURE = -16,
     WAH_OK_BUT_MULTI_RETURN = 1,
+    WAH_STATUS_FUEL_EXHAUSTED = 2,
+    WAH_STATUS_YIELDED = 3,
 } wah_error_t;
 
 // 128-bit vector type
@@ -260,6 +262,7 @@ typedef struct wah_module_s {
 
     wah_features_t enabled_features;
     wah_features_t required_features;
+    bool fuel_metering;
 } wah_module_t;
 
 typedef struct {
@@ -323,6 +326,8 @@ typedef struct wah_exec_context_s {
     // GC heap state (NULL when GC is not enabled)
     struct wah_gc_state_s *gc;
 
+    int64_t fuel;
+
     wah_features_t enabled_features;
 } wah_exec_context_t;
 
@@ -331,6 +336,7 @@ const char *wah_strerror(wah_error_t err);
 
 typedef struct {
     wah_features_t features;
+    bool enable_fuel_metering;
 } wah_parse_options_t;
 
 wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah_module_t *module);
@@ -356,6 +362,10 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_
 // Entry point to call a WebAssembly function with multiple return values.
 // func_idx can be either a function index or a wah_entry_id_t (always fits in uint64_t).
 wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *results, uint32_t max_results, uint32_t *actual_results);
+
+// Fuel metering control. Default fuel is INT64_MAX (effectively unlimited).
+void wah_set_fuel(wah_exec_context_t *ctx, int64_t fuel);
+int64_t wah_get_fuel(const wah_exec_context_t *ctx);
 
 // --- Module Cleanup ---
 void wah_free_module(wah_module_t *module);
@@ -1122,7 +1132,7 @@ typedef enum {
     WAH_IF_SIMD(WAH_IF_X86_64(WAH_X86_64_EXTRA_OPCODES_SINGLE(X) WAH_X86_64_EXTRA_OPCODES_MULTI(X)))
 
 #define WAH_INTERNAL_OPCODES(X) \
-    X(POLL) \
+    X(POLL) X(METER) X(TICK) \
     X(END_TRY_TABLE) \
     X(REF_FUNC_CONST) \
     X(GLOBAL_GET_INDIRECT) \
@@ -2214,6 +2224,8 @@ const char *wah_strerror(wah_error_t err) {
         case WAH_ERROR_EXCEPTION: return "Uncaught exception";
         case WAH_ERROR_DISABLED_FEATURE: return "Feature not enabled";
         case WAH_OK_BUT_MULTI_RETURN: return "Function succeeded but returned multiple values (only first value available)";
+        case WAH_STATUS_FUEL_EXHAUSTED: return "Fuel exhausted";
+        case WAH_STATUS_YIELDED: return "Execution yielded";
         default: return "Unknown error";
     }
 }
@@ -5919,6 +5931,23 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
     wah_lower_cf_t control_stack[WAH_MAX_CONTROL_DEPTH];
     uint32_t control_sp = 0;
 
+    // --- Fuel metering types and variables (before any goto cleanup) ---
+    typedef struct {
+        uint32_t meter_offset;
+        uint32_t next_fast_offset;
+        uint32_t instr_record_start;
+        uint16_t cost;
+        uint16_t instr_record_count;
+    } wah_meter_chunk_t;
+    typedef struct {
+        uint32_t fast_offset;
+        uint32_t byte_length;
+    } wah_meter_instr_record_t;
+    wah_meter_chunk_t *meter_chunks = NULL;
+    uint32_t meter_chunk_count = 0, meter_chunks_cap = 0;
+    wah_meter_instr_record_t *meter_instr_records = NULL;
+    uint32_t meter_instr_record_count = 0, meter_instr_records_cap = 0;
+
     // Initialize buffer
     buf_cap = 256;
     WAH_MALLOC_ARRAY_GOTO(buf, buf_cap, cleanup);
@@ -6019,6 +6048,52 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
 
     uint32_t poll_ref_cursor = 0;
 
+    // --- Fuel metering state ---
+    bool emit_meter = emit_poll && module->fuel_metering;
+    bool meter_need_new_chunk = emit_meter;
+    uint16_t meter_current_cost = 0;
+
+    #define WAH_METER_MAX_CHUNK_COST 100
+
+    #define WAH_METER_START_CHUNK() do { \
+        if (emit_meter && meter_need_new_chunk) { \
+            WAH_ENSURE_CAP_GOTO(meter_chunks, meter_chunk_count + 1, cleanup); \
+            meter_chunks[meter_chunk_count] = (wah_meter_chunk_t){ \
+                .meter_offset = buf_size, \
+                .instr_record_start = meter_instr_record_count, \
+            }; \
+            WAH_LOWER_U16(WAH_OP_METER); \
+            WAH_LOWER_U16(0); \
+            WAH_LOWER_U32(0); \
+            meter_current_cost = 0; \
+            meter_need_new_chunk = false; \
+        } \
+    } while (0)
+
+    #define WAH_METER_RECORD_INSTR_START() \
+        uint32_t _meter_instr_start = buf_size
+
+    #define WAH_METER_RECORD_INSTR_END() do { \
+        if (emit_meter) { \
+            WAH_ENSURE_CAP_GOTO(meter_instr_records, meter_instr_record_count + 1, cleanup); \
+            meter_instr_records[meter_instr_record_count++] = (wah_meter_instr_record_t){ \
+                .fast_offset = _meter_instr_start, .byte_length = buf_size - _meter_instr_start \
+            }; \
+            meter_current_cost++; \
+        } \
+    } while (0)
+
+    #define WAH_METER_END_CHUNK() do { \
+        if (emit_meter && meter_current_cost > 0) { \
+            wah_write_u16_le(buf + meter_chunks[meter_chunk_count].meter_offset + sizeof(uint16_t), meter_current_cost); \
+            meter_chunks[meter_chunk_count].cost = meter_current_cost; \
+            meter_chunks[meter_chunk_count].instr_record_count = (uint16_t)(meter_instr_record_count - meter_chunks[meter_chunk_count].instr_record_start); \
+            meter_chunks[meter_chunk_count].next_fast_offset = buf_size; \
+            meter_chunk_count++; \
+            meter_need_new_chunk = true; \
+        } \
+    } while (0)
+
     #define WAH_EMIT_POLL() do { \
         WAH_LOWER_U16(WAH_OP_POLL); \
         WAH_LOWER_U32(poll_ref_cursor); \
@@ -6042,15 +6117,22 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
 
         if (opcode == WAH_OP_BLOCK || opcode == WAH_OP_LOOP) {
             if (emit_poll && (instr->flags & WAH_INSTR_FLAG_POLL)) {
+                if (opcode == WAH_OP_LOOP) WAH_METER_END_CHUNK();
                 WAH_EMIT_POLL();
+                if (opcode == WAH_OP_LOOP) meter_need_new_chunk = emit_meter;
             }
+            WAH_METER_START_CHUNK();
+            WAH_METER_RECORD_INSTR_START();
             WAH_LOWER_PUSH_FRAME((wah_opcode_t)opcode);
+            WAH_METER_RECORD_INSTR_END();
             continue;
         }
         if (opcode == WAH_OP_TRY_TABLE) {
             WAH_ASSERT(instr->imm_kind == WAH_IMM_TRY_TABLE);
             uint32_t try_catch_count = instr->imm.try_table.catch_count;
 
+            WAH_METER_START_CHUNK();
+            WAH_METER_RECORD_INSTR_START();
             WAH_LOWER_U16(WAH_OP_TRY_TABLE);
             WAH_LOWER_U32(try_catch_count);
 
@@ -6065,17 +6147,26 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
             }
 
             WAH_LOWER_PUSH_FRAME(WAH_OP_TRY_TABLE);
+            WAH_METER_RECORD_INSTR_END();
             continue;
         }
         if (opcode == WAH_OP_END) {
             if (control_sp > 0) {
+                WAH_METER_START_CHUNK();
+                WAH_METER_RECORD_INSTR_START();
                 if (control_stack[control_sp - 1].opcode == WAH_OP_TRY_TABLE) {
                     WAH_LOWER_U16(WAH_OP_END_TRY_TABLE);
                 }
                 WAH_LOWER_FINISH_FRAME();
+                WAH_METER_RECORD_INSTR_END();
                 continue;
             }
+            // Function-level END
+            WAH_METER_START_CHUNK();
+            WAH_METER_RECORD_INSTR_START();
             WAH_LOWER_U16(WAH_OP_END);
+            WAH_METER_RECORD_INSTR_END();
+            WAH_METER_END_CHUNK();
             uint32_t func_end_pos = buf_size - sizeof(uint16_t);
             WAH_LOWER_APPLY_PATCHES(func_end_patches, func_end_patch_count, func_end_pos);
             continue;
@@ -6084,6 +6175,9 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
         if (emit_poll && (instr->flags & WAH_INSTR_FLAG_POLL)) {
             WAH_EMIT_POLL();
         }
+
+        WAH_METER_START_CHUNK();
+        WAH_METER_RECORD_INSTR_START();
 
         #if defined(WAH_X86_64) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
         uint16_t native_opcode = wah_x86_64_opcode(opcode, features);
@@ -6324,8 +6418,83 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                 }
             }
         }
+
+        WAH_METER_RECORD_INSTR_END();
+
+        if (emit_meter && meter_current_cost > 0) {
+            switch (opcode) {
+                case WAH_OP_BR: case WAH_OP_BR_IF:
+                case WAH_OP_BR_ON_NULL: case WAH_OP_BR_ON_NON_NULL:
+                case WAH_OP_BR_ON_CAST: case WAH_OP_BR_ON_CAST_FAIL:
+                case WAH_OP_BR_TABLE:
+                case WAH_OP_CALL: case WAH_OP_CALL_INDIRECT: case WAH_OP_CALL_REF:
+                case WAH_OP_RETURN_CALL: case WAH_OP_RETURN_CALL_INDIRECT:
+                case WAH_OP_RETURN: case WAH_OP_RETURN_CALL_REF:
+                case WAH_OP_IF: case WAH_OP_ELSE:
+                case WAH_OP_THROW: case WAH_OP_THROW_REF:
+                WAH_IF_MEMORY64(case WAH_OP_CALL_INDIRECT_i64: case WAH_OP_RETURN_CALL_INDIRECT_i64:)
+                    if (meter_current_cost >= WAH_METER_MAX_CHUNK_COST) {
+                        WAH_METER_END_CHUNK();
+                    }
+                    break;
+                default:
+                    break;
+            }
+        }
     }
 
+    // --- Phase 2: append slow-path islands ---
+    if (emit_meter && meter_chunk_count > 0) {
+        for (uint32_t ci = 0; ci < meter_chunk_count; ci++) {
+            wah_meter_chunk_t *chunk = &meter_chunks[ci];
+            uint32_t slow_island_start = buf_size;
+            wah_write_u32_le(buf + chunk->meter_offset + sizeof(uint16_t) + sizeof(uint16_t), slow_island_start);
+
+            uint32_t rec_start = chunk->instr_record_start;
+            uint32_t rec_end = rec_start + chunk->instr_record_count;
+            for (uint32_t ri = rec_start; ri < rec_end; ri++) {
+                wah_meter_instr_record_t *rec = &meter_instr_records[ri];
+                uint32_t tick_offset = buf_size;
+                WAH_LOWER_U16(WAH_OP_TICK);
+                WAH_LOWER_U32(tick_offset);
+                if (rec->byte_length > 0) {
+                    WAH_LOWER_ENSURE(rec->byte_length);
+                    memcpy(buf + buf_size, buf + rec->fast_offset, rec->byte_length);
+                    buf_size += rec->byte_length;
+                }
+            }
+
+            // Emit fall-through jump to next fast chunk if last instruction can fall through
+            if (chunk->instr_record_count > 0) {
+                wah_meter_instr_record_t *last_rec = &meter_instr_records[rec_end - 1];
+                bool needs_fallthrough = true;
+                if (last_rec->byte_length >= sizeof(uint16_t)) {
+                    uint16_t last_op = wah_read_u16_le(buf + last_rec->fast_offset);
+                    switch (last_op) {
+                        case WAH_OP_BR: case WAH_OP_RETURN:
+                        case WAH_OP_RETURN_CALL: case WAH_OP_RETURN_CALL_INDIRECT: case WAH_OP_RETURN_CALL_REF:
+                        case WAH_OP_BR_TABLE: case WAH_OP_UNREACHABLE:
+                        case WAH_OP_THROW: case WAH_OP_THROW_REF:
+                        case WAH_OP_END:
+                        WAH_IF_MEMORY64(case WAH_OP_RETURN_CALL_INDIRECT_i64:)
+                            needs_fallthrough = false;
+                            break;
+                        default: break;
+                    }
+                }
+                if (needs_fallthrough) {
+                    WAH_LOWER_U16(WAH_OP_ELSE);
+                    WAH_LOWER_U32(chunk->next_fast_offset);
+                }
+            }
+        }
+    }
+
+    #undef WAH_METER_END_CHUNK
+    #undef WAH_METER_RECORD_INSTR_END
+    #undef WAH_METER_RECORD_INSTR_START
+    #undef WAH_METER_START_CHUNK
+    #undef WAH_METER_MAX_CHUNK_COST
     #undef WAH_EMIT_POLL
     #undef WAH_LOWER_FINISH_FRAME
     #undef WAH_LOWER_PUSH_FRAME
@@ -6350,6 +6519,8 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
 cleanup:
     free(buf);
     free(func_end_patches);
+    free(meter_chunks);
+    free(meter_instr_records);
     for (uint32_t i = 0; i < control_sp; i++) {
         free(control_stack[i].patch_offsets);
     }
@@ -7874,6 +8045,7 @@ wah_error_t wah_parse_module_ex(const uint8_t *wasm_binary, size_t binary_size, 
     wah_features_t requested = options ? options->features : (WAH_DEFAULT_FEATURES);
     module->enabled_features = wah_feature_closure(requested) & (WAH_COMPILED_FEATURES);
     module->required_features = 0;
+    module->fuel_metering = options && options->enable_fuel_metering;
 
     const uint8_t *ptr = wasm_binary;
     const uint8_t *end = wasm_binary + binary_size;
@@ -8468,6 +8640,7 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
     exec_ctx->sp = 0;
     exec_ctx->call_depth = 0;
     exec_ctx->enabled_features = module->enabled_features;
+    exec_ctx->fuel = INT64_MAX;
 
     uint32_t total_memories = wah_memory_index_limit(module);
     if (total_memories > 0) {
@@ -8609,6 +8782,14 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
     wah_gc_destroy(exec_ctx);
 
     *exec_ctx = (wah_exec_context_t){0};
+}
+
+void wah_set_fuel(wah_exec_context_t *ctx, int64_t fuel) {
+    ctx->fuel = fuel;
+}
+
+int64_t wah_get_fuel(const wah_exec_context_t *ctx) {
+    return ctx->fuel;
 }
 
 static wah_error_t wah_poll_handler(wah_exec_context_t *ctx) {
@@ -8969,6 +9150,38 @@ WAH_RUN(POLL) {
     }
     WAH_NEXT();
     WAH_CLEANUP();
+}
+
+WAH_RUN(METER) {
+    uint16_t cost = wah_read_u16_le(bytecode_ip);
+    bytecode_ip += sizeof(uint16_t);
+    uint32_t slow_offset = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    ctx->fuel -= cost;
+    if (ctx->fuel < 0) {
+        ctx->fuel += cost;
+        bytecode_ip = bytecode_base + slow_offset;
+    }
+    WAH_NEXT();
+}
+
+WAH_RUN(TICK) {
+    uint32_t resume_offset = wah_read_u32_le(bytecode_ip);
+    bytecode_ip += sizeof(uint32_t);
+    ctx->fuel--;
+    if (ctx->fuel < 0) {
+        err = WAH_STATUS_FUEL_EXHAUSTED;
+    } else if (ctx->gc && ctx->gc->interrupt_pending) {
+        ctx->gc->interrupt_pending = false;
+        err = WAH_STATUS_YIELDED;
+    }
+    if (err != WAH_OK) {
+        bytecode_ip = bytecode_base + resume_offset;
+        frame->bytecode_ip = bytecode_ip;
+        ctx->sp = (uint32_t)(sp - ctx->value_stack);
+        WAH_CLEANUP();
+    }
+    WAH_NEXT();
 }
 
 WAH_RUN(IF) {
