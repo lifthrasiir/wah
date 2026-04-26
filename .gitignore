@@ -8,6 +8,7 @@ tests/test_call_context
 tests/test_const_expr
 tests/test_control_flow
 tests/test_determinism
+tests/test_dispatch_switch
 tests/test_exceptions
 tests/test_export
 tests/test_export_api
@@ -15,6 +16,17 @@ tests/test_functions
 tests/test_gc
 tests/test_gc_ops
 tests/test_globals
+tests/test_feature_all
+tests/test_feature_mvp
+tests/test_feature_no_exception
+tests/test_feature_no_gc
+tests/test_feature_no_gc_typedref
+tests/test_feature_no_memory64
+tests/test_feature_no_reftypes
+tests/test_feature_no_relaxed_simd
+tests/test_feature_no_simd
+tests/test_feature_no_tailcall
+tests/test_feature_v2
 tests/test_import
 tests/test_linkage
 tests/test_linkage_types
@@ -30,6 +42,7 @@ tests/test_parse_type_string
 tests/test_references
 tests/test_references_validation
 tests/test_simd
+tests/test_simd_portable
 tests/test_simd_regressions
 tests/test_spectest
 tests/test_table

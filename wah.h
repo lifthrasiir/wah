@@ -2237,9 +2237,16 @@ static inline double wah_canonicalize_f64(double val) { return val == val ? val 
 static inline float wah_sqrtf(float v) { return _mm_cvtss_f32(_mm_sqrt_ss(_mm_set_ss(v))); }
 static inline double wah_sqrt(double v) { double r; _mm_store_sd(&r, _mm_sqrt_sd(_mm_set_sd(v), _mm_set_sd(v))); return r; }
 #else
-static inline float wah_sqrtf(float v) { return sqrtf(v); }
-static inline double wah_sqrt(double v) { return sqrt(v); }
+static inline float wah_sqrtf(float v) { return wah_canonicalize_f32(sqrtf(v)); }
+static inline double wah_sqrt(double v) { return wah_canonicalize_f64(sqrt(v)); }
 #endif
+
+static inline float wah_ceilf(float v) { return wah_canonicalize_f32(ceilf(v)); }
+static inline double wah_ceil(double v) { return wah_canonicalize_f64(ceil(v)); }
+static inline float wah_floorf(float v) { return wah_canonicalize_f32(floorf(v)); }
+static inline double wah_floor(double v) { return wah_canonicalize_f64(floor(v)); }
+static inline float wah_truncf(float v) { return wah_canonicalize_f32(truncf(v)); }
+static inline double wah_trunc(double v) { return wah_canonicalize_f64(trunc(v)); }
 
 // C fmin/fmax don't match Wasm semantics for signed zeros:
 // Wasm requires min(+0,-0)=-0 and max(+0,-0)=+0, but C leaves this unspecified.
@@ -2526,7 +2533,8 @@ static WAH_ALWAYS_INLINE float wah_nearest_f32(float f) {
 #if WAH_HAS_BUILTIN(__builtin_roundevenf) && defined(__clang__) && defined(__SSE4_1__)
     return __builtin_roundevenf(f);
 #else
-    if (isnan(f) || isinf(f) || f == 0.0f) return f;
+    if (isnan(f)) return WAH_CANONICAL_NAN32.f;
+    if (isinf(f) || f == 0.0f) return f;
     float rounded = roundf(f);
     if (fabsf(f - rounded) == 0.5f && ((long long)rounded % 2) != 0) {
         float adjusted = rounded - copysignf(1.0f, f);
@@ -2540,7 +2548,8 @@ static WAH_ALWAYS_INLINE double wah_nearest_f64(double d) {
 #if WAH_HAS_BUILTIN(__builtin_roundeven) && defined(__clang__) && defined(__SSE4_1__)
     return __builtin_roundeven(d);
 #else
-    if (isnan(d) || isinf(d) || d == 0.0) return d;
+    if (isnan(d)) return WAH_CANONICAL_NAN64.f;
+    if (isinf(d) || d == 0.0) return d;
     double rounded = round(d);
     if (fabs(d - rounded) == 0.5 && ((long long)rounded % 2) != 0) {
         double adjusted = rounded - copysign(1.0, d);
@@ -8794,16 +8803,20 @@ static wah_error_t wah_call_host_function_internal(
     return WAH_OK;
 }
 
-#ifdef WAH_FORCE_MUSTTAIL
+#ifdef WAH_FORCE_SWITCH
+    // Force switch-based dispatch; skip musttail and computed goto.
+#elif defined(WAH_FORCE_MUSTTAIL)
     #define WAH_USE_MUSTTAIL
 #elif WAH_HAS_ATTRIBUTE(musttail)
     #define WAH_USE_MUSTTAIL // clang 13+, GCC 15+
 #endif
 
+#if !defined(WAH_FORCE_SWITCH)
 #ifdef WAH_FORCE_COMPUTED_GOTO
     #define WAH_USE_COMPUTED_GOTO
 #elif defined(__GNUC__) || defined(__clang__)
     #define WAH_USE_COMPUTED_GOTO
+#endif
 #endif
 
 // Enforce deterministic fp operations.
@@ -12056,9 +12069,9 @@ WAH_RUN(I64X2_EXTMUL_HIGH_I32X4_S) V128_EXTMUL_HIGH_OP(64, i64, int64_t, 32, i32
 WAH_RUN(I64X2_EXTMUL_LOW_I32X4_U) V128_EXTMUL_LOW_OP(64, u64, uint64_t, 32, u32, uint)
 WAH_RUN(I64X2_EXTMUL_HIGH_I32X4_U) V128_EXTMUL_HIGH_OP(64, u64, uint64_t, 32, u32, uint)
 
-WAH_RUN(F32X4_CEIL) N128_FP_UNARY_OP_F32(wah_vrndpq_f32, V128_UNARY_OP_LANE_FN(32, ceilf, f32))
-WAH_RUN(F32X4_FLOOR) N128_FP_UNARY_OP_F32(wah_vrndmq_f32, V128_UNARY_OP_LANE_FN(32, floorf, f32))
-WAH_RUN(F32X4_TRUNC) N128_FP_UNARY_OP_F32(wah_vrndq_f32, V128_UNARY_OP_LANE_FN(32, truncf, f32))
+WAH_RUN(F32X4_CEIL) N128_FP_UNARY_OP_F32(wah_vrndpq_f32, V128_UNARY_OP_LANE_FN(32, wah_ceilf, f32))
+WAH_RUN(F32X4_FLOOR) N128_FP_UNARY_OP_F32(wah_vrndmq_f32, V128_UNARY_OP_LANE_FN(32, wah_floorf, f32))
+WAH_RUN(F32X4_TRUNC) N128_FP_UNARY_OP_F32(wah_vrndq_f32, V128_UNARY_OP_LANE_FN(32, wah_truncf, f32))
 WAH_RUN(F32X4_NEAREST) N128_FP_UNARY_OP_F32(wah_vrndnq_f32, V128_UNARY_OP_LANE_FN(32, wah_nearest_f32, f32))
 WAH_RUN(F32X4_ABS)
     WAH_IF_X86_64({ sp[-1]._m128 = _mm_andnot_ps(_mm_set1_ps(-0.0f), sp[-1]._m128); WAH_NEXT(); },
@@ -12066,15 +12079,15 @@ WAH_RUN(F32X4_ABS)
 WAH_RUN(F32X4_NEG)
     WAH_IF_X86_64({ sp[-1]._m128 = _mm_xor_ps(_mm_set1_ps(-0.0f), sp[-1]._m128); WAH_NEXT(); },
         N128_UNARY_OP(wah_vnegq_f32, V128_UNARY_OP_LANE(32, -, f32)))
-WAH_RUN(F32X4_SQRT) M128_FP_UNARY_OP(_mm_sqrt_ps, N128_FP_UNARY_OP_F32(wah_vsqrtq_f32, V128_UNARY_OP_LANE_FN(32, sqrtf, f32)))
+WAH_RUN(F32X4_SQRT) M128_FP_UNARY_OP(_mm_sqrt_ps, N128_FP_UNARY_OP_F32(wah_vsqrtq_f32, V128_UNARY_OP_LANE_FN(32, wah_sqrtf, f32)))
 WAH_RUN(F32X4_MIN) M128_BINARY_OP(wah_f32x4_min_sse2, N128_BINARY_OP(wah_vminq_f32, V128_BINARY_OP_LANE_FN(32, wah_minf, f32)))
 WAH_RUN(F32X4_MAX) M128_BINARY_OP(wah_f32x4_max_sse2, N128_BINARY_OP(wah_vmaxq_f32, V128_BINARY_OP_LANE_FN(32, wah_maxf, f32)))
 WAH_RUN(F32X4_PMIN) M128_BINARY_OP(wah_f32x4_pmin_sse2, N128_BINARY_OP(wah_f32x4_pmin_neon, V128_BINARY_OP_LANE_FN(32, wah_pminf, f32)))
 WAH_RUN(F32X4_PMAX) M128_BINARY_OP(wah_f32x4_pmax_sse2, N128_BINARY_OP(wah_f32x4_pmax_neon, V128_BINARY_OP_LANE_FN(32, wah_pmaxf, f32)))
 
-WAH_RUN(F64X2_CEIL) N128_FP_UNARY_OP_F64(wah_vrndpq_f64, V128_UNARY_OP_LANE_FN(64, ceil, f64))
-WAH_RUN(F64X2_FLOOR) N128_FP_UNARY_OP_F64(wah_vrndmq_f64, V128_UNARY_OP_LANE_FN(64, floor, f64))
-WAH_RUN(F64X2_TRUNC) N128_FP_UNARY_OP_F64(wah_vrndq_f64, V128_UNARY_OP_LANE_FN(64, trunc, f64))
+WAH_RUN(F64X2_CEIL) N128_FP_UNARY_OP_F64(wah_vrndpq_f64, V128_UNARY_OP_LANE_FN(64, wah_ceil, f64))
+WAH_RUN(F64X2_FLOOR) N128_FP_UNARY_OP_F64(wah_vrndmq_f64, V128_UNARY_OP_LANE_FN(64, wah_floor, f64))
+WAH_RUN(F64X2_TRUNC) N128_FP_UNARY_OP_F64(wah_vrndq_f64, V128_UNARY_OP_LANE_FN(64, wah_trunc, f64))
 WAH_RUN(F64X2_NEAREST) N128_FP_UNARY_OP_F64(wah_vrndnq_f64, V128_UNARY_OP_LANE_FN(64, wah_nearest_f64, f64))
 WAH_RUN(F64X2_ABS)
     WAH_IF_X86_64({ sp[-1]._m128d = _mm_andnot_pd(_mm_set1_pd(-0.0), sp[-1]._m128d); WAH_NEXT(); },
@@ -12082,7 +12095,7 @@ WAH_RUN(F64X2_ABS)
 WAH_RUN(F64X2_NEG)
     WAH_IF_X86_64({ sp[-1]._m128d = _mm_xor_pd(_mm_set1_pd(-0.0), sp[-1]._m128d); WAH_NEXT(); },
         N128_UNARY_OP(wah_vnegq_f64, V128_UNARY_OP_LANE(64, -, f64)))
-WAH_RUN(F64X2_SQRT) M128D_FP_UNARY_OP(_mm_sqrt_pd, N128_FP_UNARY_OP_F64(wah_vsqrtq_f64, V128_UNARY_OP_LANE_FN(64, sqrt, f64)))
+WAH_RUN(F64X2_SQRT) M128D_FP_UNARY_OP(_mm_sqrt_pd, N128_FP_UNARY_OP_F64(wah_vsqrtq_f64, V128_UNARY_OP_LANE_FN(64, wah_sqrt, f64)))
 WAH_RUN(F64X2_MIN) M128D_BINARY_OP(wah_f64x2_min_sse2, N128_BINARY_OP(wah_vminq_f64, V128_BINARY_OP_LANE_FN(64, wah_min, f64)))
 WAH_RUN(F64X2_MAX) M128D_BINARY_OP(wah_f64x2_max_sse2, N128_BINARY_OP(wah_vmaxq_f64, V128_BINARY_OP_LANE_FN(64, wah_max, f64)))
 WAH_RUN(F64X2_PMIN) M128D_BINARY_OP(wah_f64x2_pmin_sse2, N128_BINARY_OP(wah_f64x2_pmin_neon, V128_BINARY_OP_LANE_FN(64, wah_pmin, f64)))
@@ -12248,8 +12261,8 @@ WAH_RUN(F64X2_PROMOTE_LOW_F32X4) WAH_IF_X86_64({
 })
 
 WAH_RUN(I8X16_RELAXED_SWIZZLE) N128_BINARY_OP(vqtbl1q_u8, {
-    wah_v128_t mask = sp[-2].v128;
-    wah_v128_t data = sp[-1].v128;
+    wah_v128_t mask = sp[-1].v128;
+    wah_v128_t data = sp[-2].v128;
     wah_v128_t result;
     for (uint32_t i = 0; i < 16; ++i) {
         uint8_t lane_idx = mask.u8[i];
@@ -12316,9 +12329,9 @@ WAH_RUN(I16X8_RELAXED_DOT_I8X16_I7X16_S) M128I_BINARY_OP(wah_i16x8_relaxed_dot_i
     WAH_NEXT();
 })
 WAH_RUN(I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S) M128I_TERNARY_OP(wah_i32x4_relaxed_dot_i8x16_i7x16_add_s_sse2(a, b, c), {
-    wah_v128_t c = sp[-3].v128;
+    wah_v128_t a = sp[-3].v128;
     wah_v128_t b = sp[-2].v128;
-    wah_v128_t a = sp[-1].v128;
+    wah_v128_t c = sp[-1].v128;
     wah_v128_t result;
     for (int i = 0; i < 4; ++i) {
         int8_t a0 = a.i8[i*4], a1 = a.i8[i*4+1], a2 = a.i8[i*4+2], a3 = a.i8[i*4+3];

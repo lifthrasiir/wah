@@ -1,4 +1,3 @@
-#define WAH_IMPLEMENTATION
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h> // For memcmp
@@ -1129,7 +1128,7 @@ void test_simd_fp_nan_canonicalization() {
 void test_f32x4_pmax_nan_handling() {
     wah_v128_t operand1 = { .f32 = {1.0f, NAN, 3.0f, NAN} };
     wah_v128_t operand2 = { .f32 = {2.0f, 2.0f, NAN, NAN} };
-    wah_v128_t expected = { .f32 = {2.0f, WAH_CANONICAL_NAN32.f, 3.0f, WAH_CANONICAL_NAN32.f} };
+    wah_v128_t expected = { .f32 = {2.0f, nanf(""), 3.0f, nanf("")} };
     run_simd_binary_op_test("f32x4.pmax (nan_handling)", binary_op_wasm_spec, &operand1, &operand2, &expected);
 }
 

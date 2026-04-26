@@ -1,4 +1,3 @@
-#define WAH_IMPLEMENTATION
 #include "../wah.h"
 #include "common.h"
 #include <stdio.h>
