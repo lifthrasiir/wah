@@ -3223,9 +3223,8 @@ WAH_NEON_UNA(vrndnq, f32) WAH_NEON_UNA(vrndnq, f64)
 // Bitmask: extract sign bits into packed integer
 static WAH_ALWAYS_INLINE int32_t wah_bitmask_i8x16_neon(uint8x16_t a) {
     static const uint8_t lut[16] = {1,2,4,8,16,32,64,128, 1,2,4,8,16,32,64,128};
-    uint8x16_t bits = vshrq_n_u8(a, 7);
-    uint8x16_t weights = vld1q_u8(lut);
-    uint8x16_t weighted = vandq_u8(bits, weights);
+    uint8x16_t mask = vreinterpretq_u8_s8(vshrq_n_s8(vreinterpretq_s8_u8(a), 7));
+    uint8x16_t weighted = vandq_u8(mask, vld1q_u8(lut));
     uint64x2_t acc = vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(weighted)));
     return (int32_t)(vgetq_lane_u64(acc, 0) | (vgetq_lane_u64(acc, 1) << 8));
 }
@@ -3237,7 +3236,7 @@ static WAH_ALWAYS_INLINE int32_t wah_bitmask_i16x8_neon(uint8x16_t a) {
     uint16x8_t weighted = vandq_u16(bits, weights);
     uint32x4_t pairs = vpaddlq_u16(weighted);
     uint64x2_t quads = vpaddlq_u32(pairs);
-    return (int32_t)vgetq_lane_u64(quads, 0);
+    return (int32_t)(vgetq_lane_u64(quads, 0) | vgetq_lane_u64(quads, 1));
 }
 static WAH_ALWAYS_INLINE int32_t wah_bitmask_i32x4_neon(uint8x16_t a) {
     int32x4_t v = vreinterpretq_s32_u8(a);
@@ -3246,7 +3245,7 @@ static WAH_ALWAYS_INLINE int32_t wah_bitmask_i32x4_neon(uint8x16_t a) {
     uint32x4_t weights = vld1q_u32(lut);
     uint32x4_t weighted = vandq_u32(bits, weights);
     uint64x2_t pairs = vpaddlq_u32(weighted);
-    return (int32_t)vgetq_lane_u64(pairs, 0);
+    return (int32_t)(vgetq_lane_u64(pairs, 0) | vgetq_lane_u64(pairs, 1));
 }
 static WAH_ALWAYS_INLINE int32_t wah_bitmask_i64x2_neon(uint8x16_t a) {
     int64x2_t v = vreinterpretq_s64_u8(a);
