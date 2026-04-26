@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: gcc x86-64
+            runner: ubuntu-latest
+            cc: gcc
+          - name: clang x86-64
+            runner: ubuntu-latest
+            cc: clang
+          - name: gcc aarch64
+            runner: ubuntu-24.04-arm
+            cc: gcc
+          - name: clang aarch64
+            runner: ubuntu-24.04-arm
+            cc: clang
+
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and test
+        run: make -j$(nproc) test CC=${{ matrix.cc }}
