@@ -35,6 +35,28 @@ static inline wah_error_t wah_parse_module_from_spec_impl_(wah_module_t *module,
 #define wah_parse_module_from_spec(module, fmt, ...) \
     wah_parse_module_from_spec_impl_(module, fmt, ##__VA_ARGS__)
 
+static inline wah_error_t wah_parse_module_from_spec_exv(wah_module_t *module, const wah_parse_options_t *options, const char *fmt, va_list args) {
+    uint8_t *data; size_t size;
+    va_list args_copy;
+    va_copy(args_copy, args);
+    int ok = wah_build_spec_binaryv(&data, &size, fmt, args_copy);
+    va_end(args_copy);
+    if (!ok) return WAH_ERROR_BAD_SPEC;
+    wah_error_t err = wah_parse_module_ex(data, size, options, module);
+    free(data);
+    return err;
+}
+
+static inline wah_error_t wah_parse_module_from_spec_ex_impl_(wah_module_t *module, const wah_parse_options_t *options, const char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    wah_error_t err = wah_parse_module_from_spec_exv(module, options, fmt, args);
+    va_end(args);
+    return err;
+}
+#define wah_parse_module_from_spec_ex(module, options, fmt, ...) \
+    wah_parse_module_from_spec_ex_impl_(module, options, fmt, ##__VA_ARGS__)
+
 void assert_eq_i32(const char *file, int line, int32_t actual, int32_t expected, const char *expr);
 void assert_eq_u32(const char *file, int line, uint32_t actual, uint32_t expected, const char *expr);
 void assert_eq_i64(const char *file, int line, int64_t actual, int64_t expected, const char *expr);
