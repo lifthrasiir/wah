@@ -12464,7 +12464,11 @@ WAH_IF_X86_64(
     )
 
     WAH_IF_AVX512(
-        WAH_RUN(I32X4_TRUNC_SAT_F32X4_U_avx512f_vl) { sp[-1]._m128i = wah_mm_cvttps_epu32(sp[-1]._m128); WAH_NEXT(); }
+        WAH_RUN(I32X4_TRUNC_SAT_F32X4_U_avx512f_vl) {
+            __m128 v = sp[-1]._m128;
+            sp[-1]._m128i = _mm_and_si128(wah_mm_cvttps_epu32(v), _mm_castps_si128(_mm_cmpord_ps(v, v)));
+            WAH_NEXT();
+        }
         WAH_RUN(I8X16_POPCNT_avx512bitalg_vl) M128I_UNARY_OP(wah_mm_popcnt_epi8)
         WAH_RUN(I8X16_LT_U_avx512bw_vl) M128I_BINARY_OP(wah_mm_cmplt_epu8_avx512)
         WAH_RUN(I64X2_MUL_avx512dq_vl) M128I_BINARY_OP(wah_mm_mullo_epi64)
