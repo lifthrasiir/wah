@@ -3226,8 +3226,8 @@ static WAH_ALWAYS_INLINE int32_t wah_bitmask_i8x16_neon(uint8x16_t a) {
     uint8x16_t bits = vshrq_n_u8(a, 7);
     uint8x16_t weights = vld1q_u8(lut);
     uint8x16_t weighted = vandq_u8(bits, weights);
-    uint32x4_t lo = vpaddlq_u16(vpaddlq_u8(weighted));
-    return (int32_t)vgetq_lane_u32(lo, 0) | ((int32_t)vgetq_lane_u32(lo, 1) << 8);
+    uint64x2_t acc = vpaddlq_u32(vpaddlq_u16(vpaddlq_u8(weighted)));
+    return (int32_t)(vgetq_lane_u64(acc, 0) | (vgetq_lane_u64(acc, 1) << 8));
 }
 static WAH_ALWAYS_INLINE int32_t wah_bitmask_i16x8_neon(uint8x16_t a) {
     int16x8_t v = vreinterpretq_s16_u8(a);
@@ -3251,9 +3251,7 @@ static WAH_ALWAYS_INLINE int32_t wah_bitmask_i32x4_neon(uint8x16_t a) {
 static WAH_ALWAYS_INLINE int32_t wah_bitmask_i64x2_neon(uint8x16_t a) {
     int64x2_t v = vreinterpretq_s64_u8(a);
     uint64x2_t bits = vcltzq_s64(v);
-    uint64x2_t weighted = vandq_u64(bits, vreinterpretq_u64_u32(vdupq_n_u32(2)));
-    uint64x2_t lo = vextq_u64(weighted, vdupq_n_u64(0), 1);
-    return (int32_t)(vgetq_lane_u64(weighted, 0) | (vgetq_lane_u64(lo, 0) << 1));
+    return (int32_t)((vgetq_lane_u64(bits, 0) & 1) | (vgetq_lane_u64(bits, 1) & 2));
 }
 
 // All-true: check all lanes nonzero
@@ -3328,8 +3326,8 @@ static WAH_ALWAYS_INLINE uint8x16_t wah_i8x16_narrow_i16x8_s_neon(uint8x16_t a, 
     return vreinterpretq_u8_s8(vcombine_s8(vqmovn_s16(va), vqmovn_s16(vb)));
 }
 static WAH_ALWAYS_INLINE uint8x16_t wah_i8x16_narrow_i16x8_u_neon(uint8x16_t a, uint8x16_t b) {
-    uint16x8_t va = vreinterpretq_u16_u8(a), vb = vreinterpretq_u16_u8(b);
-    return vcombine_u8(vqmovn_u16(va), vqmovn_u16(vb));
+    int16x8_t va = vreinterpretq_s16_u8(a), vb = vreinterpretq_s16_u8(b);
+    return vcombine_u8(vqmovun_s16(va), vqmovun_s16(vb));
 }
 static WAH_ALWAYS_INLINE uint8x16_t wah_i16x8_narrow_i32x4_s_neon(uint8x16_t a, uint8x16_t b) {
     int32x4_t va = vreinterpretq_s32_u8(a), vb = vreinterpretq_s32_u8(b);
@@ -3337,12 +3335,7 @@ static WAH_ALWAYS_INLINE uint8x16_t wah_i16x8_narrow_i32x4_s_neon(uint8x16_t a, 
 }
 static WAH_ALWAYS_INLINE uint8x16_t wah_i16x8_narrow_i32x4_u_neon(uint8x16_t a, uint8x16_t b) {
     int32x4_t va = vreinterpretq_s32_u8(a), vb = vreinterpretq_s32_u8(b);
-    // Clamp signed i32 to [0, UINT16_MAX]
-    va = vmaxq_s32(va, vdupq_n_s32(0));
-    va = vminq_s32(va, vdupq_n_s32(0xFFFF));
-    vb = vmaxq_s32(vb, vdupq_n_s32(0));
-    vb = vminq_s32(vb, vdupq_n_s32(0xFFFF));
-    return vreinterpretq_u8_u16(vcombine_u16(vreinterpret_u16_s16(vmovn_s32(va)), vreinterpret_u16_s16(vmovn_s32(vb))));
+    return vreinterpretq_u8_u16(vcombine_u16(vqmovun_s32(va), vqmovun_s32(vb)));
 }
 
 // Extend operations
