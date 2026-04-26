@@ -3448,8 +3448,7 @@ static WAH_ALWAYS_INLINE uint8x16_t wah_i32x4_trunc_sat_f32x4_u_neon(uint8x16_t 
     float32x4_t fv = vreinterpretq_f32_u8(v);
     float32x4_t clamped = vbslq_f32(vcgeq_f32(fv, vdupq_n_f32(0)), fv, vdupq_n_f32(0));
     uint32x4_t overflow = vcgtq_f32(clamped, vdupq_n_f32(4294967296.0f));
-    int32x4_t converted = vcvtq_s32_f32(clamped);
-    uint32x4_t result = vreinterpretq_u32_s32(converted);
+    uint32x4_t result = vcvtq_u32_f32(clamped);
     result = vbslq_u32(overflow, vdupq_n_u32(0xFFFFFFFF), result);
     return vreinterpretq_u8_u32(result);
 }
