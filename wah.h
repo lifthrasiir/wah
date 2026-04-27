@@ -2076,7 +2076,7 @@ typedef struct {
     uint32_t align;
     uint32_t memidx;
     uint64_t offset;
-} wah_imm_memarg_t;
+} wah_memarg_t;
 
 typedef struct {
     uint32_t target_count;
@@ -2119,8 +2119,8 @@ typedef struct {
         uint64_t f64_bits;
         uint8_t v128[16];
         struct { uint32_t a, b; } u32_u32;
-        wah_imm_memarg_t memarg;
-        struct { wah_imm_memarg_t memarg; uint8_t lane; } memarg_lane;
+        wah_memarg_t memarg;
+        struct { wah_memarg_t memarg; uint8_t lane; } memarg_lane;
         struct { uint32_t label_idx; uint32_t target_symbol; uint32_t keep; uint32_t drop; } branch;
         wah_imm_br_table_t br_table;
         struct { int32_t heap_type; } ref_cast;
@@ -4214,16 +4214,16 @@ static inline wah_error_t wah_decode_sleb128_64(const uint8_t **ptr, const uint8
 // WebAssembly 3.0 memarg format: align:u32 [memidx:u32] offset:u64
 // If align is 0..63, memidx is assumed to be 0
 // If align is 64..127, memidx is present and align is adjusted by subtracting 64
-static inline wah_error_t wah_decode_memarg(const uint8_t **ptr, const uint8_t *end, uint32_t *align, uint32_t *memidx, uint64_t *offset) {
-    WAH_CHECK(wah_decode_uleb128(ptr, end, align));
-    WAH_ENSURE(*align < 128, WAH_ERROR_MALFORMED);
-    *memidx = 0;
+static inline wah_error_t wah_decode_memarg(const uint8_t **ptr, const uint8_t *end, wah_memarg_t *memarg) {
+    WAH_CHECK(wah_decode_uleb128(ptr, end, &memarg->align));
+    WAH_ENSURE(memarg->align < 128, WAH_ERROR_MALFORMED);
+    memarg->memidx = 0;
     // WebAssembly 3.0: if align >= 64, memidx is present
-    if (*align >= 64) {
-        WAH_CHECK(wah_decode_uleb128(ptr, end, memidx));
-        *align -= 64; // adjust align to actual value
+    if (memarg->align >= 64) {
+        WAH_CHECK(wah_decode_uleb128(ptr, end, &memarg->memidx));
+        memarg->align -= 64; // adjust align to actual value
     }
-    WAH_CHECK(wah_decode_uleb128_64(ptr, end, offset));
+    WAH_CHECK(wah_decode_uleb128_64(ptr, end, &memarg->offset));
     return WAH_OK;
 }
 
@@ -4679,49 +4679,43 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
     switch (opcode_val) {
 #define LOAD_OP(T, max_lg_align) { \
-            uint32_t align, memidx; \
-            uint64_t offset; \
-            WAH_CHECK(wah_decode_memarg(code_ptr, code_end, &align, &memidx, &offset)); \
-            WAH_ENSURE(align <= max_lg_align, WAH_ERROR_VALIDATION_FAILED); \
-            WAH_ENSURE(memidx < wah_memory_index_limit(vctx->module), WAH_ERROR_VALIDATION_FAILED); \
-            wah_type_t addr_type = wah_memory_type(vctx->module, memidx)->addr_type; \
-            if (addr_type == WAH_TYPE_I32) WAH_ENSURE(offset <= 0xFFFFFFFFU, WAH_ERROR_VALIDATION_FAILED); \
+            wah_memarg_t memarg; \
+            WAH_CHECK(wah_decode_memarg(code_ptr, code_end, &memarg)); \
+            WAH_ENSURE(memarg.align <= max_lg_align, WAH_ERROR_VALIDATION_FAILED); \
+            WAH_ENSURE(memarg.memidx < wah_memory_index_limit(vctx->module), WAH_ERROR_VALIDATION_FAILED); \
+            wah_type_t addr_type = wah_memory_type(vctx->module, memarg.memidx)->addr_type; \
+            if (addr_type == WAH_TYPE_I32) WAH_ENSURE(memarg.offset <= 0xFFFFFFFFU, WAH_ERROR_VALIDATION_FAILED); \
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, addr_type, 0)); PUSH(T); \
-            EMIT_INSTR_EX(opcode_val, WAH_IMM_MEMARG, \
-                _di->imm.memarg.align = align; _di->imm.memarg.memidx = memidx; _di->imm.memarg.offset = offset); \
+            EMIT_INSTR_EX(opcode_val, WAH_IMM_MEMARG, _di->imm.memarg = memarg); \
             break; \
         }
 
 #define STORE_OP(T, max_lg_align) { \
-            uint32_t align, memidx; \
-            uint64_t offset; \
-            WAH_CHECK(wah_decode_memarg(code_ptr, code_end, &align, &memidx, &offset)); \
-            WAH_ENSURE(align <= max_lg_align, WAH_ERROR_VALIDATION_FAILED); \
-            WAH_ENSURE(memidx < wah_memory_index_limit(vctx->module), WAH_ERROR_VALIDATION_FAILED); \
-            wah_type_t addr_type = wah_memory_type(vctx->module, memidx)->addr_type; \
-            if (addr_type == WAH_TYPE_I32) WAH_ENSURE(offset <= 0xFFFFFFFFU, WAH_ERROR_VALIDATION_FAILED); \
+            wah_memarg_t memarg; \
+            WAH_CHECK(wah_decode_memarg(code_ptr, code_end, &memarg)); \
+            WAH_ENSURE(memarg.align <= max_lg_align, WAH_ERROR_VALIDATION_FAILED); \
+            WAH_ENSURE(memarg.memidx < wah_memory_index_limit(vctx->module), WAH_ERROR_VALIDATION_FAILED); \
+            wah_type_t addr_type = wah_memory_type(vctx->module, memarg.memidx)->addr_type; \
+            if (addr_type == WAH_TYPE_I32) WAH_ENSURE(memarg.offset <= 0xFFFFFFFFU, WAH_ERROR_VALIDATION_FAILED); \
             POP(T); WAH_CHECK(wah_validation_pop_and_match_type(vctx, addr_type, 0)); \
-            EMIT_INSTR_EX(opcode_val, WAH_IMM_MEMARG, \
-                _di->imm.memarg.align = align; _di->imm.memarg.memidx = memidx; _di->imm.memarg.offset = offset); \
+            EMIT_INSTR_EX(opcode_val, WAH_IMM_MEMARG, _di->imm.memarg = memarg); \
             break; \
         }
 
 #define V128_LANE_OP(max_lg_align, is_load) { \
-            uint32_t align, memidx; \
-            uint64_t offset; \
-            WAH_CHECK(wah_decode_memarg(code_ptr, code_end, &align, &memidx, &offset)); \
+            wah_memarg_t memarg; \
+            WAH_CHECK(wah_decode_memarg(code_ptr, code_end, &memarg)); \
             WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF); \
             uint8_t lane_idx = *(*code_ptr)++; \
-            WAH_ENSURE(align <= max_lg_align, WAH_ERROR_VALIDATION_FAILED); \
+            WAH_ENSURE(memarg.align <= max_lg_align, WAH_ERROR_VALIDATION_FAILED); \
             WAH_ENSURE(lane_idx < (16 >> max_lg_align), WAH_ERROR_VALIDATION_FAILED); \
-            WAH_ENSURE(memidx < wah_memory_index_limit(vctx->module), WAH_ERROR_VALIDATION_FAILED); \
-            wah_type_t addr_type = wah_memory_type(vctx->module, memidx)->addr_type; \
-            if (addr_type == WAH_TYPE_I32) WAH_ENSURE(offset <= 0xFFFFFFFFU, WAH_ERROR_VALIDATION_FAILED); \
+            WAH_ENSURE(memarg.memidx < wah_memory_index_limit(vctx->module), WAH_ERROR_VALIDATION_FAILED); \
+            wah_type_t addr_type = wah_memory_type(vctx->module, memarg.memidx)->addr_type; \
+            if (addr_type == WAH_TYPE_I32) WAH_ENSURE(memarg.offset <= 0xFFFFFFFFU, WAH_ERROR_VALIDATION_FAILED); \
             POP(V128); WAH_CHECK(wah_validation_pop_and_match_type(vctx, addr_type, 0)); \
             if (is_load) { PUSH(V128); } \
             EMIT_INSTR_EX(opcode_val, WAH_IMM_MEMARG_LANE, \
-                _di->imm.memarg_lane.memarg.align = align; _di->imm.memarg_lane.memarg.memidx = memidx; \
-                _di->imm.memarg_lane.memarg.offset = offset; _di->imm.memarg_lane.lane = lane_idx); \
+                _di->imm.memarg_lane.memarg = memarg; _di->imm.memarg_lane.lane = lane_idx); \
             break; \
         }
 
@@ -5322,45 +5316,16 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             return WAH_OK;
         }
 
-        case WAH_OP_BR: {
-            uint32_t label_idx;
-            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
-            WAH_ENSURE(label_idx <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
-
-            uint32_t br_result_count;
-            const wah_type_t *br_result_types;
-            const wah_type_flags_t *br_result_type_flags;
-            uint32_t br_stack_height;
-            wah_validation_resolve_br_target(vctx, label_idx, &br_result_count, &br_result_types, &br_result_type_flags, &br_stack_height);
-
-            uint32_t adj_keep = 0, adj_drop = 0;
-            if (!vctx->is_unreachable) {
-                uint32_t block_floor = (vctx->control_sp > 0) ? vctx->control_stack[vctx->control_sp - 1].stack_height : 0;
-                WAH_ENSURE(vctx->current_stack_depth >= br_stack_height + br_result_count, WAH_ERROR_VALIDATION_FAILED);
-                WAH_ENSURE(vctx->current_stack_depth >= block_floor + br_result_count, WAH_ERROR_VALIDATION_FAILED);
-                adj_keep = br_result_count;
-                adj_drop = vctx->current_stack_depth - br_stack_height - br_result_count;
-            }
-            RECORD_BRANCH_ADJ(adj_keep, adj_drop);
-
-            for (int32_t i = br_result_count - 1; i >= 0; --i) {
-                WAH_CHECK(wah_validation_pop_and_match_type(vctx, br_result_types[i],
-                    br_result_type_flags[i]));
-            }
-
-            wah_validation_mark_unreachable(vctx);
-            EMIT_INSTR_EX(opcode_val, WAH_IMM_BRANCH,
-                _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0;
-                _di->imm.branch.keep = adj_keep; _di->imm.branch.drop = adj_drop);
-            return WAH_OK;
-        }
-
+        case WAH_OP_BR:
         case WAH_OP_BR_IF: {
+            bool is_br_if = opcode_val == WAH_OP_BR_IF;
             uint32_t label_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
             WAH_ENSURE(label_idx <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
 
-            WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_I32, 0));
+            if (is_br_if) {
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_I32, 0));
+            }
 
             uint32_t br_result_count;
             const wah_type_t *br_result_types;
@@ -5370,21 +5335,28 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
             uint32_t adj_keep = 0, adj_drop = 0;
             if (!vctx->is_unreachable) {
-                WAH_ENSURE(vctx->current_stack_depth >= br_result_count, WAH_ERROR_VALIDATION_FAILED);
+                if (!is_br_if) {
+                    uint32_t block_floor = (vctx->control_sp > 0) ? vctx->control_stack[vctx->control_sp - 1].stack_height : 0;
+                    WAH_ENSURE(vctx->current_stack_depth >= br_stack_height + br_result_count, WAH_ERROR_VALIDATION_FAILED);
+                    WAH_ENSURE(vctx->current_stack_depth >= block_floor + br_result_count, WAH_ERROR_VALIDATION_FAILED);
+                } else {
+                    WAH_ENSURE(vctx->current_stack_depth >= br_result_count, WAH_ERROR_VALIDATION_FAILED);
+                }
                 adj_keep = br_result_count;
                 adj_drop = vctx->current_stack_depth - br_stack_height - br_result_count;
             }
             RECORD_BRANCH_ADJ(adj_keep, adj_drop);
 
             for (int32_t i = br_result_count - 1; i >= 0; --i) {
-                WAH_CHECK(wah_validation_pop_and_match_type(vctx, br_result_types[i],
-                    br_result_type_flags[i]));
+                WAH_CHECK(wah_validation_pop_and_match_type(vctx, br_result_types[i], br_result_type_flags[i]));
             }
-            for (uint32_t i = 0; i < br_result_count; ++i) {
-                WAH_CHECK(wah_validation_push_type_with_flags(vctx, br_result_types[i],
-                    br_result_type_flags[i]));
+            if (is_br_if) {
+                for (uint32_t i = 0; i < br_result_count; ++i) {
+                    WAH_CHECK(wah_validation_push_type_with_flags(vctx, br_result_types[i], br_result_type_flags[i]));
+                }
+            } else {
+                wah_validation_mark_unreachable(vctx);
             }
-
             EMIT_INSTR_EX(opcode_val, WAH_IMM_BRANCH,
                 _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0;
                 _di->imm.branch.keep = adj_keep; _di->imm.branch.drop = adj_drop);
@@ -5419,8 +5391,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
             for (uint32_t i = 0; i < num_targets; ++i) {
                 uint32_t cur_result_count;
-                wah_validation_resolve_br_target(vctx, label_indices[i],
-                                                  &cur_result_count, NULL, NULL, NULL);
+                wah_validation_resolve_br_target(vctx, label_indices[i], &cur_result_count, NULL, NULL, NULL);
                 WAH_ENSURE_GOTO(cur_result_count == default_result_count, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
             }
 
@@ -5648,31 +5619,22 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_SIMPLE();
             break;
         }
-        case WAH_OP_ARRAY_NEW_DATA: {
-            uint32_t typeidx, dataidx;
+        case WAH_OP_ARRAY_NEW_DATA: case WAH_OP_ARRAY_NEW_ELEM: {
+            uint32_t typeidx, segidx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &typeidx));
-            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &dataidx));
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &segidx));
             WAH_ENSURE(typeidx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(vctx->module->type_defs[typeidx].kind == WAH_COMP_ARRAY, WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(!WAH_TYPE_IS_REF(vctx->module->type_defs[typeidx].field_types[0]), WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(dataidx < vctx->module->data_segment_count, WAH_ERROR_VALIDATION_FAILED);
-            wah_type_t nd_t; WAH_CHECK(wah_validation_pop_type(vctx, &nd_t)); // size: i32
-            WAH_CHECK(wah_validation_pop_type(vctx, &nd_t)); // offset: i32
+            if (opcode_val == WAH_OP_ARRAY_NEW_DATA) {
+                WAH_ENSURE(!WAH_TYPE_IS_REF(vctx->module->type_defs[typeidx].field_types[0]), WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(segidx < vctx->module->data_segment_count, WAH_ERROR_VALIDATION_FAILED);
+            } else {
+                WAH_ENSURE(segidx < vctx->module->element_segment_count, WAH_ERROR_VALIDATION_FAILED);
+            }
+            wah_type_t ns_t; WAH_CHECK(wah_validation_pop_type(vctx, &ns_t)); // size: i32
+            WAH_CHECK(wah_validation_pop_type(vctx, &ns_t)); // offset: i32
             WAH_CHECK(wah_validation_push_type_with_flags(vctx, (wah_type_t)typeidx, 0));
-            EMIT_INSTR_EX(opcode_val, WAH_IMM_TYPE_LENGTH, _di->imm.type_length.type_idx = typeidx; _di->imm.type_length.length = dataidx);
-            break;
-        }
-        case WAH_OP_ARRAY_NEW_ELEM: {
-            uint32_t typeidx, elemidx;
-            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &typeidx));
-            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &elemidx));
-            WAH_ENSURE(typeidx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(vctx->module->type_defs[typeidx].kind == WAH_COMP_ARRAY, WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(elemidx < vctx->module->element_segment_count, WAH_ERROR_VALIDATION_FAILED);
-            wah_type_t ne_t; WAH_CHECK(wah_validation_pop_type(vctx, &ne_t)); // size: i32
-            WAH_CHECK(wah_validation_pop_type(vctx, &ne_t)); // offset: i32
-            WAH_CHECK(wah_validation_push_type_with_flags(vctx, (wah_type_t)typeidx, 0));
-            EMIT_INSTR_EX(opcode_val, WAH_IMM_TYPE_LENGTH, _di->imm.type_length.type_idx = typeidx; _di->imm.type_length.length = elemidx);
+            EMIT_INSTR_EX(opcode_val, WAH_IMM_TYPE_LENGTH, _di->imm.type_length.type_idx = typeidx; _di->imm.type_length.length = segidx);
             break;
         }
         case WAH_OP_ARRAY_FILL: {
@@ -5712,38 +5674,28 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_INSTR_EX(opcode_val, WAH_IMM_TYPE_LENGTH, _di->imm.type_length.type_idx = dst_typeidx; _di->imm.type_length.length = src_typeidx);
             break;
         }
-        case WAH_OP_ARRAY_INIT_DATA: {
-            uint32_t typeidx, dataidx;
+        case WAH_OP_ARRAY_INIT_DATA: case WAH_OP_ARRAY_INIT_ELEM: {
+            uint32_t typeidx, segidx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &typeidx));
-            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &dataidx));
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &segidx));
             WAH_ENSURE(typeidx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(vctx->module->type_defs[typeidx].kind == WAH_COMP_ARRAY, WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(vctx->module->type_defs[typeidx].field_mutables[0], WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(!WAH_TYPE_IS_REF(vctx->module->type_defs[typeidx].field_types[0]), WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(dataidx < vctx->module->data_segment_count, WAH_ERROR_VALIDATION_FAILED);
-            wah_type_t id_t; WAH_CHECK(wah_validation_pop_type(vctx, &id_t)); // size: i32
-            WAH_CHECK(wah_validation_pop_type(vctx, &id_t)); // src_offset: i32
-            WAH_CHECK(wah_validation_pop_type(vctx, &id_t)); // dst_offset: i32
+            const wah_type_def_t *td = &vctx->module->type_defs[typeidx];
+            WAH_ENSURE(td->kind == WAH_COMP_ARRAY, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(td->field_mutables[0], WAH_ERROR_VALIDATION_FAILED);
+            if (opcode_val == WAH_OP_ARRAY_INIT_DATA) {
+                WAH_ENSURE(!WAH_TYPE_IS_REF(td->field_types[0]), WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(segidx < vctx->module->data_segment_count, WAH_ERROR_VALIDATION_FAILED);
+            } else {
+                WAH_ENSURE(WAH_TYPE_IS_REF(td->field_types[0]), WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(segidx < vctx->module->element_segment_count, WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(wah_type_is_subtype(vctx->module->element_segments[segidx].elem_type,
+                    td->field_types[0], vctx->module), WAH_ERROR_VALIDATION_FAILED);
+            }
+            wah_type_t is_t; WAH_CHECK(wah_validation_pop_type(vctx, &is_t)); // size: i32
+            WAH_CHECK(wah_validation_pop_type(vctx, &is_t)); // src_offset: i32
+            WAH_CHECK(wah_validation_pop_type(vctx, &is_t)); // dst_offset: i32
             WAH_CHECK(wah_validation_pop_and_match_type(vctx, (wah_type_t)typeidx, WAH_TYPE_FLAG_NULLABLE));
-            EMIT_INSTR_EX(opcode_val, WAH_IMM_TYPE_LENGTH, _di->imm.type_length.type_idx = typeidx; _di->imm.type_length.length = dataidx);
-            break;
-        }
-        case WAH_OP_ARRAY_INIT_ELEM: {
-            uint32_t typeidx, elemidx;
-            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &typeidx));
-            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &elemidx));
-            WAH_ENSURE(typeidx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(vctx->module->type_defs[typeidx].kind == WAH_COMP_ARRAY, WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(vctx->module->type_defs[typeidx].field_mutables[0], WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(WAH_TYPE_IS_REF(vctx->module->type_defs[typeidx].field_types[0]), WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(elemidx < vctx->module->element_segment_count, WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(wah_type_is_subtype(vctx->module->element_segments[elemidx].elem_type,
-                vctx->module->type_defs[typeidx].field_types[0], vctx->module), WAH_ERROR_VALIDATION_FAILED);
-            wah_type_t ie_t; WAH_CHECK(wah_validation_pop_type(vctx, &ie_t)); // size: i32
-            WAH_CHECK(wah_validation_pop_type(vctx, &ie_t)); // src_offset: i32
-            WAH_CHECK(wah_validation_pop_type(vctx, &ie_t)); // dst_offset: i32
-            WAH_CHECK(wah_validation_pop_and_match_type(vctx, (wah_type_t)typeidx, WAH_TYPE_FLAG_NULLABLE));
-            EMIT_INSTR_EX(opcode_val, WAH_IMM_TYPE_LENGTH, _di->imm.type_length.type_idx = typeidx; _di->imm.type_length.length = elemidx);
+            EMIT_INSTR_EX(opcode_val, WAH_IMM_TYPE_LENGTH, _di->imm.type_length.type_idx = typeidx; _di->imm.type_length.length = segidx);
             break;
         }
 
@@ -5763,7 +5715,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_SIMPLE();
             break;
         }
-        case WAH_OP_BR_ON_NULL: {
+        case WAH_OP_BR_ON_NULL: case WAH_OP_BR_ON_NON_NULL: {
             uint32_t label_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
             WAH_ENSURE(label_idx <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
@@ -5778,46 +5730,23 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             wah_validation_resolve_br_target(vctx, label_idx,
                 &br_result_count, &br_result_types, &br_result_type_flags, NULL);
 
-            for (int32_t i = br_result_count - 1; i >= 0; --i) {
+            uint32_t prefix_result_count = br_result_count;
+            if (opcode_val == WAH_OP_BR_ON_NON_NULL) {
+                WAH_ENSURE(br_result_count >= 1, WAH_ERROR_VALIDATION_FAILED);
+                WAH_ENSURE(wah_type_is_subtype(ref_type, br_result_types[br_result_count - 1], vctx->module),
+                           WAH_ERROR_VALIDATION_FAILED);
+                prefix_result_count--;
+            }
+
+            for (int32_t i = (int32_t)prefix_result_count - 1; i >= 0; --i) {
                 WAH_CHECK(wah_validation_pop_and_match_type(vctx, br_result_types[i], br_result_type_flags[i]));
             }
             RECORD_BRANCH_ADJ(0, 0);
-            for (uint32_t i = 0; i < br_result_count; ++i) {
+            for (uint32_t i = 0; i < prefix_result_count; ++i) {
                 WAH_CHECK(wah_validation_push_type_with_flags(vctx, br_result_types[i], br_result_type_flags[i]));
             }
-            WAH_CHECK(wah_validation_push_type_with_flags(vctx, ref_type, ref_flags & ~WAH_TYPE_FLAG_NULLABLE));
-            EMIT_INSTR_EX(opcode_val, WAH_IMM_BRANCH,
-                _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0;
-                _di->imm.branch.keep = 0; _di->imm.branch.drop = 0);
-            break;
-        }
-        case WAH_OP_BR_ON_NON_NULL: {
-            uint32_t label_idx;
-            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
-            WAH_ENSURE(label_idx <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
-            wah_type_t ref_type;
-            wah_type_flags_t ref_flags;
-            WAH_CHECK(wah_validation_pop_type_with_flags(vctx, &ref_type, &ref_flags));
-            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_ANY, WAH_ERROR_VALIDATION_FAILED);
-
-            uint32_t br_result_count;
-            const wah_type_t *br_result_types;
-            const wah_type_flags_t *br_result_type_flags;
-            wah_validation_resolve_br_target(vctx, label_idx,
-                &br_result_count, &br_result_types, &br_result_type_flags, NULL);
-
-            WAH_ENSURE(br_result_count >= 1, WAH_ERROR_VALIDATION_FAILED);
-            wah_type_t non_null_type = ref_type;
-            (void)(ref_flags);
-            WAH_ENSURE(wah_type_is_subtype(non_null_type, br_result_types[br_result_count - 1], vctx->module),
-                       WAH_ERROR_VALIDATION_FAILED);
-
-            for (int32_t i = (int32_t)br_result_count - 2; i >= 0; --i) {
-                WAH_CHECK(wah_validation_pop_and_match_type(vctx, br_result_types[i], br_result_type_flags[i]));
-            }
-            RECORD_BRANCH_ADJ(0, 0);
-            for (uint32_t i = 0; i < br_result_count - 1; ++i) {
-                WAH_CHECK(wah_validation_push_type_with_flags(vctx, br_result_types[i], br_result_type_flags[i]));
+            if (opcode_val == WAH_OP_BR_ON_NULL) {
+                WAH_CHECK(wah_validation_push_type_with_flags(vctx, ref_type, ref_flags & ~WAH_TYPE_FLAG_NULLABLE));
             }
             EMIT_INSTR_EX(opcode_val, WAH_IMM_BRANCH,
                 _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0;
@@ -5825,10 +5754,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             break;
         }
 
-        case WAH_OP_REF_TEST_NULL:
-        case WAH_OP_REF_TEST:
-        case WAH_OP_REF_CAST_NULL:
-        case WAH_OP_REF_CAST: {
+        case WAH_OP_REF_TEST_NULL: case WAH_OP_REF_TEST:
+        case WAH_OP_REF_CAST_NULL: case WAH_OP_REF_CAST: {
             wah_type_t heap_type;
             WAH_CHECK(wah_decode_heap_type(code_ptr, code_end, &heap_type));
             if (heap_type >= 0) {
@@ -5848,8 +5775,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             break;
         }
 
-        case WAH_OP_BR_ON_CAST:
-        case WAH_OP_BR_ON_CAST_FAIL: {
+        case WAH_OP_BR_ON_CAST: case WAH_OP_BR_ON_CAST_FAIL: {
             WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF);
             uint8_t cast_flags = *(*code_ptr)++;
             uint32_t label_idx;
