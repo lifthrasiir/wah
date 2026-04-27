@@ -8829,6 +8829,14 @@ static DWORD WINAPI wah_deadline_timer_main(LPVOID arg) {
     return 0;
 }
 #else
+#if defined(__APPLE__)
+static uint64_t wah_deadline_timer_now_us(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
+}
+#endif
+
 static void wah_deadline_timer_abs_time(uint64_t us, struct timespec *out) {
     clock_gettime(CLOCK_MONOTONIC, out);
     out->tv_sec += (time_t)(us / 1000000);
@@ -8839,6 +8847,13 @@ static void wah_deadline_timer_abs_time(uint64_t us, struct timespec *out) {
     }
 }
 
+#if defined(__APPLE__)
+static void wah_deadline_timer_rel_time(uint64_t us, struct timespec *out) {
+    out->tv_sec = (time_t)(us / 1000000);
+    out->tv_nsec = (long)((us % 1000000) * 1000);
+}
+#endif
+
 static void *wah_deadline_timer_main(void *arg) {
     wah_deadline_timer_t *timer = (wah_deadline_timer_t *)arg;
     pthread_mutex_lock(&timer->mutex);
@@ -8848,12 +8863,29 @@ static void *wah_deadline_timer_main(void *arg) {
         }
         if (WAH_POLL_FLAG_LOAD(timer->cancelled)) break;
 
+#if defined(__APPLE__)
+        uint64_t start_us = wah_deadline_timer_now_us();
+        uint64_t deadline_us = timer->deadline_us;
+        int rc = 0;
+        while (!WAH_POLL_FLAG_LOAD(timer->cancelled) && WAH_POLL_FLAG_LOAD(timer->armed) && rc != ETIMEDOUT) {
+            uint64_t now_us = wah_deadline_timer_now_us();
+            uint64_t elapsed_us = now_us - start_us;
+            if (elapsed_us >= deadline_us) {
+                rc = ETIMEDOUT;
+                break;
+            }
+            struct timespec rel;
+            wah_deadline_timer_rel_time(deadline_us - elapsed_us, &rel);
+            rc = pthread_cond_timedwait_relative_np(&timer->cond, &timer->mutex, &rel);
+        }
+#else
         struct timespec deadline;
         wah_deadline_timer_abs_time(timer->deadline_us, &deadline);
         int rc = 0;
         while (!WAH_POLL_FLAG_LOAD(timer->cancelled) && WAH_POLL_FLAG_LOAD(timer->armed) && rc != ETIMEDOUT) {
             rc = pthread_cond_timedwait(&timer->cond, &timer->mutex, &deadline);
         }
+#endif
         if (WAH_POLL_FLAG_LOAD(timer->cancelled)) break;
         if (WAH_POLL_FLAG_LOAD(timer->armed) && rc == ETIMEDOUT) {
             WAH_POLL_FLAG_STORE(timer->armed, 0);
@@ -8897,7 +8929,7 @@ static wah_error_t wah_deadline_timer_create(wah_exec_context_t *ctx) {
         free(timer);
         return WAH_ERROR_OUT_OF_MEMORY;
     }
-#if defined(CLOCK_MONOTONIC)
+#if defined(CLOCK_MONOTONIC) && !defined(__APPLE__)
     pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
 #endif
     if (pthread_cond_init(&timer->cond, &attr) != 0) {
