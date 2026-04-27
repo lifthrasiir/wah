@@ -824,7 +824,7 @@ static int handle_assert_trap_like(const wast_node_t *node, spectest_env_t *env,
         return 0;
     }
     if ((!exhaustion && expect_trap_like(err)) ||
-        (exhaustion && (err == WAH_ERROR_CALL_STACK_OVERFLOW || err == WAH_ERROR_OUT_OF_MEMORY || err == WAH_ERROR_TRAP))) {
+        (exhaustion && (err == WAH_ERROR_STACK_OVERFLOW || err == WAH_ERROR_OUT_OF_MEMORY || err == WAH_ERROR_TRAP))) {
         pass_check(env);
         return 1;
     }
