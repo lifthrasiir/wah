@@ -601,6 +601,9 @@ int main() {
 
         // fn takes funcref param, pushes ref.null on operand stack, calls host
         // local 0 = funcref param, local 1 = i32 temp
+        // NOTE: this relies on POLL being emitted before CALL (so ref_map_offset
+        // is current when the host function calls wah_gc_enumerate_roots).
+        // If POLL is optimized to skip the ref_map_offset store, this test breaks.
         const char *spec = "wasm \
             types {[ fn [funcref] [i32], fn [] [i32] ]} \
             imports {[ {'env'} {'count_roots'} fn# 1 ]} \

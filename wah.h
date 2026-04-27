@@ -9343,6 +9343,10 @@ WAH_NEVER_RUN(LOOP) // Converted to bytecode offsets
 WAH_NEVER_RUN(SELECT_T) // Identical to WAH_RUN(SELECT) in run time
 
 WAH_RUN(POLL) {
+    // TODO: this unconditional store could be deferred to the poll_flag branch
+    // (read via bytecode_ip - sizeof(uint32_t) after advancing), but
+    // host functions currently call wah_gc_enumerate_roots which relies on
+    // ref_map_offset being up-to-date outside of poll_handler. See test_gc.c.
     frame->ref_map_offset = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
 
