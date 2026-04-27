@@ -411,6 +411,477 @@ static void test_cancel_ready_noop(void) {
     wah_free_module(&mod);
 }
 
+static void test_resume_br_table(void) {
+    printf("Testing resume through br_table...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // br_table dispatches to different blocks, each pushes a different result.
+    // Resuming with 1 fuel at a time must produce the same result as unlimited fuel.
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i32] [i32]]} funcs {[0]} \
+        code {[{[] \
+            block void \
+                block void \
+                    block void \
+                        local.get 0 \
+                        br_table [0, 1, 2] 2 \
+                    end \
+                    i32.const 100 return \
+                end \
+                i32.const 200 return \
+            end \
+            i32.const 300 \
+        end}]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+
+    int32_t expected[] = {100, 200, 300, 300};
+    for (int i = 0; i < 4; i++) {
+        wah_value_t params = { .i32 = i };
+        wah_set_fuel(&ctx, 1);
+        assert_ok(wah_start(&ctx, 0, &params, 1));
+        wah_error_t err;
+        while ((err = wah_resume(&ctx)) > 0) {
+            wah_set_fuel(&ctx, 1);
+        }
+        assert_eq_i32(err, WAH_OK);
+        wah_value_t result;
+        uint32_t actual;
+        assert_ok(wah_finish(&ctx, &result, 1, &actual));
+        assert_eq_i32(result.i32, expected[i]);
+    }
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_resume_tail_call_deep(void) {
+    printf("Testing resume through deep tail-call recursion...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // Tail-recursive sum: sum(n, acc) -> if n==0 return acc else return_call sum(n-1, acc+n)
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i32, i32] [i32]]} funcs {[0]} \
+        code {[{[] \
+            local.get 0 i32.eqz \
+            if i32 \
+                local.get 1 \
+            else \
+                local.get 0 i32.const 1 i32.sub \
+                local.get 1 local.get 0 i32.add \
+                return_call 0 \
+            end \
+        end}]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+
+    wah_value_t params[2] = { {.i32 = 100}, {.i32 = 0} };
+
+    // Reference result with unlimited fuel
+    wah_set_fuel(&ctx, INT64_MAX);
+    wah_value_t ref;
+    assert_ok(wah_call(&ctx, 0, params, 2, &ref));
+    assert_eq_i32(ref.i32, 5050); // 1+2+...+100
+
+    // Resume with small fuel chunks
+    wah_set_fuel(&ctx, 3);
+    assert_ok(wah_start(&ctx, 0, params, 2));
+    int suspensions = 0;
+    wah_error_t err;
+    while ((err = wah_resume(&ctx)) > 0) {
+        suspensions++;
+        wah_set_fuel(&ctx, 3);
+    }
+    assert_eq_i32(err, WAH_OK);
+    assert_true(suspensions > 0);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 5050);
+    printf("  deep tail-call: %d suspensions\n", suspensions);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_resume_return_call_indirect(void) {
+    printf("Testing resume through return_call_indirect...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // func 0: entry, dispatches to table[param] via return_call_indirect
+    // func 1: returns 111
+    // func 2: returns 222
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i32] [i32], fn [] [i32]]} \
+        funcs {[0, 1, 1]} \
+        tables {[funcref limits.i32/1 2]} \
+        elements {[elem.active.table#0 i32.const 0 end [1, 2]]} \
+        code {[ \
+            {[] local.get 0 return_call_indirect 1 0 end}, \
+            {[] i32.const 111 end}, \
+            {[] i32.const 222 end} \
+        ]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    for (int target = 0; target < 2; target++) {
+        wah_value_t params = { .i32 = target };
+        wah_set_fuel(&ctx, 1);
+        assert_ok(wah_start(&ctx, 0, &params, 1));
+        wah_error_t err;
+        while ((err = wah_resume(&ctx)) > 0) {
+            wah_set_fuel(&ctx, 1);
+        }
+        assert_eq_i32(err, WAH_OK);
+        wah_value_t result;
+        uint32_t actual;
+        assert_ok(wah_finish(&ctx, &result, 1, &actual));
+        assert_eq_i32(result.i32, target == 0 ? 111 : 222);
+    }
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_resume_exception_catch(void) {
+    printf("Testing resume through exception catch...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // Throw inside try_table, catch delivers value, add 1000, return.
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i32] [i32], fn [i32] []]} \
+        funcs {[0]} \
+        tags {[tag.type# 1]} \
+        code {[{[] \
+            block i32 \
+                try_table void [catch 0 0] \
+                    local.get 0 throw 0 \
+                end \
+                i32.const -1 \
+            end \
+            i32.const 1000 i32.add \
+        end}]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t params = { .i32 = 77 };
+
+    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_start(&ctx, 0, &params, 1));
+    int suspensions = 0;
+    wah_error_t err;
+    while ((err = wah_resume(&ctx)) > 0) {
+        suspensions++;
+        wah_set_fuel(&ctx, 1);
+    }
+    assert_eq_i32(err, WAH_OK);
+    assert_true(suspensions > 0);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 1077); // 77 + 1000
+    printf("  exception catch resume: %d suspensions\n", suspensions);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_resume_multi_value(void) {
+    printf("Testing resume with multi-value results...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i32, i32] [i32, i32, i32]]} funcs {[0]} \
+        code {[{[] \
+            local.get 0 local.get 1 i32.add \
+            local.get 0 local.get 1 i32.sub \
+            local.get 0 local.get 1 i32.mul \
+        end}]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+
+    wah_value_t params[2] = { {.i32 = 7}, {.i32 = 3} };
+
+    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_start(&ctx, 0, params, 2));
+    int suspensions = 0;
+    wah_error_t err;
+    while ((err = wah_resume(&ctx)) > 0) {
+        suspensions++;
+        wah_set_fuel(&ctx, 1);
+    }
+    assert_eq_i32(err, WAH_OK);
+    assert_true(suspensions > 0);
+
+    wah_value_t results[3];
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, results, 3, &actual));
+    assert_eq_u32(actual, 3);
+    assert_eq_i32(results[0].i32, 10);  // 7+3
+    assert_eq_i32(results[1].i32, 4);   // 7-3
+    assert_eq_i32(results[2].i32, 21);  // 7*3
+    printf("  multi-value resume: %d suspensions\n", suspensions);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_resume_gc_funcref_on_stack(void) {
+    printf("Testing GC safety: funcref on stack during suspension...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // func 0: push ref.func 0 onto stack, do some i32 work, then test the ref.
+    // The funcref must survive GC cycles during suspension.
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] [i32]]} funcs {[0]} \
+        exports {[{'f'} fn# 0]} \
+        code {[{[1 funcref] \
+            ref.func 0 local.set 0 \
+            i32.const 1 i32.const 2 i32.add drop \
+            i32.const 3 i32.const 4 i32.add drop \
+            local.get 0 ref.is_null \
+        end}]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+
+    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_start(&ctx, 0, NULL, 0));
+    int suspensions = 0;
+    wah_error_t err;
+    while ((err = wah_resume(&ctx)) > 0) {
+        suspensions++;
+        wah_gc_step(&ctx);
+        assert_true(wah_gc_verify_heap(&ctx));
+        wah_set_fuel(&ctx, 1);
+    }
+    assert_eq_i32(err, WAH_OK);
+    assert_true(suspensions > 0);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 0); // ref.func 0 is not null
+    printf("  gc funcref on stack: %d suspensions, heap valid\n", suspensions);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_resume_gc_ref_across_calls(void) {
+    printf("Testing GC safety: funcref across nested calls during suspension...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // func 0: creates a funcref, calls func 1, then tests the ref.
+    // func 1: does some work (burns fuel) so suspension happens while ref is live in caller's frame.
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] [i32], fn [] []]} funcs {[0, 1]} \
+        exports {[{'f'} fn# 0]} \
+        code {[ \
+            {[1 funcref] \
+                ref.func 0 local.set 0 \
+                call 1 \
+                local.get 0 ref.is_null \
+            end}, \
+            {[] \
+                i32.const 1 i32.const 2 i32.add drop \
+                i32.const 3 i32.const 4 i32.add drop \
+                i32.const 5 i32.const 6 i32.add drop \
+            end} \
+        ]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+
+    wah_set_fuel(&ctx, 2);
+    assert_ok(wah_start(&ctx, 0, NULL, 0));
+    int suspensions = 0;
+    wah_error_t err;
+    while ((err = wah_resume(&ctx)) > 0) {
+        suspensions++;
+        wah_gc_step(&ctx);
+        assert_true(wah_gc_verify_heap(&ctx));
+        wah_set_fuel(&ctx, 2);
+    }
+    assert_eq_i32(err, WAH_OK);
+    assert_true(suspensions > 0);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 0); // funcref should still be valid (not null)
+    printf("  gc ref across calls: %d suspensions\n", suspensions);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_cancel_with_live_refs(void) {
+    printf("Testing cancel with live funcref on stack...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] [i32]]} funcs {[0]} \
+        exports {[{'f'} fn# 0]} \
+        code {[{[1 funcref] \
+            ref.func 0 local.set 0 \
+            i32.const 1 i32.const 2 i32.add drop \
+            i32.const 3 i32.const 4 i32.add drop \
+            local.get 0 ref.is_null \
+        end}]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+
+    wah_set_fuel(&ctx, 2);
+    assert_ok(wah_start(&ctx, 0, NULL, 0));
+    wah_error_t err = wah_resume(&ctx);
+    assert_eq_i32(err, WAH_STATUS_FUEL_EXHAUSTED);
+    assert_true(wah_is_suspended(&ctx));
+
+    // Cancel while funcref is live on the value stack
+    wah_cancel(&ctx);
+    assert_eq_i32((int32_t)wah_exec_state(&ctx), WAH_EXEC_READY);
+
+    // GC and verify heap after cancel
+    wah_gc_step(&ctx);
+    assert_true(wah_gc_verify_heap(&ctx));
+
+    // Context should be reusable
+    wah_set_fuel(&ctx, 100);
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 0);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_destroy_with_live_refs(void) {
+    printf("Testing destroy while suspended with live refs...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] [i32]]} funcs {[0]} \
+        exports {[{'f'} fn# 0]} \
+        code {[{[1 funcref] \
+            ref.func 0 local.set 0 \
+            i32.const 1 i32.const 2 i32.add drop \
+            local.get 0 ref.is_null \
+        end}]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+
+    wah_set_fuel(&ctx, 2);
+    assert_ok(wah_start(&ctx, 0, NULL, 0));
+    wah_resume(&ctx); // fuel exhausted, funcref live in locals
+    assert_true(wah_is_suspended(&ctx));
+
+    // Destroy with live refs should not crash or leak
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_cancel_with_pending_exception(void) {
+    printf("Testing cancel with pending exception...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // func 0: calls func 1 which throws. func 0 has a try_table to catch it,
+    // but the throw + unwind path requires fuel. If we exhaust mid-unwind or
+    // just before the throw, we get suspended with exception state live.
+    // Here we set up a scenario where we suspend during the computation
+    // leading up to the throw.
+    // func 0 (catcher): calls func 1 inside try_table, catch_all returns -1.
+    // func 1 (thrower): does work then throws.
+    // tag type is fn [] [] (no params).
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] [i32], fn [] []]} \
+        funcs {[0, 1]} \
+        tags {[tag.type# 1]} \
+        code {[ \
+            {[] \
+                block void \
+                    try_table void [catch_all 0] \
+                        call 1 \
+                    end \
+                end \
+                i32.const -1 \
+            end}, \
+            {[] \
+                i32.const 1 i32.const 2 i32.add drop \
+                i32.const 3 i32.const 4 i32.add drop \
+                throw 0 \
+            end} \
+        ]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    // Suspend inside func 1 before the throw executes
+    wah_set_fuel(&ctx, 3);
+    assert_ok(wah_start(&ctx, 0, NULL, 0));
+    wah_error_t err = wah_resume(&ctx);
+    // Might be suspended or completed depending on fuel accounting
+    if (err > 0) {
+        assert_true(wah_is_suspended(&ctx));
+        // Cancel while potentially mid-exception-setup
+        wah_cancel(&ctx);
+        assert_eq_i32((int32_t)wah_exec_state(&ctx), WAH_EXEC_READY);
+    }
+
+    // Verify context is clean and reusable
+    wah_set_fuel(&ctx, 10000);
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, -1);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_resume_gc_ref_global(void) {
+    printf("Testing GC safety: funcref global during suspension...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // Mutable funcref global. Function stores ref.func into it, does work, reads it back.
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] [i32]]} funcs {[0]} \
+        globals {[funcref mut ref.null funcref end]} \
+        exports {[{'f'} fn# 0]} \
+        code {[{[] \
+            ref.func 0 global.set 0 \
+            i32.const 1 i32.const 2 i32.add drop \
+            i32.const 3 i32.const 4 i32.add drop \
+            global.get 0 ref.is_null \
+        end}]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_start(&ctx, 0, NULL, 0));
+    int suspensions = 0;
+    wah_error_t err;
+    while ((err = wah_resume(&ctx)) > 0) {
+        suspensions++;
+        wah_gc_step(&ctx);
+        assert_true(wah_gc_verify_heap(&ctx));
+        wah_set_fuel(&ctx, 1);
+    }
+    assert_eq_i32(err, WAH_OK);
+    assert_true(suspensions > 0);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 0); // global funcref is not null
+    printf("  gc ref global: %d suspensions\n", suspensions);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_resume_straight_line();
     test_resume_loop();
@@ -425,6 +896,17 @@ int main(void) {
     test_wah_call_backward_compat();
     test_finish_void_function();
     test_cancel_ready_noop();
+    test_resume_br_table();
+    test_resume_tail_call_deep();
+    test_resume_return_call_indirect();
+    test_resume_exception_catch();
+    test_resume_multi_value();
+    test_resume_gc_funcref_on_stack();
+    test_resume_gc_ref_across_calls();
+    test_cancel_with_live_refs();
+    test_destroy_with_live_refs();
+    test_cancel_with_pending_exception();
+    test_resume_gc_ref_global();
 
     printf("\n=== All resume tests passed ===\n");
     return 0;

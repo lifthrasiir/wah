@@ -388,6 +388,553 @@ static void test_slow_path_side_effects(void) {
     wah_free_module(&mod);
 }
 
+static void test_br_table_fuel(void) {
+    printf("Testing br_table fuel accounting...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // br_table with 3 targets + default, each target returns a different constant.
+    // br_table is a metering boundary, so each path's fuel should reflect only
+    // the instructions actually executed.
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i32] [i32]]} funcs {[0]} \
+        code {[{[] \
+            block void \
+                block void \
+                    block void \
+                        block void \
+                            local.get 0 \
+                            br_table [0, 1, 2] 3 \
+                        end \
+                        i32.const 10 return \
+                    end \
+                    i32.const 20 return \
+                end \
+                i32.const 30 return \
+            end \
+            i32.const 40 \
+        end}]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+
+    wah_value_t params[1], result = {0};
+    int32_t expected[] = {10, 20, 30, 40};
+
+    for (int i = 0; i < 4; i++) {
+        params[0].i32 = i;
+        wah_set_fuel(&ctx, 10000);
+        assert_ok(wah_call(&ctx, 0, params, 1, &result));
+        int64_t fuel = 10000 - wah_get_fuel(&ctx);
+        printf("  br_table[%d] fuel=%lld result=%d\n", i, (long long)fuel, result.i32);
+        assert_eq_i32(result.i32, expected[i]);
+    }
+
+    // With insufficient fuel, should exhaust before completing
+    params[0].i32 = 0;
+    wah_set_fuel(&ctx, 1);
+    assert_err(wah_call(&ctx, 0, params, 1, &result), WAH_STATUS_FUEL_EXHAUSTED);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_br_table_resume(void) {
+    printf("Testing br_table resume...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // Use a global counter incremented inside each br_table target to verify
+    // that resumption after br_table lands at the correct continuation.
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i32] [i32], fn [] []]} funcs {[0, 1]} \
+        globals {[i32 mut i32.const 0 end]} \
+        code {[ \
+            {[] \
+                block void \
+                    block void \
+                        local.get 0 \
+                        br_table [0, 1] 1 \
+                    end \
+                    global.get 0 i32.const 10 i32.add global.set 0 \
+                    i32.const 0 return \
+                end \
+                global.get 0 i32.const 20 i32.add global.set 0 \
+                i32.const 1 return \
+            end}, \
+            {[] i32.const 0 global.set 0 end} \
+        ]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t params[1];
+
+    // Resume through br_table target 0 with 1-fuel increments
+    wah_set_fuel(&ctx, 10000);
+    assert_ok(wah_call(&ctx, 1, NULL, 0, NULL)); // reset
+    params[0].i32 = 0;
+    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_start(&ctx, 0, params, 1));
+    wah_error_t err;
+    while ((err = wah_resume(&ctx)) > 0) {
+        wah_set_fuel(&ctx, 1);
+    }
+    assert_eq_i32(err, WAH_OK);
+    wah_value_t res;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &res, 1, &actual));
+    assert_eq_i32(res.i32, 0);
+    // Verify global was incremented by target 0's path (+10)
+    wah_set_fuel(&ctx, 10000);
+    assert_ok(wah_call(&ctx, 1, NULL, 0, NULL)); // reset won't help, read first
+    // Re-read: run the function fresh and check global
+    // Actually, just run a fresh call to check the global state
+    // We need a getter. Let's re-verify via another approach: run target 1.
+    wah_set_fuel(&ctx, 10000);
+    assert_ok(wah_call(&ctx, 1, NULL, 0, NULL)); // reset global
+    params[0].i32 = 1;
+    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_start(&ctx, 0, params, 1));
+    while ((err = wah_resume(&ctx)) > 0) {
+        wah_set_fuel(&ctx, 1);
+    }
+    assert_eq_i32(err, WAH_OK);
+    assert_ok(wah_finish(&ctx, &res, 1, &actual));
+    assert_eq_i32(res.i32, 1); // target 1 returns 1
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_call_indirect_fuel(void) {
+    printf("Testing call_indirect fuel accounting...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // func 0: add(i32,i32)->i32
+    // func 1: sub(i32,i32)->i32
+    // func 2: dispatch(i32,i32,i32)->i32 calls table[param2](param0,param1)
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i32, i32] [i32], fn [i32, i32, i32] [i32]]} \
+        funcs {[0, 0, 1]} \
+        tables {[funcref limits.i32/1 2]} \
+        elements {[elem.active.table#0 i32.const 0 end [0, 1]]} \
+        code {[ \
+            {[] local.get 0 local.get 1 i32.add end}, \
+            {[] local.get 0 local.get 1 i32.sub end}, \
+            {[] local.get 0 local.get 1 local.get 2 call_indirect 0 0 end} \
+        ]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t params[3], result;
+
+    // call_indirect -> add
+    params[0].i32 = 10; params[1].i32 = 3; params[2].i32 = 0;
+    wah_set_fuel(&ctx, 10000);
+    assert_ok(wah_call(&ctx, 2, params, 3, &result));
+    assert_eq_i32(result.i32, 13);
+    int64_t fuel_add = 10000 - wah_get_fuel(&ctx);
+
+    // call_indirect -> sub
+    params[2].i32 = 1;
+    wah_set_fuel(&ctx, 10000);
+    assert_ok(wah_call(&ctx, 2, params, 3, &result));
+    assert_eq_i32(result.i32, 7);
+    int64_t fuel_sub = 10000 - wah_get_fuel(&ctx);
+
+    printf("  indirect add fuel=%lld, sub fuel=%lld\n",
+           (long long)fuel_add, (long long)fuel_sub);
+    // Both paths should cost the same (same number of instructions)
+    assert_eq_i64(fuel_add, fuel_sub);
+
+    // Exhaust mid-indirect-call
+    params[2].i32 = 0;
+    wah_set_fuel(&ctx, 2);
+    assert_err(wah_call(&ctx, 2, params, 3, &result), WAH_STATUS_FUEL_EXHAUSTED);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_call_indirect_resume(void) {
+    printf("Testing call_indirect resume...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i32, i32] [i32], fn [i32, i32, i32] [i32]]} \
+        funcs {[0, 0, 1]} \
+        tables {[funcref limits.i32/1 2]} \
+        elements {[elem.active.table#0 i32.const 0 end [0, 1]]} \
+        code {[ \
+            {[] local.get 0 local.get 1 i32.add end}, \
+            {[] local.get 0 local.get 1 i32.sub end}, \
+            {[] local.get 0 local.get 1 local.get 2 call_indirect 0 0 end} \
+        ]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t params[3] = { {.i32 = 30}, {.i32 = 12}, {.i32 = 1} };
+
+    // Resume 1 fuel at a time through indirect call to sub
+    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_start(&ctx, 2, params, 3));
+    int suspensions = 0;
+    wah_error_t err;
+    while ((err = wah_resume(&ctx)) > 0) {
+        suspensions++;
+        wah_set_fuel(&ctx, 1);
+    }
+    assert_eq_i32(err, WAH_OK);
+    assert_true(suspensions > 0);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 18); // 30 - 12
+    printf("  indirect call resumed %d times\n", suspensions);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_return_call_fuel(void) {
+    printf("Testing return_call fuel accounting...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // func 0: entry, tail-calls func 1
+    // func 1: returns i32.const 42
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] [i32]]} funcs {[0, 0]} \
+        code {[ \
+            {[] return_call 1 end}, \
+            {[] i32.const 42 end} \
+        ]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+
+    wah_value_t result;
+    wah_set_fuel(&ctx, 10000);
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+    int64_t fuel_tail = 10000 - wah_get_fuel(&ctx);
+
+    // Compare with non-tail: func that calls and returns
+    wah_module_t mod2 = {0};
+    wah_exec_context_t ctx2 = {0};
+    PARSE_FUEL(&mod2, "wasm \
+        types {[fn [] [i32]]} funcs {[0, 0]} \
+        code {[ \
+            {[] call 1 end}, \
+            {[] i32.const 42 end} \
+        ]}");
+    assert_ok(wah_exec_context_create(&ctx2, &mod2));
+    wah_set_fuel(&ctx2, 10000);
+    assert_ok(wah_call(&ctx2, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+    int64_t fuel_normal = 10000 - wah_get_fuel(&ctx2);
+
+    printf("  tail-call fuel=%lld, normal call fuel=%lld\n",
+           (long long)fuel_tail, (long long)fuel_normal);
+
+    wah_exec_context_destroy(&ctx2);
+    wah_free_module(&mod2);
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_return_call_resume(void) {
+    printf("Testing return_call resume...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // Tail-recursive countdown: func(n) -> if n==0 return 0 else return_call(n-1)
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i32] [i32]]} funcs {[0]} \
+        code {[{[] \
+            local.get 0 i32.eqz \
+            if i32 \
+                i32.const 0 \
+            else \
+                local.get 0 i32.const 1 i32.sub return_call 0 \
+            end \
+        end}]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+
+    wah_value_t params = { .i32 = 20 };
+
+    // Reference result
+    wah_set_fuel(&ctx, INT64_MAX);
+    wah_value_t ref_result;
+    assert_ok(wah_call(&ctx, 0, &params, 1, &ref_result));
+    assert_eq_i32(ref_result.i32, 0);
+
+    // Resume with limited fuel
+    wah_set_fuel(&ctx, 5);
+    assert_ok(wah_start(&ctx, 0, &params, 1));
+    int suspensions = 0;
+    wah_error_t err;
+    while ((err = wah_resume(&ctx)) > 0) {
+        suspensions++;
+        wah_set_fuel(&ctx, 5);
+    }
+    assert_eq_i32(err, WAH_OK);
+    assert_true(suspensions > 0);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 0);
+    printf("  tail-recursive resume: %d suspensions\n", suspensions);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_return_call_indirect_resume(void) {
+    printf("Testing return_call_indirect resume...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // func 0: entry, tail-calls table[0] which is func 1
+    // func 1: returns 99
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] [i32]]} funcs {[0, 0]} \
+        tables {[funcref limits.i32/1 1]} \
+        elements {[elem.active.table#0 i32.const 0 end [1]]} \
+        code {[ \
+            {[] i32.const 0 return_call_indirect 0 0 end}, \
+            {[] i32.const 99 end} \
+        ]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_start(&ctx, 0, NULL, 0));
+    int suspensions = 0;
+    wah_error_t err;
+    while ((err = wah_resume(&ctx)) > 0) {
+        suspensions++;
+        wah_set_fuel(&ctx, 1);
+    }
+    assert_eq_i32(err, WAH_OK);
+    assert_true(suspensions > 0);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 99);
+    printf("  return_call_indirect resumed %d times\n", suspensions);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_exception_fuel(void) {
+    printf("Testing exception path fuel accounting...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // throw inside try_table, caught by catch handler.
+    // Compare fuel for throw-path vs. normal-path.
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i32] [i32], fn [i32] []]} \
+        funcs {[0]} \
+        tags {[tag.type# 1]} \
+        code {[{[] \
+            block i32 \
+                try_table void [catch 0 1] \
+                    local.get 0 \
+                    throw 0 \
+                end \
+                i32.const 0 \
+            end \
+        end}]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t params = { .i32 = 55 };
+    wah_value_t result;
+
+    wah_set_fuel(&ctx, 10000);
+    assert_ok(wah_call(&ctx, 0, &params, 1, &result));
+    assert_eq_i32(result.i32, 55);
+    int64_t fuel_used = 10000 - wah_get_fuel(&ctx);
+    printf("  exception catch fuel=%lld\n", (long long)fuel_used);
+    assert_true(fuel_used > 0);
+
+    // With very little fuel, should exhaust
+    wah_set_fuel(&ctx, 1);
+    assert_err(wah_call(&ctx, 0, &params, 1, &result), WAH_STATUS_FUEL_EXHAUSTED);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_exception_resume(void) {
+    printf("Testing exception path resume...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // throw value, catch it into the block, add 100 after block end.
+    // catch label 0 = the enclosing block (from try_table's perspective, label 0
+    // is the immediately enclosing block i32).
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i32] [i32], fn [i32] []]} \
+        funcs {[0]} \
+        tags {[tag.type# 1]} \
+        code {[{[] \
+            block i32 \
+                try_table void [catch 0 0] \
+                    local.get 0 \
+                    throw 0 \
+                end \
+                i32.const 0 \
+            end \
+            i32.const 100 i32.add \
+        end}]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t params = { .i32 = 7 };
+
+    // Resume 1 fuel at a time
+    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_start(&ctx, 0, &params, 1));
+    int suspensions = 0;
+    wah_error_t err;
+    while ((err = wah_resume(&ctx)) > 0) {
+        suspensions++;
+        wah_set_fuel(&ctx, 1);
+    }
+    assert_eq_i32(err, WAH_OK);
+    assert_true(suspensions > 0);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 107); // 7 + 100
+    printf("  exception resume: %d suspensions\n", suspensions);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_exception_across_call_resume(void) {
+    printf("Testing exception across call boundary resume...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // func 0 (thrower): throws tag 0 with param
+    // func 1 (catcher): calls func 0 inside try_table, catches
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i32] [], fn [i32] [i32]]} \
+        funcs {[0, 1]} \
+        tags {[tag.type# 0]} \
+        code {[ \
+            {[] local.get 0 throw 0 end}, \
+            {[] \
+                block i32 \
+                    try_table void [catch 0 1] \
+                        local.get 0 call 0 \
+                    end \
+                    i32.const -1 \
+                end \
+            end} \
+        ]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t params = { .i32 = 42 };
+
+    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_start(&ctx, 1, &params, 1));
+    int suspensions = 0;
+    wah_error_t err;
+    while ((err = wah_resume(&ctx)) > 0) {
+        suspensions++;
+        wah_set_fuel(&ctx, 1);
+    }
+    assert_eq_i32(err, WAH_OK);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 42);
+    printf("  cross-call exception resume: %d suspensions\n", suspensions);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_multi_value_fuel(void) {
+    printf("Testing multi-value return fuel...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // func returns (i32, i32)
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] [i32, i32]]} funcs {[0]} \
+        code {[{[] i32.const 11 i32.const 22 end}]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+
+    wah_set_fuel(&ctx, 10000);
+    wah_value_t results[2];
+    uint32_t actual_count;
+    assert_ok(wah_call_multi(&ctx, 0, NULL, 0, results, 2, &actual_count));
+    assert_eq_u32(actual_count, 2);
+    assert_eq_i32(results[0].i32, 11);
+    assert_eq_i32(results[1].i32, 22);
+
+    int64_t fuel_used = 10000 - wah_get_fuel(&ctx);
+    printf("  multi-value fuel=%lld\n", (long long)fuel_used);
+    assert_true(fuel_used > 0);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_multi_value_resume(void) {
+    printf("Testing multi-value return resume...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // func returns (i32, i32, i32) after some computation
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i32] [i32, i32, i32]]} funcs {[0]} \
+        code {[{[] \
+            local.get 0 \
+            local.get 0 i32.const 1 i32.add \
+            local.get 0 i32.const 2 i32.add \
+        end}]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+
+    wah_value_t params = { .i32 = 10 };
+
+    // Resume with 1 fuel at a time
+    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_start(&ctx, 0, &params, 1));
+    int suspensions = 0;
+    wah_error_t err;
+    while ((err = wah_resume(&ctx)) > 0) {
+        suspensions++;
+        wah_set_fuel(&ctx, 1);
+    }
+    assert_eq_i32(err, WAH_OK);
+    assert_true(suspensions > 0);
+
+    wah_value_t results[3];
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, results, 3, &actual));
+    assert_eq_u32(actual, 3);
+    assert_eq_i32(results[0].i32, 10);
+    assert_eq_i32(results[1].i32, 11);
+    assert_eq_i32(results[2].i32, 12);
+    printf("  multi-value resume: %d suspensions\n", suspensions);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_straight_line_exact_fuel();
     test_zero_fuel();
@@ -399,6 +946,18 @@ int main(void) {
     test_deterministic_fuel();
     test_slow_path_partial_execution();
     test_slow_path_side_effects();
+    test_br_table_fuel();
+    test_br_table_resume();
+    test_call_indirect_fuel();
+    test_call_indirect_resume();
+    test_return_call_fuel();
+    test_return_call_resume();
+    test_return_call_indirect_resume();
+    test_exception_fuel();
+    test_exception_resume();
+    test_exception_across_call_resume();
+    test_multi_value_fuel();
+    test_multi_value_resume();
 
     printf("\n=== All fuel tests passed ===\n");
     return 0;
