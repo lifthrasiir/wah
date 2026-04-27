@@ -370,6 +370,9 @@ typedef struct wah_exec_context_s {
 
     int64_t fuel;
 
+    uint64_t max_memory_bytes;      // WAH_RLIMIT_UNLIMITED = no limit; 0 is a valid limit
+    uint64_t memory_bytes_committed; // current total: linear mem + tables + GC heap
+
     wah_exec_lifecycle_t lifecycle;
 
     wah_features_t enabled_features;
@@ -398,9 +401,10 @@ wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id
 
 typedef struct wah_rlimits_s {
     uint64_t max_stack_bytes;    // unified value+call frame stack; 0=default
-    uint64_t max_memory_bytes;   // linear mem + table + GC heap total; 0=default (reserved)
-    uint64_t fuel;               // execution fuel; 0=default (no fuel limit, reserved)
+    uint64_t max_memory_bytes;   // linear mem + table + GC heap total; 0=default (no limit), >0=that limit
+    uint64_t fuel;               // execution fuel; 0=default (no fuel limit)
     uint64_t epoch_deadline;     // cooperative time limit; 0=default (reserved)
+    bool no_memory_bytes;        // true=enforce 0-byte limit; incompatible with max_memory_bytes>0
 } wah_rlimits_t;
 
 wah_rlimits_t wah_default_rlimits(void);
@@ -3612,6 +3616,27 @@ static WAH_ALWAYS_INLINE uint8x16_t wah_i32x4_trunc_sat_f32x4_s_neon(uint8x16_t 
 }
 
 #endif // defined WAH_AARCH64
+
+////////////////////////////////////////////////////////////////////////////////
+// Memory management ///////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+static bool wah_budget_check(const wah_exec_context_t *ctx, uint64_t additional) {
+    if (ctx->max_memory_bytes == WAH_RLIMIT_UNLIMITED) return true;
+    if (ctx->memory_bytes_committed > ctx->max_memory_bytes) return false;
+    return additional <= ctx->max_memory_bytes - ctx->memory_bytes_committed;
+}
+
+static void wah_budget_charge(wah_exec_context_t *ctx, uint64_t bytes) {
+    ctx->memory_bytes_committed += bytes;
+}
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+static void wah_budget_release(wah_exec_context_t *ctx, uint64_t bytes) {
+    WAH_ASSERT(ctx->memory_bytes_committed >= bytes);
+    ctx->memory_bytes_committed -= bytes;
+}
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 // Subtyping ///////////////////////////////////////////////////////////////////
@@ -8297,6 +8322,7 @@ wah_error_t wah_gc_start(wah_exec_context_t *ctx) {
 
 void wah_gc_reset(wah_exec_context_t *ctx) {
     if (!ctx->gc) return;
+    wah_budget_release(ctx, ctx->gc->allocated_bytes);
     wah_gc_free_all_objects(ctx->gc);
     ctx->gc->phase = WAH_GC_PHASE_IDLE;
     ctx->gc->gc_pending = false;
@@ -8306,6 +8332,7 @@ void wah_gc_reset(wah_exec_context_t *ctx) {
 
 void wah_gc_destroy(wah_exec_context_t *ctx) {
     if (!ctx->gc) return;
+    wah_budget_release(ctx, ctx->gc->allocated_bytes);
     wah_gc_free_all_objects(ctx->gc);
     free(ctx->gc);
     ctx->gc = NULL;
@@ -8318,6 +8345,7 @@ static void *wah_gc_alloc(wah_exec_context_t *ctx, wah_repr_t repr_id, uint32_t 
     if (!gc) return NULL;
 
     uint32_t total = (uint32_t)(sizeof(wah_gc_object_t) + payload_size);
+    if (!wah_budget_check(ctx, total)) return NULL;
     wah_gc_object_t *obj = (wah_gc_object_t *)malloc(total);
     if (!obj) return NULL;
     WAH_ASSERT(((uintptr_t)obj & WAH_I31_TAG) == 0 && "malloc returned unaligned pointer");
@@ -8329,6 +8357,7 @@ static void *wah_gc_alloc(wah_exec_context_t *ctx, wah_repr_t repr_id, uint32_t 
     gc->all_objects = obj;
     gc->object_count++;
     gc->allocated_bytes += total;
+    wah_budget_charge(ctx, total);
 #ifdef WAH_DEBUG
     gc->total_allocations++;
 #endif
@@ -8590,7 +8619,8 @@ static void wah_gc_step_mark(wah_exec_context_t *ctx) {
     gc->sweep_cursor = NULL;
 }
 
-static void wah_gc_step_sweep(wah_gc_state_t *gc) {
+static void wah_gc_step_sweep(wah_exec_context_t *ctx) {
+    wah_gc_state_t *gc = ctx->gc;
     wah_gc_object_t *prev_obj = NULL;
     wah_gc_object_t *obj = gc->all_objects;
     while (obj) {
@@ -8602,6 +8632,7 @@ static void wah_gc_step_sweep(wah_gc_state_t *gc) {
                 gc->all_objects = next;
             gc->allocated_bytes -= obj->size_bytes;
             gc->object_count--;
+            wah_budget_release(ctx, obj->size_bytes);
 #ifdef WAH_DEBUG
             gc->total_frees++;
 #endif
@@ -8630,14 +8661,14 @@ void wah_gc_step(wah_exec_context_t *ctx) {
             gc->total_collections++;
 #endif
             wah_gc_step_mark(ctx);
-            wah_gc_step_sweep(gc);
+            wah_gc_step_sweep(ctx);
             break;
         case WAH_GC_PHASE_MARK:
             wah_gc_step_mark(ctx);
-            wah_gc_step_sweep(gc);
+            wah_gc_step_sweep(ctx);
             break;
         case WAH_GC_PHASE_SWEEP:
-            wah_gc_step_sweep(gc);
+            wah_gc_step_sweep(ctx);
             break;
     }
 }
@@ -8738,6 +8769,16 @@ wah_error_t wah_exec_context_create_with_limits(wah_exec_context_t *exec_ctx, co
     *exec_ctx = (wah_exec_context_t){ .is_instantiated = false };
     wah_error_t err = WAH_OK;
 
+    WAH_ENSURE(!(limits->no_memory_bytes && limits->max_memory_bytes > 0), WAH_ERROR_MISUSE);
+    if (limits->no_memory_bytes) {
+        exec_ctx->max_memory_bytes = 0;
+    } else if (limits->max_memory_bytes > 0) {
+        exec_ctx->max_memory_bytes = limits->max_memory_bytes;
+    } else {
+        exec_ctx->max_memory_bytes = WAH_RLIMIT_UNLIMITED;
+    }
+    exec_ctx->memory_bytes_committed = 0;
+
     WAH_CHECK_GOTO(wah_alloc_unified_stack(exec_ctx, limits->max_stack_bytes), cleanup);
 
     uint32_t total_globals = wah_global_index_limit(module);
@@ -8749,7 +8790,7 @@ wah_error_t wah_exec_context_create_with_limits(wah_exec_context_t *exec_ctx, co
 
     exec_ctx->module = module;
     exec_ctx->enabled_features = module->enabled_features;
-    exec_ctx->fuel = INT64_MAX;
+    exec_ctx->fuel = (limits->fuel != 0) ? (int64_t)limits->fuel : INT64_MAX;
 
     uint32_t total_memories = wah_memory_index_limit(module);
     if (total_memories > 0) {
@@ -8769,11 +8810,14 @@ wah_error_t wah_exec_context_create_with_limits(wah_exec_context_t *exec_ctx, co
         for (uint32_t i = 0; i < module->memory_count; ++i) {
             uint32_t slot = module->import_memory_count + i;
             WAH_ENSURE_GOTO(module->memories[i].min_pages <= SIZE_MAX / WAH_WASM_PAGE_SIZE, WAH_ERROR_TOO_LARGE, cleanup);
-            exec_ctx->memories[slot].size = module->memories[i].min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
-            if (exec_ctx->memories[slot].size > 0) {
-                WAH_MALLOC_ARRAY_GOTO(exec_ctx->memories[slot].data, exec_ctx->memories[slot].size, cleanup);
-                memset(exec_ctx->memories[slot].data, 0, exec_ctx->memories[slot].size);
+            uint64_t byte_size = module->memories[i].min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
+            WAH_ENSURE_GOTO(wah_budget_check(exec_ctx, byte_size), WAH_ERROR_TOO_LARGE, cleanup);
+            exec_ctx->memories[slot].size = byte_size;
+            if (byte_size > 0) {
+                WAH_MALLOC_ARRAY_GOTO(exec_ctx->memories[slot].data, byte_size, cleanup);
+                memset(exec_ctx->memories[slot].data, 0, byte_size);
             }
+            wah_budget_charge(exec_ctx, byte_size);
         }
         if (exec_ctx->memory_count > 0) {
             exec_ctx->memory_base = exec_ctx->memories[0].data;
@@ -8792,11 +8836,15 @@ wah_error_t wah_exec_context_create_with_limits(wah_exec_context_t *exec_ctx, co
         }
         // Only allocate local tables (starting at offset import_table_count).
         for (uint32_t i = 0; i < module->table_count; ++i) {
-            uint32_t slot = exec_ctx->table_count++;
+            uint32_t slot = exec_ctx->table_count;
             uint32_t min_elements = module->tables[i].min_elements;
+            uint64_t table_bytes = (uint64_t)min_elements * sizeof(wah_value_t);
+            WAH_ENSURE_GOTO(wah_budget_check(exec_ctx, table_bytes), WAH_ERROR_TOO_LARGE, cleanup);
             exec_ctx->tables[slot] = (wah_table_inst_t){ .size = min_elements, .max_size = module->tables[i].max_elements };
             WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables[slot].entries, min_elements, cleanup);
             memset(exec_ctx->tables[slot].entries, 0, sizeof(wah_value_t) * min_elements);
+            wah_budget_charge(exec_ctx, table_bytes);
+            exec_ctx->table_count++;
         }
     }
 
@@ -8855,25 +8903,46 @@ wah_error_t wah_exec_context_set_limits(wah_exec_context_t *exec_ctx, const wah_
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(exec_ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
     WAH_ENSURE(exec_ctx->call_depth == 0 && exec_ctx->sp == exec_ctx->value_stack, WAH_ERROR_MISUSE);
-    uint64_t new_size = limits->max_stack_bytes;
-    if (new_size == 0) new_size = WAH_DEFAULT_STACK_BYTES;
-    if (new_size == exec_ctx->stack_buffer_size) return WAH_OK;
-    if (new_size > SIZE_MAX) return WAH_ERROR_TOO_LARGE;
-    uint8_t *new_buf = (uint8_t *)malloc((size_t)new_size);
-    if (!new_buf) return WAH_ERROR_OUT_OF_MEMORY;
-    free(exec_ctx->stack_buffer);
-    exec_ctx->stack_buffer = new_buf;
-    exec_ctx->stack_buffer_size = new_size;
-    exec_ctx->value_stack = (wah_value_t *)new_buf;
-    exec_ctx->sp = exec_ctx->value_stack;
-    uintptr_t buf_end = (uintptr_t)new_buf + (size_t)new_size;
-    buf_end &= ~(uintptr_t)(WAH_ALIGNOF(wah_call_frame_t) - 1);
-    exec_ctx->frame_ptr = (wah_call_frame_t *)buf_end;
+
+    if (limits->max_stack_bytes != 0 && limits->max_stack_bytes != exec_ctx->stack_buffer_size) {
+        uint64_t new_size = limits->max_stack_bytes;
+        if (new_size > SIZE_MAX) return WAH_ERROR_TOO_LARGE;
+        uint8_t *new_buf = (uint8_t *)malloc((size_t)new_size);
+        if (!new_buf) return WAH_ERROR_OUT_OF_MEMORY;
+        free(exec_ctx->stack_buffer);
+        exec_ctx->stack_buffer = new_buf;
+        exec_ctx->stack_buffer_size = new_size;
+        exec_ctx->value_stack = (wah_value_t *)new_buf;
+        exec_ctx->sp = exec_ctx->value_stack;
+        uintptr_t buf_end = (uintptr_t)new_buf + (size_t)new_size;
+        buf_end &= ~(uintptr_t)(WAH_ALIGNOF(wah_call_frame_t) - 1);
+        exec_ctx->frame_ptr = (wah_call_frame_t *)buf_end;
+    }
+
+    WAH_ENSURE(!(limits->no_memory_bytes && limits->max_memory_bytes > 0), WAH_ERROR_MISUSE);
+    if (limits->no_memory_bytes || limits->max_memory_bytes > 0) {
+        uint64_t new_max_mem = limits->no_memory_bytes ? 0 : limits->max_memory_bytes;
+        if (new_max_mem < exec_ctx->memory_bytes_committed) {
+            return WAH_ERROR_TOO_LARGE;
+        }
+        exec_ctx->max_memory_bytes = new_max_mem;
+    }
+
+    if (limits->fuel != 0) {
+        exec_ctx->fuel = (int64_t)limits->fuel;
+    }
+
     return WAH_OK;
 }
 
 void wah_exec_context_get_limits(const wah_exec_context_t *exec_ctx, wah_rlimits_t *out) {
-    *out = (wah_rlimits_t){ .max_stack_bytes = exec_ctx->stack_buffer_size };
+    uint64_t mm = exec_ctx->max_memory_bytes;
+    *out = (wah_rlimits_t){
+        .max_stack_bytes = exec_ctx->stack_buffer_size,
+        .max_memory_bytes = (mm == WAH_RLIMIT_UNLIMITED) ? 0 : mm,
+        .no_memory_bytes = (mm == 0),
+        .fuel = (exec_ctx->fuel >= 0 && exec_ctx->fuel < INT64_MAX) ? (uint64_t)exec_ctx->fuel : 0,
+    };
 }
 
 void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
@@ -10379,6 +10448,18 @@ WAH_RUN(TABLE_GROW) {
         WAH_NEXT();
     }
 
+    uint64_t delta_bytes = (uint64_t)delta * sizeof(wah_value_t);
+    if (!wah_budget_check(ctx, delta_bytes)) {
+        (*sp++).i32 = -1;
+        WAH_NEXT();
+    }
+    if (ctx->tables[table_idx].import_ctx && ctx->tables[table_idx].is_imported) {
+        if (!wah_budget_check(ctx->tables[table_idx].import_ctx, delta_bytes)) {
+            (*sp++).i32 = -1;
+            WAH_NEXT();
+        }
+    }
+
     // Reallocate table
     wah_value_t *new_table = NULL;
     WAH_MALLOC_ARRAY_GOTO(new_table, new_size, cleanup);
@@ -10393,10 +10474,12 @@ WAH_RUN(TABLE_GROW) {
     }
     ctx->tables[table_idx].entries = new_table;
     ctx->tables[table_idx].size = (uint32_t)new_size;
+    wah_budget_charge(ctx, delta_bytes);
     if (ctx->tables[table_idx].import_ctx) {
         wah_exec_context_t *src = ctx->tables[table_idx].import_ctx;
         uint32_t src_idx = ctx->tables[table_idx].import_idx;
         if (ctx->tables[table_idx].is_imported) {
+            wah_budget_charge(src, delta_bytes);
             src->tables[src_idx].is_imported = true;
         }
         src->tables[src_idx].entries = new_table;
@@ -10546,6 +10629,18 @@ WAH_RUN(TABLE_GROW_i64) {
         WAH_NEXT();
     }
 
+    uint64_t delta_bytes = (uint64_t)delta * sizeof(wah_value_t);
+    if (!wah_budget_check(ctx, delta_bytes)) {
+        (*sp++).i64 = -1;
+        WAH_NEXT();
+    }
+    if (ctx->tables[table_idx].import_ctx && ctx->tables[table_idx].is_imported) {
+        if (!wah_budget_check(ctx->tables[table_idx].import_ctx, delta_bytes)) {
+            (*sp++).i64 = -1;
+            WAH_NEXT();
+        }
+    }
+
     wah_value_t *new_table = NULL;
     WAH_MALLOC_ARRAY_GOTO(new_table, new_size, cleanup);
     memcpy(new_table, ctx->tables[table_idx].entries, sizeof(wah_value_t) * old_size);
@@ -10559,10 +10654,12 @@ WAH_RUN(TABLE_GROW_i64) {
     }
     ctx->tables[table_idx].entries = new_table;
     ctx->tables[table_idx].size = (uint32_t)new_size;
+    wah_budget_charge(ctx, delta_bytes);
     if (ctx->tables[table_idx].import_ctx) {
         wah_exec_context_t *src = ctx->tables[table_idx].import_ctx;
         uint32_t src_idx = ctx->tables[table_idx].import_idx;
         if (ctx->tables[table_idx].is_imported) {
+            wah_budget_charge(src, delta_bytes);
             src->tables[src_idx].is_imported = true;
         }
         src->tables[src_idx].entries = new_table;
@@ -11461,17 +11558,30 @@ WAH_RUN(MEMORY_GROW) {
     }
 
     size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
+    uint64_t delta_bytes = new_memory_size - fctx->memories[mem_idx].size;
+    if (!wah_budget_check(ctx, delta_bytes)) {
+        (*sp++).i32 = -1;
+        WAH_NEXT();
+    }
+    if (ctx->memories[mem_idx].import_ctx && ctx->memories[mem_idx].is_imported) {
+        if (!wah_budget_check(ctx->memories[mem_idx].import_ctx, delta_bytes)) {
+            (*sp++).i32 = -1;
+            WAH_NEXT();
+        }
+    }
     WAH_REALLOC_ARRAY_GOTO(fctx->memories[mem_idx].data, new_memory_size, grow_oom);
 
     if (new_memory_size > fctx->memories[mem_idx].size) {
         memset(fctx->memories[mem_idx].data + fctx->memories[mem_idx].size, 0, new_memory_size - fctx->memories[mem_idx].size);
     }
 
+    wah_budget_charge(ctx, delta_bytes);
     fctx->memories[mem_idx].size = (uint64_t)new_memory_size;
     if (ctx->memories[mem_idx].import_ctx) {
         wah_exec_context_t *src = ctx->memories[mem_idx].import_ctx;
         uint32_t src_idx = ctx->memories[mem_idx].import_idx;
         if (ctx->memories[mem_idx].is_imported) {
+            wah_budget_charge(src, delta_bytes);
             src->memories[src_idx].is_imported = true;
         }
         src->memories[src_idx].data = fctx->memories[mem_idx].data;
@@ -11642,17 +11752,30 @@ WAH_RUN(MEMORY_GROW_i64) {
     }
 
     size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
+    uint64_t delta_bytes = new_memory_size - fctx->memories[mem_idx].size;
+    if (!wah_budget_check(ctx, delta_bytes)) {
+        (*sp++).i64 = -1;
+        WAH_NEXT();
+    }
+    if (ctx->memories[mem_idx].import_ctx && ctx->memories[mem_idx].is_imported) {
+        if (!wah_budget_check(ctx->memories[mem_idx].import_ctx, delta_bytes)) {
+            (*sp++).i64 = -1;
+            WAH_NEXT();
+        }
+    }
     WAH_REALLOC_ARRAY_GOTO(fctx->memories[mem_idx].data, new_memory_size, grow_i64_oom);
 
     if (new_memory_size > fctx->memories[mem_idx].size) {
         memset(fctx->memories[mem_idx].data + fctx->memories[mem_idx].size, 0, new_memory_size - fctx->memories[mem_idx].size);
     }
 
+    wah_budget_charge(ctx, delta_bytes);
     fctx->memories[mem_idx].size = (uint64_t)new_memory_size;
     if (ctx->memories[mem_idx].import_ctx) {
         wah_exec_context_t *src = ctx->memories[mem_idx].import_ctx;
         uint32_t src_idx = ctx->memories[mem_idx].import_idx;
         if (ctx->memories[mem_idx].is_imported) {
+            wah_budget_charge(src, delta_bytes);
             src->memories[src_idx].is_imported = true;
         }
         src->memories[src_idx].data = fctx->memories[mem_idx].data;
@@ -14067,10 +14190,13 @@ static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, const uint8_t *b
                                      .result_count = 1, .frame_globals = ctx->globals, .module = ctx->module };
     wah_exec_context_t cctx = { .module = ctx->module, .globals = ctx->globals, .global_count = ctx->global_count,
                                 .value_stack = local_stack, .sp = local_stack, .frame_ptr = &local_frame,
-                                .call_depth = 1, .gc = ctx->gc };
+                                .call_depth = 1, .gc = ctx->gc,
+                                .max_memory_bytes = ctx->max_memory_bytes,
+                                .memory_bytes_committed = ctx->memory_bytes_committed };
     local_frame.frame_ctx = &cctx;
 
     wah_error_t err = wah_run_interpreter(&cctx);
+    ctx->memory_bytes_committed = cctx.memory_bytes_committed;
     if (err != WAH_OK) return err;
     WAH_ASSERT(cctx.sp == local_stack + 1 && "Const expression should leave exactly one value on the stack");
     *result = local_stack[0];
@@ -14361,20 +14487,26 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             if (linked_table_idx >= linked->import_table_count) {
                 WAH_ENSURE_GOTO(linked_ctx->tables[linked_table_idx].size >= ti->type.min_elements, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             }
+            uint64_t imp_bytes = (uint64_t)linked_ctx->tables[linked_table_idx].size * sizeof(wah_value_t);
+            WAH_ENSURE_GOTO(wah_budget_check(ctx, imp_bytes), WAH_ERROR_TOO_LARGE, cleanup);
             ctx->tables[i].entries = linked_ctx->tables[linked_table_idx].entries;
             ctx->tables[i].size = linked_ctx->tables[linked_table_idx].size;
             ctx->tables[i].max_size = linked_ctx->tables[linked_table_idx].max_size;
             ctx->tables[i].is_imported = true;
             ctx->tables[i].import_ctx = linked_ctx;
             ctx->tables[i].import_idx = linked_table_idx;
+            wah_budget_charge(ctx, imp_bytes);
         } else if (linked_table_idx >= linked->import_table_count) {
             WAH_ENSURE_GOTO(exp_tt->min_elements >= ti->type.min_elements, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             uint32_t min_elements = exp_tt->min_elements;
+            uint64_t table_bytes = (uint64_t)min_elements * sizeof(wah_value_t);
+            WAH_ENSURE_GOTO(wah_budget_check(ctx, table_bytes), WAH_ERROR_TOO_LARGE, cleanup);
             ctx->tables[i].is_imported = false;
             ctx->tables[i].size = min_elements;
             ctx->tables[i].max_size = exp_tt->max_elements;
             WAH_MALLOC_ARRAY_GOTO(ctx->tables[i].entries, min_elements > 0 ? min_elements : 1, cleanup);
             memset(ctx->tables[i].entries, 0, sizeof(wah_value_t) * min_elements);
+            wah_budget_charge(ctx, table_bytes);
         }
     }
 
@@ -14409,23 +14541,28 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 uint64_t cur_pages = linked_ctx->memories[linked_mem_idx].size / WAH_WASM_PAGE_SIZE;
                 WAH_ENSURE_GOTO(cur_pages >= mi->type.min_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             }
+            uint64_t imp_bytes = linked_ctx->memories[linked_mem_idx].size;
+            WAH_ENSURE_GOTO(wah_budget_check(ctx, imp_bytes), WAH_ERROR_TOO_LARGE, cleanup);
             ctx->memories[i].data = linked_ctx->memories[linked_mem_idx].data;
             ctx->memories[i].size = linked_ctx->memories[linked_mem_idx].size;
             ctx->memories[i].max_pages = linked_ctx->memories[linked_mem_idx].max_pages;
             ctx->memories[i].is_imported = true;
             ctx->memories[i].import_ctx = linked_ctx;
             ctx->memories[i].import_idx = linked_mem_idx;
+            wah_budget_charge(ctx, imp_bytes);
         } else if (linked_mem_idx >= linked->import_memory_count) {
             WAH_ENSURE_GOTO(exp_mt->min_pages >= mi->type.min_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
             ctx->memories[i].max_pages = exp_mt->max_pages;
             uint64_t min_pages = exp_mt->min_pages;
             uint64_t byte_size = min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
+            WAH_ENSURE_GOTO(wah_budget_check(ctx, byte_size), WAH_ERROR_TOO_LARGE, cleanup);
             ctx->memories[i].is_imported = false;
             ctx->memories[i].size = byte_size;
             if (byte_size > 0) {
                 WAH_MALLOC_ARRAY_GOTO(ctx->memories[i].data, byte_size, cleanup);
                 memset(ctx->memories[i].data, 0, byte_size);
             }
+            wah_budget_charge(ctx, byte_size);
         }
 
         // Update fast-path aliases if memory 0 was just resolved
