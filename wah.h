@@ -8757,6 +8757,10 @@ static inline void wah_ref_store_table(wah_exec_context_t *ctx, uint32_t table_i
 
 #endif // WAH_FEATURE_GC
 
+////////////////////////////////////////////////////////////////////////////////
+// Deadline timer //////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
 static inline void wah_recompute_poll_flag(wah_exec_context_t *ctx) {
     int pending = WAH_POLL_FLAG_LOAD(ctx->interrupt_flag) != 0;
     pending = pending || (ctx->gc && ctx->gc->gc_pending);
@@ -8837,23 +8841,6 @@ static uint64_t wah_deadline_timer_now_us(void) {
 }
 #endif
 
-static void wah_deadline_timer_abs_time(uint64_t us, struct timespec *out) {
-    clock_gettime(CLOCK_MONOTONIC, out);
-    out->tv_sec += (time_t)(us / 1000000);
-    out->tv_nsec += (long)((us % 1000000) * 1000);
-    if (out->tv_nsec >= 1000000000L) {
-        out->tv_sec++;
-        out->tv_nsec -= 1000000000L;
-    }
-}
-
-#if defined(__APPLE__)
-static void wah_deadline_timer_rel_time(uint64_t us, struct timespec *out) {
-    out->tv_sec = (time_t)(us / 1000000);
-    out->tv_nsec = (long)((us % 1000000) * 1000);
-}
-#endif
-
 static void *wah_deadline_timer_main(void *arg) {
     wah_deadline_timer_t *timer = (wah_deadline_timer_t *)arg;
     pthread_mutex_lock(&timer->mutex);
@@ -8874,13 +8861,20 @@ static void *wah_deadline_timer_main(void *arg) {
                 rc = ETIMEDOUT;
                 break;
             }
-            struct timespec rel;
-            wah_deadline_timer_rel_time(deadline_us - elapsed_us, &rel);
+            uint64_t remaining_us = deadline_us - elapsed_us;
+            struct timespec rel = { .tv_sec = (time_t)(remaining_us / 1000000),
+                                    .tv_nsec = (long)((remaining_us % 1000000) * 1000) };
             rc = pthread_cond_timedwait_relative_np(&timer->cond, &timer->mutex, &rel);
         }
 #else
         struct timespec deadline;
-        wah_deadline_timer_abs_time(timer->deadline_us, &deadline);
+        clock_gettime(CLOCK_MONOTONIC, &deadline);
+        deadline.tv_sec += (time_t)(timer->deadline_us / 1000000);
+        deadline.tv_nsec += (long)((timer->deadline_us % 1000000) * 1000);
+        if (deadline.tv_nsec >= 1000000000L) {
+            deadline.tv_sec++;
+            deadline.tv_nsec -= 1000000000L;
+        }
         int rc = 0;
         while (!WAH_POLL_FLAG_LOAD(timer->cancelled) && WAH_POLL_FLAG_LOAD(timer->armed) && rc != ETIMEDOUT) {
             rc = pthread_cond_timedwait(&timer->cond, &timer->mutex, &deadline);
@@ -8907,75 +8901,58 @@ static wah_error_t wah_deadline_timer_create(wah_exec_context_t *ctx) {
     timer->deadline_us = ctx->deadline_us;
 #if defined(_WIN32)
     timer->event = CreateEventA(NULL, TRUE, FALSE, NULL);
-    if (!timer->event) { free(timer); return WAH_ERROR_OUT_OF_MEMORY; }
+    if (!timer->event) goto cleanup;
     timer->timer = CreateWaitableTimerA(NULL, TRUE, NULL);
-    if (!timer->timer) {
-        CloseHandle(timer->event);
-        free(timer);
-        return WAH_ERROR_OUT_OF_MEMORY;
-    }
+    if (!timer->timer) goto cleanup_event;
     timer->thread = CreateThread(NULL, 0, wah_deadline_timer_main, timer, 0, NULL);
-    if (!timer->thread) {
-        CloseHandle(timer->timer);
-        CloseHandle(timer->event);
-        free(timer);
-        return WAH_ERROR_OUT_OF_MEMORY;
-    }
+    if (!timer->thread) goto cleanup_timer;
+    ctx->deadline_timer = timer;
+    return WAH_OK;
+cleanup_timer:
+    CloseHandle(timer->timer);
+cleanup_event:
+    CloseHandle(timer->event);
+cleanup:
+    free(timer);
+    return WAH_ERROR_OUT_OF_MEMORY;
 #else
     pthread_condattr_t attr;
-    if (pthread_mutex_init(&timer->mutex, NULL) != 0) { free(timer); return WAH_ERROR_OUT_OF_MEMORY; }
-    if (pthread_condattr_init(&attr) != 0) {
-        pthread_mutex_destroy(&timer->mutex);
-        free(timer);
-        return WAH_ERROR_OUT_OF_MEMORY;
-    }
+    if (pthread_mutex_init(&timer->mutex, NULL) != 0) goto cleanup;
+    if (pthread_condattr_init(&attr) != 0) goto cleanup_mutex;
 #if defined(CLOCK_MONOTONIC) && !defined(__APPLE__)
     pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
 #endif
-    if (pthread_cond_init(&timer->cond, &attr) != 0) {
-        pthread_condattr_destroy(&attr);
-        pthread_mutex_destroy(&timer->mutex);
-        free(timer);
-        return WAH_ERROR_OUT_OF_MEMORY;
-    }
+    if (pthread_cond_init(&timer->cond, &attr) != 0) goto cleanup_attr;
     pthread_condattr_destroy(&attr);
-    if (pthread_create(&timer->thread, NULL, wah_deadline_timer_main, timer) != 0) {
-        pthread_cond_destroy(&timer->cond);
-        pthread_mutex_destroy(&timer->mutex);
-        free(timer);
-        return WAH_ERROR_OUT_OF_MEMORY;
-    }
-#endif
+    if (pthread_create(&timer->thread, NULL, wah_deadline_timer_main, timer) != 0) goto cleanup_cond;
     ctx->deadline_timer = timer;
     return WAH_OK;
-}
-
-static void wah_deadline_timer_arm(wah_exec_context_t *ctx) {
-    wah_deadline_timer_t *timer = ctx->deadline_timer;
-    if (!timer || ctx->deadline_us == 0) return;
-    timer->deadline_us = ctx->deadline_us;
-#if defined(_WIN32)
-    WAH_POLL_FLAG_STORE(timer->armed, 1);
-    SetEvent(timer->event);
-#else
-    pthread_mutex_lock(&timer->mutex);
-    timer->deadline_us = ctx->deadline_us;
-    WAH_POLL_FLAG_STORE(timer->armed, 1);
-    pthread_cond_signal(&timer->cond);
-    pthread_mutex_unlock(&timer->mutex);
+cleanup_cond:
+    pthread_cond_destroy(&timer->cond);
+    goto cleanup_mutex;
+cleanup_attr:
+    pthread_condattr_destroy(&attr);
+cleanup_mutex:
+    pthread_mutex_destroy(&timer->mutex);
+cleanup:
+    free(timer);
+    return WAH_ERROR_OUT_OF_MEMORY;
 #endif
 }
 
-static void wah_deadline_timer_disarm(wah_exec_context_t *ctx) {
+static void wah_deadline_timer_set_armed(wah_exec_context_t *ctx, bool armed) {
     wah_deadline_timer_t *timer = ctx->deadline_timer;
     if (!timer) return;
+    if (armed && ctx->deadline_us == 0) return;
 #if defined(_WIN32)
-    WAH_POLL_FLAG_STORE(timer->armed, 0);
-    CancelWaitableTimer(timer->timer);
+    if (armed) timer->deadline_us = ctx->deadline_us;
+    WAH_POLL_FLAG_STORE(timer->armed, armed ? 1 : 0);
+    if (!armed) CancelWaitableTimer(timer->timer);
     SetEvent(timer->event);
 #else
     pthread_mutex_lock(&timer->mutex);
-    WAH_POLL_FLAG_STORE(timer->armed, 0);
+    if (armed) timer->deadline_us = ctx->deadline_us;
+    WAH_POLL_FLAG_STORE(timer->armed, armed ? 1 : 0);
     pthread_cond_signal(&timer->cond);
     pthread_mutex_unlock(&timer->mutex);
 #endif
@@ -9005,8 +8982,7 @@ static void wah_deadline_timer_destroy(wah_exec_context_t *ctx) {
 }
 #else
 static wah_error_t wah_deadline_timer_create(wah_exec_context_t *ctx) { (void)ctx; return WAH_ERROR_DISABLED_FEATURE; }
-static void wah_deadline_timer_arm(wah_exec_context_t *ctx) { (void)ctx; }
-static void wah_deadline_timer_disarm(wah_exec_context_t *ctx) { (void)ctx; }
+static void wah_deadline_timer_set_armed(wah_exec_context_t *ctx, bool armed) { (void)ctx; (void)armed; }
 static void wah_deadline_timer_destroy(wah_exec_context_t *ctx) { (void)ctx; }
 #endif
 
@@ -9015,7 +8991,7 @@ static void wah_deadline_timer_destroy(wah_exec_context_t *ctx) { (void)ctx; }
 ////////////////////////////////////////////////////////////////////////////////
 
 wah_rlimits_t wah_default_rlimits(void) {
-    return (wah_rlimits_t){ .max_stack_bytes = 0 };
+    return (wah_rlimits_t){0};
 }
 
 static wah_error_t wah_alloc_unified_stack(wah_exec_context_t *exec_ctx, uint64_t stack_bytes) {
@@ -13683,7 +13659,7 @@ cleanup:
 ////////////////////////////////////////////////////////////////////////////////
 
 static void wah_cancel_internal(wah_exec_context_t *ctx) {
-    wah_deadline_timer_disarm(ctx);
+    wah_deadline_timer_set_armed(ctx, false);
     WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0);
     wah_recompute_poll_flag(ctx);
     if (ctx->lifecycle.state == WAH_EXEC_READY) return;
@@ -13751,9 +13727,9 @@ static wah_error_t wah_start_internal(
 static wah_error_t wah_resume_internal(wah_exec_context_t *ctx) {
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_SUSPENDED, WAH_ERROR_MISUSE);
     ctx->lifecycle.state = WAH_EXEC_RUNNING;
-    wah_deadline_timer_arm(ctx);
+    wah_deadline_timer_set_armed(ctx, true);
     wah_error_t err = wah_run_interpreter(ctx);
-    wah_deadline_timer_disarm(ctx);
+    wah_deadline_timer_set_armed(ctx, false);
     if (err == WAH_OK) {
         ctx->lifecycle.state = WAH_EXEC_FINISHED;
     } else if (err > 0) {
@@ -13840,9 +13816,9 @@ static wah_error_t wah_call_module_multi(
     if (fn->is_host) {
         size_t nresults = fn->nresults;
         WAH_ENSURE(max_results >= nresults, WAH_ERROR_VALIDATION_FAILED);
-        wah_deadline_timer_arm(exec_ctx);
+        wah_deadline_timer_set_armed(exec_ctx, true);
         wah_error_t host_err = wah_call_host_function_internal(exec_ctx, fn, params, param_count, results);
-        wah_deadline_timer_disarm(exec_ctx);
+        wah_deadline_timer_set_armed(exec_ctx, false);
         WAH_CHECK(host_err);
         *actual_results = (uint32_t)nresults;
         return WAH_OK;
