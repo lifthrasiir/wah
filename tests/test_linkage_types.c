@@ -2,6 +2,22 @@
 #include "common.h"
 #include <stdio.h>
 
+static bool has_type_check_cache_entry(const wah_exec_context_t *ctx,
+                                       const wah_module_t *sub_module, wah_type_t sub_type,
+                                       const wah_module_t *sup_module, wah_type_t sup_type,
+                                       bool is_subtype) {
+    for (uint32_t i = 0; i < WAH_TYPE_CHECK_CACHE_SIZE; ++i) {
+        const wah_type_check_cache_entry_t *entry = &ctx->type_check_cache[i];
+        if (entry->valid &&
+            entry->sub_module == sub_module && entry->sub_type == sub_type &&
+            entry->sup_module == sup_module && entry->sup_type == sup_type &&
+            entry->is_subtype == is_subtype) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // a70aac0: Support cross-module call_indirect through imported tables.
 static void test_cross_module_call_indirect() {
     printf("Testing cross-module call_indirect (a70aac0)...\n");
@@ -489,9 +505,12 @@ static void test_cross_module_type_with_extra_types() {
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
-    wah_value_t param = {.i32 = 10};
-    assert_ok(wah_call(&ctx, 1, &param, 1, &result));
-    assert_eq_i32(result.i32, 15);
+    for (int i = 0; i < 16; ++i) {
+        wah_value_t param = {.i32 = 10};
+        assert_ok(wah_call(&ctx, 1, &param, 1, &result));
+        assert_eq_i32(result.i32, 15);
+    }
+    assert_true(has_type_check_cache_entry(&ctx, &provider, 1, &consumer, 0, true));
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&consumer);
@@ -527,6 +546,7 @@ static void test_cross_module_subtype_func_ref_test() {
     wah_value_t result;
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 1);
+    assert_true(has_type_check_cache_entry(&ctx, &provider, 1, &consumer, 0, true));
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&consumer);

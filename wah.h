@@ -318,6 +318,16 @@ typedef volatile int wah_poll_flag_t;
 
 typedef struct wah_deadline_timer_s wah_deadline_timer_t;
 
+#define WAH_TYPE_CHECK_CACHE_SIZE 64
+typedef struct wah_type_check_cache_entry_s {
+    const struct wah_module_s *sub_module;
+    const struct wah_module_s *sup_module;
+    wah_type_t sub_type;
+    wah_type_t sup_type;
+    bool is_subtype;
+    bool valid;
+} wah_type_check_cache_entry_t;
+
 typedef struct wah_exec_context_s {
     // Unified stack: values grow upward from stack_buffer, call frames grow
     // downward from stack_end. Overflow when the two regions meet.
@@ -379,6 +389,8 @@ typedef struct wah_exec_context_s {
     uint64_t memory_bytes_committed; // current total: linear mem + tables + GC heap
 
     wah_exec_lifecycle_t lifecycle;
+
+    wah_type_check_cache_entry_t type_check_cache[WAH_TYPE_CHECK_CACHE_SIZE];
 
     wah_features_t enabled_features;
 } wah_exec_context_t;
@@ -3939,6 +3951,34 @@ static bool wah_cross_module_subtype(const wah_module_t *sub_m, wah_type_t sub_t
         if (wah_cross_module_type_ref_eq(sub_m, (wah_type_t)t, sup_m, sup_t)) return true;
     }
     return false;
+}
+
+static inline uint32_t wah_type_check_cache_slot(const wah_module_t *sub_m, wah_type_t sub_t,
+                                                 const wah_module_t *sup_m, wah_type_t sup_t) {
+    uintptr_t h = (uintptr_t)sub_m >> 4;
+    h ^= ((uintptr_t)sup_m >> 9) * UINT64_C(0x9e3779b97f4a7c15);
+    h ^= (uintptr_t)(uint32_t)sub_t * UINT64_C(0xbf58476d1ce4e5b9);
+    h ^= (uintptr_t)(uint32_t)sup_t * UINT64_C(0x94d049bb133111eb);
+    return (uint32_t)(h & (WAH_TYPE_CHECK_CACHE_SIZE - 1));
+}
+
+static bool wah_cross_module_subtype_cached(wah_exec_context_t *ctx,
+                                            const wah_module_t *sub_m, wah_type_t sub_t,
+                                            const wah_module_t *sup_m, wah_type_t sup_t) {
+    if (!ctx) return wah_cross_module_subtype(sub_m, sub_t, sup_m, sup_t);
+    uint32_t slot = wah_type_check_cache_slot(sub_m, sub_t, sup_m, sup_t);
+    wah_type_check_cache_entry_t *entry = &ctx->type_check_cache[slot];
+    if (entry->valid && entry->sub_module == sub_m && entry->sup_module == sup_m &&
+        entry->sub_type == sub_t && entry->sup_type == sup_t) {
+        return entry->is_subtype;
+    }
+    bool is_subtype = wah_cross_module_subtype(sub_m, sub_t, sup_m, sup_t);
+    *entry = (wah_type_check_cache_entry_t){
+        .sub_module = sub_m, .sup_module = sup_m,
+        .sub_type = sub_t, .sup_type = sup_t,
+        .is_subtype = is_subtype, .valid = true,
+    };
+    return is_subtype;
 }
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
@@ -9481,8 +9521,8 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
             const wah_module_t *fn_module = fn->fn_module ? fn->fn_module : ctx->module;
             if (!fn->is_host && fn->local_idx < fn_module->wasm_function_count) {
                 uint32_t fn_type = fn_module->function_type_indices[fn->local_idx];
-                return wah_cross_module_subtype(fn_module, (wah_type_t)fn_type,
-                                                 ctx->module, target);
+                return wah_cross_module_subtype_cached(ctx, fn_module, (wah_type_t)fn_type,
+                                                       ctx->module, target);
             }
         }
         return false;
@@ -11111,8 +11151,8 @@ WAH_RUN(ELEM_DROP) {
         uint32_t local_idx = (actual_fn)->local_idx; \
         uint32_t actual_type_idx = fn_module->function_type_indices[local_idx]; \
         const wah_func_type_t *actual_func_type = &fn_module->types[actual_type_idx]; \
-        WAH_ENSURE_GOTO(wah_cross_module_subtype(fn_module, (wah_type_t)actual_type_idx, \
-                                                 fctx->module, (wah_type_t)type_idx), WAH_ERROR_TRAP, cleanup); \
+        WAH_ENSURE_GOTO(wah_cross_module_subtype_cached(ctx, fn_module, (wah_type_t)actual_type_idx, \
+                                                        fctx->module, (wah_type_t)type_idx), WAH_ERROR_TRAP, cleanup); \
         CALL_WASM; \
     }
 
