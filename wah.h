@@ -4120,7 +4120,7 @@ static inline wah_error_t wah_decode_uleb128(const uint8_t **ptr, const uint8_t 
 }
 
 // Helper function to decode an unsigned LEB128 integer (64-bit)
-static inline wah_error_t wah_decode_uleb128_u64(const uint8_t **ptr, const uint8_t *end, uint64_t *result) {
+static inline wah_error_t wah_decode_uleb128_64(const uint8_t **ptr, const uint8_t *end, uint64_t *result) {
     uint64_t val = 0;
     uint32_t shift = 0;
     uint8_t byte;
@@ -4164,24 +4164,6 @@ static inline wah_error_t wah_decode_sleb128_32(const uint8_t **ptr, const uint8
     }
     // If we get here, it means the 5th byte had the continuation bit set.
     return WAH_ERROR_TOO_LARGE;
-}
-
-// Helper function to decode an unsigned LEB128 integer (64-bit)
-static inline wah_error_t wah_decode_uleb128_64(const uint8_t **ptr, const uint8_t *end, uint64_t *result) {
-    *result = 0;
-    uint64_t shift = 0;
-    uint8_t byte;
-
-    do {
-        WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
-        WAH_ENSURE(shift < 64, WAH_ERROR_TOO_LARGE);
-        byte = *(*ptr)++;
-        *result |= (uint64_t)(byte & 0x7F) << shift;
-        shift += 7;
-    } while (byte & 0x80);
-
-    if (shift == 70 && byte > 1) return WAH_ERROR_TOO_LARGE;
-    return WAH_OK;
 }
 
 // Helper function to decode a signed LEB128 integer (64-bit)
@@ -7531,18 +7513,18 @@ static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *
             }
 
             if (flags == 0x04 || flags == 0x05) {
-                WAH_CHECK(wah_decode_uleb128_u64(ptr, section_end, &module->memories[i].min_pages));
+                WAH_CHECK(wah_decode_uleb128_64(ptr, section_end, &module->memories[i].min_pages));
                 if (flags & 0x01) {
-                    WAH_CHECK(wah_decode_uleb128_u64(ptr, section_end, &module->memories[i].max_pages));
+                    WAH_CHECK(wah_decode_uleb128_64(ptr, section_end, &module->memories[i].max_pages));
                 } else {
                     module->memories[i].max_pages = UINT64_MAX;
                 }
             } else {
                 uint64_t min64, max64;
-                WAH_CHECK(wah_decode_uleb128_u64(ptr, section_end, &min64));
+                WAH_CHECK(wah_decode_uleb128_64(ptr, section_end, &min64));
                 module->memories[i].min_pages = min64;
                 if (flags & 0x01) {
-                    WAH_CHECK(wah_decode_uleb128_u64(ptr, section_end, &max64));
+                    WAH_CHECK(wah_decode_uleb128_64(ptr, section_end, &max64));
                     module->memories[i].max_pages = max64;
                 } else {
                     module->memories[i].max_pages = UINT64_MAX;
@@ -7599,9 +7581,9 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
             }
 
             if (flags & 0x04) {
-                WAH_CHECK(wah_decode_uleb128_u64(ptr, section_end, &module->tables[i].min_elements));
+                WAH_CHECK(wah_decode_uleb128_64(ptr, section_end, &module->tables[i].min_elements));
                 if (flags & 0x01) {
-                    WAH_CHECK(wah_decode_uleb128_u64(ptr, section_end, &module->tables[i].max_elements));
+                    WAH_CHECK(wah_decode_uleb128_64(ptr, section_end, &module->tables[i].max_elements));
                 } else {
                     module->tables[i].max_elements = UINT64_MAX;
                 }
@@ -7712,9 +7694,9 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             uint8_t flags = *(*ptr)++;
             ti->type.addr_type = (flags & 0x04) ? WAH_TYPE_I64 : WAH_TYPE_I32;
             if (flags & 0x04) {
-                WAH_CHECK_GOTO(wah_decode_uleb128_u64(ptr, section_end, &ti->type.min_elements), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128_64(ptr, section_end, &ti->type.min_elements), cleanup);
                 if (flags & 0x01) {
-                    WAH_CHECK_GOTO(wah_decode_uleb128_u64(ptr, section_end, &ti->type.max_elements), cleanup);
+                    WAH_CHECK_GOTO(wah_decode_uleb128_64(ptr, section_end, &ti->type.max_elements), cleanup);
                 } else {
                     ti->type.max_elements = UINT64_MAX;
                 }
@@ -7748,19 +7730,19 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
                 goto cleanup;
             }
             if (flags == 0x04 || flags == 0x05) {
-                WAH_CHECK_GOTO(wah_decode_uleb128_u64(ptr, section_end, &mi->type.min_pages), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128_64(ptr, section_end, &mi->type.min_pages), cleanup);
                 if (flags & 0x01) {
-                    WAH_CHECK_GOTO(wah_decode_uleb128_u64(ptr, section_end, &mi->type.max_pages), cleanup);
+                    WAH_CHECK_GOTO(wah_decode_uleb128_64(ptr, section_end, &mi->type.max_pages), cleanup);
                 } else {
                     mi->type.max_pages = UINT64_MAX;
                 }
             } else {
                 uint64_t min64;
-                WAH_CHECK_GOTO(wah_decode_uleb128_u64(ptr, section_end, &min64), cleanup);
+                WAH_CHECK_GOTO(wah_decode_uleb128_64(ptr, section_end, &min64), cleanup);
                 mi->type.min_pages = min64;
                 if (flags & 0x01) {
                     uint64_t max64;
-                    WAH_CHECK_GOTO(wah_decode_uleb128_u64(ptr, section_end, &max64), cleanup);
+                    WAH_CHECK_GOTO(wah_decode_uleb128_64(ptr, section_end, &max64), cleanup);
                     mi->type.max_pages = max64;
                 } else {
                     mi->type.max_pages = UINT64_MAX;
