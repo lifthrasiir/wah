@@ -1196,7 +1196,6 @@ typedef enum {
     X(I64X2_LE_S,sse42) X(I64X2_GE_S,sse42) \
     X(I8X16_LT_U,avx512bw_vl) X(I64X2_MUL,avx512dq_vl) \
     X(F32X4_CONVERT_I32X4_U,avx512f_vl) X(F64X2_CONVERT_LOW_I32X4_U,avx512f_vl) \
-    X(F32X4_PMIN,avx512dq_vl) X(F32X4_PMAX,avx512dq_vl) X(F64X2_PMIN,avx512dq_vl) X(F64X2_PMAX,avx512dq_vl) \
     X(V128_BITSELECT,avx512f_vl)
 
 // Multi-version opcodes (multiple implementations with priority ordering)
@@ -1386,21 +1385,9 @@ WAH_IF_SSE41(
 )
 #endif
 
-#define wah_mm_range_ps_min wah_mm_range_ps0x83
-#define wah_mm_range_ps_max wah_mm_range_ps0x87
-#define wah_mm_range_pd_min wah_mm_range_pd0x83
-#define wah_mm_range_pd_max wah_mm_range_pd0x87
-
 WAH_IF_AVX512(
     // AVX-512 popcount wrappers
     WAH_ASM_UNARY_M128I(_mm_popcnt_epi8, "vpopcntb")
-
-    // AVX-512 FP min/max wrappers (vrange)
-    // Using SAE=1 with mode 3 (<= min) and mode 7 (>= max)
-    WAH_ASM_BINARY_M128_IMM(_mm_range_ps, "vrangeps", 0x83)
-    WAH_ASM_BINARY_M128_IMM(_mm_range_ps, "vrangeps", 0x87)
-    WAH_ASM_BINARY_M128D_IMM(_mm_range_pd, "vrangepd", 0x83)
-    WAH_ASM_BINARY_M128D_IMM(_mm_range_pd, "vrangepd", 0x87)
 
     // AVX-512 unsigned conversion wrappers (i32x4 -> f32x4/f64x2)
     WAH_ASM_CONV_M128I_TO_M128(_mm_cvtepu32_ps, "vcvtudq2ps")
@@ -13278,10 +13265,6 @@ WAH_IF_X86_64(
         WAH_RUN(I64X2_MUL_avx512dq_vl) M128I_BINARY_OP(wah_mm_mullo_epi64)
         WAH_RUN(F32X4_CONVERT_I32X4_U_avx512f_vl) { sp[-1]._m128 = wah_mm_cvtepu32_ps(sp[-1]._m128i); WAH_NEXT(); }
         WAH_RUN(F64X2_CONVERT_LOW_I32X4_U_avx512f_vl) { sp[-1]._m128d = wah_mm_cvtepu32_pd(sp[-1]._m128i); WAH_NEXT(); }
-        WAH_RUN(F32X4_PMIN_avx512dq_vl) M128_BINARY_OP(wah_mm_range_ps_min)
-        WAH_RUN(F32X4_PMAX_avx512dq_vl) M128_BINARY_OP(wah_mm_range_ps_max)
-        WAH_RUN(F64X2_PMIN_avx512dq_vl) M128D_BINARY_OP(wah_mm_range_pd_min)
-        WAH_RUN(F64X2_PMAX_avx512dq_vl) M128D_BINARY_OP(wah_mm_range_pd_max)
         WAH_RUN(V128_BITSELECT_avx512f_vl) M128I_TERNARY_OP(wah_mm_ternarylogic_epi32_bitselect(a, b, c))
     )
 )
