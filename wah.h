@@ -67,16 +67,6 @@ typedef enum {
     WAH_EXEC_TRAPPED,
 } wah_exec_state_t;
 
-typedef struct {
-    wah_exec_state_t state;
-    wah_error_t stop_reason;
-    uint32_t entry_result_count;
-    uint32_t base_sp;
-    uint32_t base_call_depth;
-    uint32_t base_handler_depth;
-    struct wah_call_frame_s *base_frame_ptr;
-} wah_exec_lifecycle_t;
-
 // 128-bit vector type
 typedef union {
     uint8_t u8[16]; uint16_t u16[8]; uint32_t u32[4]; uint64_t u64[2];
@@ -165,6 +155,16 @@ typedef uint64_t wah_features_t;
 #define WAH_FEATURE_ALL WAH_FEATURE_WASM_V3
 
 typedef uint64_t wah_entry_id_t;
+
+typedef struct {
+    wah_exec_state_t state;
+    wah_error_t stop_reason;
+    uint32_t entry_result_count;
+    wah_value_t *base_sp;
+    uint32_t base_call_depth;
+    uint32_t base_handler_depth;
+    struct wah_call_frame_s *base_frame_ptr;
+} wah_exec_lifecycle_t;
 
 // Call context for host functions
 typedef struct wah_call_context_s {
@@ -287,7 +287,7 @@ typedef struct wah_module_s {
 
 typedef struct {
     uint32_t call_depth;
-    uint32_t sp_base;
+    wah_value_t *sp_base;
     const uint8_t *catch_table;
     uint32_t catch_count;
     const uint8_t *bytecode_base;
@@ -322,7 +322,7 @@ typedef struct wah_exec_context_s {
     uint8_t *stack_buffer;          // Base of the unified stack allocation
     uint64_t stack_buffer_size;     // Total bytes allocated for stack_buffer
     wah_value_t *value_stack;       // = (wah_value_t *)stack_buffer
-    uint32_t sp;                    // Value stack pointer (index into value_stack, next free slot)
+    wah_value_t *sp;                // Value stack pointer (next free slot)
     struct wah_call_frame_s *frame_ptr; // Next free frame slot (grows downward from stack_end)
     uint32_t call_depth;            // Current call depth
 
@@ -1822,7 +1822,7 @@ typedef struct {
 typedef struct wah_call_frame_s {
     const uint8_t *bytecode_ip;  // Instruction pointer into the parsed bytecode
     const struct wah_code_body_s *code; // The function body being executed
-    uint32_t locals_offset;      // Offset into the shared value_stack for this frame's locals
+    wah_value_t *locals;         // Pointer to this frame's locals in the value stack
     uint32_t func_idx;           // Local index of the function being executed (debug)
     uint32_t result_count;       // Number of return values (used by RETURN/END)
     const struct wah_module_s *module; // The module this function belongs to (for cross-module calls)
@@ -8420,21 +8420,21 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
         if (!code) continue;
         const wah_module_t *fmod = frame->module;
         const wah_func_type_t *ftype = &fmod->types[fmod->function_type_indices[frame->func_idx]];
-        // 1a. Parameters (slots [locals_offset .. locals_offset + param_count))
+        // 1a. Parameters (slots [locals .. locals + param_count))
         for (uint32_t i = 0; i < ftype->param_count; i++) {
             if (WAH_TYPE_IS_REF(ftype->param_types[i])) {
-                visitor(&ctx->value_stack[frame->locals_offset + i], ftype->param_types[i], userdata);
+                visitor(&frame->locals[i], ftype->param_types[i], userdata);
             }
         }
-        // 1b. Declared locals (slots [locals_offset + param_count .. + param_count + local_count))
+        // 1b. Declared locals (slots [locals + param_count .. + param_count + local_count))
         for (uint32_t i = 0; i < code->local_count; i++) {
             if (WAH_TYPE_IS_REF(code->local_types[i])) {
-                visitor(&ctx->value_stack[frame->locals_offset + ftype->param_count + i], code->local_types[i], userdata);
+                visitor(&frame->locals[ftype->param_count + i], code->local_types[i], userdata);
             }
         }
 
         // 1c. Operand stack slots (using ref map from POLL points)
-        uint32_t operand_base = frame->locals_offset + ftype->param_count + code->local_count;
+        wah_value_t *operand_base = frame->locals + ftype->param_count + code->local_count;
         const uint8_t *oref_map = code->parsed_code.operand_ref_map;
         uint32_t rm_byte_offset = frame->ref_map_offset;
 
@@ -8450,11 +8450,9 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
             // The ref map describes the post-POLL type stack. Clamp to the
             // actual operand stack depth to handle frames suspended mid-call
             // (where callee results haven't been pushed yet).
-            uint32_t next_frame_base = (d < ctx->call_depth - 1)
-                ? WAH_FRAME(ctx, d + 1).locals_offset
-                : ctx->sp;
+            wah_value_t *next_frame_base = (d < ctx->call_depth - 1) ? WAH_FRAME(ctx, d + 1).locals : ctx->sp;
             uint32_t actual_depth = (next_frame_base > operand_base)
-                ? next_frame_base - operand_base : 0;
+                ? (uint32_t)(next_frame_base - operand_base) : 0;
             if (rm_count > actual_depth) rm_count = (uint16_t)actual_depth;
 
             uint32_t bmp_words = (rm_count + 15) / 16;
@@ -8465,7 +8463,7 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
                 if (word & (1u << (i % 16))) {
                     wah_type_t ref_type = (wah_type_t)(int32_t)wah_read_u32_le(type_ptr);
                     type_ptr += sizeof(wah_type_t);
-                    visitor(&ctx->value_stack[operand_base + i], ref_type, userdata);
+                    visitor(&operand_base[i], ref_type, userdata);
                 }
             }
         }
@@ -8727,7 +8725,7 @@ static wah_error_t wah_alloc_unified_stack(wah_exec_context_t *exec_ctx, uint64_
     exec_ctx->stack_buffer = (uint8_t *)malloc((size_t)stack_bytes);
     if (!exec_ctx->stack_buffer) return WAH_ERROR_OUT_OF_MEMORY;
     exec_ctx->value_stack = (wah_value_t *)exec_ctx->stack_buffer;
-    exec_ctx->sp = 0;
+    exec_ctx->sp = exec_ctx->value_stack;
     exec_ctx->call_depth = 0;
     // Align frame_ptr to wah_call_frame_t boundary at the top of the buffer
     uintptr_t buf_end = (uintptr_t)exec_ctx->stack_buffer + (size_t)stack_bytes;
@@ -8856,7 +8854,7 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
 wah_error_t wah_exec_context_set_limits(wah_exec_context_t *exec_ctx, const wah_rlimits_t *limits) {
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(exec_ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
-    WAH_ENSURE(exec_ctx->call_depth == 0 && exec_ctx->sp == 0, WAH_ERROR_MISUSE);
+    WAH_ENSURE(exec_ctx->call_depth == 0 && exec_ctx->sp == exec_ctx->value_stack, WAH_ERROR_MISUSE);
     uint64_t new_size = limits->max_stack_bytes;
     if (new_size == 0) new_size = WAH_DEFAULT_STACK_BYTES;
     if (new_size == exec_ctx->stack_buffer_size) return WAH_OK;
@@ -8867,6 +8865,7 @@ wah_error_t wah_exec_context_set_limits(wah_exec_context_t *exec_ctx, const wah_
     exec_ctx->stack_buffer = new_buf;
     exec_ctx->stack_buffer_size = new_size;
     exec_ctx->value_stack = (wah_value_t *)new_buf;
+    exec_ctx->sp = exec_ctx->value_stack;
     uintptr_t buf_end = (uintptr_t)new_buf + (size_t)new_size;
     buf_end &= ~(uintptr_t)(WAH_ALIGNOF(wah_call_frame_t) - 1);
     exec_ctx->frame_ptr = (wah_call_frame_t *)buf_end;
@@ -8982,7 +8981,10 @@ static inline bool wah_bulk_should_interrupt(const wah_exec_context_t *ctx) {
 // result_count: number of return values (stored in frame for RETURN/END).
 // fn_ctx: owning exec context of the function (NULL means use linked_modules lookup).
 // value_top: actual top of the value stack region (may differ from ctx->sp during interpretation).
-static wah_error_t wah_push_frame(wah_exec_context_t *ctx, const wah_module_t *fn_module, uint32_t local_idx, uint32_t locals_offset, uint32_t result_count, wah_exec_context_t *fn_ctx, const wah_value_t *value_top) {
+static wah_error_t wah_push_frame(
+    wah_exec_context_t *ctx, const wah_module_t *fn_module, uint32_t local_idx, wah_value_t *locals,
+    uint32_t result_count, wah_exec_context_t *fn_ctx, const wah_value_t *value_top
+) {
     wah_call_frame_t *new_frame_ptr = ctx->frame_ptr - 1;
     WAH_ENSURE((const uint8_t *)value_top <= (const uint8_t *)new_frame_ptr, WAH_ERROR_STACK_OVERFLOW);
 
@@ -8993,7 +8995,7 @@ static wah_error_t wah_push_frame(wah_exec_context_t *ctx, const wah_module_t *f
 
     frame->code = code_body;
     frame->bytecode_ip = code_body->parsed_code.bytecode;
-    frame->locals_offset = locals_offset;
+    frame->locals = locals;
     frame->func_idx = local_idx;
     frame->result_count = result_count;
     frame->module = fn_module;
@@ -9086,11 +9088,11 @@ static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t 
 
                 if (catch_kind == WAH_CATCH_KIND_CATCH || catch_kind == WAH_CATCH_KIND_CATCH_REF) {
                     for (uint32_t i = 0; i < exc->value_count; i++) {
-                        ctx->value_stack[ctx->sp++] = exc->values[i];
+                        *ctx->sp++ = exc->values[i];
                     }
                 }
                 if (catch_kind == WAH_CATCH_KIND_CATCH_REF || catch_kind == WAH_CATCH_KIND_CATCH_ALL_REF) {
-                    ctx->value_stack[ctx->sp++].ref = exc;
+                    (*ctx->sp++).ref = exc;
                     ctx->pending_exception = NULL;
                 } else {
                     free(exc->values);
@@ -9349,7 +9351,7 @@ static uint32_t wah_bulk_array_init_elem(wah_exec_context_t *ctx, uint8_t *elems
         if (ctx->call_depth > 0) { \
             frame->bytecode_ip = bytecode_ip; \
         } \
-        ctx->sp = (uint32_t)(sp - ctx->value_stack); \
+        ctx->sp = sp; \
         return (err); \
     } while (0)
 
@@ -9366,7 +9368,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
     wah_call_frame_t *frame = ctx->frame_ptr;
     const uint8_t *bytecode_ip = frame->bytecode_ip;
     const uint8_t *bytecode_base = frame->code->parsed_code.bytecode;
-    wah_value_t *sp = ctx->value_stack + ctx->sp;  // Stack pointer for faster access
+    wah_value_t *sp = ctx->sp;
     wah_exec_context_t *fctx = frame->frame_ctx;   // Module-local context for table/memory access
 
     // Computed goto jump table
@@ -9397,7 +9399,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
     wah_call_frame_t *frame = ctx->frame_ptr;
     const uint8_t *bytecode_ip = frame->bytecode_ip;
     const uint8_t *bytecode_base = frame->code->parsed_code.bytecode;
-    wah_value_t *sp = ctx->value_stack + ctx->sp;  // Stack pointer for faster access
+    wah_value_t *sp = ctx->sp;  // Stack pointer for faster access
     wah_exec_context_t *fctx = frame->frame_ctx;   // Module-local context for table/memory access
 
     while (1) {
@@ -9430,9 +9432,9 @@ WAH_RUN(POLL) {
 
     if (WAH_POLL_FLAG_LOAD(ctx->poll_flag)) {
         frame->bytecode_ip = bytecode_ip;
-        ctx->sp = (uint32_t)(sp - ctx->value_stack);
+        ctx->sp = sp;
         WAH_CHECK_GOTO(wah_poll_handler(ctx), cleanup);
-        sp = ctx->value_stack + ctx->sp;
+        sp = ctx->sp;
         frame = ctx->frame_ptr;
         bytecode_ip = frame->bytecode_ip;
         bytecode_base = frame->code->parsed_code.bytecode;
@@ -9469,7 +9471,7 @@ WAH_RUN(TICK) {
     if (err != WAH_OK) {
         bytecode_ip = bytecode_base + resume_offset;
         frame->bytecode_ip = bytecode_ip;
-        ctx->sp = (uint32_t)(sp - ctx->value_stack);
+        ctx->sp = sp;
         WAH_CLEANUP();
     }
     WAH_NEXT();
@@ -9552,7 +9554,7 @@ WAH_RUN(TRY_TABLE) {
     WAH_ASSERT(ctx->exception_handler_depth < WAH_MAX_EXCEPTION_HANDLER_DEPTH);
     wah_exception_handler_t *handler = &ctx->exception_handlers[ctx->exception_handler_depth++];
     handler->call_depth = ctx->call_depth;
-    handler->sp_base = (uint32_t)(sp - ctx->value_stack);
+    handler->sp_base = sp;
     handler->catch_table = bytecode_ip;
     handler->catch_count = catch_count_val;
     handler->bytecode_base = bytecode_base;
@@ -9601,11 +9603,11 @@ WAH_RUN(THROW) {
     }
 
     frame->bytecode_ip = bytecode_ip;
-    ctx->sp = (uint32_t)(sp - ctx->value_stack);
+    ctx->sp = sp;
     // exc is no longer owned. Also it returns WAH_THROW_EXCEPTION which should be propagated.
     err = wah_throw_exception(ctx, exc);
     if (err != WAH_OK) goto cleanup;
-    sp = ctx->value_stack + ctx->sp;
+    sp = ctx->sp;
     RELOAD_FRAME();
     WAH_NEXT();
 
@@ -9634,11 +9636,11 @@ WAH_RUN(THROW_REF) {
     }
 
     frame->bytecode_ip = bytecode_ip;
-    ctx->sp = (uint32_t)(sp - ctx->value_stack);
+    ctx->sp = sp;
     // copy is no longer owned. Also it returns WAH_THROW_EXCEPTION which should be propagated.
     err = wah_throw_exception(ctx, copy);
     if (err != WAH_OK) goto cleanup;
-    sp = ctx->value_stack + ctx->sp;
+    sp = ctx->sp;
     RELOAD_FRAME();
     WAH_NEXT();
 
@@ -10293,14 +10295,14 @@ WAH_GC_OPCODES(WAH_GC_NEVER_RUN)
 WAH_RUN(LOCAL_GET) {
     uint32_t local_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    *sp++ = ctx->value_stack[frame->locals_offset + local_idx];
+    *sp++ = frame->locals[local_idx];
     WAH_NEXT();
 }
 
 WAH_RUN(LOCAL_SET) {
     uint32_t local_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    ctx->value_stack[frame->locals_offset + local_idx] = *--sp;
+    frame->locals[local_idx] = *--sp;
     WAH_NEXT();
 }
 
@@ -10308,7 +10310,7 @@ WAH_RUN(LOCAL_TEE) {
     uint32_t local_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     wah_value_t val = sp[-1];
-    ctx->value_stack[frame->locals_offset + local_idx] = val;
+    frame->locals[local_idx] = val;
     WAH_NEXT();
 }
 
@@ -10678,13 +10680,13 @@ WAH_RUN(ELEM_DROP) {
     do { \
         size_t nparams = (the_fn)->nparams; \
         size_t nresults = (the_fn)->nresults; \
-        WAH_ASSERT((size_t)(sp - ctx->value_stack) >= nparams && "validation bug"); \
+        WAH_ASSERT(sp >= ctx->value_stack + nparams && "validation bug"); \
         wah_value_t *param_vals = sp - nparams; \
         wah_value_t *result_vals = sp; \
         WAH_ENSURE_GOTO((uint8_t *)(result_vals + nresults) <= (uint8_t *)ctx->frame_ptr, WAH_ERROR_STACK_OVERFLOW, cleanup); \
         memset(result_vals, 0, sizeof(wah_value_t) * nresults); \
         frame->bytecode_ip = bytecode_ip; \
-        ctx->sp = (uint32_t)(sp - ctx->value_stack); \
+        ctx->sp = sp; \
         WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, (the_fn), param_vals, (uint32_t)nparams, result_vals), cleanup); \
         if (nresults > 0) { \
             memmove(param_vals, result_vals, sizeof(wah_value_t) * nresults); \
@@ -10696,10 +10698,10 @@ WAH_RUN(ELEM_DROP) {
 #define WAH_CALL_WASM_INLINE(fn_module_, local_idx_, func_type_, fn_ctx_) \
     do { \
         const wah_code_body_t *called_code_ = &(fn_module_)->code_bodies[local_idx_]; \
-        uint32_t new_locals_offset_ = (uint32_t)(sp - ctx->value_stack) - (func_type_)->param_count; \
-        wah_value_t *preflight_top_ = ctx->value_stack + new_locals_offset_ + (func_type_)->param_count + called_code_->max_frame_slots; \
+        wah_value_t *new_locals_ = sp - (func_type_)->param_count; \
+        wah_value_t *preflight_top_ = new_locals_ + (func_type_)->param_count + called_code_->max_frame_slots; \
         frame->bytecode_ip = bytecode_ip; \
-        WAH_CHECK_GOTO(wah_push_frame(ctx, (fn_module_), (local_idx_), new_locals_offset_, (func_type_)->result_count, (fn_ctx_), preflight_top_), cleanup); \
+        WAH_CHECK_GOTO(wah_push_frame(ctx, (fn_module_), (local_idx_), new_locals_, (func_type_)->result_count, (fn_ctx_), preflight_top_), cleanup); \
         uint32_t num_locals_ = called_code_->local_count; \
         if (num_locals_ > 0) { \
             memset(sp, 0, sizeof(wah_value_t) * num_locals_); \
@@ -10821,7 +10823,7 @@ WAH_RUN(CALL_REF) {
         uint32_t tc_param_count = (param_count_); \
         const wah_code_body_t *tc_code = &tc_module->code_bodies[tc_local_idx]; \
         wah_value_t *tc_params_src = sp - tc_param_count; \
-        wah_value_t *tc_locals_dst = ctx->value_stack + frame->locals_offset; \
+        wah_value_t *tc_locals_dst = frame->locals; \
         WAH_ENSURE_GOTO((uint8_t *)(tc_locals_dst + tc_param_count + tc_code->max_frame_slots) <= (uint8_t *)ctx->frame_ptr, \
                         WAH_ERROR_STACK_OVERFLOW, cleanup); \
         if (tc_param_count > 0) { \
@@ -10884,7 +10886,7 @@ WAH_RUN(CALL_REF) {
         size_t tc_nparams = tc_fn->nparams; \
         size_t tc_nresults = tc_fn->nresults; \
         wah_value_t *tc_params_src = sp - tc_nparams; \
-        wah_value_t *tc_locals_dst = ctx->value_stack + frame->locals_offset; \
+        wah_value_t *tc_locals_dst = frame->locals; \
         if (tc_nparams > 0) { \
             memmove(tc_locals_dst, tc_params_src, sizeof(wah_value_t) * tc_nparams); \
         } \
@@ -10897,7 +10899,7 @@ WAH_RUN(CALL_REF) {
         memset(tc_result_vals, 0, sizeof(wah_value_t) * tc_nresults); \
         RELOAD_FRAME(); \
         frame->bytecode_ip = bytecode_ip; \
-        ctx->sp = (uint32_t)(sp - ctx->value_stack); \
+        ctx->sp = sp; \
         WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, tc_fn, tc_param_vals, (uint32_t)tc_nparams, tc_result_vals), cleanup); \
         if (tc_nresults > 0) { \
             memmove(tc_param_vals, tc_result_vals, sizeof(wah_value_t) * tc_nresults); \
@@ -11004,7 +11006,7 @@ WAH_RUN(RETURN) {
     uint32_t results_to_keep = frame->result_count;
     wah_value_t *results_src = sp - results_to_keep;
 
-    sp = ctx->value_stack + frame->locals_offset;
+    sp = frame->locals;
     ctx->call_depth--;
     ctx->frame_ptr++;
 
@@ -11027,7 +11029,7 @@ WAH_RUN(END) { // End of function
     uint32_t results_to_keep = frame->result_count;
     wah_value_t *results_src = sp - results_to_keep;
 
-    sp = ctx->value_stack + frame->locals_offset;
+    sp = frame->locals;
     ctx->call_depth--;
     ctx->frame_ptr++;
 
@@ -13243,7 +13245,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
     wah_call_frame_t *frame = ctx->frame_ptr;
     const uint8_t *bytecode_ip = frame->bytecode_ip;
     const uint8_t *bytecode_base = frame->code->parsed_code.bytecode;
-    wah_value_t *sp = ctx->value_stack + ctx->sp;  // Stack pointer for faster access
+    wah_value_t *sp = ctx->sp;
     wah_exec_context_t *fctx = frame->frame_ctx;   // Module-local context for table/memory access
 
     return wah_run_single(ctx, frame, bytecode_ip, bytecode_base, sp, fctx, WAH_OK);
@@ -13259,7 +13261,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 #endif
 
 cleanup:
-    ctx->sp = (uint32_t)(sp - ctx->value_stack);
+    ctx->sp = sp;
     if (ctx->call_depth > 0) {
         frame->bytecode_ip = bytecode_ip;
     }
@@ -13314,12 +13316,12 @@ static wah_error_t wah_start_internal(
     ctx->lifecycle.entry_result_count = func_type->result_count;
 
     const wah_code_body_t *start_code = &fn_module->code_bodies[local_idx];
-    wah_value_t *preflight_top = ctx->value_stack + ctx->sp + start_code->max_frame_slots;
+    wah_value_t *preflight_top = ctx->sp + start_code->max_frame_slots;
     // Preflight: one frame + params + max_frame_slots must fit
     WAH_ENSURE((uint8_t *)preflight_top <= (uint8_t *)(ctx->frame_ptr - 1), WAH_ERROR_STACK_OVERFLOW);
 
     for (uint32_t i = 0; i < param_count; ++i) {
-        ctx->value_stack[ctx->sp++] = params[i];
+        *ctx->sp++ = params[i];
     }
 
     wah_error_t err = wah_push_frame(ctx, fn_module, local_idx,
@@ -13332,7 +13334,7 @@ static wah_error_t wah_start_internal(
 
     uint32_t num_locals = start_code->local_count;
     if (num_locals > 0) {
-        memset(&ctx->value_stack[ctx->sp], 0, sizeof(wah_value_t) * num_locals);
+        memset(ctx->sp, 0, sizeof(wah_value_t) * num_locals);
         ctx->sp += num_locals;
     }
 
@@ -13368,9 +13370,9 @@ static wah_error_t wah_finish_internal(
         if (result_count == 0) {
             memset(results, 0, sizeof(wah_value_t) * max_results);
             if (actual_results) *actual_results = 0;
-        } else if (ctx->sp >= result_count) {
+        } else if (ctx->sp >= ctx->lifecycle.base_sp + result_count) {
             for (uint32_t i = 0; i < copy_count; ++i) {
-                results[i] = ctx->value_stack[ctx->sp - result_count + i];
+                results[i] = *(ctx->sp - result_count + i);
             }
             if (actual_results) *actual_results = result_count;
         } else {
@@ -14061,15 +14063,16 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
 static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, const uint8_t *bytecode, uint32_t bytecode_size, wah_value_t *result) {
     wah_code_body_t dummy_code = { .parsed_code = { .bytecode = (uint8_t *)bytecode, .bytecode_size = bytecode_size } };
     wah_value_t local_stack[16];
-    wah_call_frame_t local_frame = { .code = &dummy_code, .bytecode_ip = bytecode, .locals_offset = 0,
+    wah_call_frame_t local_frame = { .code = &dummy_code, .bytecode_ip = bytecode, .locals = local_stack,
                                      .result_count = 1, .frame_globals = ctx->globals, .module = ctx->module };
     wah_exec_context_t cctx = { .module = ctx->module, .globals = ctx->globals, .global_count = ctx->global_count,
-                                .value_stack = local_stack, .sp = 0, .frame_ptr = &local_frame, .call_depth = 1, .gc = ctx->gc };
+                                .value_stack = local_stack, .sp = local_stack, .frame_ptr = &local_frame,
+                                .call_depth = 1, .gc = ctx->gc };
     local_frame.frame_ctx = &cctx;
 
     wah_error_t err = wah_run_interpreter(&cctx);
     if (err != WAH_OK) return err;
-    WAH_ASSERT(cctx.sp == 1 && "Const expression should leave exactly one value on the stack");
+    WAH_ASSERT(cctx.sp == local_stack + 1 && "Const expression should leave exactly one value on the stack");
     *result = local_stack[0];
     return WAH_OK;
 }
