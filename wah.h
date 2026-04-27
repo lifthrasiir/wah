@@ -11694,8 +11694,8 @@ WAH_RUN(MEMORY_COPY) {
         for (uint32_t done = 0; done < size; ) {
             uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
             uint32_t tail = size - done;
-            memcpy(fctx->memories[dest_mem_idx].data + dest + tail - chunk,
-                   fctx->memories[src_mem_idx].data + src + tail - chunk, chunk);
+            memmove(fctx->memories[dest_mem_idx].data + dest + tail - chunk,
+                    fctx->memories[src_mem_idx].data + src + tail - chunk, chunk);
             done += chunk;
             if (WAH_BULK_CHECK(done, size)) {
                 (*sp++).i32 = (int32_t)dest;
@@ -11881,8 +11881,8 @@ WAH_RUN(MEMORY_COPY_i64) {
         for (uint32_t done = 0; done < size; ) {
             uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
             uint32_t tail = size - done;
-            memcpy(fctx->memories[dest_mem_idx].data + dest + tail - chunk,
-                   fctx->memories[src_mem_idx].data + src + tail - chunk, chunk);
+            memmove(fctx->memories[dest_mem_idx].data + dest + tail - chunk,
+                    fctx->memories[src_mem_idx].data + src + tail - chunk, chunk);
             done += chunk;
             if (WAH_BULK_CHECK(done, size)) {
                 if (dest_i64) (*sp++).i64 = (int64_t)dest; else (*sp++).i32 = (int32_t)dest;
