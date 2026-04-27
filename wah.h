@@ -7792,40 +7792,23 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
     module->import_tag_count = import_tag_count;
     return WAH_OK;
 
-#define WAH_FREE_IMPORT_NAMES(arr, count) do { \
-    for (uint32_t i_ = 0; i_ < (count); i_++) { \
-        free((arr)[i_].name.module); \
-        free((arr)[i_].name.field); \
+cleanup:
+#define WAH_FREE_IMPORTS(arr, count) do { \
+    if (arr) { \
+        for (uint32_t i_ = 0; i_ < (count); i_++) { \
+            free((arr)[i_].name.module); \
+            free((arr)[i_].name.field); \
+        } \
+        free(arr); \
+        (arr) = NULL; \
     } \
 } while(0)
-
-cleanup:
-    if (module->func_imports) {
-        WAH_FREE_IMPORT_NAMES(module->func_imports, import_func_count);
-        free(module->func_imports);
-        module->func_imports = NULL;
-    }
-    if (module->table_imports) {
-        WAH_FREE_IMPORT_NAMES(module->table_imports, import_table_count);
-        free(module->table_imports);
-        module->table_imports = NULL;
-    }
-    if (module->memory_imports) {
-        WAH_FREE_IMPORT_NAMES(module->memory_imports, import_memory_count);
-        free(module->memory_imports);
-        module->memory_imports = NULL;
-    }
-    if (module->global_imports) {
-        WAH_FREE_IMPORT_NAMES(module->global_imports, import_global_count);
-        free(module->global_imports);
-        module->global_imports = NULL;
-    }
-    if (module->tag_imports) {
-        WAH_FREE_IMPORT_NAMES(module->tag_imports, import_tag_count);
-        free(module->tag_imports);
-        module->tag_imports = NULL;
-    }
-#undef WAH_FREE_IMPORT_NAMES
+    WAH_FREE_IMPORTS(module->func_imports, import_func_count);
+    WAH_FREE_IMPORTS(module->table_imports, import_table_count);
+    WAH_FREE_IMPORTS(module->memory_imports, import_memory_count);
+    WAH_FREE_IMPORTS(module->global_imports, import_global_count);
+    WAH_FREE_IMPORTS(module->tag_imports, import_tag_count);
+#undef WAH_FREE_IMPORTS
     module->import_function_count = 0;
     module->import_table_count = 0;
     module->import_memory_count = 0;
@@ -9273,27 +9256,10 @@ static inline bool wah_bulk_should_interrupt(const wah_exec_context_t *ctx) {
 // result_count: number of return values (stored in frame for RETURN/END).
 // fn_ctx: owning exec context of the function (NULL means use linked_modules lookup).
 // value_top: actual top of the value stack region (may differ from ctx->sp during interpretation).
-static wah_error_t wah_push_frame(
-    wah_exec_context_t *ctx, const wah_module_t *fn_module, uint32_t local_idx, wah_value_t *locals,
-    uint32_t result_count, wah_exec_context_t *fn_ctx, const wah_value_t *value_top
+static inline void wah_bind_frame_module(
+    wah_exec_context_t *ctx, wah_call_frame_t *frame,
+    const wah_module_t *fn_module, wah_exec_context_t *fn_ctx
 ) {
-    wah_call_frame_t *new_frame_ptr = ctx->frame_ptr - 1;
-    WAH_ENSURE((const uint8_t *)value_top <= (const uint8_t *)new_frame_ptr, WAH_ERROR_STACK_OVERFLOW);
-
-    const wah_code_body_t *code_body = &fn_module->code_bodies[local_idx];
-    ctx->frame_ptr = new_frame_ptr;
-    ctx->call_depth++;
-    wah_call_frame_t *frame = new_frame_ptr;
-
-    frame->code = code_body;
-    frame->bytecode_ip = code_body->parsed_code.bytecode;
-    frame->locals = locals;
-    frame->func_idx = local_idx;
-    frame->result_count = result_count;
-    frame->module = fn_module;
-    frame->ref_map_offset = 0;
-
-    // Calculate frame_globals, function_table, and frame_ctx for cross-module calls
     if (fn_module == ctx->module) {
         frame->frame_globals = ctx->globals;
         frame->frame_function_table = ctx->function_table;
@@ -9305,7 +9271,6 @@ static wah_error_t wah_push_frame(
         frame->frame_function_table_count = fn_ctx->function_table_count;
         frame->frame_ctx = fn_ctx;
     } else {
-        // Find the module in linked_modules
         uint32_t offset = wah_global_index_limit(ctx->module);
         bool found = false;
         for (uint32_t i = 0; i < ctx->linked_module_count; i++) {
@@ -9326,8 +9291,38 @@ static wah_error_t wah_push_frame(
             }
             offset += ctx->linked_modules[i].module->global_count;
         }
-        WAH_ASSERT(found && "cross-module call to unknown linked module");
+        WAH_ASSERT(found && "call to unknown linked module");
     }
+}
+
+static inline void wah_init_wasm_frame(
+    wah_exec_context_t *ctx, wah_call_frame_t *frame,
+    const wah_module_t *fn_module, uint32_t local_idx, const wah_code_body_t *code_body,
+    wah_value_t *locals, uint32_t result_count, wah_exec_context_t *fn_ctx
+) {
+    frame->code = code_body;
+    frame->bytecode_ip = code_body->parsed_code.bytecode;
+    frame->locals = locals;
+    frame->func_idx = local_idx;
+    frame->result_count = result_count;
+    frame->module = fn_module;
+    frame->ref_map_offset = 0;
+    wah_bind_frame_module(ctx, frame, fn_module, fn_ctx);
+}
+
+static wah_error_t wah_push_frame(
+    wah_exec_context_t *ctx, const wah_module_t *fn_module, uint32_t local_idx, wah_value_t *locals,
+    uint32_t result_count, wah_exec_context_t *fn_ctx, const wah_value_t *value_top
+) {
+    wah_call_frame_t *new_frame_ptr = ctx->frame_ptr - 1;
+    WAH_ENSURE((const uint8_t *)value_top <= (const uint8_t *)new_frame_ptr, WAH_ERROR_STACK_OVERFLOW);
+
+    const wah_code_body_t *code_body = &fn_module->code_bodies[local_idx];
+    ctx->frame_ptr = new_frame_ptr;
+    ctx->call_depth++;
+    wah_call_frame_t *frame = new_frame_ptr;
+
+    wah_init_wasm_frame(ctx, frame, fn_module, local_idx, code_body, locals, result_count, fn_ctx);
 
     return WAH_OK;
 }
@@ -9597,6 +9592,117 @@ static uint32_t wah_bulk_array_init_elem(wah_exec_context_t *ctx, uint8_t *elems
 }
 #endif // WAH_FEATURE_GC (bulk array helpers)
 
+static wah_error_t wah_table_grow_internal(
+    wah_exec_context_t *ctx, uint32_t table_idx, uint64_t delta, wah_value_t init_val,
+    uint32_t *old_size, bool *grew
+) {
+    *grew = false;
+    *old_size = ctx->tables[table_idx].size;
+
+    uint64_t new_size = (uint64_t)*old_size + delta;
+    if (new_size > ctx->tables[table_idx].max_size) {
+        return WAH_OK;
+    }
+
+    uint64_t delta_bytes = delta * sizeof(wah_value_t);
+    if (!wah_budget_check(ctx, delta_bytes)) {
+        return WAH_OK;
+    }
+    if (ctx->tables[table_idx].import_ctx && ctx->tables[table_idx].is_imported) {
+        if (!wah_budget_check(ctx->tables[table_idx].import_ctx, delta_bytes)) {
+            return WAH_OK;
+        }
+    }
+
+    wah_value_t *new_table = NULL;
+    wah_error_t err = wah_malloc((size_t)new_size, sizeof(wah_value_t), (void **)&new_table);
+    if (err != WAH_OK) return err;
+
+    memcpy(new_table, ctx->tables[table_idx].entries, sizeof(wah_value_t) * *old_size);
+    for (uint64_t i = *old_size; i < new_size; ++i) {
+        new_table[i] = init_val;
+    }
+
+    if (!ctx->tables[table_idx].is_imported) {
+        free(ctx->tables[table_idx].entries);
+    }
+    ctx->tables[table_idx].entries = new_table;
+    ctx->tables[table_idx].size = (uint32_t)new_size;
+    wah_budget_charge(ctx, delta_bytes);
+
+    if (ctx->tables[table_idx].import_ctx) {
+        wah_exec_context_t *src = ctx->tables[table_idx].import_ctx;
+        uint32_t src_idx = ctx->tables[table_idx].import_idx;
+        if (ctx->tables[table_idx].is_imported) {
+            wah_budget_charge(src, delta_bytes);
+            src->tables[src_idx].is_imported = true;
+        }
+        src->tables[src_idx].entries = new_table;
+        src->tables[src_idx].size = (uint32_t)new_size;
+    }
+    if (ctx->tables) ctx->tables[table_idx].is_imported = false;
+
+    *grew = true;
+    return WAH_OK;
+}
+
+static bool wah_memory_grow_internal(
+    wah_exec_context_t *ctx, wah_exec_context_t *fctx, uint32_t mem_idx,
+    uint64_t pages_to_grow, uint64_t *old_pages
+) {
+    *old_pages = fctx->memories[mem_idx].size / WAH_WASM_PAGE_SIZE;
+    uint64_t new_pages = *old_pages + pages_to_grow;
+
+    if (new_pages > ctx->memories[mem_idx].max_pages || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
+        return false;
+    }
+
+    size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
+    uint64_t delta_bytes = new_memory_size - fctx->memories[mem_idx].size;
+    if (!wah_budget_check(ctx, delta_bytes)) {
+        return false;
+    }
+    if (ctx->memories[mem_idx].import_ctx && ctx->memories[mem_idx].is_imported) {
+        if (!wah_budget_check(ctx->memories[mem_idx].import_ctx, delta_bytes)) {
+            return false;
+        }
+    }
+
+    void *memory_data = fctx->memories[mem_idx].data;
+    if (wah_realloc(new_memory_size, sizeof(*fctx->memories[mem_idx].data), &memory_data) != WAH_OK) {
+        return false;
+    }
+    fctx->memories[mem_idx].data = (uint8_t *)memory_data;
+
+    if (new_memory_size > fctx->memories[mem_idx].size) {
+        memset(fctx->memories[mem_idx].data + fctx->memories[mem_idx].size, 0, new_memory_size - fctx->memories[mem_idx].size);
+    }
+
+    wah_budget_charge(ctx, delta_bytes);
+    fctx->memories[mem_idx].size = (uint64_t)new_memory_size;
+    if (ctx->memories[mem_idx].import_ctx) {
+        wah_exec_context_t *src = ctx->memories[mem_idx].import_ctx;
+        uint32_t src_idx = ctx->memories[mem_idx].import_idx;
+        if (ctx->memories[mem_idx].is_imported) {
+            wah_budget_charge(src, delta_bytes);
+            src->memories[src_idx].is_imported = true;
+        }
+        src->memories[src_idx].data = fctx->memories[mem_idx].data;
+        src->memories[src_idx].size = fctx->memories[mem_idx].size;
+        if (src_idx == 0) {
+            src->memory_base = src->memories[0].data;
+            src->memory_size = src->memories[0].size;
+        }
+    }
+    if (ctx->memories) ctx->memories[mem_idx].is_imported = false;
+    if (mem_idx == 0) {
+        fctx->memory_base = fctx->memories[0].data;
+        fctx->memory_size = fctx->memories[0].size;
+    }
+
+    return true;
+}
+
 #ifdef WAH_FORCE_SWITCH
     // Force switch-based dispatch; skip musttail and computed goto.
 #elif defined(WAH_FORCE_MUSTTAIL)
@@ -9785,6 +9891,16 @@ WAH_RUN(ELSE) { // This is an unconditional jump
     WAH_NEXT();
 }
 
+#define WAH_DROP_KEEP(keep_, drop_) do { \
+    uint32_t keep__ = (keep_); \
+    uint32_t drop__ = (drop_); \
+    if (drop__ > 0) { \
+        wah_value_t *dst__ = sp - keep__ - drop__; \
+        if (keep__ > 0) memmove(dst__, sp - keep__, keep__ * sizeof(wah_value_t)); \
+        sp -= drop__; \
+    } \
+} while (0)
+
 WAH_RUN(BR) {
     uint32_t offset = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
@@ -9792,11 +9908,7 @@ WAH_RUN(BR) {
     bytecode_ip += sizeof(uint32_t);
     uint32_t drop = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    if (drop > 0) {
-        wah_value_t *dst = sp - keep - drop;
-        if (keep > 0) memmove(dst, sp - keep, keep * sizeof(wah_value_t));
-        sp -= drop;
-    }
+    WAH_DROP_KEEP(keep, drop);
     bytecode_ip = bytecode_base + offset;
     WAH_NEXT();
 }
@@ -9809,11 +9921,7 @@ WAH_RUN(BR_IF) {
     uint32_t drop = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     if ((*--sp).i32 != 0) {
-        if (drop > 0) {
-            wah_value_t *dst = sp - keep - drop;
-            if (keep > 0) memmove(dst, sp - keep, keep * sizeof(wah_value_t));
-            sp -= drop;
-        }
+        WAH_DROP_KEEP(keep, drop);
         bytecode_ip = bytecode_base + offset;
     }
     WAH_NEXT();
@@ -9829,11 +9937,7 @@ WAH_RUN(BR_TABLE) {
     uint32_t target_idx = (index < num_targets) ? index : num_targets;
     uint32_t target_offset = wah_read_u32_le(bytecode_ip + target_idx * 2 * sizeof(uint32_t));
     uint32_t drop = wah_read_u32_le(bytecode_ip + target_idx * 2 * sizeof(uint32_t) + sizeof(uint32_t));
-    if (drop > 0) {
-        wah_value_t *dst = sp - keep - drop;
-        if (keep > 0) memmove(dst, sp - keep, keep * sizeof(wah_value_t));
-        sp -= drop;
-    }
+    WAH_DROP_KEEP(keep, drop);
     bytecode_ip = bytecode_base + target_offset;
     WAH_NEXT();
 }
@@ -10029,11 +10133,7 @@ WAH_RUN(BR_ON_NULL) {
     bytecode_ip += sizeof(uint32_t);
     if (sp[-1].ref == NULL) {
         --sp;
-        if (drop > 0) {
-            wah_value_t *dst = sp - keep - drop;
-            if (keep > 0) memmove(dst, sp - keep, keep * sizeof(wah_value_t));
-            sp -= drop;
-        }
+        WAH_DROP_KEEP(keep, drop);
         bytecode_ip = bytecode_base + offset;
     }
     WAH_NEXT();
@@ -10047,11 +10147,7 @@ WAH_RUN(BR_ON_NON_NULL) {
     uint32_t drop = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     if (sp[-1].ref != NULL) {
-        if (drop > 0) {
-            wah_value_t *dst = sp - keep - drop;
-            if (keep > 0) memmove(dst, sp - keep, keep * sizeof(wah_value_t));
-            sp -= drop;
-        }
+        WAH_DROP_KEEP(keep, drop);
         bytecode_ip = bytecode_base + offset;
     } else {
         --sp;
@@ -10660,57 +10756,12 @@ WAH_RUN(TABLE_GROW) {
 
     if (delta < 0) {
         (*sp++).i32 = -1;
-        WAH_NEXT();
-    }
-
-    uint32_t old_size = ctx->tables[table_idx].size;
-    uint64_t new_size = (uint64_t)old_size + delta;
-
-    if (new_size > ctx->tables[table_idx].max_size) {
-        (*sp++).i32 = -1;
-        WAH_NEXT();
-    }
-
-    uint64_t delta_bytes = (uint64_t)delta * sizeof(wah_value_t);
-    if (!wah_budget_check(ctx, delta_bytes)) {
-        (*sp++).i32 = -1;
-        WAH_NEXT();
-    }
-    if (ctx->tables[table_idx].import_ctx && ctx->tables[table_idx].is_imported) {
-        if (!wah_budget_check(ctx->tables[table_idx].import_ctx, delta_bytes)) {
-            (*sp++).i32 = -1;
-            WAH_NEXT();
-        }
-    }
-
-    // Reallocate table
-    wah_value_t *new_table = NULL;
-    WAH_MALLOC_ARRAY_GOTO(new_table, new_size, cleanup);
-    memcpy(new_table, ctx->tables[table_idx].entries, sizeof(wah_value_t) * old_size);
-    for (uint64_t i = old_size; i < new_size; ++i) {
-        new_table[i] = init_val;
-    }
-    if (ctx->tables[table_idx].is_imported) {
-        // Imported table: don't free, source context owns the old buffer
     } else {
-        free(ctx->tables[table_idx].entries);
+        uint32_t old_size;
+        bool grew;
+        WAH_CHECK_GOTO(wah_table_grow_internal(ctx, table_idx, (uint64_t)delta, init_val, &old_size, &grew), cleanup);
+        (*sp++).i32 = grew ? (int32_t)old_size : -1;
     }
-    ctx->tables[table_idx].entries = new_table;
-    ctx->tables[table_idx].size = (uint32_t)new_size;
-    wah_budget_charge(ctx, delta_bytes);
-    if (ctx->tables[table_idx].import_ctx) {
-        wah_exec_context_t *src = ctx->tables[table_idx].import_ctx;
-        uint32_t src_idx = ctx->tables[table_idx].import_idx;
-        if (ctx->tables[table_idx].is_imported) {
-            wah_budget_charge(src, delta_bytes);
-            src->tables[src_idx].is_imported = true;
-        }
-        src->tables[src_idx].entries = new_table;
-        src->tables[src_idx].size = (uint32_t)new_size;
-    }
-    if (ctx->tables) ctx->tables[table_idx].is_imported = false;
-
-    (*sp++).i32 = (int32_t)old_size;
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10724,14 +10775,12 @@ WAH_RUN(TABLE_FILL) {
     uint32_t offset = (uint32_t)(*--sp).i32;
     WAH_ASSERT(table_idx < ctx->table_count);
     WAH_ENSURE_GOTO((uint64_t)offset + size <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup);
-    {
-        uint64_t done = wah_bulk_table_fill(ctx, table_idx, offset, val, size);
-        if (done < size) {
-            (*sp++).i32 = (int32_t)(offset + done);
-            *sp++ = val;
-            (*sp++).i32 = (int32_t)(size - done);
-            WAH_BULK_YIELD(instr_start);
-        }
+    uint64_t done = wah_bulk_table_fill(ctx, table_idx, offset, val, size);
+    if (done < size) {
+        (*sp++).i32 = (int32_t)(offset + done);
+        *sp++ = val;
+        (*sp++).i32 = (int32_t)(size - done);
+        WAH_BULK_YIELD(instr_start);
     }
     WAH_NEXT();
     WAH_CLEANUP();
@@ -10841,56 +10890,12 @@ WAH_RUN(TABLE_GROW_i64) {
 
     if (delta < 0) {
         (*sp++).i64 = -1;
-        WAH_NEXT();
-    }
-
-    uint32_t old_size = ctx->tables[table_idx].size;
-    uint64_t new_size = (uint64_t)old_size + (uint64_t)delta;
-
-    if (new_size > ctx->tables[table_idx].max_size) {
-        (*sp++).i64 = -1;
-        WAH_NEXT();
-    }
-
-    uint64_t delta_bytes = (uint64_t)delta * sizeof(wah_value_t);
-    if (!wah_budget_check(ctx, delta_bytes)) {
-        (*sp++).i64 = -1;
-        WAH_NEXT();
-    }
-    if (ctx->tables[table_idx].import_ctx && ctx->tables[table_idx].is_imported) {
-        if (!wah_budget_check(ctx->tables[table_idx].import_ctx, delta_bytes)) {
-            (*sp++).i64 = -1;
-            WAH_NEXT();
-        }
-    }
-
-    wah_value_t *new_table = NULL;
-    WAH_MALLOC_ARRAY_GOTO(new_table, new_size, cleanup);
-    memcpy(new_table, ctx->tables[table_idx].entries, sizeof(wah_value_t) * old_size);
-    for (uint64_t i = old_size; i < new_size; ++i) {
-        new_table[i] = init_val;
-    }
-    if (ctx->tables[table_idx].is_imported) {
-        // Imported table: don't free, source context owns the old buffer
     } else {
-        free(ctx->tables[table_idx].entries);
+        uint32_t old_size;
+        bool grew;
+        WAH_CHECK_GOTO(wah_table_grow_internal(ctx, table_idx, (uint64_t)delta, init_val, &old_size, &grew), cleanup);
+        (*sp++).i64 = grew ? (int64_t)old_size : -1;
     }
-    ctx->tables[table_idx].entries = new_table;
-    ctx->tables[table_idx].size = (uint32_t)new_size;
-    wah_budget_charge(ctx, delta_bytes);
-    if (ctx->tables[table_idx].import_ctx) {
-        wah_exec_context_t *src = ctx->tables[table_idx].import_ctx;
-        uint32_t src_idx = ctx->tables[table_idx].import_idx;
-        if (ctx->tables[table_idx].is_imported) {
-            wah_budget_charge(src, delta_bytes);
-            src->tables[src_idx].is_imported = true;
-        }
-        src->tables[src_idx].entries = new_table;
-        src->tables[src_idx].size = (uint32_t)new_size;
-    }
-    if (ctx->tables) ctx->tables[table_idx].is_imported = false;
-
-    (*sp++).i64 = (int64_t)old_size;
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -11155,45 +11160,7 @@ WAH_RUN(CALL_REF) {
             memset(sp, 0, sizeof(wah_value_t) * tc_num_locals); \
             sp += tc_num_locals; \
         } \
-        frame->code = tc_code; \
-        frame->bytecode_ip = tc_code->parsed_code.bytecode; \
-        frame->func_idx = tc_local_idx; \
-        frame->result_count = (result_count_); \
-        frame->module = tc_module; \
-        frame->ref_map_offset = 0; \
-        if (tc_module == ctx->module) { \
-            frame->frame_globals = ctx->globals; \
-            frame->frame_function_table = ctx->function_table; \
-            frame->frame_function_table_count = ctx->function_table_count; \
-            frame->frame_ctx = ctx; \
-        } else if (tc_ctx && tc_ctx != ctx) { \
-            frame->frame_globals = tc_ctx->globals; \
-            frame->frame_function_table = tc_ctx->function_table; \
-            frame->frame_function_table_count = tc_ctx->function_table_count; \
-            frame->frame_ctx = tc_ctx; \
-        } else { \
-            uint32_t tc_offset = wah_global_index_limit(ctx->module); \
-            bool tc_found = false; \
-            for (uint32_t tc_i = 0; tc_i < ctx->linked_module_count; tc_i++) { \
-                if (ctx->linked_modules[tc_i].module == tc_module) { \
-                    if (ctx->linked_modules[tc_i].ctx) { \
-                        frame->frame_globals = ctx->linked_modules[tc_i].ctx->globals; \
-                        frame->frame_function_table = ctx->linked_modules[tc_i].ctx->function_table; \
-                        frame->frame_function_table_count = ctx->linked_modules[tc_i].ctx->function_table_count; \
-                        frame->frame_ctx = ctx->linked_modules[tc_i].ctx; \
-                    } else { \
-                        frame->frame_globals = ctx->globals + tc_offset; \
-                        frame->frame_function_table = ctx->function_table; \
-                        frame->frame_function_table_count = ctx->function_table_count; \
-                        frame->frame_ctx = ctx; \
-                    } \
-                    tc_found = true; \
-                    break; \
-                } \
-                tc_offset += ctx->linked_modules[tc_i].module->global_count; \
-            } \
-            WAH_ASSERT(tc_found && "tail call to unknown linked module"); \
-        } \
+        wah_init_wasm_frame(ctx, frame, tc_module, tc_local_idx, tc_code, tc_locals_dst, (result_count_), tc_ctx); \
         bytecode_ip = frame->bytecode_ip; \
         bytecode_base = frame->code->parsed_code.bytecode; \
         fctx = frame->frame_ctx; \
@@ -11317,50 +11284,31 @@ WAH_IF_MEMORY64(WAH_NEVER_RUN(RETURN_CALL_INDIRECT_i64))
 WAH_NEVER_RUN(RETURN_CALL_REF)
 #endif // WAH_FEATURE_TAIL_CALL
 
+#define WAH_RETURN_CURRENT_FRAME() do { \
+    while (ctx->exception_handler_depth > 0 && \
+           ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) { \
+        ctx->exception_handler_depth--; \
+    } \
+    uint32_t results_to_keep_ = frame->result_count; \
+    wah_value_t *results_src_ = sp - results_to_keep_; \
+    sp = frame->locals; \
+    ctx->call_depth--; \
+    ctx->frame_ptr++; \
+    if (results_to_keep_ > 0) { \
+        memmove(sp, results_src_, sizeof(wah_value_t) * results_to_keep_); \
+        sp += results_to_keep_; \
+    } \
+    RELOAD_FRAME(); \
+    WAH_NEXT(); \
+    WAH_CLEANUP(); \
+} while (0)
+
 WAH_RUN(RETURN) {
-    while (ctx->exception_handler_depth > 0 &&
-           ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) {
-        ctx->exception_handler_depth--;
-    }
-
-    uint32_t results_to_keep = frame->result_count;
-    wah_value_t *results_src = sp - results_to_keep;
-
-    sp = frame->locals;
-    ctx->call_depth--;
-    ctx->frame_ptr++;
-
-    if (results_to_keep > 0) {
-        memmove(sp, results_src, sizeof(wah_value_t) * results_to_keep);
-        sp += results_to_keep;
-    }
-
-    RELOAD_FRAME();
-    WAH_NEXT();
-    WAH_CLEANUP();
+    WAH_RETURN_CURRENT_FRAME();
 }
 
 WAH_RUN(END) { // End of function
-    while (ctx->exception_handler_depth > 0 &&
-           ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) {
-        ctx->exception_handler_depth--;
-    }
-
-    uint32_t results_to_keep = frame->result_count;
-    wah_value_t *results_src = sp - results_to_keep;
-
-    sp = frame->locals;
-    ctx->call_depth--;
-    ctx->frame_ptr++;
-
-    if (results_to_keep > 0) {
-        memmove(sp, results_src, sizeof(wah_value_t) * results_to_keep);
-        sp += results_to_keep;
-    }
-
-    RELOAD_FRAME();
-    WAH_NEXT();
-    WAH_CLEANUP();
+    WAH_RETURN_CURRENT_FRAME();
 }
 
 #define BINOP_I(N,op) { sp[-2].i##N = (int##N##_t)((uint##N##_t)sp[-2].i##N op (uint##N##_t)sp[-1].i##N); sp--; WAH_NEXT(); }
@@ -11772,56 +11720,13 @@ WAH_RUN(MEMORY_GROW) {
         WAH_NEXT();
     }
 
-    uint32_t old_pages = fctx->memories[mem_idx].size / WAH_WASM_PAGE_SIZE;
-    uint64_t new_pages = (uint64_t)old_pages + pages_to_grow;
-
-    if (new_pages > ctx->memories[mem_idx].max_pages || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
+    uint64_t old_pages;
+    if (!wah_memory_grow_internal(ctx, fctx, mem_idx, (uint64_t)pages_to_grow, &old_pages)) {
         (*sp++).i32 = -1;
         WAH_NEXT();
-    }
-
-    size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
-    uint64_t delta_bytes = new_memory_size - fctx->memories[mem_idx].size;
-    if (!wah_budget_check(ctx, delta_bytes)) {
-        (*sp++).i32 = -1;
-        WAH_NEXT();
-    }
-    if (ctx->memories[mem_idx].import_ctx && ctx->memories[mem_idx].is_imported) {
-        if (!wah_budget_check(ctx->memories[mem_idx].import_ctx, delta_bytes)) {
-            (*sp++).i32 = -1;
-            WAH_NEXT();
-        }
-    }
-    WAH_REALLOC_ARRAY_GOTO(fctx->memories[mem_idx].data, new_memory_size, grow_oom);
-
-    if (new_memory_size > fctx->memories[mem_idx].size) {
-        memset(fctx->memories[mem_idx].data + fctx->memories[mem_idx].size, 0, new_memory_size - fctx->memories[mem_idx].size);
-    }
-
-    wah_budget_charge(ctx, delta_bytes);
-    fctx->memories[mem_idx].size = (uint64_t)new_memory_size;
-    if (ctx->memories[mem_idx].import_ctx) {
-        wah_exec_context_t *src = ctx->memories[mem_idx].import_ctx;
-        uint32_t src_idx = ctx->memories[mem_idx].import_idx;
-        if (ctx->memories[mem_idx].is_imported) {
-            wah_budget_charge(src, delta_bytes);
-            src->memories[src_idx].is_imported = true;
-        }
-        src->memories[src_idx].data = fctx->memories[mem_idx].data;
-        src->memories[src_idx].size = fctx->memories[mem_idx].size;
-        if (src_idx == 0) {
-            src->memory_base = src->memories[0].data;
-            src->memory_size = src->memories[0].size;
-        }
-    }
-    if (ctx->memories) ctx->memories[mem_idx].is_imported = false;
-    if (mem_idx == 0) {
-        fctx->memory_base = fctx->memories[0].data;
-        fctx->memory_size = fctx->memories[0].size;
     }
     (*sp++).i32 = (int32_t)old_pages;
     WAH_NEXT();
-    if (0) { grow_oom: err = WAH_OK; (*sp++).i32 = -1; WAH_NEXT(); }
 }
 
 WAH_RUN(MEMORY_FILL) {
@@ -11966,56 +11871,13 @@ WAH_RUN(MEMORY_GROW_i64) {
         WAH_NEXT();
     }
 
-    uint64_t old_pages = fctx->memories[mem_idx].size / WAH_WASM_PAGE_SIZE;
-    uint64_t new_pages = old_pages + (uint64_t)pages_to_grow;
-
-    if (new_pages > ctx->memories[mem_idx].max_pages || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
+    uint64_t old_pages;
+    if (!wah_memory_grow_internal(ctx, fctx, mem_idx, (uint64_t)pages_to_grow, &old_pages)) {
         (*sp++).i64 = -1;
         WAH_NEXT();
-    }
-
-    size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
-    uint64_t delta_bytes = new_memory_size - fctx->memories[mem_idx].size;
-    if (!wah_budget_check(ctx, delta_bytes)) {
-        (*sp++).i64 = -1;
-        WAH_NEXT();
-    }
-    if (ctx->memories[mem_idx].import_ctx && ctx->memories[mem_idx].is_imported) {
-        if (!wah_budget_check(ctx->memories[mem_idx].import_ctx, delta_bytes)) {
-            (*sp++).i64 = -1;
-            WAH_NEXT();
-        }
-    }
-    WAH_REALLOC_ARRAY_GOTO(fctx->memories[mem_idx].data, new_memory_size, grow_i64_oom);
-
-    if (new_memory_size > fctx->memories[mem_idx].size) {
-        memset(fctx->memories[mem_idx].data + fctx->memories[mem_idx].size, 0, new_memory_size - fctx->memories[mem_idx].size);
-    }
-
-    wah_budget_charge(ctx, delta_bytes);
-    fctx->memories[mem_idx].size = (uint64_t)new_memory_size;
-    if (ctx->memories[mem_idx].import_ctx) {
-        wah_exec_context_t *src = ctx->memories[mem_idx].import_ctx;
-        uint32_t src_idx = ctx->memories[mem_idx].import_idx;
-        if (ctx->memories[mem_idx].is_imported) {
-            wah_budget_charge(src, delta_bytes);
-            src->memories[src_idx].is_imported = true;
-        }
-        src->memories[src_idx].data = fctx->memories[mem_idx].data;
-        src->memories[src_idx].size = fctx->memories[mem_idx].size;
-        if (src_idx == 0) {
-            src->memory_base = src->memories[0].data;
-            src->memory_size = src->memories[0].size;
-        }
-    }
-    if (ctx->memories) ctx->memories[mem_idx].is_imported = false;
-    if (mem_idx == 0) {
-        fctx->memory_base = fctx->memories[0].data;
-        fctx->memory_size = fctx->memories[0].size;
     }
     (*sp++).i64 = (int64_t)old_pages;
     WAH_NEXT();
-    if (0) { grow_i64_oom: err = WAH_OK; (*sp++).i64 = -1; WAH_NEXT(); }
     WAH_CLEANUP();
 }
 
