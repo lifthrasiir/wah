@@ -882,6 +882,199 @@ static void test_resume_gc_ref_global(void) {
     wah_free_module(&mod);
 }
 
+static void test_poll_yield_without_fuel(void) {
+    printf("Testing POLL yield without fuel metering...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // No fuel metering — just a loop that runs many iterations.
+    // wah_request_interrupt should cause WAH_STATUS_YIELDED at POLL.
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [i32] [i32]]} funcs {[0]} \
+        code {[{[1 i32] \
+            block void \
+                loop void \
+                    local.get 0 i32.eqz br_if 1 \
+                    local.get 1 local.get 0 i32.add local.set 1 \
+                    local.get 0 i32.const 1 i32.sub local.set 0 \
+                    br 0 \
+                end \
+            end \
+            local.get 1 \
+        end}]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t params = { .i32 = 100 };
+
+    assert_ok(wah_start(&ctx, 0, &params, 1));
+    wah_request_interrupt(&ctx);
+    wah_error_t err = wah_resume(&ctx);
+    assert_eq_i32(err, WAH_STATUS_YIELDED);
+    assert_true(wah_is_suspended(&ctx));
+
+    // Resume to completion
+    err = wah_resume(&ctx);
+    assert_eq_i32(err, WAH_OK);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 5050); // 1+2+...+100
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_bulk_table_fill_interrupt(void) {
+    printf("Testing bulk table.fill interrupt...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // Create a table with many entries, fill it, then read one entry.
+    // func 0: table.fill(0, ref.null, 1000) then table.get 0 ref.is_null -> 1
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32]]} funcs {[0]} \
+        tables {[funcref limits.i32/2 1000 1000]} \
+        code {[{[] \
+            i32.const 0 ref.null funcref i32.const 1000 table.fill 0 \
+            i32.const 500 table.get 0 ref.is_null \
+        end}]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    // Run with interrupt — should yield and resume correctly
+    assert_ok(wah_start(&ctx, 0, NULL, 0));
+    wah_request_interrupt(&ctx);
+    wah_error_t err = wah_resume(&ctx);
+    // 1000 entries is small (< 2^24 check interval), so the fill completes
+    // before the check fires. The interrupt will be caught at the next POLL.
+    if (err == WAH_STATUS_YIELDED) {
+        err = wah_resume(&ctx);
+    }
+    assert_eq_i32(err, WAH_OK);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 1); // table entry is null
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_bulk_memory_fill_interrupt(void) {
+    printf("Testing bulk memory.fill interrupt...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // Create a module with 1 page memory, fill it, then load a byte.
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32]]} funcs {[0]} \
+        memories {[limits.i32/1 1]} \
+        code {[{[] \
+            i32.const 0 i32.const 42 i32.const 65536 memory.fill 0 \
+            i32.const 100 i32.load8_u 0 0 \
+        end}]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    assert_ok(wah_start(&ctx, 0, NULL, 0));
+    wah_request_interrupt(&ctx);
+    wah_error_t err = wah_resume(&ctx);
+    // 64KB fill is small, interrupt caught at next POLL
+    while (err > 0) {
+        err = wah_resume(&ctx);
+    }
+    assert_eq_i32(err, WAH_OK);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 42);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_bulk_memory_copy_interrupt(void) {
+    printf("Testing bulk memory.copy interrupt...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // Fill first half with 0xAA, copy to second half, load from second half.
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32]]} funcs {[0]} \
+        memories {[limits.i32/1 1]} \
+        code {[{[] \
+            i32.const 0 i32.const 170 i32.const 32768 memory.fill 0 \
+            i32.const 32768 i32.const 0 i32.const 32768 memory.copy 0 0 \
+            i32.const 50000 i32.load8_u 0 0 \
+        end}]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    assert_ok(wah_start(&ctx, 0, NULL, 0));
+    wah_request_interrupt(&ctx);
+    wah_error_t err = wah_resume(&ctx);
+    while (err > 0) {
+        err = wah_resume(&ctx);
+    }
+    assert_eq_i32(err, WAH_OK);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 170); // 0xAA
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_bulk_memory_fill_large(void) {
+    printf("Testing bulk memory.fill > 2^24 bytes with actual chunk interrupt...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // 512 pages = 32MB > 2^24 (16MB). The chunked fill must cross at least one
+    // chunk boundary, so wah_bulk_should_interrupt fires between chunks.
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32]]} funcs {[0]} \
+        memories {[limits.i32/2 512 512]} \
+        code {[{[] \
+            i32.const 0 i32.const 0xAB i32.const %d32 memory.fill 0 \
+            i32.const %d32 i32.load8_u 0 0 \
+        end}]}", 512 * 65536, 512 * 65536 - 1));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    // Start execution and immediately request interrupt.
+    // The interrupt should be picked up at a bulk-op chunk boundary.
+    assert_ok(wah_start(&ctx, 0, NULL, 0));
+    wah_request_interrupt(&ctx);
+    wah_error_t err = wah_resume(&ctx);
+    // With 32MB fill and 16MB chunks, the first chunk completes then
+    // the interrupt check fires -> WAH_STATUS_YIELDED.
+    assert_eq_i32(err, WAH_STATUS_YIELDED);
+    assert_true(wah_is_suspended(&ctx));
+    printf("  yielded after first chunk (expected)\n");
+
+    // Resume to completion
+    while ((err = wah_resume(&ctx)) > 0) {
+        // No more interrupts, should complete
+    }
+    assert_eq_i32(err, WAH_OK);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 0xAB);
+    printf("  32MB fill completed correctly after resume\n");
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_resume_straight_line();
     test_resume_loop();
@@ -907,6 +1100,11 @@ int main(void) {
     test_destroy_with_live_refs();
     test_cancel_with_pending_exception();
     test_resume_gc_ref_global();
+    test_poll_yield_without_fuel();
+    test_bulk_table_fill_interrupt();
+    test_bulk_memory_fill_interrupt();
+    test_bulk_memory_copy_interrupt();
+    test_bulk_memory_fill_large();
 
     printf("\n=== All resume tests passed ===\n");
     return 0;

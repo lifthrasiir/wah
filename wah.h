@@ -8882,6 +8882,27 @@ static wah_error_t wah_poll_handler(wah_exec_context_t *ctx) {
     return WAH_OK;
 }
 
+#define WAH_BULK_CHECK_INTERVAL (1u << 24)
+
+static inline bool wah_bulk_should_interrupt(const wah_exec_context_t *ctx) {
+    return WAH_POLL_FLAG_LOAD(ctx->poll_flag) && ctx->gc && ctx->gc->interrupt_pending;
+}
+
+// Yield from a bulk op: clear interrupt, rewind IP to instruction start, return YIELDED.
+// Caller must have already pushed remaining args onto sp before this.
+#define WAH_BULK_YIELD(instr_start) do { \
+    ctx->gc->interrupt_pending = false; \
+    if (!ctx->gc->gc_pending) WAH_POLL_FLAG_STORE(ctx->poll_flag, 0); \
+    err = WAH_STATUS_YIELDED; \
+    bytecode_ip = (instr_start); \
+    goto cleanup; \
+} while (0)
+
+// Check for interrupt at the end of a bulk-op chunk. 'done' is elements/bytes
+// completed so far, 'total' is the total. Only checks every WAH_BULK_CHECK_INTERVAL.
+#define WAH_BULK_CHECK(done, total) \
+    ((done) < (total) && ((done) & (WAH_BULK_CHECK_INTERVAL - 1)) == 0 && wah_bulk_should_interrupt(ctx))
+
 // Pushes a new call frame. This is an internal helper.
 // local_idx: index into fn_module->code_bodies[] for the function body.
 // result_count: number of return values (stored in frame for RETURN/END).
@@ -9084,6 +9105,125 @@ static wah_error_t wah_call_host_function_internal(
 
     return WAH_OK;
 }
+
+// --- Chunked bulk-op helpers for bounded interruption ---
+// Each returns the number of elements processed. If < size, interrupted.
+
+static uint64_t wah_bulk_table_fill(wah_exec_context_t *ctx, uint32_t table_idx,
+                                     uint64_t offset, wah_value_t val, uint64_t size) {
+    for (uint64_t done = 0; done < size; ) {
+        uint64_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        for (uint64_t i = 0; i < chunk; ++i)
+            wah_ref_store_table(ctx, table_idx, offset + done + i, val);
+        done += chunk;
+        if (done < size && wah_bulk_should_interrupt(ctx)) return done;
+    }
+    return size;
+}
+
+static uint64_t wah_bulk_table_copy(wah_exec_context_t *ctx,
+                                     uint32_t dst_table_idx, uint64_t dst_offset,
+                                     uint32_t src_table_idx, uint64_t src_offset, uint64_t size) {
+    if (src_table_idx == dst_table_idx && dst_offset == src_offset) return size;
+    bool backward = (src_table_idx == dst_table_idx && dst_offset > src_offset && dst_offset < src_offset + size);
+    for (uint64_t done = 0; done < size; ) {
+        uint64_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        if (backward) {
+            uint64_t tail = size - done;
+            for (uint64_t j = 0; j < chunk; ++j)
+                wah_ref_store_table(ctx, dst_table_idx, dst_offset + tail - 1 - j,
+                                    ctx->tables[src_table_idx].entries[src_offset + tail - 1 - j]);
+        } else {
+            for (uint64_t j = 0; j < chunk; ++j)
+                wah_ref_store_table(ctx, dst_table_idx, dst_offset + done + j,
+                                    ctx->tables[src_table_idx].entries[src_offset + done + j]);
+        }
+        done += chunk;
+        if (done < size && wah_bulk_should_interrupt(ctx)) return done;
+    }
+    return size;
+}
+
+// Returns elements processed. Sets *out_err on trap (negative). If WAH_OK and returned < size, interrupted.
+static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, uint32_t table_idx, uint64_t dst_offset,
+                                     uint32_t elem_idx, uint32_t src_offset, uint32_t size, wah_error_t *out_err) {
+    const wah_element_segment_t *segment = &ctx->module->element_segments[elem_idx];
+    *out_err = WAH_OK;
+    for (uint32_t done = 0; done < size; ) {
+        uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        for (uint32_t j = 0; j < chunk; ++j) {
+            uint32_t i = done + j;
+            wah_value_t store_val;
+            if (!segment->is_expr_elem) {
+                uint32_t gfi = segment->u.func_indices[src_offset + i];
+                WAH_ASSERT(gfi < ctx->function_table_count);
+                wah_function_t *fn = &ctx->function_table[gfi];
+                if (!fn->is_host && fn->fn_module == NULL) { fn->fn_module = ctx->module; fn->fn_ctx = ctx; }
+                store_val.ref = wah_func_to_ref(fn);
+            } else {
+                wah_value_t elem_val;
+                if (src_offset + i >= segment->num_elems) { *out_err = WAH_ERROR_TRAP; return done + j; }
+                wah_error_t e = wah_eval_const_expr(ctx, segment->u.expr.bytecodes[src_offset + i],
+                                                    segment->u.expr.bytecode_sizes[src_offset + i], &elem_val);
+                if (e != WAH_OK) { *out_err = e; return done + j; }
+                if (elem_val.ref == wah_func_to_ref(wah_funcref_sentinel)) {
+                    uint32_t gfi = elem_val.prefuncref.func_idx;
+                    WAH_ASSERT(gfi < ctx->function_table_count);
+                    wah_function_t *fn = &ctx->function_table[gfi];
+                    if (!fn->is_host && fn->fn_module == NULL) { fn->fn_module = ctx->module; fn->fn_ctx = ctx; }
+                    store_val.ref = wah_func_to_ref(fn);
+                } else {
+                    store_val = elem_val;
+                }
+            }
+            wah_ref_store_table(ctx, table_idx, dst_offset + i, store_val);
+        }
+        done += chunk;
+        if (done < size && wah_bulk_should_interrupt(ctx)) return done;
+    }
+    return size;
+}
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+static uint32_t wah_bulk_array_fill(wah_exec_context_t *ctx, wah_type_t et, uint8_t *elems,
+                                     uint32_t offset, uint32_t size, uint32_t elem_size, const wah_value_t *fill_val) {
+    (void)ctx;
+    for (uint32_t done = 0; done < size; ) {
+        uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        for (uint32_t i = 0; i < chunk; i++)
+            wah_gc_store_field(et, elems + (offset + done + i) * elem_size, fill_val);
+        done += chunk;
+        if (done < size && wah_bulk_should_interrupt(ctx)) return done;
+    }
+    return size;
+}
+
+static uint32_t wah_bulk_array_init_elem(wah_exec_context_t *ctx, uint8_t *elems, uint32_t dst_offset,
+                                          const wah_element_segment_t *seg, uint32_t src_offset,
+                                          uint32_t size, wah_error_t *out_err) {
+    *out_err = WAH_OK;
+    for (uint32_t done = 0; done < size; ) {
+        uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        for (uint32_t j = 0; j < chunk; j++) {
+            uint32_t i = done + j;
+            if (!seg->is_expr_elem) {
+                uint32_t fidx = seg->u.func_indices[src_offset + i];
+                WAH_ASSERT(fidx < ctx->function_table_count);
+                ((void **)(elems))[dst_offset + i] = wah_func_to_ref(&ctx->function_table[fidx]);
+            } else {
+                wah_value_t ev;
+                wah_error_t e = wah_eval_const_expr(ctx, seg->u.expr.bytecodes[src_offset + i],
+                    seg->u.expr.bytecode_sizes[src_offset + i], &ev);
+                if (e != WAH_OK) { *out_err = e; return done + j; }
+                ((void **)(elems))[dst_offset + i] = ev.ref;
+            }
+        }
+        done += chunk;
+        if (done < size && wah_bulk_should_interrupt(ctx)) return done;
+    }
+    return size;
+}
+#endif // WAH_FEATURE_GC (bulk array helpers)
 
 #ifdef WAH_FORCE_SWITCH
     // Force switch-based dispatch; skip musttail and computed goto.
@@ -9888,6 +10028,7 @@ WAH_RUN(ARRAY_NEW_ELEM) {
 }
 
 WAH_RUN(ARRAY_FILL) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     uint32_t size = (uint32_t)(--sp)->i32;
     wah_value_t fill_val = *--sp;
@@ -9896,19 +10037,28 @@ WAH_RUN(ARRAY_FILL) {
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     wah_gc_array_body_t *body = (wah_gc_array_body_t *)obj;
     WAH_ENSURE_GOTO((uint64_t)offset + size <= body->length, WAH_ERROR_TRAP, cleanup);
-    uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
-    const wah_repr_info_t *info = fctx->module->repr_infos[wah_gc_header(obj)->repr_id];
-    wah_type_t et = fctx->module->type_defs[typeidx].field_types[0];
-    for (uint32_t i = 0; i < size; i++)
-        wah_gc_store_field(et, elems + (offset + i) * info->size, &fill_val);
+    {
+        uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
+        const wah_repr_info_t *info = fctx->module->repr_infos[wah_gc_header(obj)->repr_id];
+        wah_type_t et = fctx->module->type_defs[typeidx].field_types[0];
+        uint32_t done = wah_bulk_array_fill(ctx, et, elems, offset, size, info->size, &fill_val);
+        if (done < size) {
+            (*sp++).ref = obj;
+            (*sp++).i32 = (int32_t)(offset + done);
+            *sp++ = fill_val;
+            (*sp++).i32 = (int32_t)(size - done);
+            WAH_BULK_YIELD(instr_start);
+        }
+    }
     WAH_NEXT();
     WAH_CLEANUP();
 }
 
 WAH_RUN(ARRAY_COPY) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t dst_typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     uint32_t src_typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
-    (void)dst_typeidx;
+    (void)dst_typeidx; (void)src_typeidx;
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t src_offset = (uint32_t)(--sp)->i32;
     void *src_obj = (--sp)->ref;
@@ -9921,18 +10071,49 @@ WAH_RUN(ARRAY_COPY) {
     WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= dst_body->length, WAH_ERROR_TRAP, cleanup);
     const wah_repr_info_t *src_info = fctx->module->repr_infos[wah_gc_header(src_obj)->repr_id];
     const wah_repr_info_t *dst_info = fctx->module->repr_infos[wah_gc_header(dst_obj)->repr_id];
-    uint32_t src_esz = src_info->size;
-    uint32_t dst_esz = dst_info->size;
-    (void)src_typeidx;
-    uint8_t *src_elems = (uint8_t *)src_body + sizeof(wah_gc_array_body_t);
-    uint8_t *dst_elems = (uint8_t *)dst_body + sizeof(wah_gc_array_body_t);
-    WAH_ASSERT(src_esz == dst_esz);
-    memmove(dst_elems + (size_t)dst_offset * dst_esz, src_elems + (size_t)src_offset * src_esz, (size_t)size * dst_esz);
+    uint32_t esz = src_info->size;
+    WAH_ASSERT(esz == dst_info->size);
+    {
+        uint8_t *src_elems = (uint8_t *)src_body + sizeof(wah_gc_array_body_t);
+        uint8_t *dst_elems = (uint8_t *)dst_body + sizeof(wah_gc_array_body_t);
+        size_t byte_size = (size_t)size * esz;
+        bool backward = (dst_obj == src_obj && dst_offset > src_offset && dst_offset < src_offset + size);
+        for (size_t done = 0; done < byte_size; ) {
+            size_t chunk = byte_size - done < WAH_BULK_CHECK_INTERVAL ? byte_size - done : WAH_BULK_CHECK_INTERVAL;
+            if (backward) {
+                size_t tail = byte_size - done;
+                memcpy(dst_elems + (size_t)dst_offset * esz + tail - chunk,
+                       src_elems + (size_t)src_offset * esz + tail - chunk, chunk);
+            } else {
+                memcpy(dst_elems + (size_t)dst_offset * esz + done,
+                       src_elems + (size_t)src_offset * esz + done, chunk);
+            }
+            done += chunk;
+            if (done < byte_size && wah_bulk_should_interrupt(ctx)) {
+                uint32_t elem_done = (uint32_t)(done / esz);
+                if (backward) {
+                    (*sp++).ref = dst_obj;
+                    (*sp++).i32 = (int32_t)dst_offset;
+                    (*sp++).ref = src_obj;
+                    (*sp++).i32 = (int32_t)src_offset;
+                    (*sp++).i32 = (int32_t)(size - elem_done);
+                } else {
+                    (*sp++).ref = dst_obj;
+                    (*sp++).i32 = (int32_t)(dst_offset + elem_done);
+                    (*sp++).ref = src_obj;
+                    (*sp++).i32 = (int32_t)(src_offset + elem_done);
+                    (*sp++).i32 = (int32_t)(size - elem_done);
+                }
+                WAH_BULK_YIELD(instr_start);
+            }
+        }
+    }
     WAH_NEXT();
     WAH_CLEANUP();
 }
 
 WAH_RUN(ARRAY_INIT_DATA) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     uint32_t dataidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     uint32_t size = (uint32_t)(--sp)->i32;
@@ -9948,12 +10129,26 @@ WAH_RUN(ARRAY_INIT_DATA) {
     uint32_t esz = info->size;
     WAH_ENSURE_GOTO((uint64_t)src_offset + (uint64_t)size * esz <= seg->data_len, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
-    memcpy(elems + (size_t)dst_offset * esz, seg->data + src_offset, (size_t)size * esz);
+    size_t byte_size = (size_t)size * esz;
+    for (size_t done = 0; done < byte_size; ) {
+        size_t chunk = byte_size - done < WAH_BULK_CHECK_INTERVAL ? byte_size - done : WAH_BULK_CHECK_INTERVAL;
+        memcpy(elems + (size_t)dst_offset * esz + done, seg->data + src_offset + done, chunk);
+        done += chunk;
+        if (done < byte_size && wah_bulk_should_interrupt(ctx)) {
+            uint32_t elem_done = (uint32_t)(done / esz);
+            (*sp++).ref = obj;
+            (*sp++).i32 = (int32_t)(dst_offset + elem_done);
+            (*sp++).i32 = (int32_t)(src_offset + done);
+            (*sp++).i32 = (int32_t)(size - elem_done);
+            WAH_BULK_YIELD(instr_start);
+        }
+    }
     WAH_NEXT();
     WAH_CLEANUP();
 }
 
 WAH_RUN(ARRAY_INIT_ELEM) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     uint32_t elemidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     (void)typeidx;
@@ -9969,17 +10164,15 @@ WAH_RUN(ARRAY_INIT_ELEM) {
     WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= body->length, WAH_ERROR_TRAP, cleanup);
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= seg_len, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
-    for (uint32_t i = 0; i < size; i++) {
-        if (!seg->is_expr_elem) {
-            uint32_t fidx = seg->u.func_indices[src_offset + i];
-            WAH_ASSERT(fidx < ctx->function_table_count);
-            ((void **)(elems))[dst_offset + i] = wah_func_to_ref(&ctx->function_table[fidx]);
-        } else {
-            wah_value_t ev;
-            WAH_CHECK_GOTO(wah_eval_const_expr(ctx, seg->u.expr.bytecodes[src_offset + i],
-                seg->u.expr.bytecode_sizes[src_offset + i], &ev), cleanup);
-            ((void **)(elems))[dst_offset + i] = ev.ref;
-        }
+    wah_error_t init_err;
+    uint32_t done = wah_bulk_array_init_elem(ctx, elems, dst_offset, seg, src_offset, size, &init_err);
+    if (init_err != WAH_OK) { err = init_err; goto cleanup; }
+    if (done < size) {
+        (*sp++).ref = obj;
+        (*sp++).i32 = (int32_t)(dst_offset + done);
+        (*sp++).i32 = (int32_t)(src_offset + done);
+        (*sp++).i32 = (int32_t)(size - done);
+        WAH_BULK_YIELD(instr_start);
     }
     WAH_NEXT();
     WAH_CLEANUP();
@@ -10133,78 +10326,29 @@ WAH_RUN(TABLE_GROW) {
 }
 
 WAH_RUN(TABLE_FILL) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    // Stack: [offset, value, size] -> [] (per formal spec: i32.const i val i32.const n table.fill x)
     uint32_t size = (uint32_t)(*--sp).i32;
     wah_value_t val = *--sp;
     uint32_t offset = (uint32_t)(*--sp).i32;
-    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
+    WAH_ASSERT(table_idx < ctx->table_count);
     WAH_ENSURE_GOTO((uint64_t)offset + size <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup);
-
-    for (uint32_t i = 0; i < size; ++i) {
-        wah_ref_store_table(ctx, table_idx, offset + i, val);
+    {
+        uint64_t done = wah_bulk_table_fill(ctx, table_idx, offset, val, size);
+        if (done < size) {
+            (*sp++).i32 = (int32_t)(offset + done);
+            *sp++ = val;
+            (*sp++).i32 = (int32_t)(size - done);
+            WAH_BULK_YIELD(instr_start);
+        }
     }
     WAH_NEXT();
     WAH_CLEANUP();
 }
 
-// Common body for TABLE_COPY / TABLE_COPY_i64 after resolving offsets and size
-#define WAH_TABLE_COPY_BODY(dst_offset, src_offset, size) \
-    WAH_ENSURE_GOTO((uint64_t)(src_offset) + (size) <= ctx->tables[src_table_idx].size, WAH_ERROR_TRAP, cleanup); \
-    WAH_ENSURE_GOTO((uint64_t)(dst_offset) + (size) <= ctx->tables[dst_table_idx].size, WAH_ERROR_TRAP, cleanup); \
-    if (src_table_idx == dst_table_idx && (src_offset) == (dst_offset)) { \
-        WAH_NEXT(); \
-    } else if ((dst_offset) <= (src_offset) || src_table_idx != dst_table_idx) { \
-        for (uint64_t _i = 0; _i < (uint64_t)(size); ++_i) { \
-            wah_ref_store_table(ctx, dst_table_idx, (dst_offset) + _i, ctx->tables[src_table_idx].entries[(src_offset) + _i]); \
-        } \
-    } else { \
-        for (uint64_t _i = (uint64_t)(size); _i > 0; --_i) { \
-            wah_ref_store_table(ctx, dst_table_idx, (dst_offset) + _i - 1, ctx->tables[src_table_idx].entries[(src_offset) + _i - 1]); \
-        } \
-    }
-
-// Common body for TABLE_INIT / TABLE_INIT_i64 after resolving dst_offset, src_offset, size
-#define WAH_TABLE_INIT_BODY(dst_offset, src_offset, size) do { \
-        const wah_element_segment_t *segment = &ctx->module->element_segments[elem_idx]; \
-        if (segment->is_dropped) { \
-            WAH_ENSURE_GOTO((size) == 0 && (src_offset) == 0, WAH_ERROR_TRAP, cleanup); \
-            WAH_ENSURE_GOTO((uint64_t)(dst_offset) <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
-            WAH_NEXT(); \
-        } \
-        WAH_ENSURE_GOTO((uint64_t)(src_offset) + (size) <= segment->num_elems, WAH_ERROR_TRAP, cleanup); \
-        WAH_ENSURE_GOTO((uint64_t)(dst_offset) + (size) <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
-        for (uint32_t _i = 0; _i < (uint32_t)(size); ++_i) { \
-            wah_value_t _store_val; \
-            if (!segment->is_expr_elem) { \
-                uint32_t global_func_idx = segment->u.func_indices[(src_offset) + _i]; \
-                WAH_ASSERT(global_func_idx < ctx->function_table_count); \
-                wah_function_t *_fn = &ctx->function_table[global_func_idx]; \
-                if (!_fn->is_host && _fn->fn_module == NULL) { _fn->fn_module = ctx->module; _fn->fn_ctx = ctx; } \
-                _store_val.ref = wah_func_to_ref(_fn); \
-            } else { \
-                wah_value_t elem_val; \
-                WAH_ENSURE_GOTO((src_offset) + _i < segment->num_elems, WAH_ERROR_TRAP, cleanup); \
-                WAH_CHECK_GOTO(wah_eval_const_expr(ctx, \
-                                                   segment->u.expr.bytecodes[(src_offset) + _i], \
-                                                   segment->u.expr.bytecode_sizes[(src_offset) + _i], \
-                                                   &elem_val), cleanup); \
-                if (elem_val.ref == wah_func_to_ref(wah_funcref_sentinel)) { \
-                    uint32_t global_func_idx = elem_val.prefuncref.func_idx; \
-                    WAH_ASSERT(global_func_idx < ctx->function_table_count); \
-                    wah_function_t *_fn = &ctx->function_table[global_func_idx]; \
-                    if (!_fn->is_host && _fn->fn_module == NULL) { _fn->fn_module = ctx->module; _fn->fn_ctx = ctx; } \
-                    _store_val.ref = wah_func_to_ref(_fn); \
-                } else { \
-                    _store_val = elem_val; \
-                } \
-            } \
-            wah_ref_store_table(ctx, table_idx, (dst_offset) + _i, _store_val); \
-        } \
-    } while (0)
-
 WAH_RUN(TABLE_COPY) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t dst_table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     uint32_t src_table_idx = wah_read_u32_le(bytecode_ip);
@@ -10214,12 +10358,27 @@ WAH_RUN(TABLE_COPY) {
     uint32_t dst_offset = (uint32_t)(*--sp).i32;
     WAH_ASSERT(src_table_idx < ctx->table_count);
     WAH_ASSERT(dst_table_idx < ctx->table_count);
-    WAH_TABLE_COPY_BODY(dst_offset, src_offset, size)
+    WAH_ENSURE_GOTO((uint64_t)src_offset + size <= ctx->tables[src_table_idx].size, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= ctx->tables[dst_table_idx].size, WAH_ERROR_TRAP, cleanup);
+    uint64_t done = wah_bulk_table_copy(ctx, dst_table_idx, dst_offset, src_table_idx, src_offset, size);
+    if (done < size) {
+        bool backward = (src_table_idx == dst_table_idx && dst_offset > src_offset && dst_offset < src_offset + size);
+        if (backward) {
+            (*sp++).i32 = (int32_t)dst_offset;
+            (*sp++).i32 = (int32_t)src_offset;
+        } else {
+            (*sp++).i32 = (int32_t)(dst_offset + done);
+            (*sp++).i32 = (int32_t)(src_offset + done);
+        }
+        (*sp++).i32 = (int32_t)(size - done);
+        WAH_BULK_YIELD(instr_start);
+    }
     WAH_NEXT();
     WAH_CLEANUP();
 }
 
 WAH_RUN(TABLE_INIT) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t elem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
@@ -10229,7 +10388,23 @@ WAH_RUN(TABLE_INIT) {
     uint32_t dst_offset = (uint32_t)(*--sp).i32;
     WAH_ASSERT(elem_idx < ctx->module->element_segment_count);
     WAH_ASSERT(table_idx < ctx->table_count);
-    WAH_TABLE_INIT_BODY(dst_offset, src_offset, size);
+    const wah_element_segment_t *segment = &ctx->module->element_segments[elem_idx];
+    if (segment->is_dropped) {
+        WAH_ENSURE_GOTO(size == 0 && src_offset == 0, WAH_ERROR_TRAP, cleanup);
+        WAH_ENSURE_GOTO((uint64_t)dst_offset <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup);
+        WAH_NEXT();
+    }
+    WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->num_elems, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup);
+    wah_error_t init_err;
+    uint32_t done = wah_bulk_table_init(ctx, table_idx, dst_offset, elem_idx, src_offset, size, &init_err);
+    if (init_err != WAH_OK) { err = init_err; goto cleanup; }
+    if (done < size) {
+        (*sp++).i32 = (int32_t)(dst_offset + done);
+        (*sp++).i32 = (int32_t)(src_offset + done);
+        (*sp++).i32 = (int32_t)(size - done);
+        WAH_BULK_YIELD(instr_start);
+    }
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -10317,6 +10492,7 @@ WAH_RUN(TABLE_GROW_i64) {
 }
 
 WAH_RUN(TABLE_FILL_i64) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     uint64_t size = (uint64_t)(*--sp).i64;
@@ -10324,15 +10500,19 @@ WAH_RUN(TABLE_FILL_i64) {
     uint64_t offset = (uint64_t)(*--sp).i64;
     WAH_ASSERT(table_idx < ctx->table_count);
     WAH_ENSURE_GOTO(offset + size <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup);
-
-    for (uint64_t i = 0; i < size; ++i) {
-        wah_ref_store_table(ctx, table_idx, offset + i, val);
+    uint64_t done = wah_bulk_table_fill(ctx, table_idx, offset, val, size);
+    if (done < size) {
+        (*sp++).i64 = (int64_t)(offset + done);
+        *sp++ = val;
+        (*sp++).i64 = (int64_t)(size - done);
+        WAH_BULK_YIELD(instr_start);
     }
     WAH_NEXT();
     WAH_CLEANUP();
 }
 
 WAH_RUN(TABLE_COPY_i64) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t dst_table_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     uint32_t src_table_idx = wah_read_u32_le(bytecode_ip);
@@ -10342,12 +10522,27 @@ WAH_RUN(TABLE_COPY_i64) {
     uint64_t dst_offset = (uint64_t)(*--sp).i64;
     WAH_ASSERT(src_table_idx < ctx->table_count);
     WAH_ASSERT(dst_table_idx < ctx->table_count);
-    WAH_TABLE_COPY_BODY(dst_offset, src_offset, size)
+    WAH_ENSURE_GOTO(src_offset + size <= ctx->tables[src_table_idx].size, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(dst_offset + size <= ctx->tables[dst_table_idx].size, WAH_ERROR_TRAP, cleanup);
+    uint64_t done = wah_bulk_table_copy(ctx, dst_table_idx, dst_offset, src_table_idx, src_offset, size);
+    if (done < size) {
+        bool backward = (src_table_idx == dst_table_idx && dst_offset > src_offset && dst_offset < src_offset + size);
+        if (backward) {
+            (*sp++).i64 = (int64_t)dst_offset;
+            (*sp++).i64 = (int64_t)src_offset;
+        } else {
+            (*sp++).i64 = (int64_t)(dst_offset + done);
+            (*sp++).i64 = (int64_t)(src_offset + done);
+        }
+        (*sp++).i64 = (int64_t)(size - done);
+        WAH_BULK_YIELD(instr_start);
+    }
     WAH_NEXT();
     WAH_CLEANUP();
 }
 
 WAH_RUN(TABLE_INIT_i64) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t elem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     uint32_t table_idx = wah_read_u32_le(bytecode_ip);
@@ -10357,7 +10552,23 @@ WAH_RUN(TABLE_INIT_i64) {
     uint64_t dst_offset = (uint64_t)(*--sp).i64;
     WAH_ASSERT(elem_idx < ctx->module->element_segment_count);
     WAH_ASSERT(table_idx < ctx->table_count);
-    WAH_TABLE_INIT_BODY(dst_offset, src_offset, size);
+    const wah_element_segment_t *segment = &ctx->module->element_segments[elem_idx];
+    if (segment->is_dropped) {
+        WAH_ENSURE_GOTO(size == 0 && src_offset == 0, WAH_ERROR_TRAP, cleanup);
+        WAH_ENSURE_GOTO(dst_offset <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup);
+        WAH_NEXT();
+    }
+    WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->num_elems, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(dst_offset + size <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup);
+    wah_error_t init_err;
+    uint32_t done = wah_bulk_table_init(ctx, table_idx, dst_offset, elem_idx, src_offset, size, &init_err);
+    if (init_err != WAH_OK) { err = init_err; goto cleanup; }
+    if (done < size) {
+        (*sp++).i64 = (int64_t)(dst_offset + done);
+        (*sp++).i32 = (int32_t)(src_offset + done);
+        (*sp++).i32 = (int32_t)(size - done);
+        WAH_BULK_YIELD(instr_start);
+    }
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -11193,28 +11404,40 @@ WAH_RUN(MEMORY_GROW) {
 }
 
 WAH_RUN(MEMORY_FILL) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t mem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    WAH_ASSERT(mem_idx < ctx->memory_count && "validation didn't catch out-of-bound memory index");
+    WAH_ASSERT(mem_idx < ctx->memory_count);
 
     uint32_t size = (uint32_t)(*--sp).i32;
     uint8_t val = (uint8_t)(*--sp).i32;
     uint32_t dst = (uint32_t)(*--sp).i32;
 
     WAH_ENSURE_GOTO((uint64_t)dst + size <= fctx->memories[mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-    memset(fctx->memories[mem_idx].data + dst, val, size);
+    for (uint32_t done = 0; done < size; ) {
+        uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        memset(fctx->memories[mem_idx].data + dst + done, val, chunk);
+        done += chunk;
+        if (WAH_BULK_CHECK(done, size)) {
+            (*sp++).i32 = (int32_t)(dst + done);
+            (*sp++).i32 = (int32_t)val;
+            (*sp++).i32 = (int32_t)(size - done);
+            WAH_BULK_YIELD(instr_start);
+        }
+    }
     WAH_NEXT();
     WAH_CLEANUP();
 }
 
 WAH_RUN(MEMORY_INIT) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t data_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     uint32_t mem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
 
-    WAH_ASSERT(mem_idx < ctx->memory_count && "validation didn't catch out-of-bound memory index");
-    WAH_ASSERT(data_idx < ctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index");
+    WAH_ASSERT(mem_idx < ctx->memory_count);
+    WAH_ASSERT(data_idx < ctx->module->data_segment_count);
 
     uint32_t size = (uint32_t)(*--sp).i32;
     uint32_t src_offset = (uint32_t)(*--sp).i32;
@@ -11223,10 +11446,20 @@ WAH_RUN(MEMORY_INIT) {
     const wah_data_segment_t *segment = &ctx->module->data_segments[data_idx];
 
     WAH_ENSURE_GOTO((uint64_t)dest_offset + size <= fctx->memories[mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-    WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->data_len, WAH_ERROR_TRAP, cleanup); // Ensure source data is within segment bounds
-    WAH_ENSURE_GOTO(size <= segment->data_len, WAH_ERROR_TRAP, cleanup); // Cannot initialize more than available data
+    WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->data_len, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(size <= segment->data_len, WAH_ERROR_TRAP, cleanup);
 
-    memcpy(fctx->memories[mem_idx].data + dest_offset, segment->data + src_offset, size);
+    for (uint32_t done = 0; done < size; ) {
+        uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        memcpy(fctx->memories[mem_idx].data + dest_offset + done, segment->data + src_offset + done, chunk);
+        done += chunk;
+        if (WAH_BULK_CHECK(done, size)) {
+            (*sp++).i32 = (int32_t)(dest_offset + done);
+            (*sp++).i32 = (int32_t)(src_offset + done);
+            (*sp++).i32 = (int32_t)(size - done);
+            WAH_BULK_YIELD(instr_start);
+        }
+    }
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -11243,13 +11476,14 @@ WAH_RUN(DATA_DROP) {
 }
 
 WAH_RUN(MEMORY_COPY) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t dest_mem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     uint32_t src_mem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
 
-    WAH_ASSERT(dest_mem_idx < ctx->memory_count && "validation didn't catch out-of-bound destination memory index");
-    WAH_ASSERT(src_mem_idx < ctx->memory_count && "validation didn't catch out-of-bound source memory index");
+    WAH_ASSERT(dest_mem_idx < ctx->memory_count);
+    WAH_ASSERT(src_mem_idx < ctx->memory_count);
 
     uint32_t size = (uint32_t)(*--sp).i32;
     uint32_t src = (uint32_t)(*--sp).i32;
@@ -11258,7 +11492,34 @@ WAH_RUN(MEMORY_COPY) {
     WAH_ENSURE_GOTO((uint64_t)dest + size <= fctx->memories[dest_mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
     WAH_ENSURE_GOTO((uint64_t)src + size <= fctx->memories[src_mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
 
-    memmove(fctx->memories[dest_mem_idx].data + dest, fctx->memories[src_mem_idx].data + src, size);
+    if (dest_mem_idx == src_mem_idx && dest > src && dest < src + size) {
+        for (uint32_t done = 0; done < size; ) {
+            uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+            uint32_t tail = size - done;
+            memcpy(fctx->memories[dest_mem_idx].data + dest + tail - chunk,
+                   fctx->memories[src_mem_idx].data + src + tail - chunk, chunk);
+            done += chunk;
+            if (WAH_BULK_CHECK(done, size)) {
+                (*sp++).i32 = (int32_t)dest;
+                (*sp++).i32 = (int32_t)src;
+                (*sp++).i32 = (int32_t)(size - done);
+                WAH_BULK_YIELD(instr_start);
+            }
+        }
+    } else {
+        for (uint32_t done = 0; done < size; ) {
+            uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+            memcpy(fctx->memories[dest_mem_idx].data + dest + done,
+                   fctx->memories[src_mem_idx].data + src + done, chunk);
+            done += chunk;
+            if (WAH_BULK_CHECK(done, size)) {
+                (*sp++).i32 = (int32_t)(dest + done);
+                (*sp++).i32 = (int32_t)(src + done);
+                (*sp++).i32 = (int32_t)(size - done);
+                WAH_BULK_YIELD(instr_start);
+            }
+        }
+    }
     WAH_NEXT();
     WAH_CLEANUP();
 }
@@ -11326,28 +11587,40 @@ WAH_RUN(MEMORY_GROW_i64) {
 
 // --- i64-addressed memory.fill/init/copy ---
 WAH_RUN(MEMORY_FILL_i64) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t mem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    WAH_ASSERT(mem_idx < ctx->memory_count && "validation didn't catch out-of-bound memory index");
+    WAH_ASSERT(mem_idx < ctx->memory_count);
 
     uint32_t size = (uint32_t)(*--sp).i32;
     uint8_t val = (uint8_t)(*--sp).i32;
     uint64_t dst = (uint64_t)(*--sp).i64;
 
     WAH_ENSURE_GOTO(dst + size <= fctx->memories[mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-    memset(fctx->memories[mem_idx].data + dst, val, size);
+    for (uint32_t done = 0; done < size; ) {
+        uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        memset(fctx->memories[mem_idx].data + dst + done, val, chunk);
+        done += chunk;
+        if (WAH_BULK_CHECK(done, size)) {
+            (*sp++).i64 = (int64_t)(dst + done);
+            (*sp++).i32 = (int32_t)val;
+            (*sp++).i32 = (int32_t)(size - done);
+            WAH_BULK_YIELD(instr_start);
+        }
+    }
     WAH_NEXT();
     WAH_CLEANUP();
 }
 
 WAH_RUN(MEMORY_INIT_i64) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t data_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     uint32_t mem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
 
-    WAH_ASSERT(mem_idx < ctx->memory_count && "validation didn't catch out-of-bound memory index");
-    WAH_ASSERT(data_idx < ctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index");
+    WAH_ASSERT(mem_idx < ctx->memory_count);
+    WAH_ASSERT(data_idx < ctx->module->data_segment_count);
 
     uint32_t size = (uint32_t)(*--sp).i32;
     uint32_t src_offset = (uint32_t)(*--sp).i32;
@@ -11359,19 +11632,30 @@ WAH_RUN(MEMORY_INIT_i64) {
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->data_len, WAH_ERROR_TRAP, cleanup);
     WAH_ENSURE_GOTO(size <= segment->data_len, WAH_ERROR_TRAP, cleanup);
 
-    memcpy(fctx->memories[mem_idx].data + dest_offset, segment->data + src_offset, size);
+    for (uint32_t done = 0; done < size; ) {
+        uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        memcpy(fctx->memories[mem_idx].data + dest_offset + done, segment->data + src_offset + done, chunk);
+        done += chunk;
+        if (WAH_BULK_CHECK(done, size)) {
+            (*sp++).i64 = (int64_t)(dest_offset + done);
+            (*sp++).i32 = (int32_t)(src_offset + done);
+            (*sp++).i32 = (int32_t)(size - done);
+            WAH_BULK_YIELD(instr_start);
+        }
+    }
     WAH_NEXT();
     WAH_CLEANUP();
 }
 
 WAH_RUN(MEMORY_COPY_i64) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t dest_mem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     uint32_t src_mem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
 
-    WAH_ASSERT(dest_mem_idx < ctx->memory_count && "validation didn't catch out-of-bound destination memory index");
-    WAH_ASSERT(src_mem_idx < ctx->memory_count && "validation didn't catch out-of-bound source memory index");
+    WAH_ASSERT(dest_mem_idx < ctx->memory_count);
+    WAH_ASSERT(src_mem_idx < ctx->memory_count);
 
     uint32_t size = (uint32_t)(*--sp).i32;
     bool src_i64 = wah_memory_type(ctx->module, src_mem_idx)->addr_type == WAH_TYPE_I64;
@@ -11382,7 +11666,34 @@ WAH_RUN(MEMORY_COPY_i64) {
     WAH_ENSURE_GOTO(dest + size <= fctx->memories[dest_mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
     WAH_ENSURE_GOTO(src + size <= fctx->memories[src_mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
 
-    memmove(fctx->memories[dest_mem_idx].data + dest, fctx->memories[src_mem_idx].data + src, size);
+    if (dest_mem_idx == src_mem_idx && dest > src && dest < src + size) {
+        for (uint32_t done = 0; done < size; ) {
+            uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+            uint32_t tail = size - done;
+            memcpy(fctx->memories[dest_mem_idx].data + dest + tail - chunk,
+                   fctx->memories[src_mem_idx].data + src + tail - chunk, chunk);
+            done += chunk;
+            if (WAH_BULK_CHECK(done, size)) {
+                if (dest_i64) (*sp++).i64 = (int64_t)dest; else (*sp++).i32 = (int32_t)dest;
+                if (src_i64) (*sp++).i64 = (int64_t)src; else (*sp++).i32 = (int32_t)src;
+                (*sp++).i32 = (int32_t)(size - done);
+                WAH_BULK_YIELD(instr_start);
+            }
+        }
+    } else {
+        for (uint32_t done = 0; done < size; ) {
+            uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+            memcpy(fctx->memories[dest_mem_idx].data + dest + done,
+                   fctx->memories[src_mem_idx].data + src + done, chunk);
+            done += chunk;
+            if (WAH_BULK_CHECK(done, size)) {
+                if (dest_i64) (*sp++).i64 = (int64_t)(dest + done); else (*sp++).i32 = (int32_t)(dest + done);
+                if (src_i64) (*sp++).i64 = (int64_t)(src + done); else (*sp++).i32 = (int32_t)(src + done);
+                (*sp++).i32 = (int32_t)(size - done);
+                WAH_BULK_YIELD(instr_start);
+            }
+        }
+    }
     WAH_NEXT();
     WAH_CLEANUP();
 }
