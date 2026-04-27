@@ -1312,6 +1312,10 @@ static const int8_t wah_opcode_features[WAH_FE] = {
 #define WAH_ASM_CONV_M128_TO_M128I(intrin, insn) static WAH_ALWAYS_INLINE __m128i wah##intrin(__m128 a) { return intrin(a); }
 #endif
 
+// SSE2 wrappers (cmpord used for NaN detection immune to compiler optimizations)
+WAH_ASM_BINARY_M128(_mm_cmpord_ps, "cmpordps")
+WAH_ASM_BINARY_M128D(_mm_cmpord_pd, "cmpordpd")
+
 // SSSE3 wrappers
 WAH_IF_SSSE3(
     WAH_ASM_UNARY_M128I(_mm_abs_epi8, "pabsb")
@@ -2377,12 +2381,12 @@ static inline double wah_max(double a, double b) {
 #ifdef WAH_X86_64 // SSE2
 
 static inline __m128 wah_canonicalize_f32x4_sse2(__m128 v) {
-    __m128 nan_mask = _mm_cmpeq_ps(v, v);
+    __m128 nan_mask = wah_mm_cmpord_ps(v, v);
     return _mm_or_ps(_mm_and_ps(nan_mask, v), _mm_andnot_ps(nan_mask, _mm_set1_ps(WAH_CANONICAL_NAN32.f)));
 }
 
 static inline __m128d wah_canonicalize_f64x2_sse2(__m128d v) {
-    __m128d nan_mask = _mm_cmpeq_pd(v, v);
+    __m128d nan_mask = wah_mm_cmpord_pd(v, v);
     return _mm_or_pd(_mm_and_pd(nan_mask, v), _mm_andnot_pd(nan_mask, _mm_set1_pd(WAH_CANONICAL_NAN64.f)));
 }
 
