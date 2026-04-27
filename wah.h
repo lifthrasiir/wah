@@ -316,6 +316,8 @@ typedef volatile int wah_poll_flag_t;
 #define WAH_POLL_FLAG_STORE(f, v)   ((f) = (v))
 #endif
 
+typedef struct wah_deadline_timer_s wah_deadline_timer_t;
+
 typedef struct wah_exec_context_s {
     // Unified stack: values grow upward from stack_buffer, call frames grow
     // downward from stack_end. Overflow when the two regions meet.
@@ -327,6 +329,7 @@ typedef struct wah_exec_context_s {
     uint32_t call_depth;            // Current call depth
 
     wah_poll_flag_t poll_flag;      // Fast path: non-zero means slow path needed
+    wah_poll_flag_t interrupt_flag; // Cross-thread cooperative interruption
 
     wah_value_t *globals;           // Mutable global values
     uint32_t global_count;
@@ -369,6 +372,8 @@ typedef struct wah_exec_context_s {
     struct wah_gc_state_s *gc;
 
     int64_t fuel;
+    uint64_t deadline_us;
+    wah_deadline_timer_t *deadline_timer;
 
     uint64_t max_memory_bytes;      // WAH_RLIMIT_UNLIMITED = no limit; 0 is a valid limit
     uint64_t memory_bytes_committed; // current total: linear mem + tables + GC heap
@@ -403,7 +408,7 @@ typedef struct wah_rlimits_s {
     uint64_t max_stack_bytes;    // unified value+call frame stack; 0=default
     uint64_t max_memory_bytes;   // linear mem + table + GC heap total; 0=default (no limit), >0=that limit
     uint64_t fuel;               // execution fuel; 0=default (no fuel limit)
-    uint64_t epoch_deadline;     // cooperative time limit; 0=default (reserved)
+    uint64_t deadline;           // cooperative time limit in microseconds; 0=default (none)
     bool no_memory_bytes;        // true=enforce 0-byte limit; incompatible with max_memory_bytes>0
 } wah_rlimits_t;
 
@@ -545,9 +550,12 @@ bool wah_gc_verify_heap(const wah_exec_context_t *ctx);
 void *wah_gc_alloc_host(wah_exec_context_t *ctx, size_t size);
 
 // Requests an interrupt from the interpreter. Safe to call from another thread.
-// The interpreter will trap (or yield, if fuel metering is enabled) at the next POLL/TICK point.
-// Requires GC to be started on the context (wah_gc_start).
+// The interpreter will yield at the next POLL/TICK point.
 void wah_request_interrupt(wah_exec_context_t *ctx);
+
+// Returns true if an interrupt has been requested and not yet consumed.
+// Safe to call from another thread.
+bool wah_is_interrupted(const wah_exec_context_t *ctx);
 
 wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id, wah_entry_t *out);
 
@@ -619,8 +627,26 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
 #include <assert.h> // For assert
 #include <stdint.h> // For INT32_MIN, INT32_MAX
 #include <math.h> // For floating-point functions
+#include <errno.h> // For ETIMEDOUT
 #if defined(_MSC_VER)
 #include <intrin.h> // For MSVC intrinsics
+#endif
+
+#ifndef WAH_NO_THREADS
+#if defined(_WIN32)
+#define WAH_HAS_THREADS 1
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#define NOUSER
+#define NOGDI
+#include <windows.h>
+#elif defined(__unix__) || defined(__APPLE__) || defined(_POSIX_THREADS)
+#define WAH_HAS_THREADS 1
+#include <pthread.h>
+#include <time.h>
+#else
+#define WAH_NO_THREADS
+#endif
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1649,7 +1675,6 @@ typedef struct wah_gc_state_s {
     size_t allocated_bytes;
     size_t allocation_threshold;
     bool gc_pending;
-    bool interrupt_pending;
 #ifdef WAH_DEBUG
     uint32_t total_collections;
     uint32_t total_allocations;
@@ -6222,6 +6247,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
         uint16_t opcode = instr->opcode;
 
         if (opcode == WAH_OP_BLOCK || opcode == WAH_OP_LOOP) {
+            uint32_t continuation_offset = buf_size;
             if (emit_poll && (instr->flags & WAH_INSTR_FLAG_POLL)) {
                 if (opcode == WAH_OP_LOOP) WAH_METER_END_CHUNK();
                 WAH_EMIT_POLL();
@@ -6230,6 +6256,9 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
             WAH_METER_START_CHUNK();
             WAH_METER_RECORD_INSTR_START();
             WAH_LOWER_PUSH_FRAME((wah_opcode_t)opcode);
+            if (opcode == WAH_OP_LOOP) {
+                control_stack[control_sp - 1].continuation_offset = continuation_offset;
+            }
             WAH_METER_RECORD_INSTR_END();
             continue;
         }
@@ -8291,6 +8320,8 @@ static void wah_free_element_segment_data(wah_element_segment_t *segment) {
 
 #define WAH_GC_DEFAULT_THRESHOLD (256 * 1024)
 
+static inline void wah_recompute_poll_flag(wah_exec_context_t *ctx);
+
 static void wah_gc_free_all_objects(wah_gc_state_t *gc) {
     wah_gc_object_t *obj = gc->all_objects;
     while (obj) {
@@ -8317,8 +8348,7 @@ void wah_gc_reset(wah_exec_context_t *ctx) {
     wah_gc_free_all_objects(ctx->gc);
     ctx->gc->phase = WAH_GC_PHASE_IDLE;
     ctx->gc->gc_pending = false;
-    ctx->gc->interrupt_pending = false;
-    WAH_POLL_FLAG_STORE(ctx->poll_flag, 0);
+    wah_recompute_poll_flag(ctx);
 }
 
 void wah_gc_destroy(wah_exec_context_t *ctx) {
@@ -8727,10 +8757,226 @@ static inline void wah_ref_store_table(wah_exec_context_t *ctx, uint32_t table_i
 
 #endif // WAH_FEATURE_GC
 
+static inline void wah_recompute_poll_flag(wah_exec_context_t *ctx) {
+    int pending = WAH_POLL_FLAG_LOAD(ctx->interrupt_flag) != 0;
+    pending = pending || (ctx->gc && ctx->gc->gc_pending);
+    WAH_POLL_FLAG_STORE(ctx->poll_flag, pending ? 1 : 0);
+}
+
 void wah_request_interrupt(wah_exec_context_t *ctx) {
-    if (ctx->gc) ctx->gc->interrupt_pending = true;
+    if (!ctx) return;
+    WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 1);
     WAH_POLL_FLAG_STORE(ctx->poll_flag, 1);
 }
+
+bool wah_is_interrupted(const wah_exec_context_t *ctx) {
+    return ctx && WAH_POLL_FLAG_LOAD(ctx->interrupt_flag) != 0;
+}
+
+#ifndef WAH_NO_THREADS
+struct wah_deadline_timer_s {
+    wah_exec_context_t *ctx;
+    uint64_t deadline_us;
+    wah_poll_flag_t cancelled;
+    wah_poll_flag_t armed;
+#if defined(_WIN32)
+    HANDLE thread;
+    HANDLE event;
+    HANDLE timer;
+#else
+    pthread_t thread;
+    pthread_mutex_t mutex;
+    pthread_cond_t cond;
+#endif
+};
+
+static void wah_deadline_timer_fire(wah_deadline_timer_t *timer) {
+    wah_request_interrupt(timer->ctx);
+}
+
+#if defined(_WIN32)
+static DWORD WINAPI wah_deadline_timer_main(LPVOID arg) {
+    wah_deadline_timer_t *timer = (wah_deadline_timer_t *)arg;
+    for (;;) {
+        WaitForSingleObject(timer->event, INFINITE);
+        ResetEvent(timer->event);
+        if (WAH_POLL_FLAG_LOAD(timer->cancelled)) break;
+        if (!WAH_POLL_FLAG_LOAD(timer->armed)) continue;
+
+        uint64_t ticks_100ns = timer->deadline_us * 10;
+        if (ticks_100ns == 0) ticks_100ns = 1;
+        LARGE_INTEGER due_time;
+        due_time.QuadPart = -(LONGLONG)ticks_100ns;
+        if (!SetWaitableTimer(timer->timer, &due_time, 0, NULL, NULL, FALSE)) {
+            WAH_POLL_FLAG_STORE(timer->armed, 0);
+            wah_deadline_timer_fire(timer);
+            continue;
+        }
+
+        HANDLE handles[2] = { timer->event, timer->timer };
+        DWORD rc = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
+        if (WAH_POLL_FLAG_LOAD(timer->cancelled)) break;
+        if (rc == WAIT_OBJECT_0) {
+            CancelWaitableTimer(timer->timer);
+            ResetEvent(timer->event);
+            continue;
+        }
+        if (rc == WAIT_OBJECT_0 + 1 && WAH_POLL_FLAG_LOAD(timer->armed)) {
+            WAH_POLL_FLAG_STORE(timer->armed, 0);
+            wah_deadline_timer_fire(timer);
+        }
+    }
+    return 0;
+}
+#else
+static void wah_deadline_timer_abs_time(uint64_t us, struct timespec *out) {
+    clock_gettime(CLOCK_MONOTONIC, out);
+    out->tv_sec += (time_t)(us / 1000000);
+    out->tv_nsec += (long)((us % 1000000) * 1000);
+    if (out->tv_nsec >= 1000000000L) {
+        out->tv_sec++;
+        out->tv_nsec -= 1000000000L;
+    }
+}
+
+static void *wah_deadline_timer_main(void *arg) {
+    wah_deadline_timer_t *timer = (wah_deadline_timer_t *)arg;
+    pthread_mutex_lock(&timer->mutex);
+    for (;;) {
+        while (!WAH_POLL_FLAG_LOAD(timer->cancelled) && !WAH_POLL_FLAG_LOAD(timer->armed)) {
+            pthread_cond_wait(&timer->cond, &timer->mutex);
+        }
+        if (WAH_POLL_FLAG_LOAD(timer->cancelled)) break;
+
+        struct timespec deadline;
+        wah_deadline_timer_abs_time(timer->deadline_us, &deadline);
+        int rc = 0;
+        while (!WAH_POLL_FLAG_LOAD(timer->cancelled) && WAH_POLL_FLAG_LOAD(timer->armed) && rc != ETIMEDOUT) {
+            rc = pthread_cond_timedwait(&timer->cond, &timer->mutex, &deadline);
+        }
+        if (WAH_POLL_FLAG_LOAD(timer->cancelled)) break;
+        if (WAH_POLL_FLAG_LOAD(timer->armed) && rc == ETIMEDOUT) {
+            WAH_POLL_FLAG_STORE(timer->armed, 0);
+            pthread_mutex_unlock(&timer->mutex);
+            wah_deadline_timer_fire(timer);
+            pthread_mutex_lock(&timer->mutex);
+        }
+    }
+    pthread_mutex_unlock(&timer->mutex);
+    return NULL;
+}
+#endif
+
+static wah_error_t wah_deadline_timer_create(wah_exec_context_t *ctx) {
+    if (ctx->deadline_timer) return WAH_OK;
+    wah_deadline_timer_t *timer = (wah_deadline_timer_t *)calloc(1, sizeof(*timer));
+    if (!timer) return WAH_ERROR_OUT_OF_MEMORY;
+    timer->ctx = ctx;
+    timer->deadline_us = ctx->deadline_us;
+#if defined(_WIN32)
+    timer->event = CreateEventA(NULL, TRUE, FALSE, NULL);
+    if (!timer->event) { free(timer); return WAH_ERROR_OUT_OF_MEMORY; }
+    timer->timer = CreateWaitableTimerA(NULL, TRUE, NULL);
+    if (!timer->timer) {
+        CloseHandle(timer->event);
+        free(timer);
+        return WAH_ERROR_OUT_OF_MEMORY;
+    }
+    timer->thread = CreateThread(NULL, 0, wah_deadline_timer_main, timer, 0, NULL);
+    if (!timer->thread) {
+        CloseHandle(timer->timer);
+        CloseHandle(timer->event);
+        free(timer);
+        return WAH_ERROR_OUT_OF_MEMORY;
+    }
+#else
+    pthread_condattr_t attr;
+    if (pthread_mutex_init(&timer->mutex, NULL) != 0) { free(timer); return WAH_ERROR_OUT_OF_MEMORY; }
+    if (pthread_condattr_init(&attr) != 0) {
+        pthread_mutex_destroy(&timer->mutex);
+        free(timer);
+        return WAH_ERROR_OUT_OF_MEMORY;
+    }
+#if defined(CLOCK_MONOTONIC)
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+#endif
+    if (pthread_cond_init(&timer->cond, &attr) != 0) {
+        pthread_condattr_destroy(&attr);
+        pthread_mutex_destroy(&timer->mutex);
+        free(timer);
+        return WAH_ERROR_OUT_OF_MEMORY;
+    }
+    pthread_condattr_destroy(&attr);
+    if (pthread_create(&timer->thread, NULL, wah_deadline_timer_main, timer) != 0) {
+        pthread_cond_destroy(&timer->cond);
+        pthread_mutex_destroy(&timer->mutex);
+        free(timer);
+        return WAH_ERROR_OUT_OF_MEMORY;
+    }
+#endif
+    ctx->deadline_timer = timer;
+    return WAH_OK;
+}
+
+static void wah_deadline_timer_arm(wah_exec_context_t *ctx) {
+    wah_deadline_timer_t *timer = ctx->deadline_timer;
+    if (!timer || ctx->deadline_us == 0) return;
+    timer->deadline_us = ctx->deadline_us;
+#if defined(_WIN32)
+    WAH_POLL_FLAG_STORE(timer->armed, 1);
+    SetEvent(timer->event);
+#else
+    pthread_mutex_lock(&timer->mutex);
+    timer->deadline_us = ctx->deadline_us;
+    WAH_POLL_FLAG_STORE(timer->armed, 1);
+    pthread_cond_signal(&timer->cond);
+    pthread_mutex_unlock(&timer->mutex);
+#endif
+}
+
+static void wah_deadline_timer_disarm(wah_exec_context_t *ctx) {
+    wah_deadline_timer_t *timer = ctx->deadline_timer;
+    if (!timer) return;
+#if defined(_WIN32)
+    WAH_POLL_FLAG_STORE(timer->armed, 0);
+    CancelWaitableTimer(timer->timer);
+    SetEvent(timer->event);
+#else
+    pthread_mutex_lock(&timer->mutex);
+    WAH_POLL_FLAG_STORE(timer->armed, 0);
+    pthread_cond_signal(&timer->cond);
+    pthread_mutex_unlock(&timer->mutex);
+#endif
+}
+
+static void wah_deadline_timer_destroy(wah_exec_context_t *ctx) {
+    wah_deadline_timer_t *timer = ctx->deadline_timer;
+    if (!timer) return;
+#if defined(_WIN32)
+    WAH_POLL_FLAG_STORE(timer->cancelled, 1);
+    SetEvent(timer->event);
+    WaitForSingleObject(timer->thread, INFINITE);
+    CloseHandle(timer->thread);
+    CloseHandle(timer->timer);
+    CloseHandle(timer->event);
+#else
+    pthread_mutex_lock(&timer->mutex);
+    WAH_POLL_FLAG_STORE(timer->cancelled, 1);
+    pthread_cond_signal(&timer->cond);
+    pthread_mutex_unlock(&timer->mutex);
+    pthread_join(timer->thread, NULL);
+    pthread_cond_destroy(&timer->cond);
+    pthread_mutex_destroy(&timer->mutex);
+#endif
+    free(timer);
+    ctx->deadline_timer = NULL;
+}
+#else
+static wah_error_t wah_deadline_timer_create(wah_exec_context_t *ctx) { (void)ctx; return WAH_ERROR_DISABLED_FEATURE; }
+static void wah_deadline_timer_arm(wah_exec_context_t *ctx) { (void)ctx; }
+static void wah_deadline_timer_disarm(wah_exec_context_t *ctx) { (void)ctx; }
+static void wah_deadline_timer_destroy(wah_exec_context_t *ctx) { (void)ctx; }
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 // Interpreter loop ////////////////////////////////////////////////////////////
@@ -8782,6 +9028,10 @@ wah_error_t wah_exec_context_create_with_limits(wah_exec_context_t *exec_ctx, co
     exec_ctx->module = module;
     exec_ctx->enabled_features = module->enabled_features;
     exec_ctx->fuel = (limits->fuel != 0) ? (int64_t)limits->fuel : INT64_MAX;
+    exec_ctx->deadline_us = limits->deadline;
+    if (exec_ctx->deadline_us > 0) {
+        WAH_CHECK_GOTO(wah_deadline_timer_create(exec_ctx), cleanup);
+    }
 
     uint32_t total_memories = wah_memory_index_limit(module);
     if (total_memories > 0) {
@@ -8923,6 +9173,11 @@ wah_error_t wah_exec_context_set_limits(wah_exec_context_t *exec_ctx, const wah_
         exec_ctx->fuel = (int64_t)limits->fuel;
     }
 
+    if (limits->deadline != 0) {
+        exec_ctx->deadline_us = limits->deadline;
+        WAH_CHECK(wah_deadline_timer_create(exec_ctx));
+    }
+
     return WAH_OK;
 }
 
@@ -8933,11 +9188,13 @@ void wah_exec_context_get_limits(const wah_exec_context_t *exec_ctx, wah_rlimits
         .max_memory_bytes = (mm == WAH_RLIMIT_UNLIMITED) ? 0 : mm,
         .no_memory_bytes = (mm == 0),
         .fuel = (exec_ctx->fuel >= 0 && exec_ctx->fuel < INT64_MAX) ? (uint64_t)exec_ctx->fuel : 0,
+        .deadline = exec_ctx->deadline_us,
     };
 }
 
 void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
     if (!exec_ctx) return;
+    wah_deadline_timer_destroy(exec_ctx);
     exec_ctx->lifecycle = (wah_exec_lifecycle_t){0};
     free(exec_ctx->stack_buffer);
     free(exec_ctx->globals);
@@ -8994,17 +9251,19 @@ int64_t wah_get_fuel(const wah_exec_context_t *ctx) {
 static wah_error_t wah_poll_handler(wah_exec_context_t *ctx) {
     wah_gc_state_t *gc = ctx->gc;
 
-    WAH_POLL_FLAG_STORE(ctx->poll_flag, 0);
-
-    if (!gc) return WAH_OK;
-
 #ifdef WAH_DEBUG
-    gc->total_polls++;
+    if (gc) gc->total_polls++;
 #endif
 
-    if (gc->interrupt_pending) {
-        gc->interrupt_pending = false;
+    if (WAH_POLL_FLAG_LOAD(ctx->interrupt_flag)) {
+        WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0);
+        wah_recompute_poll_flag(ctx);
         return WAH_STATUS_YIELDED;
+    }
+
+    if (!gc) {
+        wah_recompute_poll_flag(ctx);
+        return WAH_OK;
     }
 
     if (gc->gc_pending) {
@@ -9012,20 +9271,21 @@ static wah_error_t wah_poll_handler(wah_exec_context_t *ctx) {
         wah_gc_step(ctx);
     }
 
+    wah_recompute_poll_flag(ctx);
     return WAH_OK;
 }
 
 #define WAH_BULK_CHECK_INTERVAL (1u << 24)
 
 static inline bool wah_bulk_should_interrupt(const wah_exec_context_t *ctx) {
-    return WAH_POLL_FLAG_LOAD(ctx->poll_flag) && ctx->gc && ctx->gc->interrupt_pending;
+    return WAH_POLL_FLAG_LOAD(ctx->interrupt_flag) != 0;
 }
 
 // Yield from a bulk op: clear interrupt, rewind IP to instruction start, return YIELDED.
 // Caller must have already pushed remaining args onto sp before this.
 #define WAH_BULK_YIELD(instr_start) do { \
-    ctx->gc->interrupt_pending = false; \
-    if (!ctx->gc->gc_pending) WAH_POLL_FLAG_STORE(ctx->poll_flag, 0); \
+    WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0); \
+    wah_recompute_poll_flag(ctx); \
     err = WAH_STATUS_YIELDED; \
     bytecode_ip = (instr_start); \
     goto cleanup; \
@@ -9523,9 +9783,9 @@ WAH_RUN(TICK) {
     ctx->fuel--;
     if (ctx->fuel < 0) {
         err = WAH_STATUS_FUEL_EXHAUSTED;
-    } else if (WAH_POLL_FLAG_LOAD(ctx->poll_flag) && ctx->gc && ctx->gc->interrupt_pending) {
-        ctx->gc->interrupt_pending = false;
-        WAH_POLL_FLAG_STORE(ctx->poll_flag, 0);
+    } else if (WAH_POLL_FLAG_LOAD(ctx->interrupt_flag)) {
+        WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0);
+        wah_recompute_poll_flag(ctx);
         err = WAH_STATUS_YIELDED;
     }
     if (err != WAH_OK) {
@@ -13391,6 +13651,9 @@ cleanup:
 ////////////////////////////////////////////////////////////////////////////////
 
 static void wah_cancel_internal(wah_exec_context_t *ctx) {
+    wah_deadline_timer_disarm(ctx);
+    WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0);
+    wah_recompute_poll_flag(ctx);
     if (ctx->lifecycle.state == WAH_EXEC_READY) return;
     ctx->sp = ctx->lifecycle.base_sp;
     ctx->call_depth = ctx->lifecycle.base_call_depth;
@@ -13456,7 +13719,9 @@ static wah_error_t wah_start_internal(
 static wah_error_t wah_resume_internal(wah_exec_context_t *ctx) {
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_SUSPENDED, WAH_ERROR_MISUSE);
     ctx->lifecycle.state = WAH_EXEC_RUNNING;
+    wah_deadline_timer_arm(ctx);
     wah_error_t err = wah_run_interpreter(ctx);
+    wah_deadline_timer_disarm(ctx);
     if (err == WAH_OK) {
         ctx->lifecycle.state = WAH_EXEC_FINISHED;
     } else if (err > 0) {
@@ -13543,7 +13808,10 @@ static wah_error_t wah_call_module_multi(
     if (fn->is_host) {
         size_t nresults = fn->nresults;
         WAH_ENSURE(max_results >= nresults, WAH_ERROR_VALIDATION_FAILED);
-        WAH_CHECK(wah_call_host_function_internal(exec_ctx, fn, params, param_count, results));
+        wah_deadline_timer_arm(exec_ctx);
+        wah_error_t host_err = wah_call_host_function_internal(exec_ctx, fn, params, param_count, results);
+        wah_deadline_timer_disarm(exec_ctx);
+        WAH_CHECK(host_err);
         *actual_results = (uint32_t)nresults;
         return WAH_OK;
     }
@@ -14195,6 +14463,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(!ctx->is_instantiated, WAH_ERROR_MISUSE);
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
+    WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0);
+    wah_recompute_poll_flag(ctx);
 
     WAH_ENSURE((ctx->module->required_features & ~ctx->enabled_features) == 0, WAH_ERROR_DISABLED_FEATURE);
 

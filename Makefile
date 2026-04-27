@@ -2,6 +2,10 @@ CC ?= gcc
 CFLAGS ?= -W -Wall -Wextra
 LDFLAGS ?= -lm
 
+ifneq ($(OS),Windows_NT)
+    LDFLAGS += -pthread
+endif
+
 ifdef DEBUG
     CFLAGS += -DWAH_DEBUG -g -O0
 else

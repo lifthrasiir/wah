@@ -11,7 +11,7 @@ static void test_default_rlimits(void) {
     assert_eq_u64(lim.max_memory_bytes, 0);
     assert_true(!lim.no_memory_bytes);
     assert_eq_u64(lim.fuel, 0);
-    assert_eq_u64(lim.epoch_deadline, 0);
+    assert_eq_u64(lim.deadline, 0);
 }
 
 static void test_create_with_limits(void) {

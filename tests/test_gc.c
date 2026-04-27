@@ -78,7 +78,7 @@ int main() {
     assert_true(ctx.gc->allocated_bytes == 0);
     assert_true(ctx.gc->all_objects == NULL);
     assert_false(ctx.gc->gc_pending);
-    assert_false(ctx.gc->interrupt_pending);
+    assert_false(wah_is_interrupted(&ctx));
     assert_true(ctx.gc->allocation_threshold > 0);
 
     printf("Testing wah_gc_start idempotent...\n");
@@ -92,7 +92,7 @@ int main() {
     wah_gc_reset(&ctx);
     assert_true(ctx.gc->phase == WAH_GC_PHASE_IDLE);
     assert_false(ctx.gc->gc_pending);
-    assert_false(ctx.gc->interrupt_pending);
+    assert_false(wah_is_interrupted(&ctx));
     assert_true(ctx.gc->object_count == 0);
 
     printf("Testing wah_gc_destroy...\n");
@@ -252,7 +252,7 @@ int main() {
         wah_free_module(&module);
     }
 
-    printf("Testing POLL with interrupt_pending (yields)...\n");
+    printf("Testing POLL with interrupt flag (yields)...\n");
     {
         const char *spec = "wasm \
             types {[ fn [] [i32] ]} \
@@ -261,10 +261,11 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&module, spec));
         assert_ok(wah_exec_context_create(&ctx, &module));
         assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
         wah_request_interrupt(&ctx);
         wah_value_t r;
         assert_err(wah_call(&ctx, 0, NULL, 0, &r), WAH_STATUS_YIELDED);
-        assert_false(ctx.gc->interrupt_pending);
+        assert_false(wah_is_interrupted(&ctx));
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
     }
