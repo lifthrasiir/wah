@@ -1596,9 +1596,8 @@ static inline bool wah_repr_field_is_ref(const wah_repr_field_t *f) {
 }
 
 typedef struct wah_repr_set_s {
-    uint32_t count;
-    uint32_t ids_cap;
-    wah_repr_t *ids;
+    uint32_t word_count;
+    uint64_t *bits;
     bool accepts_i31;
 } wah_repr_set_t;
 
@@ -1745,10 +1744,25 @@ static inline uint32_t wah_repr_info_typeidx(const wah_module_t *module, wah_rep
 static inline bool wah_repr_set_contains(const wah_repr_set_t *set, wah_repr_t repr_id) {
     if (!set) return false;
     if (!wah_repr_is_positive(repr_id)) return false;
-    for (uint32_t i = 0; i < set->count; ++i) {
-        if (set->ids[i] == repr_id) return true;
-    }
-    return false;
+    uint32_t word = (uint32_t)repr_id / 64;
+    if (word >= set->word_count || !set->bits) return false;
+    return (set->bits[word] & (UINT64_C(1) << ((uint32_t)repr_id & 63))) != 0;
+}
+
+static inline wah_error_t wah_repr_set_init(wah_repr_set_t *set, uint32_t repr_count) {
+    *set = (wah_repr_set_t){0};
+    set->word_count = (repr_count + 63) / 64;
+    if (set->word_count == 0) return WAH_OK;
+    set->bits = (uint64_t *)calloc(set->word_count, sizeof(set->bits[0]));
+    if (!set->bits) return WAH_ERROR_OUT_OF_MEMORY;
+    return WAH_OK;
+}
+
+static inline void wah_repr_set_add(wah_repr_set_t *set, wah_repr_t repr_id) {
+    if (!set || !wah_repr_is_positive(repr_id)) return;
+    uint32_t word = (uint32_t)repr_id / 64;
+    WAH_ASSERT(word < set->word_count);
+    set->bits[word] |= UINT64_C(1) << ((uint32_t)repr_id & 63);
 }
 
 static inline bool wah_type_accepts_repr(const wah_module_t *module, uint32_t typeidx, wah_repr_t repr_id) {
@@ -7280,26 +7294,28 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
 
     // Build accepted-subtype repr sets for runtime cast/test
     WAH_MALLOC_ARRAY(module->type_cast_sets, module->type_count);
+    memset(module->type_cast_sets, 0, (size_t)module->type_count * sizeof(module->type_cast_sets[0]));
     for (uint32_t i = 0; i < module->type_count; ++i) {
-        module->type_cast_sets[i] = (wah_repr_set_t){0};
+        WAH_CHECK(wah_repr_set_init(&module->type_cast_sets[i], module->repr_count));
     }
     for (uint32_t i = 0; i < module->type_count; ++i) {
         wah_repr_t repr_id = module->typeidx_to_repr[i];
         if (repr_id == WAH_REPR_NONE) continue;
-        // This concrete type's repr is accepted by itself and all its supertypes,
-        // and also by all canonically equivalent types and their supertypes.
+        // This concrete type's repr is accepted by itself and each supertype's
+        // canonical class. Equivalent target types share the class bitset below.
         uint32_t t = i;
         while (t != WAH_NO_SUPERTYPE) {
-            // Add repr_id to type t and all types canonically equal to t
-            for (uint32_t c = 0; c < module->type_count; ++c) {
-                if (canonical_map[c] != canonical_map[t]) continue;
-                wah_repr_set_t *set = &module->type_cast_sets[c];
-                if (!wah_repr_set_contains(set, repr_id)) {
-                    WAH_ENSURE_CAP(set->ids, set->count + 1);
-                    set->ids[set->count++] = repr_id;
-                }
-            }
+            wah_repr_set_add(&module->type_cast_sets[canonical_map[t]], repr_id);
             t = module->type_defs[t].supertype;
+        }
+    }
+    for (uint32_t i = 0; i < module->type_count; ++i) {
+        uint32_t canonical = canonical_map[i];
+        if (canonical == i) continue;
+        if (module->type_cast_sets[i].word_count > 0) {
+            memcpy(module->type_cast_sets[i].bits,
+                   module->type_cast_sets[canonical].bits,
+                   (size_t)module->type_cast_sets[i].word_count * sizeof(module->type_cast_sets[i].bits[0]));
         }
     }
 #endif // WAH_FEATURE_GC (repr metadata + cast sets)
@@ -14002,7 +14018,7 @@ void wah_free_module(wah_module_t *module) {
     free(module->canonical_map);
     if (module->type_cast_sets) {
         for (uint32_t i = 0; i < module->type_count; ++i) {
-            free(module->type_cast_sets[i].ids);
+            free(module->type_cast_sets[i].bits);
         }
         free(module->type_cast_sets);
     }

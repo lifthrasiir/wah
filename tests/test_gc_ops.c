@@ -515,6 +515,44 @@ static void test_struct_null_trap() {
     wah_free_module(&module);
 }
 
+static void test_ref_test_cast_set_bitset_multiword() {
+    printf("Testing ref.test cast-set bitset across multiple words...\n");
+
+    enum { TYPE_COUNT = 70 };
+    char spec[12000];
+    size_t off = 0;
+#define APPEND_SPEC(...) do { \
+        int n = snprintf(spec + off, sizeof(spec) - off, __VA_ARGS__); \
+        assert_true(n >= 0 && (size_t)n < sizeof(spec) - off); \
+        off += (size_t)n; \
+    } while (0)
+
+    APPEND_SPEC("wasm types {[ sub [] struct [i32 mut]");
+    for (int i = 1; i < TYPE_COUNT; ++i) {
+        APPEND_SPEC(", sub [%d] struct [i32 mut]", i - 1);
+    }
+    APPEND_SPEC(", fn [] [i32] ]} funcs {[ %d ]} code {[ {[] ", TYPE_COUNT);
+    APPEND_SPEC("struct.new_default %d ref.test 0 ", TYPE_COUNT - 1);
+    APPEND_SPEC("struct.new_default %d ref.test %d i32.add end } ]}", TYPE_COUNT - 1, TYPE_COUNT - 1);
+#undef APPEND_SPEC
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_true(module.repr_count > 64);
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 2);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 // Cross-module GC opcodes: fctx->module must be used instead of ctx->module
 // for typeidx_to_repr, repr_infos, and type_defs lookups.
 
@@ -1063,6 +1101,7 @@ int main() {
     test_array_new_get_set_len();
     test_array_oob_trap();
     test_struct_null_trap();
+    test_ref_test_cast_set_bitset_multiword();
     test_cross_module_struct_new_get_set();
     test_cross_module_struct_new_default();
     test_cross_module_array_new_get_set_len();
