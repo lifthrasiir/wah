@@ -57,6 +57,23 @@ typedef enum {
     WAH_STATUS_YIELDED = 3,
 } wah_error_t;
 
+typedef enum {
+    WAH_EXEC_READY = 0,
+    WAH_EXEC_RUNNING,
+    WAH_EXEC_SUSPENDED,
+    WAH_EXEC_FINISHED,
+    WAH_EXEC_TRAPPED,
+} wah_exec_state_t;
+
+typedef struct {
+    wah_exec_state_t state;
+    wah_error_t stop_reason;
+    uint32_t entry_result_count;
+    uint32_t base_sp;
+    uint32_t base_call_depth;
+    uint32_t base_handler_depth;
+} wah_exec_lifecycle_t;
+
 // 128-bit vector type
 typedef union {
     uint8_t u8[16]; uint16_t u16[8]; uint32_t u32[4]; uint64_t u64[2];
@@ -351,6 +368,8 @@ typedef struct wah_exec_context_s {
 
     int64_t fuel;
 
+    wah_exec_lifecycle_t lifecycle;
+
     wah_features_t enabled_features;
 } wah_exec_context_t;
 
@@ -389,6 +408,17 @@ wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, uint64_t func_idx, cons
 // Fuel metering control. Default fuel is INT64_MAX (effectively unlimited).
 void wah_set_fuel(wah_exec_context_t *ctx, int64_t fuel);
 int64_t wah_get_fuel(const wah_exec_context_t *ctx);
+
+// Resumable execution API.
+// wah_start sets up a call frame without executing. wah_resume drives execution
+// until completion, terminal error, or resumable stop. wah_finish extracts results
+// after WAH_OK. wah_cancel discards a suspended/finished/trapped activation.
+wah_error_t wah_start(wah_exec_context_t *ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count);
+wah_error_t wah_resume(wah_exec_context_t *ctx);
+wah_error_t wah_finish(wah_exec_context_t *ctx, wah_value_t *results, uint32_t max_results, uint32_t *actual_results);
+void wah_cancel(wah_exec_context_t *ctx);
+bool wah_is_suspended(const wah_exec_context_t *ctx);
+wah_exec_state_t wah_exec_state(const wah_exec_context_t *ctx);
 
 // --- Module Cleanup ---
 void wah_free_module(wah_module_t *module);
@@ -8774,6 +8804,7 @@ cleanup:
 
 void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
     if (!exec_ctx) return;
+    exec_ctx->lifecycle = (wah_exec_lifecycle_t){0};
     free(exec_ctx->value_stack);
     free(exec_ctx->call_stack);
     free(exec_ctx->globals);
@@ -8840,7 +8871,7 @@ static wah_error_t wah_poll_handler(wah_exec_context_t *ctx) {
 
     if (gc->interrupt_pending) {
         gc->interrupt_pending = false;
-        return WAH_ERROR_TRAP;
+        return WAH_STATUS_YIELDED;
     }
 
     if (gc->gc_pending) {
@@ -12850,87 +12881,173 @@ cleanup:
 // Public API implementation ///////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+static void wah_cancel_internal(wah_exec_context_t *ctx) {
+    if (ctx->lifecycle.state == WAH_EXEC_READY) return;
+    ctx->sp = ctx->lifecycle.base_sp;
+    ctx->call_depth = ctx->lifecycle.base_call_depth;
+    ctx->exception_handler_depth = ctx->lifecycle.base_handler_depth;
+    if (ctx->pending_exception) {
+        free(ctx->pending_exception->values);
+        free(ctx->pending_exception->value_types);
+        free(ctx->pending_exception);
+        ctx->pending_exception = NULL;
+    }
+    ctx->lifecycle = (wah_exec_lifecycle_t){0};
+}
+
+static wah_error_t wah_start_internal(
+    wah_exec_context_t *ctx, uint32_t func_idx,
+    const wah_value_t *params, uint32_t param_count
+) {
+    WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
+    WAH_ENSURE(func_idx < ctx->function_table_count, WAH_ERROR_NOT_FOUND);
+    const wah_function_t *fn = &ctx->function_table[func_idx];
+    WAH_ENSURE(!fn->is_host, WAH_ERROR_MISUSE);
+
+    uint32_t local_idx = (uint32_t)fn->local_idx;
+    const wah_module_t *fn_module = fn->fn_module ? fn->fn_module : ctx->module;
+    const wah_func_type_t *func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
+    WAH_ENSURE(param_count == func_type->param_count, WAH_ERROR_VALIDATION_FAILED);
+
+    ctx->lifecycle.base_sp = ctx->sp;
+    ctx->lifecycle.base_call_depth = ctx->call_depth;
+    ctx->lifecycle.base_handler_depth = ctx->exception_handler_depth;
+    ctx->lifecycle.entry_result_count = func_type->result_count;
+
+    for (uint32_t i = 0; i < param_count; ++i) {
+        WAH_ENSURE(ctx->sp < ctx->value_stack_cap, WAH_ERROR_CALL_STACK_OVERFLOW);
+        ctx->value_stack[ctx->sp++] = params[i];
+    }
+
+    wah_error_t err = wah_push_frame(ctx, fn_module, local_idx,
+        ctx->sp - func_type->param_count, func_type->result_count, fn->fn_ctx);
+    if (err != WAH_OK) {
+        ctx->sp = ctx->lifecycle.base_sp;
+        ctx->lifecycle = (wah_exec_lifecycle_t){0};
+        return err;
+    }
+
+    uint32_t num_locals = ctx->call_stack[ctx->call_depth - 1].code->local_count;
+    if (num_locals > 0) {
+        if (ctx->sp + num_locals > ctx->value_stack_cap) {
+            ctx->sp = ctx->lifecycle.base_sp;
+            ctx->call_depth = ctx->lifecycle.base_call_depth;
+            ctx->lifecycle = (wah_exec_lifecycle_t){0};
+            return WAH_ERROR_OUT_OF_MEMORY;
+        }
+        memset(&ctx->value_stack[ctx->sp], 0, sizeof(wah_value_t) * num_locals);
+        ctx->sp += num_locals;
+    }
+
+    ctx->lifecycle.state = WAH_EXEC_SUSPENDED;
+    ctx->lifecycle.stop_reason = WAH_OK;
+    return WAH_OK;
+}
+
+static wah_error_t wah_resume_internal(wah_exec_context_t *ctx) {
+    WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_SUSPENDED, WAH_ERROR_MISUSE);
+    ctx->lifecycle.state = WAH_EXEC_RUNNING;
+    wah_error_t err = wah_run_interpreter(ctx);
+    if (err == WAH_OK) {
+        ctx->lifecycle.state = WAH_EXEC_FINISHED;
+    } else if (err > 0) {
+        ctx->lifecycle.state = WAH_EXEC_SUSPENDED;
+    } else {
+        ctx->lifecycle.state = WAH_EXEC_TRAPPED;
+    }
+    ctx->lifecycle.stop_reason = err;
+    return err;
+}
+
+static wah_error_t wah_finish_internal(
+    wah_exec_context_t *ctx, wah_value_t *results,
+    uint32_t max_results, uint32_t *actual_results
+) {
+    WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_FINISHED, WAH_ERROR_MISUSE);
+    uint32_t result_count = ctx->lifecycle.entry_result_count;
+    uint32_t copy_count = result_count < max_results ? result_count : max_results;
+
+    if (results) {
+        if (result_count == 0) {
+            memset(results, 0, sizeof(wah_value_t) * max_results);
+            if (actual_results) *actual_results = 0;
+        } else if (ctx->sp >= result_count) {
+            for (uint32_t i = 0; i < copy_count; ++i) {
+                results[i] = ctx->value_stack[ctx->sp - result_count + i];
+            }
+            if (actual_results) *actual_results = result_count;
+        } else {
+            if (actual_results) *actual_results = 0;
+        }
+    } else {
+        if (actual_results) *actual_results = 0;
+    }
+
+    ctx->sp = ctx->lifecycle.base_sp;
+    ctx->call_depth = ctx->lifecycle.base_call_depth;
+    ctx->exception_handler_depth = ctx->lifecycle.base_handler_depth;
+    ctx->lifecycle = (wah_exec_lifecycle_t){0};
+    return WAH_OK;
+}
+
+wah_error_t wah_start(wah_exec_context_t *ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count) {
+    WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(ctx->module, WAH_ERROR_MISUSE);
+    if (!ctx->is_instantiated) {
+        WAH_CHECK(wah_instantiate(ctx));
+    }
+    return wah_start_internal(ctx, (uint32_t)func_idx, params, param_count);
+}
+
+wah_error_t wah_resume(wah_exec_context_t *ctx) {
+    WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    return wah_resume_internal(ctx);
+}
+
+wah_error_t wah_finish(wah_exec_context_t *ctx, wah_value_t *results, uint32_t max_results, uint32_t *actual_results) {
+    WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    return wah_finish_internal(ctx, results, max_results, actual_results);
+}
+
+void wah_cancel(wah_exec_context_t *ctx) {
+    if (!ctx) return;
+    wah_cancel_internal(ctx);
+}
+
+bool wah_is_suspended(const wah_exec_context_t *ctx) {
+    return ctx && ctx->lifecycle.state == WAH_EXEC_SUSPENDED;
+}
+
+wah_exec_state_t wah_exec_state(const wah_exec_context_t *ctx) {
+    if (!ctx) return WAH_EXEC_TRAPPED;
+    return ctx->lifecycle.state;
+}
+
 static wah_error_t wah_call_module_multi(
     wah_exec_context_t *exec_ctx, uint32_t func_idx, const wah_value_t *params, uint32_t param_count,
     wah_value_t *results, uint32_t max_results, uint32_t *actual_results
 ) {
-    // Dispatch via the runtime function_table (global index space)
     WAH_ENSURE(func_idx < exec_ctx->function_table_count, WAH_ERROR_NOT_FOUND);
     const wah_function_t *fn = &exec_ctx->function_table[func_idx];
 
     if (fn->is_host) {
-        // Host function path
         size_t nresults = fn->nresults;
-
-        // Check result count
         WAH_ENSURE(max_results >= nresults, WAH_ERROR_VALIDATION_FAILED);
-
-        // Call host function using helper
         WAH_CHECK(wah_call_host_function_internal(exec_ctx, fn, params, param_count, results));
-
         *actual_results = (uint32_t)nresults;
         return WAH_OK;
     }
 
-    // WASM function call
-    uint32_t local_idx = (uint32_t)fn->local_idx;
-    const wah_module_t *fn_module = fn->fn_module ? fn->fn_module : exec_ctx->module;
-    const wah_func_type_t *func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
-    WAH_ENSURE(param_count == func_type->param_count, WAH_ERROR_VALIDATION_FAILED);
+    wah_error_t err = wah_start_internal(exec_ctx, func_idx, params, param_count);
+    if (err != WAH_OK) return err;
 
-    uint32_t saved_sp = exec_ctx->sp;
-    uint32_t saved_call_depth = exec_ctx->call_depth;
-    uint32_t saved_handler_depth = exec_ctx->exception_handler_depth;
-
-    // Push initial params onto the value stack
-    for (uint32_t i = 0; i < param_count; ++i) {
-        WAH_ENSURE(exec_ctx->sp < exec_ctx->value_stack_cap, WAH_ERROR_CALL_STACK_OVERFLOW);
-        exec_ctx->value_stack[exec_ctx->sp++] = params[i];
+    err = wah_resume_internal(exec_ctx);
+    if (err == WAH_OK) {
+        return wah_finish_internal(exec_ctx, results, max_results, actual_results);
     }
 
-    // Push the first frame. Locals offset is the current stack pointer before parameters.
-    WAH_CHECK(wah_push_frame(exec_ctx, fn_module, local_idx, exec_ctx->sp - func_type->param_count, func_type->result_count, fn->fn_ctx));
-
-    // Reserve space for the function's own locals and initialize them to zero
-    uint32_t num_locals = exec_ctx->call_stack[0].code->local_count;
-    if (num_locals > 0) {
-        WAH_ENSURE(exec_ctx->sp + num_locals <= exec_ctx->value_stack_cap, WAH_ERROR_OUT_OF_MEMORY);
-        memset(&exec_ctx->value_stack[exec_ctx->sp], 0, sizeof(wah_value_t) * num_locals);
-        exec_ctx->sp += num_locals;
-    }
-
-    // Run the main interpreter loop
-    wah_error_t run_err = wah_run_interpreter(exec_ctx);
-    if (run_err != WAH_OK) {
-        exec_ctx->sp = saved_sp;
-        exec_ctx->call_depth = saved_call_depth;
-        exec_ctx->exception_handler_depth = saved_handler_depth;
-        return run_err;
-    }
-
-    // After execution, copy multiple results from the stack
-    uint32_t copy_count = func_type->result_count;
-    if (copy_count > max_results) copy_count = max_results;
-
-    if (results) {
-        if (func_type->result_count == 0) {
-            // Zero return function - zeroize results for safety
-            memset(results, 0, sizeof(wah_value_t) * max_results);
-            *actual_results = 0;
-        } else if (exec_ctx->sp >= func_type->result_count) {
-            // Copy results (as many as fit in the provided buffer)
-            for (uint32_t i = 0; i < copy_count; ++i) {
-                results[i] = exec_ctx->value_stack[exec_ctx->sp - func_type->result_count + i];
-            }
-            *actual_results = func_type->result_count;
-        } else {
-            *actual_results = 0;
-        }
-    } else {
-        *actual_results = 0;
-    }
-
-    return WAH_OK;
+    wah_cancel_internal(exec_ctx);
+    return err;
 }
 
 static wah_error_t wah_call_module(wah_exec_context_t *exec_ctx, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
@@ -13493,7 +13610,8 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
-    WAH_ENSURE(!ctx->is_instantiated, WAH_ERROR_MISUSE);  // Cannot link after instantiation
+    WAH_ENSURE(!ctx->is_instantiated, WAH_ERROR_MISUSE);
+    WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
 
     // Check for duplicate module name
     for (uint32_t i = 0; i < ctx->linked_module_count; ++i) {
@@ -13519,6 +13637,7 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(linked_ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(!ctx->is_instantiated, WAH_ERROR_MISUSE);
+    WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
     WAH_ENSURE(linked_ctx->is_instantiated, WAH_ERROR_MISUSE);
 
     for (uint32_t i = 0; i < ctx->linked_module_count; ++i) {
@@ -13561,7 +13680,8 @@ static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, const uint8_t *b
 wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     wah_error_t err = WAH_OK;
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
-    WAH_ENSURE(!ctx->is_instantiated, WAH_ERROR_MISUSE);  // Already instantiated
+    WAH_ENSURE(!ctx->is_instantiated, WAH_ERROR_MISUSE);
+    WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
 
     WAH_ENSURE((ctx->module->required_features & ~ctx->enabled_features) == 0, WAH_ERROR_DISABLED_FEATURE);
 

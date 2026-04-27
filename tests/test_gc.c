@@ -252,7 +252,7 @@ int main() {
         wah_free_module(&module);
     }
 
-    printf("Testing POLL with interrupt_pending (traps)...\n");
+    printf("Testing POLL with interrupt_pending (yields)...\n");
     {
         const char *spec = "wasm \
             types {[ fn [] [i32] ]} \
@@ -263,7 +263,7 @@ int main() {
         assert_ok(wah_gc_start(&ctx));
         wah_request_interrupt(&ctx);
         wah_value_t r;
-        assert_err(wah_call(&ctx, 0, NULL, 0, &r), WAH_ERROR_TRAP);
+        assert_err(wah_call(&ctx, 0, NULL, 0, &r), WAH_STATUS_YIELDED);
         assert_false(ctx.gc->interrupt_pending);
         wah_exec_context_destroy(&ctx);
         wah_free_module(&module);
