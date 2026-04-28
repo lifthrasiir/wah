@@ -866,6 +866,7 @@ static inline wah_error_t wah_require_feature(wah_module_t *module, int8_t shift
 #define WAH_FE 0x21c // (sentinel)
 
 typedef enum {
+    WAH_OPCLASS_MISSING = 0, // Default value for non-existent opcodes
     WAH_OPCLASS_, // Each opcode is in its own class by default
 
     // No opcode arguments, validation consists of pops and pushes only
@@ -1287,12 +1288,6 @@ static const uint8_t wah_opclasses[WAH_FE] = {
 #define WAH_OPCLASS_INIT(name, cls, val, feat) [WAH_OP_##name] = WAH_OPCLASS_##cls,
     WAH_OPCODES(WAH_OPCLASS_INIT)
 #undef WAH_OPCLASS_INIT
-};
-
-static const bool wah_opcode_exists[WAH_FE] = {
-#define WAH_OPCODE_EXISTS_INIT(name, cls, val, feat) [WAH_OP_##name] = true,
-    WAH_OPCODES(WAH_OPCODE_EXISTS_INIT)
-#undef WAH_OPCODE_EXISTS_INIT
 };
 
 static const int8_t wah_opcode_features[WAH_FE] = {
@@ -4990,7 +4985,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
 #define EMIT_SIMPLE() EMIT_INSTR_EX(opcode_val, (void)0)
 
-    WAH_ENSURE(wah_opcode_exists[opcode_val], WAH_ERROR_MALFORMED);
+    WAH_ENSURE(wah_opclasses[opcode_val] != WAH_OPCLASS_MISSING, WAH_ERROR_MALFORMED);
 
     if (vctx->mode == WAH_ANALYZE_CONST_EXPR) {
         switch (opcode_val) {
@@ -11459,116 +11454,38 @@ WAH_RUN(END) { // End of function
     WAH_RUN(F##N##_MAX) BINOP_F_FN(N, wah_max##_F) \
     WAH_RUN(F##N##_COPYSIGN) { sp[-2].f##N = copysign##_F(sp[-2].f##N, sp[-1].f##N); sp--; WAH_NEXT(); }
 
-#define LOAD_OP(N, T, value_field, cast) { \
-    uint32_t memidx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+#define WAH_SP_ADDR_I32 ((uint64_t)(uint32_t)(*--sp).i32)
+#define WAH_SP_ADDR_I64 ((uint64_t)(*--sp).i64)
+
+#define LOAD_OP(mem0, addr_expr, N, T, value_field, cast) { \
+    uint32_t memidx = 0; \
+    if (!(mem0)) { memidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); } \
     uint64_t offset = wah_read_u64_le(bytecode_ip); \
     bytecode_ip += sizeof(uint64_t); \
-    uint32_t addr = (uint32_t)(*--sp).i32; \
+    uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
-    \
-    WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memories[memidx].size, &effective_addr), cleanup); \
-    (*sp++).value_field = cast wah_read_##T##_le(fctx->memories[memidx].data + effective_addr); \
+    if (!(mem0)) { WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, \
+        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr), cleanup); \
+    (*sp++).value_field = cast wah_read_##T##_le( \
+        ((mem0) ? fctx->memory_base : fctx->memories[memidx].data) + effective_addr); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
 
-#define LOAD_OP_I32_MEM0(N, T, value_field, cast) { \
-    uint64_t offset = wah_read_u64_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint64_t); \
-    uint32_t addr = (uint32_t)(*--sp).i32; \
-    uint64_t effective_addr; \
-    \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_size, &effective_addr), cleanup); \
-    (*sp++).value_field = cast wah_read_##T##_le(fctx->memory_base + effective_addr); \
-    WAH_NEXT(); \
-    WAH_CLEANUP(); \
-}
-
-#define STORE_OP(N, T, value_field, value_type, cast) { \
-    uint32_t memidx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+#define STORE_OP(mem0, addr_expr, N, T, value_field, value_type, cast) { \
+    uint32_t memidx = 0; \
+    if (!(mem0)) { memidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); } \
     uint64_t offset = wah_read_u64_le(bytecode_ip); \
     bytecode_ip += sizeof(uint64_t); \
     value_type val = (*--sp).value_field; \
-    uint32_t addr = (uint32_t)(*--sp).i32; \
+    uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
-    \
-    WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memories[memidx].size, &effective_addr), cleanup); \
-    wah_write_##T##_le(fctx->memories[memidx].data + effective_addr, cast (val)); \
-    WAH_NEXT(); \
-    WAH_CLEANUP(); \
-}
-
-#define STORE_OP_I32_MEM0(N, T, value_field, value_type, cast) { \
-    uint64_t offset = wah_read_u64_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint64_t); \
-    value_type val = (*--sp).value_field; \
-    uint32_t addr = (uint32_t)(*--sp).i32; \
-    uint64_t effective_addr; \
-    \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_size, &effective_addr), cleanup); \
-    wah_write_##T##_le(fctx->memory_base + effective_addr, cast (val)); \
-    WAH_NEXT(); \
-    WAH_CLEANUP(); \
-}
-
-// i64-addressed memory: non-mem0 (reads i64 address from stack)
-#define LOAD_OP_I64(N, T, value_field, cast) { \
-    uint32_t memidx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
-    uint64_t offset = wah_read_u64_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint64_t); \
-    uint64_t addr = (uint64_t)(*--sp).i64; \
-    uint64_t effective_addr; \
-    \
-    WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memories[memidx].size, &effective_addr), cleanup); \
-    (*sp++).value_field = cast wah_read_##T##_le(fctx->memories[memidx].data + effective_addr); \
-    WAH_NEXT(); \
-    WAH_CLEANUP(); \
-}
-
-#define STORE_OP_I64(N, T, value_field, value_type, cast) { \
-    uint32_t memidx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
-    uint64_t offset = wah_read_u64_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint64_t); \
-    value_type val = (*--sp).value_field; \
-    uint64_t addr = (uint64_t)(*--sp).i64; \
-    uint64_t effective_addr; \
-    \
-    WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memories[memidx].size, &effective_addr), cleanup); \
-    wah_write_##T##_le(fctx->memories[memidx].data + effective_addr, cast (val)); \
-    WAH_NEXT(); \
-    WAH_CLEANUP(); \
-}
-
-// i64-addressed memory: mem0 fast-path (reads i64 address from stack)
-#define LOAD_OP_I64_MEM0(N, T, value_field, cast) { \
-    uint64_t offset = wah_read_u64_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint64_t); \
-    uint64_t addr = (uint64_t)(*--sp).i64; \
-    uint64_t effective_addr; \
-    \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_size, &effective_addr), cleanup); \
-    (*sp++).value_field = cast wah_read_##T##_le(fctx->memory_base + effective_addr); \
-    WAH_NEXT(); \
-    WAH_CLEANUP(); \
-}
-
-#define STORE_OP_I64_MEM0(N, T, value_field, value_type, cast) { \
-    uint64_t offset = wah_read_u64_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint64_t); \
-    value_type val = (*--sp).value_field; \
-    uint64_t addr = (uint64_t)(*--sp).i64; \
-    uint64_t effective_addr; \
-    \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_size, &effective_addr), cleanup); \
-    wah_write_##T##_le(fctx->memory_base + effective_addr, cast (val)); \
+    if (!(mem0)) { WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, \
+        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr), cleanup); \
+    wah_write_##T##_le( \
+        ((mem0) ? fctx->memory_base : fctx->memories[memidx].data) + effective_addr, cast (val)); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -11592,108 +11509,108 @@ WAH_RUN(END) { // End of function
 NUM_OPS(32,f)
 NUM_OPS(64,)
 
-WAH_RUN(I32_LOAD) LOAD_OP(32, u32, i32, (int32_t))
-WAH_RUN(I64_LOAD) LOAD_OP(64, u64, i64, (int64_t))
-WAH_RUN(F32_LOAD) LOAD_OP(32, f32, f32, )
-WAH_RUN(F64_LOAD) LOAD_OP(64, f64, f64, )
-WAH_RUN(I32_LOAD8_S) LOAD_OP(8, u8, i32, (int32_t)(int8_t))
-WAH_RUN(I32_LOAD8_U) LOAD_OP(8, u8, i32, (int32_t))
-WAH_RUN(I32_LOAD16_S) LOAD_OP(16, u16, i32, (int32_t)(int16_t))
-WAH_RUN(I32_LOAD16_U) LOAD_OP(16, u16, i32, (int32_t))
-WAH_RUN(I64_LOAD8_S) LOAD_OP(8, u8, i64, (int64_t)(int8_t))
-WAH_RUN(I64_LOAD8_U) LOAD_OP(8, u8, i64, (int64_t))
-WAH_RUN(I64_LOAD16_S) LOAD_OP(16, u16, i64, (int64_t)(int16_t))
-WAH_RUN(I64_LOAD16_U) LOAD_OP(16, u16, i64, (int64_t))
-WAH_RUN(I64_LOAD32_S) LOAD_OP(32, u32, i64, (int64_t)(int32_t))
-WAH_RUN(I64_LOAD32_U) LOAD_OP(32, u32, i64, (int64_t))
+WAH_RUN(I32_LOAD) LOAD_OP(0, WAH_SP_ADDR_I32, 32, u32, i32, (int32_t))
+WAH_RUN(I64_LOAD) LOAD_OP(0, WAH_SP_ADDR_I32, 64, u64, i64, (int64_t))
+WAH_RUN(F32_LOAD) LOAD_OP(0, WAH_SP_ADDR_I32, 32, f32, f32, )
+WAH_RUN(F64_LOAD) LOAD_OP(0, WAH_SP_ADDR_I32, 64, f64, f64, )
+WAH_RUN(I32_LOAD8_S) LOAD_OP(0, WAH_SP_ADDR_I32, 8, u8, i32, (int32_t)(int8_t))
+WAH_RUN(I32_LOAD8_U) LOAD_OP(0, WAH_SP_ADDR_I32, 8, u8, i32, (int32_t))
+WAH_RUN(I32_LOAD16_S) LOAD_OP(0, WAH_SP_ADDR_I32, 16, u16, i32, (int32_t)(int16_t))
+WAH_RUN(I32_LOAD16_U) LOAD_OP(0, WAH_SP_ADDR_I32, 16, u16, i32, (int32_t))
+WAH_RUN(I64_LOAD8_S) LOAD_OP(0, WAH_SP_ADDR_I32, 8, u8, i64, (int64_t)(int8_t))
+WAH_RUN(I64_LOAD8_U) LOAD_OP(0, WAH_SP_ADDR_I32, 8, u8, i64, (int64_t))
+WAH_RUN(I64_LOAD16_S) LOAD_OP(0, WAH_SP_ADDR_I32, 16, u16, i64, (int64_t)(int16_t))
+WAH_RUN(I64_LOAD16_U) LOAD_OP(0, WAH_SP_ADDR_I32, 16, u16, i64, (int64_t))
+WAH_RUN(I64_LOAD32_S) LOAD_OP(0, WAH_SP_ADDR_I32, 32, u32, i64, (int64_t)(int32_t))
+WAH_RUN(I64_LOAD32_U) LOAD_OP(0, WAH_SP_ADDR_I32, 32, u32, i64, (int64_t))
 
-WAH_RUN(I32_LOAD_i32_mem0) LOAD_OP_I32_MEM0(32, u32, i32, (int32_t))
-WAH_RUN(I64_LOAD_i32_mem0) LOAD_OP_I32_MEM0(64, u64, i64, (int64_t))
-WAH_RUN(F32_LOAD_i32_mem0) LOAD_OP_I32_MEM0(32, f32, f32, )
-WAH_RUN(F64_LOAD_i32_mem0) LOAD_OP_I32_MEM0(64, f64, f64, )
-WAH_RUN(I32_LOAD8_S_i32_mem0) LOAD_OP_I32_MEM0(8, u8, i32, (int32_t)(int8_t))
-WAH_RUN(I32_LOAD8_U_i32_mem0) LOAD_OP_I32_MEM0(8, u8, i32, (int32_t))
-WAH_RUN(I32_LOAD16_S_i32_mem0) LOAD_OP_I32_MEM0(16, u16, i32, (int32_t)(int16_t))
-WAH_RUN(I32_LOAD16_U_i32_mem0) LOAD_OP_I32_MEM0(16, u16, i32, (int32_t))
-WAH_RUN(I64_LOAD8_S_i32_mem0) LOAD_OP_I32_MEM0(8, u8, i64, (int64_t)(int8_t))
-WAH_RUN(I64_LOAD8_U_i32_mem0) LOAD_OP_I32_MEM0(8, u8, i64, (int64_t))
-WAH_RUN(I64_LOAD16_S_i32_mem0) LOAD_OP_I32_MEM0(16, u16, i64, (int64_t)(int16_t))
-WAH_RUN(I64_LOAD16_U_i32_mem0) LOAD_OP_I32_MEM0(16, u16, i64, (int64_t))
-WAH_RUN(I64_LOAD32_S_i32_mem0) LOAD_OP_I32_MEM0(32, u32, i64, (int64_t)(int32_t))
-WAH_RUN(I64_LOAD32_U_i32_mem0) LOAD_OP_I32_MEM0(32, u32, i64, (int64_t))
+WAH_RUN(I32_LOAD_i32_mem0) LOAD_OP(1, WAH_SP_ADDR_I32, 32, u32, i32, (int32_t))
+WAH_RUN(I64_LOAD_i32_mem0) LOAD_OP(1, WAH_SP_ADDR_I32, 64, u64, i64, (int64_t))
+WAH_RUN(F32_LOAD_i32_mem0) LOAD_OP(1, WAH_SP_ADDR_I32, 32, f32, f32, )
+WAH_RUN(F64_LOAD_i32_mem0) LOAD_OP(1, WAH_SP_ADDR_I32, 64, f64, f64, )
+WAH_RUN(I32_LOAD8_S_i32_mem0) LOAD_OP(1, WAH_SP_ADDR_I32, 8, u8, i32, (int32_t)(int8_t))
+WAH_RUN(I32_LOAD8_U_i32_mem0) LOAD_OP(1, WAH_SP_ADDR_I32, 8, u8, i32, (int32_t))
+WAH_RUN(I32_LOAD16_S_i32_mem0) LOAD_OP(1, WAH_SP_ADDR_I32, 16, u16, i32, (int32_t)(int16_t))
+WAH_RUN(I32_LOAD16_U_i32_mem0) LOAD_OP(1, WAH_SP_ADDR_I32, 16, u16, i32, (int32_t))
+WAH_RUN(I64_LOAD8_S_i32_mem0) LOAD_OP(1, WAH_SP_ADDR_I32, 8, u8, i64, (int64_t)(int8_t))
+WAH_RUN(I64_LOAD8_U_i32_mem0) LOAD_OP(1, WAH_SP_ADDR_I32, 8, u8, i64, (int64_t))
+WAH_RUN(I64_LOAD16_S_i32_mem0) LOAD_OP(1, WAH_SP_ADDR_I32, 16, u16, i64, (int64_t)(int16_t))
+WAH_RUN(I64_LOAD16_U_i32_mem0) LOAD_OP(1, WAH_SP_ADDR_I32, 16, u16, i64, (int64_t))
+WAH_RUN(I64_LOAD32_S_i32_mem0) LOAD_OP(1, WAH_SP_ADDR_I32, 32, u32, i64, (int64_t)(int32_t))
+WAH_RUN(I64_LOAD32_U_i32_mem0) LOAD_OP(1, WAH_SP_ADDR_I32, 32, u32, i64, (int64_t))
 
-WAH_RUN(I32_STORE) STORE_OP(32, u32, i32, int32_t, (uint32_t))
-WAH_RUN(I64_STORE) STORE_OP(64, u64, i64, int64_t, (uint64_t))
-WAH_RUN(F32_STORE) STORE_OP(32, f32, f32, float, )
-WAH_RUN(F64_STORE) STORE_OP(64, f64, f64, double, )
-WAH_RUN(I32_STORE8) STORE_OP(8, u8, i32, int32_t, (uint8_t))
-WAH_RUN(I32_STORE16) STORE_OP(16, u16, i32, int32_t, (uint16_t))
-WAH_RUN(I64_STORE8) STORE_OP(8, u8, i64, int64_t, (uint8_t))
-WAH_RUN(I64_STORE16) STORE_OP(16, u16, i64, int64_t, (uint16_t))
-WAH_RUN(I64_STORE32) STORE_OP(32, u32, i64, int64_t, (uint32_t))
+WAH_RUN(I32_STORE) STORE_OP(0, WAH_SP_ADDR_I32, 32, u32, i32, int32_t, (uint32_t))
+WAH_RUN(I64_STORE) STORE_OP(0, WAH_SP_ADDR_I32, 64, u64, i64, int64_t, (uint64_t))
+WAH_RUN(F32_STORE) STORE_OP(0, WAH_SP_ADDR_I32, 32, f32, f32, float, )
+WAH_RUN(F64_STORE) STORE_OP(0, WAH_SP_ADDR_I32, 64, f64, f64, double, )
+WAH_RUN(I32_STORE8) STORE_OP(0, WAH_SP_ADDR_I32, 8, u8, i32, int32_t, (uint8_t))
+WAH_RUN(I32_STORE16) STORE_OP(0, WAH_SP_ADDR_I32, 16, u16, i32, int32_t, (uint16_t))
+WAH_RUN(I64_STORE8) STORE_OP(0, WAH_SP_ADDR_I32, 8, u8, i64, int64_t, (uint8_t))
+WAH_RUN(I64_STORE16) STORE_OP(0, WAH_SP_ADDR_I32, 16, u16, i64, int64_t, (uint16_t))
+WAH_RUN(I64_STORE32) STORE_OP(0, WAH_SP_ADDR_I32, 32, u32, i64, int64_t, (uint32_t))
 
-WAH_RUN(I32_STORE_i32_mem0) STORE_OP_I32_MEM0(32, u32, i32, int32_t, (uint32_t))
-WAH_RUN(I64_STORE_i32_mem0) STORE_OP_I32_MEM0(64, u64, i64, int64_t, (uint64_t))
-WAH_RUN(F32_STORE_i32_mem0) STORE_OP_I32_MEM0(32, f32, f32, float, )
-WAH_RUN(F64_STORE_i32_mem0) STORE_OP_I32_MEM0(64, f64, f64, double, )
-WAH_RUN(I32_STORE8_i32_mem0) STORE_OP_I32_MEM0(8, u8, i32, int32_t, (uint8_t))
-WAH_RUN(I32_STORE16_i32_mem0) STORE_OP_I32_MEM0(16, u16, i32, int32_t, (uint16_t))
-WAH_RUN(I64_STORE8_i32_mem0) STORE_OP_I32_MEM0(8, u8, i64, int64_t, (uint8_t))
-WAH_RUN(I64_STORE16_i32_mem0) STORE_OP_I32_MEM0(16, u16, i64, int64_t, (uint16_t))
-WAH_RUN(I64_STORE32_i32_mem0) STORE_OP_I32_MEM0(32, u32, i64, int64_t, (uint32_t))
+WAH_RUN(I32_STORE_i32_mem0) STORE_OP(1, WAH_SP_ADDR_I32, 32, u32, i32, int32_t, (uint32_t))
+WAH_RUN(I64_STORE_i32_mem0) STORE_OP(1, WAH_SP_ADDR_I32, 64, u64, i64, int64_t, (uint64_t))
+WAH_RUN(F32_STORE_i32_mem0) STORE_OP(1, WAH_SP_ADDR_I32, 32, f32, f32, float, )
+WAH_RUN(F64_STORE_i32_mem0) STORE_OP(1, WAH_SP_ADDR_I32, 64, f64, f64, double, )
+WAH_RUN(I32_STORE8_i32_mem0) STORE_OP(1, WAH_SP_ADDR_I32, 8, u8, i32, int32_t, (uint8_t))
+WAH_RUN(I32_STORE16_i32_mem0) STORE_OP(1, WAH_SP_ADDR_I32, 16, u16, i32, int32_t, (uint16_t))
+WAH_RUN(I64_STORE8_i32_mem0) STORE_OP(1, WAH_SP_ADDR_I32, 8, u8, i64, int64_t, (uint8_t))
+WAH_RUN(I64_STORE16_i32_mem0) STORE_OP(1, WAH_SP_ADDR_I32, 16, u16, i64, int64_t, (uint16_t))
+WAH_RUN(I64_STORE32_i32_mem0) STORE_OP(1, WAH_SP_ADDR_I32, 32, u32, i64, int64_t, (uint32_t))
 
 // --- i64-addressed memory loads/stores (non-mem0) ---
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
-WAH_RUN(I32_LOAD_i64) LOAD_OP_I64(32, u32, i32, (int32_t))
-WAH_RUN(I64_LOAD_i64) LOAD_OP_I64(64, u64, i64, (int64_t))
-WAH_RUN(F32_LOAD_i64) LOAD_OP_I64(32, f32, f32, )
-WAH_RUN(F64_LOAD_i64) LOAD_OP_I64(64, f64, f64, )
-WAH_RUN(I32_LOAD8_S_i64) LOAD_OP_I64(8, u8, i32, (int32_t)(int8_t))
-WAH_RUN(I32_LOAD8_U_i64) LOAD_OP_I64(8, u8, i32, (int32_t))
-WAH_RUN(I32_LOAD16_S_i64) LOAD_OP_I64(16, u16, i32, (int32_t)(int16_t))
-WAH_RUN(I32_LOAD16_U_i64) LOAD_OP_I64(16, u16, i32, (int32_t))
-WAH_RUN(I64_LOAD8_S_i64) LOAD_OP_I64(8, u8, i64, (int64_t)(int8_t))
-WAH_RUN(I64_LOAD8_U_i64) LOAD_OP_I64(8, u8, i64, (int64_t))
-WAH_RUN(I64_LOAD16_S_i64) LOAD_OP_I64(16, u16, i64, (int64_t)(int16_t))
-WAH_RUN(I64_LOAD16_U_i64) LOAD_OP_I64(16, u16, i64, (int64_t))
-WAH_RUN(I64_LOAD32_S_i64) LOAD_OP_I64(32, u32, i64, (int64_t)(int32_t))
-WAH_RUN(I64_LOAD32_U_i64) LOAD_OP_I64(32, u32, i64, (int64_t))
+WAH_RUN(I32_LOAD_i64) LOAD_OP(0, WAH_SP_ADDR_I64, 32, u32, i32, (int32_t))
+WAH_RUN(I64_LOAD_i64) LOAD_OP(0, WAH_SP_ADDR_I64, 64, u64, i64, (int64_t))
+WAH_RUN(F32_LOAD_i64) LOAD_OP(0, WAH_SP_ADDR_I64, 32, f32, f32, )
+WAH_RUN(F64_LOAD_i64) LOAD_OP(0, WAH_SP_ADDR_I64, 64, f64, f64, )
+WAH_RUN(I32_LOAD8_S_i64) LOAD_OP(0, WAH_SP_ADDR_I64, 8, u8, i32, (int32_t)(int8_t))
+WAH_RUN(I32_LOAD8_U_i64) LOAD_OP(0, WAH_SP_ADDR_I64, 8, u8, i32, (int32_t))
+WAH_RUN(I32_LOAD16_S_i64) LOAD_OP(0, WAH_SP_ADDR_I64, 16, u16, i32, (int32_t)(int16_t))
+WAH_RUN(I32_LOAD16_U_i64) LOAD_OP(0, WAH_SP_ADDR_I64, 16, u16, i32, (int32_t))
+WAH_RUN(I64_LOAD8_S_i64) LOAD_OP(0, WAH_SP_ADDR_I64, 8, u8, i64, (int64_t)(int8_t))
+WAH_RUN(I64_LOAD8_U_i64) LOAD_OP(0, WAH_SP_ADDR_I64, 8, u8, i64, (int64_t))
+WAH_RUN(I64_LOAD16_S_i64) LOAD_OP(0, WAH_SP_ADDR_I64, 16, u16, i64, (int64_t)(int16_t))
+WAH_RUN(I64_LOAD16_U_i64) LOAD_OP(0, WAH_SP_ADDR_I64, 16, u16, i64, (int64_t))
+WAH_RUN(I64_LOAD32_S_i64) LOAD_OP(0, WAH_SP_ADDR_I64, 32, u32, i64, (int64_t)(int32_t))
+WAH_RUN(I64_LOAD32_U_i64) LOAD_OP(0, WAH_SP_ADDR_I64, 32, u32, i64, (int64_t))
 
-WAH_RUN(I32_STORE_i64) STORE_OP_I64(32, u32, i32, int32_t, (uint32_t))
-WAH_RUN(I64_STORE_i64) STORE_OP_I64(64, u64, i64, int64_t, (uint64_t))
-WAH_RUN(F32_STORE_i64) STORE_OP_I64(32, f32, f32, float, )
-WAH_RUN(F64_STORE_i64) STORE_OP_I64(64, f64, f64, double, )
-WAH_RUN(I32_STORE8_i64) STORE_OP_I64(8, u8, i32, int32_t, (uint8_t))
-WAH_RUN(I32_STORE16_i64) STORE_OP_I64(16, u16, i32, int32_t, (uint16_t))
-WAH_RUN(I64_STORE8_i64) STORE_OP_I64(8, u8, i64, int64_t, (uint8_t))
-WAH_RUN(I64_STORE16_i64) STORE_OP_I64(16, u16, i64, int64_t, (uint16_t))
-WAH_RUN(I64_STORE32_i64) STORE_OP_I64(32, u32, i64, int64_t, (uint32_t))
+WAH_RUN(I32_STORE_i64) STORE_OP(0, WAH_SP_ADDR_I64, 32, u32, i32, int32_t, (uint32_t))
+WAH_RUN(I64_STORE_i64) STORE_OP(0, WAH_SP_ADDR_I64, 64, u64, i64, int64_t, (uint64_t))
+WAH_RUN(F32_STORE_i64) STORE_OP(0, WAH_SP_ADDR_I64, 32, f32, f32, float, )
+WAH_RUN(F64_STORE_i64) STORE_OP(0, WAH_SP_ADDR_I64, 64, f64, f64, double, )
+WAH_RUN(I32_STORE8_i64) STORE_OP(0, WAH_SP_ADDR_I64, 8, u8, i32, int32_t, (uint8_t))
+WAH_RUN(I32_STORE16_i64) STORE_OP(0, WAH_SP_ADDR_I64, 16, u16, i32, int32_t, (uint16_t))
+WAH_RUN(I64_STORE8_i64) STORE_OP(0, WAH_SP_ADDR_I64, 8, u8, i64, int64_t, (uint8_t))
+WAH_RUN(I64_STORE16_i64) STORE_OP(0, WAH_SP_ADDR_I64, 16, u16, i64, int64_t, (uint16_t))
+WAH_RUN(I64_STORE32_i64) STORE_OP(0, WAH_SP_ADDR_I64, 32, u32, i64, int64_t, (uint32_t))
 
 // --- i64-addressed memory loads/stores (mem0 fast-path) ---
-WAH_RUN(I32_LOAD_i64_mem0) LOAD_OP_I64_MEM0(32, u32, i32, (int32_t))
-WAH_RUN(I64_LOAD_i64_mem0) LOAD_OP_I64_MEM0(64, u64, i64, (int64_t))
-WAH_RUN(F32_LOAD_i64_mem0) LOAD_OP_I64_MEM0(32, f32, f32, )
-WAH_RUN(F64_LOAD_i64_mem0) LOAD_OP_I64_MEM0(64, f64, f64, )
-WAH_RUN(I32_LOAD8_S_i64_mem0) LOAD_OP_I64_MEM0(8, u8, i32, (int32_t)(int8_t))
-WAH_RUN(I32_LOAD8_U_i64_mem0) LOAD_OP_I64_MEM0(8, u8, i32, (int32_t))
-WAH_RUN(I32_LOAD16_S_i64_mem0) LOAD_OP_I64_MEM0(16, u16, i32, (int32_t)(int16_t))
-WAH_RUN(I32_LOAD16_U_i64_mem0) LOAD_OP_I64_MEM0(16, u16, i32, (int32_t))
-WAH_RUN(I64_LOAD8_S_i64_mem0) LOAD_OP_I64_MEM0(8, u8, i64, (int64_t)(int8_t))
-WAH_RUN(I64_LOAD8_U_i64_mem0) LOAD_OP_I64_MEM0(8, u8, i64, (int64_t))
-WAH_RUN(I64_LOAD16_S_i64_mem0) LOAD_OP_I64_MEM0(16, u16, i64, (int64_t)(int16_t))
-WAH_RUN(I64_LOAD16_U_i64_mem0) LOAD_OP_I64_MEM0(16, u16, i64, (int64_t))
-WAH_RUN(I64_LOAD32_S_i64_mem0) LOAD_OP_I64_MEM0(32, u32, i64, (int64_t)(int32_t))
-WAH_RUN(I64_LOAD32_U_i64_mem0) LOAD_OP_I64_MEM0(32, u32, i64, (int64_t))
+WAH_RUN(I32_LOAD_i64_mem0) LOAD_OP(1, WAH_SP_ADDR_I64, 32, u32, i32, (int32_t))
+WAH_RUN(I64_LOAD_i64_mem0) LOAD_OP(1, WAH_SP_ADDR_I64, 64, u64, i64, (int64_t))
+WAH_RUN(F32_LOAD_i64_mem0) LOAD_OP(1, WAH_SP_ADDR_I64, 32, f32, f32, )
+WAH_RUN(F64_LOAD_i64_mem0) LOAD_OP(1, WAH_SP_ADDR_I64, 64, f64, f64, )
+WAH_RUN(I32_LOAD8_S_i64_mem0) LOAD_OP(1, WAH_SP_ADDR_I64, 8, u8, i32, (int32_t)(int8_t))
+WAH_RUN(I32_LOAD8_U_i64_mem0) LOAD_OP(1, WAH_SP_ADDR_I64, 8, u8, i32, (int32_t))
+WAH_RUN(I32_LOAD16_S_i64_mem0) LOAD_OP(1, WAH_SP_ADDR_I64, 16, u16, i32, (int32_t)(int16_t))
+WAH_RUN(I32_LOAD16_U_i64_mem0) LOAD_OP(1, WAH_SP_ADDR_I64, 16, u16, i32, (int32_t))
+WAH_RUN(I64_LOAD8_S_i64_mem0) LOAD_OP(1, WAH_SP_ADDR_I64, 8, u8, i64, (int64_t)(int8_t))
+WAH_RUN(I64_LOAD8_U_i64_mem0) LOAD_OP(1, WAH_SP_ADDR_I64, 8, u8, i64, (int64_t))
+WAH_RUN(I64_LOAD16_S_i64_mem0) LOAD_OP(1, WAH_SP_ADDR_I64, 16, u16, i64, (int64_t)(int16_t))
+WAH_RUN(I64_LOAD16_U_i64_mem0) LOAD_OP(1, WAH_SP_ADDR_I64, 16, u16, i64, (int64_t))
+WAH_RUN(I64_LOAD32_S_i64_mem0) LOAD_OP(1, WAH_SP_ADDR_I64, 32, u32, i64, (int64_t)(int32_t))
+WAH_RUN(I64_LOAD32_U_i64_mem0) LOAD_OP(1, WAH_SP_ADDR_I64, 32, u32, i64, (int64_t))
 
-WAH_RUN(I32_STORE_i64_mem0) STORE_OP_I64_MEM0(32, u32, i32, int32_t, (uint32_t))
-WAH_RUN(I64_STORE_i64_mem0) STORE_OP_I64_MEM0(64, u64, i64, int64_t, (uint64_t))
-WAH_RUN(F32_STORE_i64_mem0) STORE_OP_I64_MEM0(32, f32, f32, float, )
-WAH_RUN(F64_STORE_i64_mem0) STORE_OP_I64_MEM0(64, f64, f64, double, )
-WAH_RUN(I32_STORE8_i64_mem0) STORE_OP_I64_MEM0(8, u8, i32, int32_t, (uint8_t))
-WAH_RUN(I32_STORE16_i64_mem0) STORE_OP_I64_MEM0(16, u16, i32, int32_t, (uint16_t))
-WAH_RUN(I64_STORE8_i64_mem0) STORE_OP_I64_MEM0(8, u8, i64, int64_t, (uint8_t))
-WAH_RUN(I64_STORE16_i64_mem0) STORE_OP_I64_MEM0(16, u16, i64, int64_t, (uint16_t))
-WAH_RUN(I64_STORE32_i64_mem0) STORE_OP_I64_MEM0(32, u32, i64, int64_t, (uint32_t))
+WAH_RUN(I32_STORE_i64_mem0) STORE_OP(1, WAH_SP_ADDR_I64, 32, u32, i32, int32_t, (uint32_t))
+WAH_RUN(I64_STORE_i64_mem0) STORE_OP(1, WAH_SP_ADDR_I64, 64, u64, i64, int64_t, (uint64_t))
+WAH_RUN(F32_STORE_i64_mem0) STORE_OP(1, WAH_SP_ADDR_I64, 32, f32, f32, float, )
+WAH_RUN(F64_STORE_i64_mem0) STORE_OP(1, WAH_SP_ADDR_I64, 64, f64, f64, double, )
+WAH_RUN(I32_STORE8_i64_mem0) STORE_OP(1, WAH_SP_ADDR_I64, 8, u8, i32, int32_t, (uint8_t))
+WAH_RUN(I32_STORE16_i64_mem0) STORE_OP(1, WAH_SP_ADDR_I64, 16, u16, i32, int32_t, (uint16_t))
+WAH_RUN(I64_STORE8_i64_mem0) STORE_OP(1, WAH_SP_ADDR_I64, 8, u8, i64, int64_t, (uint8_t))
+WAH_RUN(I64_STORE16_i64_mem0) STORE_OP(1, WAH_SP_ADDR_I64, 16, u16, i64, int64_t, (uint16_t))
+WAH_RUN(I64_STORE32_i64_mem0) STORE_OP(1, WAH_SP_ADDR_I64, 32, u32, i64, int64_t, (uint32_t))
 #endif // WAH_FEATURE_MEMORY64 (i64 memory loads/stores)
 
 WAH_RUN(I32_WRAP_I64) CONVERT(i64, (int32_t), i32)
@@ -11752,13 +11669,9 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
 #undef BINOP_F_FN
 #undef NUM_OPS
 #undef LOAD_OP
-#undef LOAD_OP_I32_MEM0
 #undef STORE_OP
-#undef STORE_OP_I32_MEM0
-#undef LOAD_OP_I64
-#undef STORE_OP_I64
-#undef LOAD_OP_I64_MEM0
-#undef STORE_OP_I64_MEM0
+#undef WAH_SP_ADDR_I32
+#undef WAH_SP_ADDR_I64
 #undef CONVERT
 #undef CONVERT_CHECK
 #undef REINTERPRET
@@ -12148,81 +12061,47 @@ WAH_RUN(UNREACHABLE) {
 
 #define V128_LOAD_COMMON(mem0, read_size, addr_expr) \
     uint32_t memidx = 0; \
-    if (!mem0) { \
-        memidx = wah_read_u32_le(bytecode_ip); \
-        bytecode_ip += sizeof(uint32_t); \
-    } \
+    if (!(mem0)) { memidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); } \
     uint64_t offset = wah_read_u64_le(bytecode_ip); \
     bytecode_ip += sizeof(uint64_t); \
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
-    WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK(wah_check_effective_addr(addr, offset, (read_size), fctx->memories[memidx].size, &effective_addr))
+    if (!(mem0)) { WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
+    WAH_CHECK(wah_check_effective_addr(addr, offset, (read_size), \
+        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr)); \
+    uint8_t *_mem_base = (mem0) ? fctx->memory_base : fctx->memories[memidx].data
 
-#define V128_LOAD_HALF_OP(addr_expr, N, elem_ty, cast) { \
-    V128_LOAD_COMMON(0, 8, addr_expr); \
+#define V128_LOAD_HALF_OP(mem0, addr_expr, N, elem_ty, cast) { \
+    V128_LOAD_COMMON(mem0, 8, addr_expr); \
     wah_v128_t *v = &(*sp++).v128; \
-    for (int i = 0; i < 64/N; ++i) { \
-        v->elem_ty[i] = cast(wah_read_u##N##_le(fctx->memories[memidx].data + effective_addr + i * (N/8))); \
-    } \
+    for (int i = 0; i < 64/N; ++i) \
+        v->elem_ty[i] = cast(wah_read_u##N##_le(_mem_base + effective_addr + i * (N/8))); \
     WAH_NEXT(); \
 }
 
-#define V128_LOAD_HALF_OP_MEM0(addr_expr, N, elem_ty, cast) { \
-    V128_LOAD_COMMON(1, 8, addr_expr); \
+#define V128_LOAD_SPLAT_OP(mem0, addr_expr, N) { \
+    V128_LOAD_COMMON(mem0, N/8, addr_expr); \
     wah_v128_t *v = &(*sp++).v128; \
-    for (int i = 0; i < 64/N; ++i) { \
-        v->elem_ty[i] = cast(wah_read_u##N##_le(fctx->memory_base + effective_addr + i * (N/8))); \
-    } \
-    WAH_NEXT(); \
-}
-
-#define V128_LOAD_SPLAT_OP(addr_expr, N) { \
-    V128_LOAD_COMMON(0, N/8, addr_expr); \
-    wah_v128_t *v = &(*sp++).v128; \
-    uint##N##_t val = wah_read_u##N##_le(fctx->memories[memidx].data + effective_addr); \
+    uint##N##_t val = wah_read_u##N##_le(_mem_base + effective_addr); \
     for (int i = 0; i < 128/N; ++i) v->u##N[i] = val; \
     WAH_NEXT(); \
 }
 
-#define V128_LOAD_SPLAT_OP_MEM0(addr_expr, N) { \
-    V128_LOAD_COMMON(1, N/8, addr_expr); \
-    wah_v128_t *v = &(*sp++).v128; \
-    uint##N##_t val = wah_read_u##N##_le(fctx->memory_base + effective_addr); \
-    for (int i = 0; i < 128/N; ++i) v->u##N[i] = val; \
-    WAH_NEXT(); \
-}
-
-#define V128_LOAD_LANE_OP(addr_expr, N) { \
-    uint32_t memidx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+#define V128_LOAD_LANE_OP(mem0, addr_expr, N) { \
+    uint32_t memidx = 0; \
+    if (!(mem0)) { memidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); } \
     uint64_t offset = wah_read_u64_le(bytecode_ip); \
     bytecode_ip += sizeof(uint64_t); \
     uint32_t lane_idx = *bytecode_ip++; \
-    wah_v128_t val = (*--sp).v128; /* Existing vector */ \
+    wah_v128_t val = (*--sp).v128; \
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
-    \
-    WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memories[memidx].size, &effective_addr), cleanup); \
+    if (!(mem0)) { WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, \
+        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr), cleanup); \
     WAH_ASSERT(lane_idx < 128/N && "validation didn't catch out-of-bound lane index"); \
-    val.u##N[lane_idx] = wah_read_u##N##_le(fctx->memories[memidx].data + effective_addr); \
-    (*sp++).v128 = val; \
-    WAH_NEXT(); \
-    WAH_CLEANUP(); \
-}
-
-#define V128_LOAD_LANE_OP_MEM0(addr_expr, N) { \
-    uint64_t offset = wah_read_u64_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint64_t); \
-    uint32_t lane_idx = *bytecode_ip++; \
-    wah_v128_t val = (*--sp).v128; /* Existing vector */ \
-    uint64_t addr = (addr_expr); \
-    uint64_t effective_addr; \
-    \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_size, &effective_addr), cleanup); \
-    WAH_ASSERT(lane_idx < 128/N && "validation didn't catch out-of-bound lane index"); \
-    val.u##N[lane_idx] = wah_read_u##N##_le(fctx->memory_base + effective_addr); \
+    val.u##N[lane_idx] = wah_read_u##N##_le( \
+        ((mem0) ? fctx->memory_base : fctx->memories[memidx].data) + effective_addr); \
     (*sp++).v128 = val; \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
@@ -12230,118 +12109,104 @@ WAH_RUN(UNREACHABLE) {
 
 WAH_RUN(V128_LOAD) {
     V128_LOAD_COMMON(0, sizeof(wah_v128_t), WAH_SP_ADDR_I32);
-    memcpy(&(*sp++).v128, fctx->memories[memidx].data + effective_addr, sizeof(wah_v128_t));
+    memcpy(&(*sp++).v128, _mem_base + effective_addr, sizeof(wah_v128_t));
     WAH_NEXT();
 }
 
 WAH_RUN(V128_LOAD_i32_mem0) {
     V128_LOAD_COMMON(1, sizeof(wah_v128_t), WAH_SP_ADDR_I32);
-    memcpy(&(*sp++).v128, fctx->memory_base + effective_addr, sizeof(wah_v128_t));
+    memcpy(&(*sp++).v128, _mem_base + effective_addr, sizeof(wah_v128_t));
     WAH_NEXT();
 }
 
-WAH_RUN(V128_LOAD8X8_S) V128_LOAD_HALF_OP(WAH_SP_ADDR_I32, 8, i16, (int16_t)(int8_t))
-WAH_RUN(V128_LOAD8X8_U) V128_LOAD_HALF_OP(WAH_SP_ADDR_I32, 8, u16, (uint16_t))
-WAH_RUN(V128_LOAD16X4_S) V128_LOAD_HALF_OP(WAH_SP_ADDR_I32, 16, i32, (int32_t)(int16_t))
-WAH_RUN(V128_LOAD16X4_U) V128_LOAD_HALF_OP(WAH_SP_ADDR_I32, 16, u32, (uint32_t))
-WAH_RUN(V128_LOAD32X2_S) V128_LOAD_HALF_OP(WAH_SP_ADDR_I32, 32, i64, (int64_t)(int32_t))
-WAH_RUN(V128_LOAD32X2_U) V128_LOAD_HALF_OP(WAH_SP_ADDR_I32, 32, u64, (uint64_t))
+WAH_RUN(V128_LOAD8X8_S) V128_LOAD_HALF_OP(0, WAH_SP_ADDR_I32, 8, i16, (int16_t)(int8_t))
+WAH_RUN(V128_LOAD8X8_U) V128_LOAD_HALF_OP(0, WAH_SP_ADDR_I32, 8, u16, (uint16_t))
+WAH_RUN(V128_LOAD16X4_S) V128_LOAD_HALF_OP(0, WAH_SP_ADDR_I32, 16, i32, (int32_t)(int16_t))
+WAH_RUN(V128_LOAD16X4_U) V128_LOAD_HALF_OP(0, WAH_SP_ADDR_I32, 16, u32, (uint32_t))
+WAH_RUN(V128_LOAD32X2_S) V128_LOAD_HALF_OP(0, WAH_SP_ADDR_I32, 32, i64, (int64_t)(int32_t))
+WAH_RUN(V128_LOAD32X2_U) V128_LOAD_HALF_OP(0, WAH_SP_ADDR_I32, 32, u64, (uint64_t))
 
-WAH_RUN(V128_LOAD8X8_S_i32_mem0) V128_LOAD_HALF_OP_MEM0(WAH_SP_ADDR_I32, 8, i16, (int16_t)(int8_t))
-WAH_RUN(V128_LOAD8X8_U_i32_mem0) V128_LOAD_HALF_OP_MEM0(WAH_SP_ADDR_I32, 8, u16, (uint16_t))
-WAH_RUN(V128_LOAD16X4_S_i32_mem0) V128_LOAD_HALF_OP_MEM0(WAH_SP_ADDR_I32, 16, i32, (int32_t)(int16_t))
-WAH_RUN(V128_LOAD16X4_U_i32_mem0) V128_LOAD_HALF_OP_MEM0(WAH_SP_ADDR_I32, 16, u32, (uint32_t))
-WAH_RUN(V128_LOAD32X2_S_i32_mem0) V128_LOAD_HALF_OP_MEM0(WAH_SP_ADDR_I32, 32, i64, (int64_t)(int32_t))
-WAH_RUN(V128_LOAD32X2_U_i32_mem0) V128_LOAD_HALF_OP_MEM0(WAH_SP_ADDR_I32, 32, u64, (uint64_t))
+WAH_RUN(V128_LOAD8X8_S_i32_mem0) V128_LOAD_HALF_OP(1, WAH_SP_ADDR_I32, 8, i16, (int16_t)(int8_t))
+WAH_RUN(V128_LOAD8X8_U_i32_mem0) V128_LOAD_HALF_OP(1, WAH_SP_ADDR_I32, 8, u16, (uint16_t))
+WAH_RUN(V128_LOAD16X4_S_i32_mem0) V128_LOAD_HALF_OP(1, WAH_SP_ADDR_I32, 16, i32, (int32_t)(int16_t))
+WAH_RUN(V128_LOAD16X4_U_i32_mem0) V128_LOAD_HALF_OP(1, WAH_SP_ADDR_I32, 16, u32, (uint32_t))
+WAH_RUN(V128_LOAD32X2_S_i32_mem0) V128_LOAD_HALF_OP(1, WAH_SP_ADDR_I32, 32, i64, (int64_t)(int32_t))
+WAH_RUN(V128_LOAD32X2_U_i32_mem0) V128_LOAD_HALF_OP(1, WAH_SP_ADDR_I32, 32, u64, (uint64_t))
 
-WAH_RUN(V128_LOAD8_SPLAT) V128_LOAD_SPLAT_OP(WAH_SP_ADDR_I32, 8)
-WAH_RUN(V128_LOAD16_SPLAT) V128_LOAD_SPLAT_OP(WAH_SP_ADDR_I32, 16)
-WAH_RUN(V128_LOAD32_SPLAT) V128_LOAD_SPLAT_OP(WAH_SP_ADDR_I32, 32)
-WAH_RUN(V128_LOAD64_SPLAT) V128_LOAD_SPLAT_OP(WAH_SP_ADDR_I32, 64)
+WAH_RUN(V128_LOAD8_SPLAT) V128_LOAD_SPLAT_OP(0, WAH_SP_ADDR_I32, 8)
+WAH_RUN(V128_LOAD16_SPLAT) V128_LOAD_SPLAT_OP(0, WAH_SP_ADDR_I32, 16)
+WAH_RUN(V128_LOAD32_SPLAT) V128_LOAD_SPLAT_OP(0, WAH_SP_ADDR_I32, 32)
+WAH_RUN(V128_LOAD64_SPLAT) V128_LOAD_SPLAT_OP(0, WAH_SP_ADDR_I32, 64)
 
-WAH_RUN(V128_LOAD8_SPLAT_i32_mem0) V128_LOAD_SPLAT_OP_MEM0(WAH_SP_ADDR_I32, 8)
-WAH_RUN(V128_LOAD16_SPLAT_i32_mem0) V128_LOAD_SPLAT_OP_MEM0(WAH_SP_ADDR_I32, 16)
-WAH_RUN(V128_LOAD32_SPLAT_i32_mem0) V128_LOAD_SPLAT_OP_MEM0(WAH_SP_ADDR_I32, 32)
-WAH_RUN(V128_LOAD64_SPLAT_i32_mem0) V128_LOAD_SPLAT_OP_MEM0(WAH_SP_ADDR_I32, 64)
+WAH_RUN(V128_LOAD8_SPLAT_i32_mem0) V128_LOAD_SPLAT_OP(1, WAH_SP_ADDR_I32, 8)
+WAH_RUN(V128_LOAD16_SPLAT_i32_mem0) V128_LOAD_SPLAT_OP(1, WAH_SP_ADDR_I32, 16)
+WAH_RUN(V128_LOAD32_SPLAT_i32_mem0) V128_LOAD_SPLAT_OP(1, WAH_SP_ADDR_I32, 32)
+WAH_RUN(V128_LOAD64_SPLAT_i32_mem0) V128_LOAD_SPLAT_OP(1, WAH_SP_ADDR_I32, 64)
 
 WAH_RUN(V128_LOAD32_ZERO) {
     V128_LOAD_COMMON(0, 4, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){ .u64 = {wah_read_u32_le(fctx->memories[memidx].data + effective_addr), 0} };
+    *v = (wah_v128_t){ .u64 = {wah_read_u32_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
 }
 WAH_RUN(V128_LOAD64_ZERO) {
     V128_LOAD_COMMON(0, 8, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){ .u64 = {wah_read_u64_le(fctx->memories[memidx].data + effective_addr), 0} };
+    *v = (wah_v128_t){ .u64 = {wah_read_u64_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
 }
 
 WAH_RUN(V128_LOAD32_ZERO_i32_mem0) {
     V128_LOAD_COMMON(1, 4, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){ .u64 = {wah_read_u32_le(fctx->memory_base + effective_addr), 0} };
+    *v = (wah_v128_t){ .u64 = {wah_read_u32_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
 }
 WAH_RUN(V128_LOAD64_ZERO_i32_mem0) {
     V128_LOAD_COMMON(1, 8, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){ .u64 = {wah_read_u64_le(fctx->memory_base + effective_addr), 0} };
+    *v = (wah_v128_t){ .u64 = {wah_read_u64_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
 }
 
-WAH_RUN(V128_LOAD8_LANE) V128_LOAD_LANE_OP(WAH_SP_ADDR_I32, 8)
-WAH_RUN(V128_LOAD16_LANE) V128_LOAD_LANE_OP(WAH_SP_ADDR_I32, 16)
-WAH_RUN(V128_LOAD32_LANE) V128_LOAD_LANE_OP(WAH_SP_ADDR_I32, 32)
-WAH_RUN(V128_LOAD64_LANE) V128_LOAD_LANE_OP(WAH_SP_ADDR_I32, 64)
+WAH_RUN(V128_LOAD8_LANE) V128_LOAD_LANE_OP(0, WAH_SP_ADDR_I32, 8)
+WAH_RUN(V128_LOAD16_LANE) V128_LOAD_LANE_OP(0, WAH_SP_ADDR_I32, 16)
+WAH_RUN(V128_LOAD32_LANE) V128_LOAD_LANE_OP(0, WAH_SP_ADDR_I32, 32)
+WAH_RUN(V128_LOAD64_LANE) V128_LOAD_LANE_OP(0, WAH_SP_ADDR_I32, 64)
 
-WAH_RUN(V128_LOAD8_LANE_i32_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I32, 8)
-WAH_RUN(V128_LOAD16_LANE_i32_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I32, 16)
-WAH_RUN(V128_LOAD32_LANE_i32_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I32, 32)
-WAH_RUN(V128_LOAD64_LANE_i32_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I32, 64)
+WAH_RUN(V128_LOAD8_LANE_i32_mem0) V128_LOAD_LANE_OP(1, WAH_SP_ADDR_I32, 8)
+WAH_RUN(V128_LOAD16_LANE_i32_mem0) V128_LOAD_LANE_OP(1, WAH_SP_ADDR_I32, 16)
+WAH_RUN(V128_LOAD32_LANE_i32_mem0) V128_LOAD_LANE_OP(1, WAH_SP_ADDR_I32, 32)
+WAH_RUN(V128_LOAD64_LANE_i32_mem0) V128_LOAD_LANE_OP(1, WAH_SP_ADDR_I32, 64)
 
-#define V128_STORE_LANE_OP(addr_expr, N) { \
-    uint32_t memidx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+#define V128_STORE_LANE_OP(mem0, addr_expr, N) { \
+    uint32_t memidx = 0; \
+    if (!(mem0)) { memidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); } \
     uint64_t offset = wah_read_u64_le(bytecode_ip); \
     bytecode_ip += sizeof(uint64_t); \
     uint32_t lane_idx = *bytecode_ip++; \
     wah_v128_t val = (*--sp).v128; \
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
-    \
-    WAH_ASSERT(memidx < ctx->memory_count); \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memories[memidx].size, &effective_addr), cleanup); \
+    if (!(mem0)) { WAH_ASSERT(memidx < ctx->memory_count); } \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, \
+        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr), cleanup); \
     WAH_ASSERT(lane_idx < 128/N); \
-    wah_write_u##N##_le(fctx->memories[memidx].data + effective_addr, val.u##N[lane_idx]); \
+    wah_write_u##N##_le( \
+        ((mem0) ? fctx->memory_base : fctx->memories[memidx].data) + effective_addr, val.u##N[lane_idx]); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
 
-#define V128_STORE_LANE_OP_MEM0(addr_expr, N) { \
-    uint64_t offset = wah_read_u64_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint64_t); \
-    uint32_t lane_idx = *bytecode_ip++; \
-    wah_v128_t val = (*--sp).v128; \
-    uint64_t addr = (addr_expr); \
-    uint64_t effective_addr; \
-    \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, fctx->memory_size, &effective_addr), cleanup); \
-    WAH_ASSERT(lane_idx < 128/N); \
-    wah_write_u##N##_le(fctx->memory_base + effective_addr, val.u##N[lane_idx]); \
-    WAH_NEXT(); \
-    WAH_CLEANUP(); \
-}
+WAH_RUN(V128_STORE8_LANE) V128_STORE_LANE_OP(0, WAH_SP_ADDR_I32, 8)
+WAH_RUN(V128_STORE16_LANE) V128_STORE_LANE_OP(0, WAH_SP_ADDR_I32, 16)
+WAH_RUN(V128_STORE32_LANE) V128_STORE_LANE_OP(0, WAH_SP_ADDR_I32, 32)
+WAH_RUN(V128_STORE64_LANE) V128_STORE_LANE_OP(0, WAH_SP_ADDR_I32, 64)
 
-WAH_RUN(V128_STORE8_LANE) V128_STORE_LANE_OP(WAH_SP_ADDR_I32, 8)
-WAH_RUN(V128_STORE16_LANE) V128_STORE_LANE_OP(WAH_SP_ADDR_I32, 16)
-WAH_RUN(V128_STORE32_LANE) V128_STORE_LANE_OP(WAH_SP_ADDR_I32, 32)
-WAH_RUN(V128_STORE64_LANE) V128_STORE_LANE_OP(WAH_SP_ADDR_I32, 64)
-
-WAH_RUN(V128_STORE8_LANE_i32_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I32, 8)
-WAH_RUN(V128_STORE16_LANE_i32_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I32, 16)
-WAH_RUN(V128_STORE32_LANE_i32_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I32, 32)
-WAH_RUN(V128_STORE64_LANE_i32_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I32, 64)
+WAH_RUN(V128_STORE8_LANE_i32_mem0) V128_STORE_LANE_OP(1, WAH_SP_ADDR_I32, 8)
+WAH_RUN(V128_STORE16_LANE_i32_mem0) V128_STORE_LANE_OP(1, WAH_SP_ADDR_I32, 16)
+WAH_RUN(V128_STORE32_LANE_i32_mem0) V128_STORE_LANE_OP(1, WAH_SP_ADDR_I32, 32)
+WAH_RUN(V128_STORE64_LANE_i32_mem0) V128_STORE_LANE_OP(1, WAH_SP_ADDR_I32, 64)
 
 WAH_RUN(V128_STORE) {
     uint32_t memidx = wah_read_u32_le(bytecode_ip);
@@ -12375,85 +12240,85 @@ WAH_RUN(V128_STORE_i32_mem0) {
 
 WAH_RUN(V128_LOAD_i64) {
     V128_LOAD_COMMON(0, sizeof(wah_v128_t), WAH_SP_ADDR_I64);
-    memcpy(&(*sp++).v128, fctx->memories[memidx].data + effective_addr, sizeof(wah_v128_t));
+    memcpy(&(*sp++).v128, _mem_base + effective_addr, sizeof(wah_v128_t));
     WAH_NEXT();
 }
 
 WAH_RUN(V128_LOAD_i64_mem0) {
     V128_LOAD_COMMON(1, sizeof(wah_v128_t), WAH_SP_ADDR_I64);
-    memcpy(&(*sp++).v128, fctx->memory_base + effective_addr, sizeof(wah_v128_t));
+    memcpy(&(*sp++).v128, _mem_base + effective_addr, sizeof(wah_v128_t));
     WAH_NEXT();
 }
 
-WAH_RUN(V128_LOAD8X8_S_i64) V128_LOAD_HALF_OP(WAH_SP_ADDR_I64, 8, i16, (int16_t)(int8_t))
-WAH_RUN(V128_LOAD8X8_U_i64) V128_LOAD_HALF_OP(WAH_SP_ADDR_I64, 8, u16, (uint16_t))
-WAH_RUN(V128_LOAD16X4_S_i64) V128_LOAD_HALF_OP(WAH_SP_ADDR_I64, 16, i32, (int32_t)(int16_t))
-WAH_RUN(V128_LOAD16X4_U_i64) V128_LOAD_HALF_OP(WAH_SP_ADDR_I64, 16, u32, (uint32_t))
-WAH_RUN(V128_LOAD32X2_S_i64) V128_LOAD_HALF_OP(WAH_SP_ADDR_I64, 32, i64, (int64_t)(int32_t))
-WAH_RUN(V128_LOAD32X2_U_i64) V128_LOAD_HALF_OP(WAH_SP_ADDR_I64, 32, u64, (uint64_t))
+WAH_RUN(V128_LOAD8X8_S_i64) V128_LOAD_HALF_OP(0, WAH_SP_ADDR_I64, 8, i16, (int16_t)(int8_t))
+WAH_RUN(V128_LOAD8X8_U_i64) V128_LOAD_HALF_OP(0, WAH_SP_ADDR_I64, 8, u16, (uint16_t))
+WAH_RUN(V128_LOAD16X4_S_i64) V128_LOAD_HALF_OP(0, WAH_SP_ADDR_I64, 16, i32, (int32_t)(int16_t))
+WAH_RUN(V128_LOAD16X4_U_i64) V128_LOAD_HALF_OP(0, WAH_SP_ADDR_I64, 16, u32, (uint32_t))
+WAH_RUN(V128_LOAD32X2_S_i64) V128_LOAD_HALF_OP(0, WAH_SP_ADDR_I64, 32, i64, (int64_t)(int32_t))
+WAH_RUN(V128_LOAD32X2_U_i64) V128_LOAD_HALF_OP(0, WAH_SP_ADDR_I64, 32, u64, (uint64_t))
 
-WAH_RUN(V128_LOAD8X8_S_i64_mem0) V128_LOAD_HALF_OP_MEM0(WAH_SP_ADDR_I64, 8, i16, (int16_t)(int8_t))
-WAH_RUN(V128_LOAD8X8_U_i64_mem0) V128_LOAD_HALF_OP_MEM0(WAH_SP_ADDR_I64, 8, u16, (uint16_t))
-WAH_RUN(V128_LOAD16X4_S_i64_mem0) V128_LOAD_HALF_OP_MEM0(WAH_SP_ADDR_I64, 16, i32, (int32_t)(int16_t))
-WAH_RUN(V128_LOAD16X4_U_i64_mem0) V128_LOAD_HALF_OP_MEM0(WAH_SP_ADDR_I64, 16, u32, (uint32_t))
-WAH_RUN(V128_LOAD32X2_S_i64_mem0) V128_LOAD_HALF_OP_MEM0(WAH_SP_ADDR_I64, 32, i64, (int64_t)(int32_t))
-WAH_RUN(V128_LOAD32X2_U_i64_mem0) V128_LOAD_HALF_OP_MEM0(WAH_SP_ADDR_I64, 32, u64, (uint64_t))
+WAH_RUN(V128_LOAD8X8_S_i64_mem0) V128_LOAD_HALF_OP(1, WAH_SP_ADDR_I64, 8, i16, (int16_t)(int8_t))
+WAH_RUN(V128_LOAD8X8_U_i64_mem0) V128_LOAD_HALF_OP(1, WAH_SP_ADDR_I64, 8, u16, (uint16_t))
+WAH_RUN(V128_LOAD16X4_S_i64_mem0) V128_LOAD_HALF_OP(1, WAH_SP_ADDR_I64, 16, i32, (int32_t)(int16_t))
+WAH_RUN(V128_LOAD16X4_U_i64_mem0) V128_LOAD_HALF_OP(1, WAH_SP_ADDR_I64, 16, u32, (uint32_t))
+WAH_RUN(V128_LOAD32X2_S_i64_mem0) V128_LOAD_HALF_OP(1, WAH_SP_ADDR_I64, 32, i64, (int64_t)(int32_t))
+WAH_RUN(V128_LOAD32X2_U_i64_mem0) V128_LOAD_HALF_OP(1, WAH_SP_ADDR_I64, 32, u64, (uint64_t))
 
-WAH_RUN(V128_LOAD8_SPLAT_i64) V128_LOAD_SPLAT_OP(WAH_SP_ADDR_I64, 8)
-WAH_RUN(V128_LOAD16_SPLAT_i64) V128_LOAD_SPLAT_OP(WAH_SP_ADDR_I64, 16)
-WAH_RUN(V128_LOAD32_SPLAT_i64) V128_LOAD_SPLAT_OP(WAH_SP_ADDR_I64, 32)
-WAH_RUN(V128_LOAD64_SPLAT_i64) V128_LOAD_SPLAT_OP(WAH_SP_ADDR_I64, 64)
+WAH_RUN(V128_LOAD8_SPLAT_i64) V128_LOAD_SPLAT_OP(0, WAH_SP_ADDR_I64, 8)
+WAH_RUN(V128_LOAD16_SPLAT_i64) V128_LOAD_SPLAT_OP(0, WAH_SP_ADDR_I64, 16)
+WAH_RUN(V128_LOAD32_SPLAT_i64) V128_LOAD_SPLAT_OP(0, WAH_SP_ADDR_I64, 32)
+WAH_RUN(V128_LOAD64_SPLAT_i64) V128_LOAD_SPLAT_OP(0, WAH_SP_ADDR_I64, 64)
 
-WAH_RUN(V128_LOAD8_SPLAT_i64_mem0) V128_LOAD_SPLAT_OP_MEM0(WAH_SP_ADDR_I64, 8)
-WAH_RUN(V128_LOAD16_SPLAT_i64_mem0) V128_LOAD_SPLAT_OP_MEM0(WAH_SP_ADDR_I64, 16)
-WAH_RUN(V128_LOAD32_SPLAT_i64_mem0) V128_LOAD_SPLAT_OP_MEM0(WAH_SP_ADDR_I64, 32)
-WAH_RUN(V128_LOAD64_SPLAT_i64_mem0) V128_LOAD_SPLAT_OP_MEM0(WAH_SP_ADDR_I64, 64)
+WAH_RUN(V128_LOAD8_SPLAT_i64_mem0) V128_LOAD_SPLAT_OP(1, WAH_SP_ADDR_I64, 8)
+WAH_RUN(V128_LOAD16_SPLAT_i64_mem0) V128_LOAD_SPLAT_OP(1, WAH_SP_ADDR_I64, 16)
+WAH_RUN(V128_LOAD32_SPLAT_i64_mem0) V128_LOAD_SPLAT_OP(1, WAH_SP_ADDR_I64, 32)
+WAH_RUN(V128_LOAD64_SPLAT_i64_mem0) V128_LOAD_SPLAT_OP(1, WAH_SP_ADDR_I64, 64)
 
 WAH_RUN(V128_LOAD32_ZERO_i64) {
     V128_LOAD_COMMON(0, 4, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){ .u64 = {wah_read_u32_le(fctx->memories[memidx].data + effective_addr), 0} };
+    *v = (wah_v128_t){ .u64 = {wah_read_u32_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
 }
 WAH_RUN(V128_LOAD64_ZERO_i64) {
     V128_LOAD_COMMON(0, 8, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){ .u64 = {wah_read_u64_le(fctx->memories[memidx].data + effective_addr), 0} };
+    *v = (wah_v128_t){ .u64 = {wah_read_u64_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
 }
 
 WAH_RUN(V128_LOAD32_ZERO_i64_mem0) {
     V128_LOAD_COMMON(1, 4, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){ .u64 = {wah_read_u32_le(fctx->memory_base + effective_addr), 0} };
+    *v = (wah_v128_t){ .u64 = {wah_read_u32_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
 }
 WAH_RUN(V128_LOAD64_ZERO_i64_mem0) {
     V128_LOAD_COMMON(1, 8, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
-    *v = (wah_v128_t){ .u64 = {wah_read_u64_le(fctx->memory_base + effective_addr), 0} };
+    *v = (wah_v128_t){ .u64 = {wah_read_u64_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
 }
 
-WAH_RUN(V128_LOAD8_LANE_i64) V128_LOAD_LANE_OP(WAH_SP_ADDR_I64, 8)
-WAH_RUN(V128_LOAD16_LANE_i64) V128_LOAD_LANE_OP(WAH_SP_ADDR_I64, 16)
-WAH_RUN(V128_LOAD32_LANE_i64) V128_LOAD_LANE_OP(WAH_SP_ADDR_I64, 32)
-WAH_RUN(V128_LOAD64_LANE_i64) V128_LOAD_LANE_OP(WAH_SP_ADDR_I64, 64)
+WAH_RUN(V128_LOAD8_LANE_i64) V128_LOAD_LANE_OP(0, WAH_SP_ADDR_I64, 8)
+WAH_RUN(V128_LOAD16_LANE_i64) V128_LOAD_LANE_OP(0, WAH_SP_ADDR_I64, 16)
+WAH_RUN(V128_LOAD32_LANE_i64) V128_LOAD_LANE_OP(0, WAH_SP_ADDR_I64, 32)
+WAH_RUN(V128_LOAD64_LANE_i64) V128_LOAD_LANE_OP(0, WAH_SP_ADDR_I64, 64)
 
-WAH_RUN(V128_LOAD8_LANE_i64_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I64, 8)
-WAH_RUN(V128_LOAD16_LANE_i64_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I64, 16)
-WAH_RUN(V128_LOAD32_LANE_i64_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I64, 32)
-WAH_RUN(V128_LOAD64_LANE_i64_mem0) V128_LOAD_LANE_OP_MEM0(WAH_SP_ADDR_I64, 64)
+WAH_RUN(V128_LOAD8_LANE_i64_mem0) V128_LOAD_LANE_OP(1, WAH_SP_ADDR_I64, 8)
+WAH_RUN(V128_LOAD16_LANE_i64_mem0) V128_LOAD_LANE_OP(1, WAH_SP_ADDR_I64, 16)
+WAH_RUN(V128_LOAD32_LANE_i64_mem0) V128_LOAD_LANE_OP(1, WAH_SP_ADDR_I64, 32)
+WAH_RUN(V128_LOAD64_LANE_i64_mem0) V128_LOAD_LANE_OP(1, WAH_SP_ADDR_I64, 64)
 
-WAH_RUN(V128_STORE8_LANE_i64) V128_STORE_LANE_OP(WAH_SP_ADDR_I64, 8)
-WAH_RUN(V128_STORE16_LANE_i64) V128_STORE_LANE_OP(WAH_SP_ADDR_I64, 16)
-WAH_RUN(V128_STORE32_LANE_i64) V128_STORE_LANE_OP(WAH_SP_ADDR_I64, 32)
-WAH_RUN(V128_STORE64_LANE_i64) V128_STORE_LANE_OP(WAH_SP_ADDR_I64, 64)
+WAH_RUN(V128_STORE8_LANE_i64) V128_STORE_LANE_OP(0, WAH_SP_ADDR_I64, 8)
+WAH_RUN(V128_STORE16_LANE_i64) V128_STORE_LANE_OP(0, WAH_SP_ADDR_I64, 16)
+WAH_RUN(V128_STORE32_LANE_i64) V128_STORE_LANE_OP(0, WAH_SP_ADDR_I64, 32)
+WAH_RUN(V128_STORE64_LANE_i64) V128_STORE_LANE_OP(0, WAH_SP_ADDR_I64, 64)
 
-WAH_RUN(V128_STORE8_LANE_i64_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I64, 8)
-WAH_RUN(V128_STORE16_LANE_i64_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I64, 16)
-WAH_RUN(V128_STORE32_LANE_i64_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I64, 32)
-WAH_RUN(V128_STORE64_LANE_i64_mem0) V128_STORE_LANE_OP_MEM0(WAH_SP_ADDR_I64, 64)
+WAH_RUN(V128_STORE8_LANE_i64_mem0) V128_STORE_LANE_OP(1, WAH_SP_ADDR_I64, 8)
+WAH_RUN(V128_STORE16_LANE_i64_mem0) V128_STORE_LANE_OP(1, WAH_SP_ADDR_I64, 16)
+WAH_RUN(V128_STORE32_LANE_i64_mem0) V128_STORE_LANE_OP(1, WAH_SP_ADDR_I64, 32)
+WAH_RUN(V128_STORE64_LANE_i64_mem0) V128_STORE_LANE_OP(1, WAH_SP_ADDR_I64, 64)
 
 WAH_RUN(V128_STORE_i64) {
     uint32_t memidx = wah_read_u32_le(bytecode_ip);
@@ -12488,11 +12353,9 @@ WAH_RUN(V128_STORE_i64_mem0) {
 #undef WAH_SP_ADDR_I64
 #undef V128_LOAD_COMMON
 #undef V128_LOAD_HALF_OP
-#undef V128_LOAD_HALF_OP_MEM0
 #undef V128_LOAD_LANE_OP
-#undef V128_LOAD_LANE_OP_MEM0
 #undef V128_LOAD_SPLAT_OP
-#undef V128_LOAD_SPLAT_OP_MEM0
+#undef V128_STORE_LANE_OP
 
 #define EXTRACT_LANE_OP(VEC_TYPE, SCALAR_TYPE, LANE_COUNT) { \
     wah_v128_t vec = (*--sp).v128; \
@@ -12688,44 +12551,34 @@ WAH_RUN(F64X2_SPLAT) SPLAT_OP(f64, double, f64)
     WAH_NEXT(); \
 }
 
-WAH_RUN(V128_NOT) M128I_UNARY_OP(wah_v128_not_sse2, N128_UNARY_OP(vmvnq_u8, {
-    wah_v128_t val = sp[-1].v128;
-    for (int i = 0; i < 16; ++i) val.u8[i] = ~val.u8[i];
-    sp[-1].v128 = val;
-    WAH_NEXT();
-}))
-WAH_RUN(V128_AND) M128I_BINARY_OP(_mm_and_si128, N128_BINARY_OP(vandq_u8, {
-    wah_v128_t b = sp[-1].v128;
-    wah_v128_t a = sp[-2].v128;
-    for (int i = 0; i < 16; ++i) a.u8[i] &= b.u8[i];
-    sp[-2].v128 = a;
-    sp--;
-    WAH_NEXT();
-}))
-WAH_RUN(V128_ANDNOT) M128I_BINARY_OP(wah_v128_andnot_rev_sse2, N128_BINARY_OP(wah_v128_andnot_neon, {
-    wah_v128_t b = sp[-1].v128;
-    wah_v128_t a = sp[-2].v128;
-    for (int i = 0; i < 16; ++i) a.u8[i] &= ~b.u8[i];
-    sp[-2].v128 = a;
-    sp--;
-    WAH_NEXT();
-}))
-WAH_RUN(V128_OR) M128I_BINARY_OP(_mm_or_si128, N128_BINARY_OP(vorrq_u8, {
-    wah_v128_t b = sp[-1].v128;
-    wah_v128_t a = sp[-2].v128;
-    for (int i = 0; i < 16; ++i) a.u8[i] |= b.u8[i];
-    sp[-2].v128 = a;
-    sp--;
-    WAH_NEXT();
-}))
-WAH_RUN(V128_XOR) M128I_BINARY_OP(_mm_xor_si128, N128_BINARY_OP(veorq_u8, {
-    wah_v128_t b = sp[-1].v128;
-    wah_v128_t a = sp[-2].v128;
-    for (int i = 0; i < 16; ++i) a.u8[i] ^= b.u8[i];
-    sp[-2].v128 = a;
-    sp--;
-    WAH_NEXT();
-}))
+#define V128_BITWISE_UNARY_FALLBACK(expr) { \
+    wah_v128_t val = sp[-1].v128; \
+    for (int i = 0; i < 16; ++i) val.u8[i] = (expr); \
+    sp[-1].v128 = val; \
+    WAH_NEXT(); \
+}
+#define V128_BITWISE_BINARY_FALLBACK(expr) { \
+    wah_v128_t b = sp[-1].v128; \
+    wah_v128_t a = sp[-2].v128; \
+    for (int i = 0; i < 16; ++i) a.u8[i] = (expr); \
+    sp[-2].v128 = a; \
+    sp--; \
+    WAH_NEXT(); \
+}
+
+WAH_RUN(V128_NOT) M128I_UNARY_OP(wah_v128_not_sse2, N128_UNARY_OP(vmvnq_u8,
+    V128_BITWISE_UNARY_FALLBACK((uint8_t)~val.u8[i])))
+WAH_RUN(V128_AND) M128I_BINARY_OP(_mm_and_si128, N128_BINARY_OP(vandq_u8,
+    V128_BITWISE_BINARY_FALLBACK(a.u8[i] & b.u8[i])))
+WAH_RUN(V128_ANDNOT) M128I_BINARY_OP(wah_v128_andnot_rev_sse2, N128_BINARY_OP(wah_v128_andnot_neon,
+    V128_BITWISE_BINARY_FALLBACK(a.u8[i] & (uint8_t)~b.u8[i])))
+WAH_RUN(V128_OR) M128I_BINARY_OP(_mm_or_si128, N128_BINARY_OP(vorrq_u8,
+    V128_BITWISE_BINARY_FALLBACK(a.u8[i] | b.u8[i])))
+WAH_RUN(V128_XOR) M128I_BINARY_OP(_mm_xor_si128, N128_BINARY_OP(veorq_u8,
+    V128_BITWISE_BINARY_FALLBACK(a.u8[i] ^ b.u8[i])))
+
+#undef V128_BITWISE_UNARY_FALLBACK
+#undef V128_BITWISE_BINARY_FALLBACK
 
 WAH_RUN(I8X16_ADD) M128I_BINARY_OP(_mm_add_epi8, N128_BINARY_OP(wah_vaddq_s8, V128_BINARY_OP_LANE(8, +, i8)))
 WAH_RUN(I8X16_ADD_SAT_S) M128I_BINARY_OP(_mm_adds_epi8, N128_BINARY_OP(wah_vqaddq_s8, V128_BINARY_OP_LANE_SAT_S(8, +, i8, -128, 127)))
@@ -14315,81 +14168,14 @@ static wah_error_t wah_module_ensure_export(wah_module_t *mod, const char *name)
     return WAH_OK;
 }
 
-wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const char *types, wah_func_t func, void *userdata, wah_finalize_t finalize) {
-    wah_error_t err;
-    wah_type_spec_parser_t p;
-    wah_func_type_t ft = {0};
-    char *name_copy = NULL;
-    wah_type_t *param_types_copy = NULL;
-    wah_type_t *result_types_copy = NULL;
-    uint32_t new_func_idx;
-
-    WAH_ENSURE(mod, WAH_ERROR_MISUSE);
-    WAH_ENSURE(name, WAH_ERROR_MISUSE);
-    WAH_ENSURE(types, WAH_ERROR_MISUSE);
-    WAH_ENSURE(func, WAH_ERROR_MISUSE);
-
-    p = (wah_type_spec_parser_t){ .cur = types, .module = mod, .allow_placeholders = false };
-    bool has_fn = wah_type_spec_take_kw(&p, "fn");
-    p.cur = types;
-    WAH_CHECK_GOTO(wah_type_spec_parse_func(&p, &ft, !has_fn), cleanup);
-    wah_type_spec_skip_ws(&p);
-    WAH_ENSURE_GOTO(*p.cur == '\0', WAH_ERROR_BAD_SPEC, cleanup);
-
-    WAH_CHECK_GOTO(wah_module_ensure_export(mod, name), cleanup);
-    WAH_ENSURE_CAP_GOTO(mod->functions, mod->local_function_count + 1, cleanup);
-
-    name_copy = wah_strdup(name);
-    WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
-
-    if (ft.param_count > 0) {
-        WAH_MALLOC_ARRAY_GOTO(param_types_copy, ft.param_count, cleanup);
-        memcpy(param_types_copy, ft.param_types, ft.param_count * sizeof(wah_type_t));
-    }
-
-    if (ft.result_count > 0) {
-        WAH_MALLOC_ARRAY_GOTO(result_types_copy, ft.result_count, cleanup);
-        memcpy(result_types_copy, ft.result_types, ft.result_count * sizeof(wah_type_t));
-    }
-
-    new_func_idx = mod->local_function_count;
-    mod->functions[new_func_idx] = (wah_function_t){
-        .fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER, .is_host = true,
-        .name = name_copy, .func = func, .userdata = userdata, .finalize = finalize,
-        .nparams = ft.param_count, .param_types = param_types_copy,
-        .nresults = ft.result_count, .result_types = result_types_copy,
-    };
-    mod->local_function_count++;
-    mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
-                                                        .kind = WAH_KIND_FUNCTION, .index = new_func_idx };
-    name_copy = NULL;
-    param_types_copy = NULL;
-    result_types_copy = NULL;
-    err = WAH_OK;
-cleanup:
-    free(param_types_copy);
-    free(result_types_copy);
-    free(name_copy);
-    free(ft.param_types);
-    free(ft.result_types);
-
-    return err;
-}
-
-wah_error_t wah_module_export_typed_func(wah_module_t *mod, const char *name, wah_type_t type, wah_func_t func, void *userdata, wah_finalize_t finalize) {
+static wah_error_t wah_module_register_host_func(
+    wah_module_t *mod, const char *name, const wah_func_type_t *ft,
+    wah_func_t func, void *userdata, wah_finalize_t finalize
+) {
     wah_error_t err;
     char *name_copy = NULL;
     wah_type_t *param_types_copy = NULL;
     wah_type_t *result_types_copy = NULL;
-    uint32_t new_func_idx;
-
-    WAH_ENSURE(mod, WAH_ERROR_MISUSE);
-    WAH_ENSURE(name, WAH_ERROR_MISUSE);
-    WAH_ENSURE(func, WAH_ERROR_MISUSE);
-    WAH_ENSURE(type >= 0 && WAH_TYIDX(type) < mod->type_count, WAH_ERROR_MISUSE);
-    WAH_ENSURE(mod->type_defs[WAH_TYIDX(type)].kind == WAH_COMP_FUNC, WAH_ERROR_MISUSE);
-
-    const wah_func_type_t *ft = &mod->types[WAH_TYIDX(type)];
 
     WAH_CHECK_GOTO(wah_module_ensure_export(mod, name), cleanup);
     WAH_ENSURE_CAP_GOTO(mod->functions, mod->local_function_count + 1, cleanup);
@@ -14407,7 +14193,7 @@ wah_error_t wah_module_export_typed_func(wah_module_t *mod, const char *name, wa
         memcpy(result_types_copy, ft->result_types, ft->result_count * sizeof(wah_type_t));
     }
 
-    new_func_idx = mod->local_function_count;
+    uint32_t new_func_idx = mod->local_function_count;
     mod->functions[new_func_idx] = (wah_function_t){
         .fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER, .is_host = true,
         .name = name_copy, .func = func, .userdata = userdata, .finalize = finalize,
@@ -14425,39 +14211,69 @@ cleanup:
     free(param_types_copy);
     free(result_types_copy);
     free(name_copy);
+    return err;
+}
+
+wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const char *types, wah_func_t func, void *userdata, wah_finalize_t finalize) {
+    wah_error_t err;
+    wah_type_spec_parser_t p;
+    wah_func_type_t ft = {0};
+
+    WAH_ENSURE(mod, WAH_ERROR_MISUSE);
+    WAH_ENSURE(name, WAH_ERROR_MISUSE);
+    WAH_ENSURE(types, WAH_ERROR_MISUSE);
+    WAH_ENSURE(func, WAH_ERROR_MISUSE);
+
+    p = (wah_type_spec_parser_t){ .cur = types, .module = mod, .allow_placeholders = false };
+    bool has_fn = wah_type_spec_take_kw(&p, "fn");
+    p.cur = types;
+    WAH_CHECK_GOTO(wah_type_spec_parse_func(&p, &ft, !has_fn), cleanup);
+    wah_type_spec_skip_ws(&p);
+    WAH_ENSURE_GOTO(*p.cur == '\0', WAH_ERROR_BAD_SPEC, cleanup);
+
+    err = wah_module_register_host_func(mod, name, &ft, func, userdata, finalize);
+cleanup:
+    free(ft.param_types);
+    free(ft.result_types);
 
     return err;
 }
 
+wah_error_t wah_module_export_typed_func(wah_module_t *mod, const char *name, wah_type_t type, wah_func_t func, void *userdata, wah_finalize_t finalize) {
+    WAH_ENSURE(mod, WAH_ERROR_MISUSE);
+    WAH_ENSURE(name, WAH_ERROR_MISUSE);
+    WAH_ENSURE(func, WAH_ERROR_MISUSE);
+    WAH_ENSURE(type >= 0 && WAH_TYIDX(type) < mod->type_count, WAH_ERROR_MISUSE);
+    WAH_ENSURE(mod->type_defs[WAH_TYIDX(type)].kind == WAH_COMP_FUNC, WAH_ERROR_MISUSE);
+
+    const wah_func_type_t *ft = &mod->types[WAH_TYIDX(type)];
+    return wah_module_register_host_func(mod, name, ft, func, userdata, finalize);
+}
+
 // Helper to create a preparsed const expression from a simple constant value
 static wah_error_t wah_create_const_expr(wah_type_t type, const wah_value_t *value, wah_parsed_code_t *parsed_code) {
-    uint32_t size = sizeof(uint16_t);  // opcode
     uint16_t opcode;
+    const void *payload;
+    uint32_t payload_size;
 
     switch (type) {
-        case WAH_TYPE_I32: opcode = WAH_OP_I32_CONST; size += sizeof(int32_t); break;
-        case WAH_TYPE_I64: opcode = WAH_OP_I64_CONST; size += sizeof(int64_t); break;
-        case WAH_TYPE_F32: opcode = WAH_OP_F32_CONST; size += sizeof(float); break;
-        case WAH_TYPE_F64: opcode = WAH_OP_F64_CONST; size += sizeof(double); break;
-        case WAH_TYPE_V128: opcode = WAH_OP_V128_CONST; size += sizeof(wah_v128_t); break;
+        case WAH_TYPE_I32:  opcode = WAH_OP_I32_CONST;  payload = &value->i32; payload_size = sizeof(int32_t); break;
+        case WAH_TYPE_I64:  opcode = WAH_OP_I64_CONST;  payload = &value->i64; payload_size = sizeof(int64_t); break;
+        case WAH_TYPE_F32:  opcode = WAH_OP_F32_CONST;  payload = &value->f32; payload_size = sizeof(float); break;
+        case WAH_TYPE_F64:  opcode = WAH_OP_F64_CONST;  payload = &value->f64; payload_size = sizeof(double); break;
+        case WAH_TYPE_V128: opcode = WAH_OP_V128_CONST; payload = &value->v128; payload_size = sizeof(wah_v128_t); break;
         default: return WAH_ERROR_VALIDATION_FAILED;
     }
 
-    size += sizeof(uint16_t); // END opcode
+    uint32_t size = sizeof(uint16_t) + payload_size + sizeof(uint16_t);
     WAH_MALLOC_ARRAY(parsed_code->bytecode, size);
     parsed_code->bytecode_size = size;
 
     uint8_t *out = parsed_code->bytecode;
     wah_write_u16_le(out, opcode);
     out += sizeof(uint16_t);
-
-    switch (type) {
-        case WAH_TYPE_I32: memcpy(out, &value->i32, sizeof(int32_t)); out += sizeof(int32_t); break;
-        case WAH_TYPE_I64: memcpy(out, &value->i64, sizeof(int64_t)); out += sizeof(int64_t); break;
-        case WAH_TYPE_F32: memcpy(out, &value->f32, sizeof(float)); out += sizeof(float); break;
-        case WAH_TYPE_F64: memcpy(out, &value->f64, sizeof(double)); out += sizeof(double); break;
-        case WAH_TYPE_V128: memcpy(out, &value->v128, sizeof(wah_v128_t)); out += sizeof(wah_v128_t); break;
-    }
+    memcpy(out, payload, payload_size);
+    out += payload_size;
     wah_write_u16_le(out, WAH_OP_END);
 
     return WAH_OK;
@@ -14467,18 +14283,14 @@ static wah_error_t wah_create_const_expr(wah_type_t type, const wah_value_t *val
 static wah_error_t wah_module_export_global_internal(wah_module_t *mod, const char *name, wah_type_t type, bool is_mutable, const wah_value_t *init_value) {
     wah_error_t err;
     char *name_copy = NULL;
-    wah_global_t *new_globals = NULL;
 
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
 
     WAH_CHECK_GOTO(wah_module_ensure_export(mod, name), cleanup);
 
-    // Reallocate globals array
-    uint32_t new_global_count = mod->global_count + 1;
-    WAH_REALLOC_ARRAY_GOTO(mod->globals, new_global_count, cleanup);
+    WAH_REALLOC_ARRAY_GOTO(mod->globals, mod->global_count + 1, cleanup);
 
-    // Duplicate name
     name_copy = wah_strdup(name);
     WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
 
@@ -14491,14 +14303,12 @@ static wah_error_t wah_module_export_global_internal(wah_module_t *mod, const ch
 
 cleanup:
     free(name_copy);
-    if (new_globals) free(new_globals);
     return err;
 }
 
 wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages) {
     wah_error_t err;
     char *name_copy = NULL;
-    wah_memory_type_t *new_memories = NULL;
 
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
@@ -14507,11 +14317,8 @@ wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64
 
     WAH_CHECK_GOTO(wah_module_ensure_export(mod, name), cleanup);
 
-    // Reallocate memories array
-    uint32_t new_memory_count = mod->memory_count + 1;
-    WAH_REALLOC_ARRAY_GOTO(mod->memories, new_memory_count, cleanup);
+    WAH_REALLOC_ARRAY_GOTO(mod->memories, mod->memory_count + 1, cleanup);
 
-    // Duplicate name
     name_copy = wah_strdup(name);
     WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
 
@@ -14523,7 +14330,6 @@ wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64
 
 cleanup:
     free(name_copy);
-    if (new_memories) free(new_memories);
     return err;
 }
 
@@ -15259,7 +15065,6 @@ wah_error_t wah_module_function(const wah_module_t *module, uint32_t funcidx, wa
     return WAH_OK;
 }
 
-
 wah_error_t wah_module_global(const wah_module_t *module, uint32_t globalidx, wah_global_desc_t *out) {
     WAH_ENSURE(module, WAH_ERROR_MISUSE);
     WAH_ENSURE(out, WAH_ERROR_MISUSE);
@@ -15303,19 +15108,25 @@ wah_error_t wah_module_tag(const wah_module_t *module, uint32_t tagidx, wah_tag_
     return WAH_OK;
 }
 
+static wah_error_t wah_module_extern_desc(int8_t kind, const wah_module_t *module, uint32_t idx, union wah_extern_desc_u *out) {
+    switch (kind) {
+        case WAH_KIND_FUNCTION: return wah_module_function(module, idx, &out->func);
+        case WAH_KIND_TABLE: return wah_module_table(module, idx, &out->table);
+        case WAH_KIND_MEMORY: return wah_module_memory(module, idx, &out->memory);
+        case WAH_KIND_GLOBAL: return wah_module_global(module, idx, &out->global);
+        case WAH_KIND_TAG: return wah_module_tag(module, idx, &out->tag);
+        default:
+            WAH_ASSERT(false && "verification should have prevented invalid import/export kinds");
+            return WAH_ERROR_VALIDATION_FAILED;
+    }
+}
+
 wah_error_t wah_module_import(const wah_module_t *module, uint32_t importidx, wah_import_desc_t *out) {
     WAH_ENSURE(module, WAH_ERROR_MISUSE);
     WAH_ENSURE(out, WAH_ERROR_MISUSE);
     WAH_ENSURE(importidx < module->import_count, WAH_ERROR_NOT_FOUND);
     *out = module->imports[importidx];
-    switch (out->kind) {
-        case WAH_KIND_FUNCTION: return wah_module_function(module, out->index, &out->u.func);
-        case WAH_KIND_TABLE: return wah_module_table(module, out->index, &out->u.table);
-        case WAH_KIND_MEMORY: return wah_module_memory(module, out->index, &out->u.memory);
-        case WAH_KIND_GLOBAL: return wah_module_global(module, out->index, &out->u.global);
-        case WAH_KIND_TAG: return wah_module_tag(module, out->index, &out->u.tag);
-        default: return WAH_ERROR_VALIDATION_FAILED;
-    }
+    return wah_module_extern_desc(out->kind, module, out->index, &out->u);
 }
 
 wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_export_desc_t *out) {
@@ -15329,16 +15140,7 @@ wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_export
         .name = export_entry->name, .name_len = export_entry->name_len,
     };
 
-    switch (export_entry->kind) {
-        case WAH_KIND_FUNCTION: return wah_module_function(module, export_entry->index, &out->u.func);
-        case WAH_KIND_TABLE: return wah_module_table(module, export_entry->index, &out->u.table);
-        case WAH_KIND_MEMORY: return wah_module_memory(module, export_entry->index, &out->u.memory);
-        case WAH_KIND_GLOBAL: return wah_module_global(module, export_entry->index, &out->u.global);
-        case WAH_KIND_TAG: return wah_module_tag(module, export_entry->index, &out->u.tag);
-        default:
-            WAH_ASSERT(false && "verification should have prevented invalid export kinds");
-            return WAH_ERROR_VALIDATION_FAILED;
-    }
+    return wah_module_extern_desc(export_entry->kind, module, export_entry->index, &out->u);
 }
 
 wah_error_t wah_module_export_by_name(const wah_module_t *module, const char *name, wah_export_desc_t *out) {
