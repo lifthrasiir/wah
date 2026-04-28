@@ -9430,7 +9430,7 @@ static inline void wah_bind_frame_module(
                     frame->frame_function_table_count = ctx->linked_modules[i].ctx->function_table_count;
                     frame->frame_ctx = ctx->linked_modules[i].ctx;
                 } else {
-                    frame->frame_globals = ctx->globals + offset;
+                    frame->frame_globals = offset ? ctx->globals + offset : ctx->globals;
                     frame->frame_function_table = ctx->function_table;
                     frame->frame_function_table_count = ctx->function_table_count;
                     frame->frame_ctx = ctx;
@@ -14754,7 +14754,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 ictx->memory_count = ctx->memory_count;
                 ictx->tables = ctx->tables;
                 ictx->table_count = ctx->table_count;
-                ictx->globals = ctx->globals + g_offset;
+                ictx->globals = g_offset ? ctx->globals + g_offset : ctx->globals;
                 ictx->global_count = lmod->global_count;
                 ictx->function_table = ctx->function_table;
                 ictx->function_table_count = ctx->function_table_count;
