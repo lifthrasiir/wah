@@ -1320,6 +1320,57 @@ int main() {
         wah_free_module(&wasm_mod);
     }
 
+    printf("Testing pending exception replacement and destroy cleanup...\n");
+    {
+        wah_module_t wasm_mod = {0};
+        wah_exec_context_t ctx5 = {0};
+
+        const char *spec = "wasm \
+            types {[ fn [] [] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] end } ]}";
+
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        assert_ok(wah_exec_context_create(&ctx5, &wasm_mod));
+        assert_ok(wah_gc_start(&ctx5));
+        assert_ok(wah_instantiate(&ctx5));
+
+        wah_exception_t *old_exc = (wah_exception_t *)calloc(1, sizeof(*old_exc));
+        wah_exception_t *new_exc = (wah_exception_t *)calloc(1, sizeof(*new_exc));
+        assert_not_null(old_exc);
+        assert_not_null(new_exc);
+
+        old_exc->value_count = 1;
+        old_exc->values = (wah_value_t *)calloc(1, sizeof(wah_value_t));
+        old_exc->value_types = (wah_type_t *)calloc(1, sizeof(wah_type_t));
+        new_exc->value_count = 1;
+        new_exc->values = (wah_value_t *)calloc(1, sizeof(wah_value_t));
+        new_exc->value_types = (wah_type_t *)calloc(1, sizeof(wah_type_t));
+        assert_not_null(old_exc->values);
+        assert_not_null(old_exc->value_types);
+        assert_not_null(new_exc->values);
+        assert_not_null(new_exc->value_types);
+        old_exc->values[0].i32 = 11;
+        old_exc->value_types[0] = WAH_TYPE_I32;
+        new_exc->values[0].i32 = 22;
+        new_exc->value_types[0] = WAH_TYPE_I32;
+
+        wah_exception_track(&ctx5, old_exc);
+        wah_exception_track(&ctx5, new_exc);
+        ctx5.pending_exception = old_exc;
+
+        assert_err(wah_throw_exception(&ctx5, new_exc), WAH_ERROR_EXCEPTION);
+        assert_eq_ptr(ctx5.pending_exception, new_exc);
+        assert_eq_i32(ctx5.pending_exception->values[0].i32, 22);
+
+        uint32_t tracked = 0;
+        for (wah_exception_t *e = ctx5.exceptions; e; e = e->next) tracked++;
+        assert_eq_u32(tracked, 1);
+
+        wah_exec_context_destroy(&ctx5);
+        wah_free_module(&wasm_mod);
+    }
+
     printf("Testing GC mark: array ref elements survive collection...\n");
     {
         // Keep only the array itself in a local across a host-triggered GC.
