@@ -38,6 +38,16 @@
 #include <stdbool.h>
 #include <math.h>
 
+#include "../wah.h"
+
+#ifndef WAH_LOG
+#ifdef WAH_DEBUG
+#define WAH_LOG(fmt, ...) printf("(%d) " fmt "\n", __LINE__, ##__VA_ARGS__)
+#else
+#define WAH_LOG(fmt, ...) (void)(0)
+#endif
+#endif
+
 // Token entry for the keyword mapping table
 typedef struct {
     const char *name;
@@ -597,6 +607,42 @@ typedef struct {
     size_t capacity;
 } buffer_t;
 
+static void wah_spec_fail_at(const char *start, const char *at, bool *error, const char *msg) {
+    *error = true;
+#ifdef WAH_DEBUG
+    size_t offset = (start && at && at >= start) ? (size_t)(at - start) : 0;
+    WAH_LOG("WASM binary DSL parse error at offset %zu near \"%.32s\": %s",
+            offset, at ? at : "", msg);
+#else
+    (void)start;
+    (void)at;
+    (void)msg;
+#endif
+}
+
+static void wah_spec_fail_token(const char *start, const char *token, size_t token_len,
+                                bool *error, const char *msg) {
+    *error = true;
+#ifdef WAH_DEBUG
+    size_t offset = (start && token && token >= start) ? (size_t)(token - start) : 0;
+    WAH_LOG("WASM binary DSL parse error at offset %zu near \"%.*s\": %s",
+            offset, (int)token_len, token ? token : "", msg);
+#else
+    (void)start;
+    (void)token;
+    (void)token_len;
+    (void)msg;
+#endif
+}
+
+static bool wah_spec_has_only_trailing_ws(const char *s) {
+    while (*s != '\0') {
+        if (!isspace((unsigned char)*s)) return false;
+        s++;
+    }
+    return true;
+}
+
 static void buffer_init(buffer_t *buf) {
     buf->capacity = 1024;
     buf->size = 0;
@@ -757,6 +803,7 @@ static size_t parse_bracket_expr(buffer_t *buf, const char *fmt, char bracket, v
                     return 0;
                 }
                 if (consumed == 0) {
+                    wah_spec_fail_at(original_fmt, fmt, error, "empty nested list parse");
                     buffer_free(&content_buf);
                     return 0;
                 }
@@ -783,8 +830,7 @@ static size_t parse_bracket_expr(buffer_t *buf, const char *fmt, char bracket, v
                 return 0;
             }
             if (consumed == 0) {
-                // Unknown token - return error
-                *error = true;
+                wah_spec_fail_at(original_fmt, fmt, error, "expected list item");
                 buffer_free(&content_buf);
                 return 0;
             }
@@ -792,7 +838,13 @@ static size_t parse_bracket_expr(buffer_t *buf, const char *fmt, char bracket, v
             fmt += consumed;
         }
 
-        if (*fmt == ']') fmt++;
+        if (*fmt == ']') {
+            fmt++;
+        } else {
+            wah_spec_fail_at(original_fmt, fmt, error, "missing closing ']'");
+            buffer_free(&content_buf);
+            return 0;
+        }
 
         // Append: (comma_count + 1) as varint, then content
         // But if empty brackets [], should be 0 not 1
@@ -813,15 +865,20 @@ static size_t parse_bracket_expr(buffer_t *buf, const char *fmt, char bracket, v
                 return 0;
             }
             if (consumed == 0) {
-                // Unknown token - return error
-                *error = true;
+                wah_spec_fail_at(original_fmt, fmt, error, "expected block content");
                 buffer_free(&content_buf);
                 return 0;
             }
             fmt += consumed;
         }
 
-        if (*fmt == '}') fmt++;
+        if (*fmt == '}') {
+            fmt++;
+        } else {
+            wah_spec_fail_at(original_fmt, fmt, error, "missing closing '}'");
+            buffer_free(&content_buf);
+            return 0;
+        }
 
         // Append: byte count as varint, then content
         append_varint(buf, content_buf.size);
@@ -880,6 +937,9 @@ static size_t parse_tokens(buffer_t *buf, const char *fmt, va_list *args, bool *
                 // Append the string content as raw bytes
                 buffer_append(buf, (const uint8_t *)str_start, fmt - str_start);
                 fmt++;  // Skip closing quote
+            } else {
+                wah_spec_fail_at(start, str_start - 1, error, "missing closing quote for raw bytes");
+                return 0;
             }
             continue;
         }
@@ -942,11 +1002,18 @@ static size_t parse_tokens(buffer_t *buf, const char *fmt, va_list *args, bool *
                 fmt += 4;
             } else if (strncmp(fmt, "t", 1) == 0) {
                 const char *spec = va_arg(*args, const char*);
+                if (!spec) {
+                    wah_spec_fail_at(start, fmt - 1, error, "%t placeholder received NULL spec");
+                    return 0;
+                }
                 size_t consumed = parse_tokens(buf, spec, args, error);
                 if (*error) {
                     return 0;
                 }
-                (void)consumed;  // Unused, parse_tokens processes the entire spec string
+                if (!wah_spec_has_only_trailing_ws(spec + consumed)) {
+                    wah_spec_fail_at(spec, spec + consumed, error, "unexpected trailing token in %t spec");
+                    return 0;
+                }
                 fmt += 1;
             } else if (*fmt == '\'') {
                 // Hex string in single quotes: %'414243' -> bytes 0x41 0x42 0x43
@@ -956,18 +1023,28 @@ static size_t parse_tokens(buffer_t *buf, const char *fmt, va_list *args, bool *
                     fmt++;
                 }
                 size_t hex_len = fmt - hex_start;
+                if (*fmt != '\'') {
+                    wah_spec_fail_at(start, hex_start - 2, error, "missing closing quote for hex bytes");
+                    return 0;
+                }
+                if ((hex_len % 2) != 0) {
+                    wah_spec_fail_at(start, hex_start, error, "hex byte string has odd length");
+                    return 0;
+                }
                 // Parse hex string
                 for (size_t i = 0; i < hex_len; i += 2) {
-                    if (i + 1 < hex_len) {
-                        char byte_str[3] = {hex_start[i], hex_start[i+1], '\0'};
-                        uint8_t byte = (uint8_t)strtol(byte_str, NULL, 16);
-                        buffer_append(buf, &byte, 1);
+                    if (!isxdigit((unsigned char)hex_start[i]) ||
+                        !isxdigit((unsigned char)hex_start[i + 1])) {
+                        wah_spec_fail_at(start, hex_start + i, error, "hex byte string contains non-hex digit");
+                        return 0;
                     }
+                    char byte_str[3] = {hex_start[i], hex_start[i+1], '\0'};
+                    uint8_t byte = (uint8_t)strtol(byte_str, NULL, 16);
+                    buffer_append(buf, &byte, 1);
                 }
-                if (*fmt == '\'') fmt++;  // Skip closing quote
+                fmt++;  // Skip closing quote
             } else {
-                // Unknown specifier
-                *error = true;
+                wah_spec_fail_at(start, fmt - 1, error, "unknown placeholder");
                 return 0;
             }
             continue;
@@ -1017,17 +1094,18 @@ static size_t parse_tokens(buffer_t *buf, const char *fmt, va_list *args, bool *
                             double val = strtod(numbuf, NULL);
                             append_f64(buf, val);
                         } else {
-                            // f32/f64 suffix is mandatory
-                            *error = true;
+                            wah_spec_fail_token(start, token_start, token_len, error,
+                                                "unknown float suffix, expected f32 or f64");
                             return 0;
                         }
                     } else {
-                        *error = true;
+                        wah_spec_fail_token(start, token_start, token_len, error,
+                                            "float literal requires f32 or f64 suffix");
                         return 0;
                     }
                 } else {
-                    // Unknown token - return error
-                    *error = true;
+                    wah_spec_fail_token(start, token_start, token_len, error,
+                                        "unknown token");
                     return 0;
                 }
             }
@@ -1039,6 +1117,7 @@ static size_t parse_tokens(buffer_t *buf, const char *fmt, va_list *args, bool *
 
 int wah_build_spec_binaryv(uint8_t **out_data, size_t *out_size, const char *fmt, va_list args) {
     if (!fmt || !out_data || !out_size) {
+        WAH_LOG("WASM binary DSL parse error: invalid output pointer or NULL format");
         return 0;
     }
 
@@ -1048,8 +1127,12 @@ int wah_build_spec_binaryv(uint8_t **out_data, size_t *out_size, const char *fmt
     bool error = false;
     va_list args_copy;
     va_copy(args_copy, args);
-    parse_tokens(&buf, fmt, &args_copy, &error);
+    size_t consumed = parse_tokens(&buf, fmt, &args_copy, &error);
     va_end(args_copy);
+
+    if (!error && !wah_spec_has_only_trailing_ws(fmt + consumed)) {
+        wah_spec_fail_at(fmt, fmt + consumed, &error, "unexpected trailing token");
+    }
 
     if (error) {
         buffer_free(&buf);
