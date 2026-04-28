@@ -558,6 +558,7 @@ wah_error_t wah_module_define_type(wah_module_t *mod, wah_type_t *out_type, cons
 wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, const char *spec, va_list *args);
 
 wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const char *types, wah_func_t func, void *userdata, wah_finalize_t finalize);
+wah_error_t wah_module_export_typed_func(wah_module_t *mod, const char *name, wah_type_t type, wah_func_t func, void *userdata, wah_finalize_t finalize);
 wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages);
 wah_error_t wah_module_export_global_i32(wah_module_t *mod, const char *name, bool mutable, int32_t init_value);
 wah_error_t wah_module_export_global_i64(wah_module_t *mod, const char *name, bool mutable, int64_t init_value);
@@ -14371,6 +14372,59 @@ cleanup:
     free(name_copy);
     free(ft.param_types);
     free(ft.result_types);
+
+    return err;
+}
+
+wah_error_t wah_module_export_typed_func(wah_module_t *mod, const char *name, wah_type_t type, wah_func_t func, void *userdata, wah_finalize_t finalize) {
+    wah_error_t err;
+    char *name_copy = NULL;
+    wah_type_t *param_types_copy = NULL;
+    wah_type_t *result_types_copy = NULL;
+    uint32_t new_func_idx;
+
+    WAH_ENSURE(mod, WAH_ERROR_MISUSE);
+    WAH_ENSURE(name, WAH_ERROR_MISUSE);
+    WAH_ENSURE(func, WAH_ERROR_MISUSE);
+    WAH_ENSURE(type >= 0 && WAH_TYIDX(type) < mod->type_count, WAH_ERROR_MISUSE);
+    WAH_ENSURE(mod->type_defs[WAH_TYIDX(type)].kind == WAH_COMP_FUNC, WAH_ERROR_MISUSE);
+
+    const wah_func_type_t *ft = &mod->types[WAH_TYIDX(type)];
+
+    WAH_CHECK_GOTO(wah_module_ensure_export(mod, name), cleanup);
+    WAH_ENSURE_CAP_GOTO(mod->functions, mod->local_function_count + 1, cleanup);
+
+    name_copy = wah_strdup(name);
+    WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+
+    if (ft->param_count > 0) {
+        WAH_MALLOC_ARRAY_GOTO(param_types_copy, ft->param_count, cleanup);
+        memcpy(param_types_copy, ft->param_types, ft->param_count * sizeof(wah_type_t));
+    }
+
+    if (ft->result_count > 0) {
+        WAH_MALLOC_ARRAY_GOTO(result_types_copy, ft->result_count, cleanup);
+        memcpy(result_types_copy, ft->result_types, ft->result_count * sizeof(wah_type_t));
+    }
+
+    new_func_idx = mod->local_function_count;
+    mod->functions[new_func_idx] = (wah_function_t){
+        .fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER, .is_host = true,
+        .name = name_copy, .func = func, .userdata = userdata, .finalize = finalize,
+        .nparams = ft->param_count, .param_types = param_types_copy,
+        .nresults = ft->result_count, .result_types = result_types_copy,
+    };
+    mod->local_function_count++;
+    mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
+                                                        .kind = WAH_KIND_FUNCTION, .index = new_func_idx };
+    name_copy = NULL;
+    param_types_copy = NULL;
+    result_types_copy = NULL;
+    err = WAH_OK;
+cleanup:
+    free(param_types_copy);
+    free(result_types_copy);
+    free(name_copy);
 
     return err;
 }

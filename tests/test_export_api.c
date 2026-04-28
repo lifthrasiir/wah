@@ -6,6 +6,11 @@
 #include <stdio.h>
 #include <string.h>
 
+static void add_i32_host(wah_call_context_t *ctx, void *userdata) {
+    (void)userdata;
+    wah_return_i32(ctx, wah_param_i32(ctx, 0) + wah_param_i32(ctx, 1));
+}
+
 static bool flags_checked = false;
 static void check_flags_host(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
@@ -258,6 +263,63 @@ int main(void) {
         assert_eq_i32(entry.u.func.param_types[0], WAH_TYPE_I32);
         assert_eq_u32(entry.u.func.result_count, 1);
         assert_eq_i32(entry.u.func.result_types[0], WAH_TYPE_I32);
+
+        wah_free_module(&mod);
+    }
+
+    printf("Testing wah_module_export_typed_func...\n");
+    {
+        wah_module_t host_mod = {0};
+        assert_ok(wah_new_module(&host_mod));
+
+        wah_type_t ft;
+        assert_ok(wah_module_define_type(&host_mod, &ft, "fn (i32, i32) -> (i32)"));
+        assert_ok(wah_module_export_typed_func(&host_mod, "add", ft, add_i32_host, NULL, NULL));
+
+        wah_export_desc_t entry;
+        assert_ok(wah_module_export_by_name(&host_mod, "add", &entry));
+        assert_eq_i32(entry.kind, WAH_KIND_FUNCTION);
+        assert_true(entry.u.func.is_host);
+        assert_eq_u32(entry.u.func.param_count, 2);
+        assert_eq_i32(entry.u.func.param_types[0], WAH_TYPE_I32);
+        assert_eq_i32(entry.u.func.param_types[1], WAH_TYPE_I32);
+        assert_eq_u32(entry.u.func.result_count, 1);
+        assert_eq_i32(entry.u.func.result_types[0], WAH_TYPE_I32);
+
+        // Call it via a WASM module that imports it
+        const char *spec = "wasm \
+            types {[ fn [i32, i32] [i32] ]} \
+            imports {[ {'env'} {'add'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'call_add'} fn# 1 ]} \
+            code {[ {[] local.get 0 local.get 1 call 0 end } ]}";
+        wah_module_t wasm_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+        assert_ok(wah_link_module(&ctx, "env", &host_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t args[2] = {{ .i32 = 17 }, { .i32 = 25 }};
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 1, args, 2, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_exec_context_destroy(&ctx);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&host_mod);
+    }
+
+    printf("Testing wah_module_export_typed_func with non-func type...\n");
+    {
+        wah_module_t mod = {0};
+        assert_ok(wah_new_module(&mod));
+
+        wah_type_t st;
+        assert_ok(wah_module_define_type(&mod, &st, "struct {i32}"));
+        assert_err(wah_module_export_typed_func(&mod, "bad", st, add_i32_host, NULL, NULL),
+                   WAH_ERROR_MISUSE);
 
         wah_free_module(&mod);
     }
