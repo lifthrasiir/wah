@@ -35,7 +35,11 @@
 #endif
 #endif
 
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define WAH_ALIGNOF(T) _Alignof(T)
+#else
 #define WAH_ALIGNOF(T) offsetof(struct { char c; T t; }, t)
+#endif
 
 typedef enum {
     WAH_OK = 0,
@@ -652,6 +656,7 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
 #include <errno.h> // For ETIMEDOUT
 #if defined(_MSC_VER)
 #include <intrin.h> // For MSVC intrinsics
+#pragma warning(disable: 4200) // flexible array member is standard C11
 #endif
 
 #ifndef WAH_NO_THREADS
@@ -2886,14 +2891,14 @@ static WAH_ALWAYS_INLINE __m128i wah_i8x16_max_s_sse2(__m128i a, __m128i b) {
 }
 
 static WAH_ALWAYS_INLINE __m128i wah_i16x8_min_u_sse2(__m128i a, __m128i b) {
-    __m128i a_xor = _mm_xor_si128(a, _mm_set1_epi16(0x8000));
-    __m128i b_xor = _mm_xor_si128(b, _mm_set1_epi16(0x8000));
+    __m128i a_xor = _mm_xor_si128(a, _mm_set1_epi16(INT16_MIN));
+    __m128i b_xor = _mm_xor_si128(b, _mm_set1_epi16(INT16_MIN));
     __m128i mask = _mm_cmplt_epi16(a_xor, b_xor);
     return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b));
 }
 static WAH_ALWAYS_INLINE __m128i wah_i16x8_max_u_sse2(__m128i a, __m128i b) {
-    __m128i a_xor = _mm_xor_si128(a, _mm_set1_epi16(0x8000));
-    __m128i b_xor = _mm_xor_si128(b, _mm_set1_epi16(0x8000));
+    __m128i a_xor = _mm_xor_si128(a, _mm_set1_epi16(INT16_MIN));
+    __m128i b_xor = _mm_xor_si128(b, _mm_set1_epi16(INT16_MIN));
     __m128i mask = _mm_cmpgt_epi16(a_xor, b_xor);
     return _mm_or_si128(_mm_and_si128(mask, a), _mm_andnot_si128(mask, b));
 }
@@ -2958,7 +2963,7 @@ static WAH_ALWAYS_INLINE __m128i wah_i16x8_narrow_i32x4_u_sse2(__m128i a, __m128
     bc = _mm_and_si128(bc, max_val);
     __m128i bias = _mm_set1_epi32(0x8000);
     __m128i result = _mm_packs_epi32(_mm_sub_epi32(ac, bias), _mm_sub_epi32(bc, bias));
-    return _mm_add_epi16(result, _mm_set1_epi16((int16_t)0x8000));
+    return _mm_add_epi16(result, _mm_set1_epi16(INT16_MIN));
 }
 
 static WAH_ALWAYS_INLINE int32_t wah_i64x2_all_true_sse2(__m128i v) {
@@ -3662,7 +3667,7 @@ static inline bool wah_type_is_subtype(wah_type_t sub, wah_type_t sup, const wah
     sup = WAH_TYPE_AS_NON_NULL(sup);
     if (sub == sup) return true;
 
-    // concrete sub → concrete sup: check canonical equivalence then walk supertype chain
+    // concrete sub -> concrete sup: check canonical equivalence then walk supertype chain
     if (sub >= 0 && sup >= 0) {
         if (!module || !module->type_defs) return false;
         uint32_t sub_idx = WAH_TYIDX(sub);
@@ -3685,7 +3690,7 @@ static inline bool wah_type_is_subtype(wah_type_t sub, wah_type_t sup, const wah
         return false;
     }
 
-    // concrete sub → abstract sup
+    // concrete sub -> abstract sup
     if (sub >= 0) {
         wah_comp_type_kind_t kind = wah_type_def_kind(module, sub);
         switch (sup) {
@@ -3698,7 +3703,7 @@ static inline bool wah_type_is_subtype(wah_type_t sub, wah_type_t sup, const wah
         }
     }
 
-    // abstract sub → concrete sup (bottom types)
+    // abstract sub -> concrete sup (bottom types)
     if (sup >= 0) {
         wah_comp_type_kind_t kind = wah_type_def_kind(module, sup);
         switch (sub) {
@@ -3708,7 +3713,7 @@ static inline bool wah_type_is_subtype(wah_type_t sub, wah_type_t sup, const wah
         }
     }
 
-    // abstract sub → abstract sup
+    // abstract sub -> abstract sup
     if (!WAH_TYPE_IS_REF(sub) || !WAH_TYPE_IS_REF(sup)) return false;
 
     switch (sup) {
@@ -9626,6 +9631,12 @@ static bool wah_memory_grow_internal(
 #if defined(__GNUC__) && !defined(__clang__)
     #pragma GCC push_options
     #pragma GCC optimize("-ffp-contract=off")
+    #pragma GCC diagnostic push
+    // GCC 15 warns that locals' addresses may escape through musttail calls, but
+    // WAH_NEXT() only passes values (pointers into ctx/frame/bytecode), never &local.
+    #if __GNUC__ >= 15
+    #pragma GCC diagnostic ignored "-Wmaybe-musttail-local-addr"
+    #endif
     #define WAH_PRAGMA_FP_CONTRACT_OFF()
 #elif defined(_MSC_VER)
     #pragma float_control(push)
@@ -13186,7 +13197,7 @@ WAH_IF_X86_64(
         WAH_RUN(I16X8_Q15MULR_SAT_S_ssse3) {
             __m128i a = sp[-2]._m128i, b = sp[-1]._m128i;
             __m128i result = wah_mm_mulhrs_epi16(a, b);
-            __m128i min16 = _mm_set1_epi16((int16_t)0x8000);
+            __m128i min16 = _mm_set1_epi16(INT16_MIN);
             __m128i both_min = _mm_and_si128(_mm_cmpeq_epi16(a, min16), _mm_cmpeq_epi16(b, min16));
             sp[-2]._m128i = _mm_xor_si128(result, both_min);
             sp--;
@@ -13378,6 +13389,7 @@ cleanup:
 #endif
 
 #if defined(__GNUC__) && !defined(__clang__)
+    #pragma GCC diagnostic pop
     #pragma GCC pop_options
 #elif defined(_MSC_VER)
     #pragma float_control(pop)

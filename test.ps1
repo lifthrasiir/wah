@@ -1,10 +1,27 @@
 param(
     [switch]$g,
+    [switch]$clang,
+    [switch]$gcc,
+    [switch]$msvc,
     [Parameter(ValueFromRemainingArguments)]
     [string[]]$Remaining
 )
 
 $ErrorActionPreference = 'Stop'
+
+# --- Compiler selection ---
+$compilerCount = ([int]$clang.IsPresent + [int]$gcc.IsPresent + [int]$msvc.IsPresent)
+if ($compilerCount -gt 1) {
+    Write-Host '## Error: specify at most one of -clang, -gcc, -msvc.'
+    exit 1
+}
+if ($msvc) {
+    $compiler = 'msvc'
+} elseif ($gcc) {
+    $compiler = 'gcc'
+} else {
+    $compiler = 'clang'
+}
 
 $filter = ''
 if ($Remaining.Count -gt 0) { $filter = $Remaining[0] }
@@ -12,14 +29,61 @@ if ($Remaining.Count -gt 0) { $filter = $Remaining[0] }
 $projDir = $PSScriptRoot
 if (-not $projDir) { $projDir = Get-Location }
 
+# --- MSVC environment setup ---
+if ($compiler -eq 'msvc') {
+    $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    if (-not (Test-Path $vsWhere)) {
+        Write-Host "## Error: vswhere.exe not found at $vsWhere"
+        Write-Host '## Make sure Visual Studio is installed.'
+        exit 1
+    }
+    $vsPath = & $vsWhere -latest -version '[16.8,' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+    if (-not $vsPath) {
+        Write-Host '## Error: Visual Studio 2019 16.8+ with C++ tools is required (for /std:c11 support).'
+        exit 1
+    }
+    $vcvarsall = "$vsPath\VC\Auxiliary\Build\vcvarsall.bat"
+    if (-not (Test-Path $vcvarsall)) {
+        Write-Host "## Error: vcvarsall.bat not found at $vcvarsall"
+        exit 1
+    }
+    # Import MSVC environment variables into this PowerShell session.
+    $envBefore = @{}
+    Get-ChildItem env: | ForEach-Object { $envBefore[$_.Name] = $_.Value }
+    $output = cmd /c "`"$vcvarsall`" x64 >nul 2>&1 && set"
+    foreach ($line in $output) {
+        if ($line -match '^([^=]+)=(.*)$') {
+            $n = $matches[1]; $v = $matches[2]
+            if ($envBefore[$n] -ne $v) {
+                Set-Item "env:$n" $v
+            }
+        }
+    }
+    Write-Host "## Using MSVC from $vsPath"
+}
+
+# --- Compiler driver helpers ---
+$objExt = if ($compiler -eq 'msvc') { '.obj' } else { '.o' }
+
 # --- Bench command ---
 if ($filter -eq 'bench') {
     $benchSrc = "$projDir\bench\bench_coremark.c"
     $benchExe = "$projDir\bench\bench_coremark.exe"
-    $benchCflags = @('-W', '-Wall', '-Wextra', '-DWAH_ASSERT=assert', '-O3')
-    Write-Host '## Compiling bench_coremark...'
-    & clang @benchCflags $benchSrc -o $benchExe
-    if ($LASTEXITCODE -ne 0) {
+    if ($compiler -eq 'msvc') {
+        $benchCflags = @('/W4', '/O2', '/DWAH_ASSERT=assert')
+    } else {
+        $benchCflags = @('-W', '-Wall', '-Wextra', '-DWAH_ASSERT=assert', '-O3')
+    }
+    Write-Host "## Compiling bench_coremark ($compiler)..."
+    if ($compiler -eq 'msvc') {
+        & cl /nologo @benchCflags $benchSrc /Fe"$benchExe"
+        $compExit = $LASTEXITCODE
+        Remove-Item ($benchSrc -replace '\.c$', '.obj') -ErrorAction SilentlyContinue
+    } else {
+        & $compiler @benchCflags $benchSrc -o $benchExe
+        $compExit = $LASTEXITCODE
+    }
+    if ($compExit -ne 0) {
         Write-Host '## Bench compilation failed.'
         exit 1
     }
@@ -30,11 +94,20 @@ if ($filter -eq 'bench') {
     exit $benchExit
 }
 
-$cflags = @('-W', '-Wall', '-Wextra')
-if ($g) {
-    $cflags += '-DWAH_DEBUG', '-g'
+if ($compiler -eq 'msvc') {
+    $cflags = @('/W4', '/std:c11')
+    if ($g) {
+        $cflags += '/DWAH_DEBUG', '/Zi'
+    } else {
+        $cflags += '/DWAH_ASSERT=assert'
+    }
 } else {
-    $cflags += '-DWAH_ASSERT=assert'
+    $cflags = @('-W', '-Wall', '-Wextra')
+    if ($g) {
+        $cflags += '-DWAH_DEBUG', '-g'
+    } else {
+        $cflags += '-DWAH_ASSERT=assert'
+    }
 }
 
 $testFiles = Get-ChildItem "$projDir\tests\test_$filter*.c" | Sort-Object Name
@@ -67,8 +140,8 @@ foreach ($f in $testFiles) {
 }
 
 # --- Precompiled objects ---
-$wahImplObj = "$projDir\tests\wah_impl.o"
-$commonObj = "$projDir\tests\common.o"
+$wahImplObj = "$projDir\tests\wah_impl$objExt"
+$commonObj = "$projDir\tests\common$objExt"
 
 function Test-ObjUpToDate($obj, [string[]]$deps) {
     if (-not (Test-Path $obj)) { return $false }
@@ -96,22 +169,30 @@ if ($apiTests.Count -gt 0) {
 
 $jobs = @()
 if (-not $wahImplObjOk) {
-    Write-Host '## Compiling wah_impl.o...'
+    Write-Host "## Compiling wah_impl$objExt..."
     $jobs += Start-Job -ScriptBlock {
-        param($cflags, $src, $out, $dir)
+        param($compiler, $cflags, $src, $out, $dir)
         Set-Location $dir
-        & clang @cflags -c $src -o $out 2>&1
-        if ($LASTEXITCODE -ne 0) { throw 'wah_impl.o compilation failed' }
-    } -ArgumentList $cflags, $wahImplSrc, $wahImplObj, $projDir
+        if ($compiler -eq 'msvc') {
+            & cl /nologo @cflags /c $src /Fo"$out" 2>&1
+        } else {
+            & $compiler @cflags -c $src -o $out 2>&1
+        }
+        if ($LASTEXITCODE -ne 0) { throw "wah_impl$objExt compilation failed" }
+    } -ArgumentList $compiler, $cflags, $wahImplSrc, $wahImplObj, $projDir
 }
 if (-not $commonObjOk) {
-    Write-Host '## Compiling common.o...'
+    Write-Host "## Compiling common$objExt..."
     $jobs += Start-Job -ScriptBlock {
-        param($cflags, $src, $out, $dir)
+        param($compiler, $cflags, $src, $out, $dir)
         Set-Location $dir
-        & clang @cflags -c $src -o $out 2>&1
-        if ($LASTEXITCODE -ne 0) { throw 'common.o compilation failed' }
-    } -ArgumentList $cflags, $commonSrc, $commonObj, $projDir
+        if ($compiler -eq 'msvc') {
+            & cl /nologo @cflags /c $src /Fo"$out" 2>&1
+        } else {
+            & $compiler @cflags -c $src -o $out 2>&1
+        }
+        if ($LASTEXITCODE -ne 0) { throw "common$objExt compilation failed" }
+    } -ArgumentList $compiler, $cflags, $commonSrc, $commonObj, $projDir
 }
 
 $objFailed = $false
@@ -138,22 +219,28 @@ function Start-Compile($test) {
     $name = $f.BaseName
     $exe = "$projDir\tests\$name.exe"
 
-    # standalone: test.o has WAH_IMPLEMENTATION, link with common.o
-    # api-only: test.o has no WAH_IMPLEMENTATION, link with wah_impl.o + common.o
+    # standalone: test.obj has WAH_IMPLEMENTATION, link with common.obj
+    # api-only: test.obj has no WAH_IMPLEMENTATION, link with wah_impl.obj + common.obj
     $linkObjStr = if ($test.Standalone) { $commonObj } else { "$wahImplObj|$commonObj" }
 
     return Start-Job -ScriptBlock {
-        param($cflags, $src, $exe, $linkObjStr, $dir)
+        param($cc, $cflags, $src, $exe, $linkObjStr, $dir, $objExt)
         Set-Location $dir
         $linkObjs = $linkObjStr -split '\|'
-        $obj = $exe -replace '\.exe$', '.o'
-        & clang @cflags -c $src -o $obj 2>&1
-        if ($LASTEXITCODE -ne 0) { $LASTEXITCODE; return }
-        & clang $obj @linkObjs -o $exe 2>&1
+        $obj = $exe -replace '\.exe$', $objExt
+        if ($cc -eq 'msvc') {
+            & cl /nologo @cflags /c $src /Fo"$obj" 2>&1
+            if ($LASTEXITCODE -ne 0) { $LASTEXITCODE; return }
+            & cl /nologo $obj @linkObjs /Fe"$exe" /link /nologo 2>&1
+        } else {
+            & $cc @cflags -c $src -o $obj 2>&1
+            if ($LASTEXITCODE -ne 0) { $LASTEXITCODE; return }
+            & $cc $obj @linkObjs -o $exe 2>&1
+        }
         $lec = $LASTEXITCODE
         Remove-Item $obj -ErrorAction SilentlyContinue
         $lec
-    } -ArgumentList $script:cflags, $f.FullName, $exe, $linkObjStr, $script:projDir
+    } -ArgumentList $script:compiler, $script:cflags, $f.FullName, $exe, $linkObjStr, $script:projDir, $script:objExt
 }
 
 function Wait-Compile($job, $test) {
