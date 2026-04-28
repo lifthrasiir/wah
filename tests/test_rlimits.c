@@ -163,6 +163,7 @@ static void test_wide_operand_stack_preflight(void) {
     assert_eq_i32(result.i32, 16);
 
     wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
 }
 
 // Mixed: moderate recursion + moderate locals.

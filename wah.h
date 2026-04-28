@@ -9674,9 +9674,7 @@ static wah_error_t wah_table_grow_internal(
         new_table[i] = init_val;
     }
 
-    if (!ctx->tables[table_idx].is_imported) {
-        free(ctx->tables[table_idx].entries);
-    }
+    wah_value_t *old_entries = ctx->tables[table_idx].entries;
     ctx->tables[table_idx].entries = new_table;
     ctx->tables[table_idx].size = new_size;
     wah_budget_charge(ctx, delta_bytes);
@@ -9691,6 +9689,7 @@ static wah_error_t wah_table_grow_internal(
         src->tables[src_idx].entries = new_table;
         src->tables[src_idx].size = new_size;
     }
+    free(old_entries);
     if (ctx->tables) ctx->tables[table_idx].is_imported = false;
 
     *grew = true;
@@ -10087,6 +10086,10 @@ WAH_RUN(THROW_REF) {
         memcpy(copy->values, exc->values, sizeof(wah_value_t) * exc->value_count);
         memcpy(copy->value_types, exc->value_types, sizeof(wah_type_t) * exc->value_count);
     }
+
+    free(exc->values);
+    free(exc->value_types);
+    free(exc);
 
     frame->bytecode_ip = bytecode_ip;
     ctx->sp = sp;
@@ -11771,6 +11774,7 @@ WAH_RUN(DATA_DROP) {
     WAH_ASSERT(data_idx < ctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index");
 
     wah_data_segment_t *segment = &ctx->module->data_segments[data_idx];
+    free((void *)segment->data);
     segment->data = NULL;
     segment->data_len = 0;
     WAH_NEXT();
