@@ -5251,28 +5251,52 @@ static inline void wah_write_u8_le(uint8_t *ptr, uint8_t val) {
     ptr[0] = val;
 }
 
+// Little-endian detection for direct memory access optimization.
+// On little-endian platforms with unaligned access support (x86/x64, AArch64),
+// memcpy-based loads/stores compile to single instructions.
+#if defined(WAH_X86_64) || defined(WAH_AARCH64)
+#if defined(_MSC_VER) || (defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__)
+#define WAH_NATIVE_LE
+#endif
+#endif
+
 // Helper to read a uint16_t from a byte array in little-endian format
 static inline uint16_t wah_read_u16_le(const uint8_t *ptr) {
+#ifdef WAH_NATIVE_LE
+    uint16_t val; memcpy(&val, ptr, sizeof(val)); return val;
+#else
     return ((uint16_t)ptr[0] << 0) |
            ((uint16_t)ptr[1] << 8);
+#endif
 }
 
 // Helper to write a uint16_t to a byte array in little-endian format
 static inline void wah_write_u16_le(uint8_t *ptr, uint16_t val) {
+#ifdef WAH_NATIVE_LE
+    memcpy(ptr, &val, sizeof(val));
+#else
     ptr[0] = (uint8_t)(val >> 0);
     ptr[1] = (uint8_t)(val >> 8);
+#endif
 }
 
 // Helper to read a uint32_t from a byte array in little-endian format
 static inline uint32_t wah_read_u32_le(const uint8_t *ptr) {
+#ifdef WAH_NATIVE_LE
+    uint32_t val; memcpy(&val, ptr, sizeof(val)); return val;
+#else
     return ((uint32_t)ptr[0] << 0) |
            ((uint32_t)ptr[1] << 8) |
            ((uint32_t)ptr[2] << 16) |
            ((uint32_t)ptr[3] << 24);
+#endif
 }
 
 // Helper to read a uint64_t from a byte array in little-endian format
 static inline uint64_t wah_read_u64_le(const uint8_t *ptr) {
+#ifdef WAH_NATIVE_LE
+    uint64_t val; memcpy(&val, ptr, sizeof(val)); return val;
+#else
     return ((uint64_t)ptr[0] << 0) |
            ((uint64_t)ptr[1] << 8) |
            ((uint64_t)ptr[2] << 16) |
@@ -5281,18 +5305,26 @@ static inline uint64_t wah_read_u64_le(const uint8_t *ptr) {
            ((uint64_t)ptr[5] << 40) |
            ((uint64_t)ptr[6] << 48) |
            ((uint64_t)ptr[7] << 56);
+#endif
 }
 
 // Helper to write a uint32_t to a byte array in little-endian format
 static inline void wah_write_u32_le(uint8_t *ptr, uint32_t val) {
+#ifdef WAH_NATIVE_LE
+    memcpy(ptr, &val, sizeof(val));
+#else
     ptr[0] = (uint8_t)(val >> 0);
     ptr[1] = (uint8_t)(val >> 8);
     ptr[2] = (uint8_t)(val >> 16);
     ptr[3] = (uint8_t)(val >> 24);
+#endif
 }
 
 // Helper to write a uint64_t to a byte array in little-endian format
 static inline void wah_write_u64_le(uint8_t *ptr, uint64_t val) {
+#ifdef WAH_NATIVE_LE
+    memcpy(ptr, &val, sizeof(val));
+#else
     ptr[0] = (uint8_t)(val >> 0);
     ptr[1] = (uint8_t)(val >> 8);
     ptr[2] = (uint8_t)(val >> 16);
@@ -5301,6 +5333,7 @@ static inline void wah_write_u64_le(uint8_t *ptr, uint64_t val) {
     ptr[5] = (uint8_t)(val >> 40);
     ptr[6] = (uint8_t)(val >> 48);
     ptr[7] = (uint8_t)(val >> 56);
+#endif
 }
 
 // Helper to read a float from a byte array in little-endian format
