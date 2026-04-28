@@ -44,7 +44,7 @@ wah_error_t wah_debug_table_type(const wah_module_t *mod, uint32_t idx,
     if (out_max_elements) *out_max_elements = mod->tables[idx].max_elements;
     return WAH_OK;
 }
-uint32_t wah_debug_table_size(const wah_exec_context_t *ctx, uint32_t tbl_idx) {
+uint64_t wah_debug_table_size(const wah_exec_context_t *ctx, uint32_t tbl_idx) {
     return ctx->tables[tbl_idx].size;
 }
 

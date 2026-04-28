@@ -1716,8 +1716,8 @@ typedef struct wah_memory_inst_s {
 
 typedef struct wah_table_inst_s {
     wah_value_t *entries;
-    uint32_t size;
-    uint32_t max_size;
+    uint64_t size;
+    uint64_t max_size;
     bool is_imported;
     struct wah_exec_context_s *import_ctx;
     uint32_t import_idx;
@@ -8406,7 +8406,7 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
     for (uint32_t t = 0; t < ctx->table_count; t++) {
         const wah_table_type_t *tt = wah_table_type(module, t);
         if (WAH_TYPE_IS_REF(tt->elem_type)) {
-            for (uint32_t e = 0; e < ctx->tables[t].size; e++) {
+            for (uint64_t e = 0; e < ctx->tables[t].size; e++) {
                 visitor(&ctx->tables[t].entries[e], tt->elem_type, userdata);
             }
         }
@@ -8947,8 +8947,8 @@ wah_error_t wah_exec_context_create_with_limits(wah_exec_context_t *exec_ctx, co
         // Only allocate local tables (starting at offset import_table_count).
         for (uint32_t i = 0; i < module->table_count; ++i) {
             uint32_t slot = exec_ctx->table_count;
-            uint32_t min_elements = module->tables[i].min_elements;
-            uint64_t table_bytes = (uint64_t)min_elements * sizeof(wah_value_t);
+            uint64_t min_elements = module->tables[i].min_elements;
+            uint64_t table_bytes = min_elements * sizeof(wah_value_t);
             WAH_ENSURE_GOTO(wah_budget_check(exec_ctx, table_bytes), WAH_ERROR_TOO_LARGE, cleanup);
             exec_ctx->tables[slot] = (wah_table_inst_t){ .size = min_elements, .max_size = module->tables[i].max_elements };
             WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables[slot].entries, min_elements, cleanup);
@@ -9502,12 +9502,12 @@ static uint32_t wah_bulk_array_init_elem(wah_exec_context_t *ctx, uint8_t *elems
 
 static wah_error_t wah_table_grow_internal(
     wah_exec_context_t *ctx, uint32_t table_idx, uint64_t delta, wah_value_t init_val,
-    uint32_t *old_size, bool *grew
+    uint64_t *old_size, bool *grew
 ) {
     *grew = false;
     *old_size = ctx->tables[table_idx].size;
 
-    uint64_t new_size = (uint64_t)*old_size + delta;
+    uint64_t new_size = *old_size + delta;
     if (new_size > ctx->tables[table_idx].max_size) {
         return WAH_OK;
     }
@@ -9535,7 +9535,7 @@ static wah_error_t wah_table_grow_internal(
         free(ctx->tables[table_idx].entries);
     }
     ctx->tables[table_idx].entries = new_table;
-    ctx->tables[table_idx].size = (uint32_t)new_size;
+    ctx->tables[table_idx].size = new_size;
     wah_budget_charge(ctx, delta_bytes);
 
     if (ctx->tables[table_idx].import_ctx) {
@@ -9546,7 +9546,7 @@ static wah_error_t wah_table_grow_internal(
             src->tables[src_idx].is_imported = true;
         }
         src->tables[src_idx].entries = new_table;
-        src->tables[src_idx].size = (uint32_t)new_size;
+        src->tables[src_idx].size = new_size;
     }
     if (ctx->tables) ctx->tables[table_idx].is_imported = false;
 
@@ -10671,7 +10671,7 @@ WAH_RUN(TABLE_GROW) {
     if (delta < 0) {
         (*sp++).i32 = -1;
     } else {
-        uint32_t old_size;
+        uint64_t old_size;
         bool grew;
         WAH_CHECK_GOTO(wah_table_grow_internal(ctx, table_idx, (uint64_t)delta, init_val, &old_size, &grew), cleanup);
         (*sp++).i32 = grew ? (int32_t)old_size : -1;
@@ -10805,7 +10805,7 @@ WAH_RUN(TABLE_GROW_i64) {
     if (delta < 0) {
         (*sp++).i64 = -1;
     } else {
-        uint32_t old_size;
+        uint64_t old_size;
         bool grew;
         WAH_CHECK_GOTO(wah_table_grow_internal(ctx, table_idx, (uint64_t)delta, init_val, &old_size, &grew), cleanup);
         (*sp++).i64 = grew ? (int64_t)old_size : -1;
@@ -14686,8 +14686,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             wah_budget_charge(ctx, imp_bytes);
         } else if (linked_table_idx >= linked->import_table_count) {
             WAH_ENSURE_GOTO(exp_tt->min_elements >= ti->type.min_elements, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-            uint32_t min_elements = exp_tt->min_elements;
-            uint64_t table_bytes = (uint64_t)min_elements * sizeof(wah_value_t);
+            uint64_t min_elements = exp_tt->min_elements;
+            uint64_t table_bytes = min_elements * sizeof(wah_value_t);
             WAH_ENSURE_GOTO(wah_budget_check(ctx, table_bytes), WAH_ERROR_TOO_LARGE, cleanup);
             ctx->tables[i].is_imported = false;
             ctx->tables[i].size = min_elements;

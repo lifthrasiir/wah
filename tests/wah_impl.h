@@ -29,7 +29,7 @@ wah_error_t wah_debug_memory_type(const wah_module_t *mod, uint32_t idx,
 // --- Table accessors ---
 wah_error_t wah_debug_table_type(const wah_module_t *mod, uint32_t idx,
     wah_type_t *out_elem_type, uint64_t *out_min_elements, uint64_t *out_max_elements);
-uint32_t wah_debug_table_size(const wah_exec_context_t *ctx, uint32_t tbl_idx);
+uint64_t wah_debug_table_size(const wah_exec_context_t *ctx, uint32_t tbl_idx);
 
 // --- Global accessors ---
 wah_error_t wah_debug_global_def(const wah_module_t *mod, uint32_t idx,

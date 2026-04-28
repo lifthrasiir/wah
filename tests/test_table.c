@@ -606,7 +606,7 @@ void wah_test_table_no_max_is_unbounded() {
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 3);  // returns old size
-    assert_eq_u32(wah_debug_table_size(&ctx, 0), 8);
+    assert_eq_u64(wah_debug_table_size(&ctx, 0), 8);
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
