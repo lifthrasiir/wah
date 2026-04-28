@@ -648,6 +648,17 @@ static spectest_instance_t *add_instance(spectest_env_t *env, const char *name, 
     return instance;
 }
 
+static void discard_last_instance(spectest_env_t *env, spectest_instance_t *instance) {
+    if (!env || !instance || env->instance_count == 0 ||
+        instance != &env->instances[env->instance_count - 1]) {
+        return;
+    }
+    wah_exec_context_destroy(&instance->exec);
+    free(instance->name);
+    memset(instance, 0, sizeof(*instance));
+    env->instance_count--;
+}
+
 static int register_instance_import_name(spectest_env_t *env, spectest_instance_t *instance, const char *name) {
     registered_module_t *item;
     if (!ensure_capacity((void **)&env->registered, &env->registered_capacity,
@@ -891,7 +902,7 @@ static int handle_module_instance(const wast_node_t *node, spectest_env_t *env, 
         free(instance_name);
         return 0;
     }
-    if (expect_failure_kind == 0) {
+    if (expect_failure_kind == 0 || expect_failure_kind == 2) {
         instance = add_instance(env, instance_name, def);
         if (!instance) {
             fail_check(env, "out of memory");
@@ -920,17 +931,10 @@ static int handle_module_instance(const wast_node_t *node, spectest_env_t *env, 
     }
     if (expect_failure_kind == 2) {
         if (expect_trap_like(err)) {
-            spectest_instance_t *kept = add_instance(env, NULL, def);
-            if (kept) {
-                kept->exec = tmp.exec;
-                kept->live = 1;
-            }
             pass_check(env);
             return 1;
         }
-        if (instance == &tmp) {
-            wah_exec_context_destroy(&tmp.exec);
-        }
+        discard_last_instance(env, instance);
         fail_check(env, "expected instantiation trap, got %s", wah_strerror(err));
         return 0;
     }
