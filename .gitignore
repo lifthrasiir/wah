@@ -50,10 +50,11 @@ tests/test_simd
 tests/test_simd_portable
 tests/test_simd_regressions
 tests/test_spectest
+tests/test_struct_layout
 tests/test_table
 tests/test_tail_call
 tests/test_traps
-tests/test_type_desc
+tests/test_type_spec
 tests/test_types
 tests/test_validation
 bench/bench_coremark

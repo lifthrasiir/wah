@@ -105,6 +105,34 @@ void wah_debug_set_linked_ctx(wah_exec_context_t *ctx, uint32_t i, wah_exec_cont
     if (i < ctx->linked_module_count) ctx->linked_modules[i].ctx = lctx;
 }
 
+wah_error_t wah_debug_repr_info(const wah_module_t *mod, wah_type_t type,
+    wah_debug_repr_info_t *out_info, wah_debug_repr_field_t *out_fields, uint32_t max_fields)
+{
+    if (!mod || !out_info || type < 0) return WAH_ERROR_MISUSE;
+    uint32_t typeidx = WAH_TYIDX(type);
+    if (typeidx >= mod->type_count || !mod->typeidx_to_repr) return WAH_ERROR_NOT_FOUND;
+    wah_repr_t repr_id = mod->typeidx_to_repr[typeidx];
+    if (repr_id < 0 || (uint32_t)repr_id >= mod->repr_count || !mod->repr_infos) return WAH_ERROR_NOT_FOUND;
+    const wah_repr_info_t *info = mod->repr_infos[repr_id];
+    if (!info) return WAH_ERROR_NOT_FOUND;
+    *out_info = (wah_debug_repr_info_t){
+        .type = (uint32_t)info->type,
+        .typeidx = info->typeidx,
+        .size = info->size,
+        .count = info->count,
+    };
+    if (out_fields) {
+        uint32_t n = info->count < max_fields ? info->count : max_fields;
+        for (uint32_t i = 0; i < n; ++i) {
+            out_fields[i] = (wah_debug_repr_field_t){
+                .offset = info->fields[i].offset,
+                .repr_id = info->fields[i].repr_id,
+            };
+        }
+    }
+    return WAH_OK;
+}
+
 void wah_debug_print_platform_features(void) {
 #if defined(WAH_X86_64) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
     wah_x86_64_features_t f = wah_x86_64_features();

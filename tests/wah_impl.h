@@ -41,6 +41,21 @@ const wah_exec_context_t *wah_debug_linked_ctx(const wah_exec_context_t *ctx, ui
 void wah_debug_set_linked_module(wah_exec_context_t *ctx, uint32_t i, const wah_module_t *mod);
 void wah_debug_set_linked_ctx(wah_exec_context_t *ctx, uint32_t i, wah_exec_context_t *lctx);
 
+typedef struct {
+    uint32_t offset;
+    int32_t repr_id;
+} wah_debug_repr_field_t;
+
+typedef struct {
+    uint32_t type;
+    uint32_t typeidx;
+    uint32_t size;
+    uint32_t count;
+} wah_debug_repr_info_t;
+
+wah_error_t wah_debug_repr_info(const wah_module_t *mod, wah_type_t type,
+    wah_debug_repr_info_t *out_info, wah_debug_repr_field_t *out_fields, uint32_t max_fields);
+
 // --- Platform feature detection ---
 void wah_debug_print_platform_features(void);
 

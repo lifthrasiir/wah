@@ -3972,6 +3972,176 @@ static wah_error_t wah_field_type_layout(wah_type_t ft, uint32_t *out_size, wah_
     }
 }
 
+typedef struct {
+    uint32_t *offsets;
+    uint32_t count;
+    uint32_t cap;
+} wah_layout_slot_list_t;
+
+static inline uint32_t wah_layout_slot_index(uint32_t size) {
+    switch (size) {
+        case 1: return 0;
+        case 2: return 1;
+        case 4: return 2;
+        case 8: return 3;
+        default: WAH_ASSERT(0 && "invalid layout slot size"); return 0;
+    }
+}
+
+static wah_error_t wah_layout_slot_push(wah_layout_slot_list_t slots[4], uint32_t size, uint32_t offset) {
+    WAH_ASSERT(size == 1 || size == 2 || size == 4 || size == 8);
+    WAH_ASSERT((offset & (size - 1)) == 0);
+    wah_layout_slot_list_t *list = &slots[wah_layout_slot_index(size)];
+    if (list->count == list->cap) {
+        if (list->cap > UINT32_MAX / 2) return WAH_ERROR_TOO_LARGE;
+        uint32_t new_cap = list->cap ? list->cap * 2 : 8;
+        if (new_cap < list->count + 1) return WAH_ERROR_TOO_LARGE;
+        void *new_offsets = list->offsets;
+        WAH_CHECK(wah_realloc(new_cap, sizeof(list->offsets[0]), &new_offsets));
+        list->offsets = (uint32_t *)new_offsets;
+        list->cap = new_cap;
+    }
+    uint32_t i = list->count;
+    while (i > 0 && list->offsets[i - 1] > offset) {
+        list->offsets[i] = list->offsets[i - 1];
+        --i;
+    }
+    list->offsets[i] = offset;
+    list->count++;
+    return WAH_OK;
+}
+
+static bool wah_layout_slot_pop(wah_layout_slot_list_t slots[4], uint32_t size, uint32_t *out_offset) {
+    wah_layout_slot_list_t *list = &slots[wah_layout_slot_index(size)];
+    if (list->count == 0) return false;
+    *out_offset = list->offsets[0];
+    memmove(list->offsets, list->offsets + 1, (size_t)(list->count - 1) * sizeof(list->offsets[0]));
+    list->count--;
+    return true;
+}
+
+static wah_error_t wah_layout_split_slot(wah_layout_slot_list_t slots[4], uint32_t offset, uint32_t from_size, uint32_t used_size) {
+    while (from_size / 2 >= used_size) {
+        from_size /= 2;
+        WAH_CHECK(wah_layout_slot_push(slots, from_size, offset + from_size));
+    }
+    return WAH_OK;
+}
+
+static wah_error_t wah_layout_record_tail_slots(wah_layout_slot_list_t slots[4], uint32_t base, uint32_t used_size) {
+    WAH_ASSERT(used_size == 1 || used_size == 2 || used_size == 4 || used_size == 8 || used_size == 16);
+    for (uint32_t size = 8; size >= used_size && size > 0; size /= 2) {
+        WAH_CHECK(wah_layout_slot_push(slots, size, base + size));
+        if (size == 1) break;
+    }
+    return WAH_OK;
+}
+
+static void wah_layout_free_slots(wah_layout_slot_list_t slots[4]) {
+    for (uint32_t i = 0; i < 4; ++i) free(slots[i].offsets);
+}
+
+#ifdef WAH_DEBUG
+static wah_error_t wah_validate_struct_repr_info(const wah_type_def_t *td, const wah_repr_info_t *info) {
+    uint64_t field_bytes = 0;
+    uint8_t *used = NULL;
+    WAH_ENSURE(td && info && info->type == WAH_REPR_STRUCT, WAH_ERROR_MISUSE);
+    if (info->size > 0 && info->size <= 4096) {
+        WAH_MALLOC_ARRAY(used, info->size);
+        memset(used, 0, info->size);
+    }
+    for (uint32_t i = 0; i < td->field_count; ++i) {
+        uint32_t field_size;
+        wah_repr_t field_repr;
+        WAH_CHECK(wah_field_type_layout(td->field_types[i], &field_size, &field_repr));
+        WAH_ENSURE(field_size > 0 && field_size <= 16 && (field_size & (field_size - 1)) == 0, WAH_ERROR_VALIDATION_FAILED);
+        WAH_ENSURE((info->fields[i].offset & (field_size - 1)) == 0, WAH_ERROR_VALIDATION_FAILED);
+        WAH_ENSURE(info->fields[i].offset <= info->size && field_size <= info->size - info->fields[i].offset, WAH_ERROR_VALIDATION_FAILED);
+        WAH_ENSURE(info->fields[i].repr_id == field_repr, WAH_ERROR_VALIDATION_FAILED);
+        field_bytes += field_size;
+        if (used) {
+            for (uint32_t j = 0; j < field_size; ++j) {
+                WAH_ENSURE(!used[info->fields[i].offset + j], WAH_ERROR_VALIDATION_FAILED);
+                used[info->fields[i].offset + j] = 1;
+            }
+        }
+    }
+    WAH_ENSURE((uint64_t)info->size >= field_bytes && (uint64_t)info->size - field_bytes <= 15, WAH_ERROR_VALIDATION_FAILED);
+    free(used);
+    return WAH_OK;
+}
+#else
+static wah_error_t wah_validate_struct_repr_info(const wah_type_def_t *td, const wah_repr_info_t *info) {
+    (void)td; (void)info;
+    return WAH_OK;
+}
+#endif
+
+static wah_error_t wah_build_struct_repr_info(uint32_t typeidx, const wah_type_def_t *td, wah_repr_info_t **out_info) {
+    wah_error_t err = WAH_OK;
+    wah_layout_slot_list_t slots[4] = {{0}};
+    wah_repr_field_t *fields = NULL;
+    wah_repr_info_t *info = NULL;
+    uint32_t frontier = 0;
+    uint32_t live_end = 0;
+
+    WAH_ENSURE(td && out_info && td->kind == WAH_COMP_STRUCT, WAH_ERROR_MISUSE);
+    *out_info = NULL;
+    if (td->field_count > 0) WAH_MALLOC_ARRAY_GOTO(fields, td->field_count, cleanup);
+
+    for (uint32_t i = 0; i < td->field_count; ++i) {
+        uint32_t field_size;
+        wah_repr_t field_repr;
+        uint32_t offset = 0;
+        WAH_CHECK_GOTO(wah_field_type_layout(td->field_types[i], &field_size, &field_repr), cleanup);
+        WAH_ENSURE_GOTO(field_size > 0 && field_size <= 16 && (field_size & (field_size - 1)) == 0,
+                        WAH_ERROR_VALIDATION_FAILED, cleanup);
+
+        if (field_size == 16) {
+            offset = frontier;
+            WAH_ENSURE_GOTO(frontier <= UINT32_MAX - 16, WAH_ERROR_TOO_LARGE, cleanup);
+            frontier += 16;
+        } else if (!wah_layout_slot_pop(slots, field_size, &offset)) {
+            uint32_t slot_size = field_size * 2;
+            while (slot_size <= 8 && !wah_layout_slot_pop(slots, slot_size, &offset)) slot_size *= 2;
+            if (slot_size <= 8) {
+                WAH_CHECK_GOTO(wah_layout_split_slot(slots, offset, slot_size, field_size), cleanup);
+            } else {
+                offset = frontier;
+                WAH_ENSURE_GOTO(frontier <= UINT32_MAX - 16, WAH_ERROR_TOO_LARGE, cleanup);
+                frontier += 16;
+                WAH_CHECK_GOTO(wah_layout_record_tail_slots(slots, offset, field_size), cleanup);
+            }
+        }
+
+        fields[i] = (wah_repr_field_t){ .offset = offset, .repr_id = field_repr };
+        if (offset > UINT32_MAX - field_size) { err = WAH_ERROR_TOO_LARGE; goto cleanup; }
+        if (live_end < offset + field_size) live_end = offset + field_size;
+    }
+
+    if ((uint64_t)td->field_count > ((uint64_t)SIZE_MAX - sizeof(wah_repr_info_t)) / sizeof(wah_repr_field_t)) {
+        err = WAH_ERROR_TOO_LARGE;
+        goto cleanup;
+    }
+    size_t info_size = sizeof(wah_repr_info_t) + td->field_count * sizeof(wah_repr_field_t);
+    info = (wah_repr_info_t *)malloc(info_size);
+    if (!info) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
+    info->type = WAH_REPR_STRUCT;
+    info->typeidx = typeidx;
+    info->size = live_end;
+    info->count = td->field_count;
+    if (td->field_count > 0) memcpy(info->fields, fields, td->field_count * sizeof(wah_repr_field_t));
+    WAH_CHECK_GOTO(wah_validate_struct_repr_info(td, info), cleanup);
+    *out_info = info;
+    info = NULL;
+
+cleanup:
+    free(info);
+    free(fields);
+    wah_layout_free_slots(slots);
+    return err;
+}
+
 static wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx, const wah_repr_info_t *info, wah_repr_t *out_repr_id) {
     WAH_ENSURE(module && info && out_repr_id, WAH_ERROR_MISUSE);
     WAH_ENSURE(typeidx < module->type_count, WAH_ERROR_MISUSE);
@@ -4019,7 +4189,6 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
     wah_error_t err;
     uint32_t *canonical_map = NULL;
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-    wah_repr_field_t *fields = NULL;
     wah_repr_info_t *info = NULL;
 #endif
 
@@ -4105,29 +4274,10 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
     for (uint32_t i = 0; i < module->type_count; ++i) {
         wah_type_def_t *td = &module->type_defs[i];
         if (td->kind == WAH_COMP_STRUCT) {
-            uint32_t offset = 0;
-            if (td->field_count > 0) WAH_MALLOC_ARRAY_GOTO(fields, td->field_count, cleanup);
-            for (uint32_t j = 0; j < td->field_count; ++j) {
-                uint32_t field_size;
-                wah_repr_t field_repr;
-                WAH_CHECK_GOTO(wah_field_type_layout(td->field_types[j], &field_size, &field_repr), cleanup);
-                uint32_t align = field_size < sizeof(void *) ? field_size : sizeof(void *);
-                offset = (offset + align - 1) & ~(align - 1);
-                fields[j] = (wah_repr_field_t){ .offset = offset, .repr_id = field_repr };
-                offset += field_size;
-            }
-            size_t info_size = sizeof(wah_repr_info_t) + td->field_count * sizeof(wah_repr_field_t);
-            info = (wah_repr_info_t *)malloc(info_size);
-            if (!info) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
-            info->type = WAH_REPR_STRUCT;
-            info->typeidx = i;
-            info->size = (offset + sizeof(void *) - 1) & ~(uint32_t)(sizeof(void *) - 1);
-            info->count = td->field_count;
-            if (td->field_count > 0) memcpy(info->fields, fields, td->field_count * sizeof(wah_repr_field_t));
+            WAH_CHECK_GOTO(wah_build_struct_repr_info(i, td, &info), cleanup);
             wah_repr_t repr_id;
             WAH_CHECK_GOTO(wah_module_alloc_repr(module, i, info, &repr_id), cleanup);
             free(info); info = NULL;
-            free(fields); fields = NULL;
         } else if (td->kind == WAH_COMP_ARRAY) {
             uint32_t elem_size;
             wah_repr_t elem_repr;
@@ -4177,7 +4327,6 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
 cleanup:
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     free(info);
-    free(fields);
 #endif
     free(canonical_map);
     wah_module_clear_type_metadata(module);
@@ -4205,7 +4354,6 @@ static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
     uint32_t idx;
     void *new_ptr;
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-    wah_repr_field_t *fields = NULL;
     wah_repr_info_t *info = NULL;
     wah_repr_t repr_id = WAH_REPR_NONE;
 #endif
@@ -4228,25 +4376,7 @@ static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
     wah_type_def_t *td = &module->type_defs[idx];
 
     if (td->kind == WAH_COMP_STRUCT) {
-        uint32_t offset = 0;
-        if (td->field_count > 0) WAH_MALLOC_ARRAY_GOTO(fields, td->field_count, cleanup);
-        for (uint32_t j = 0; j < td->field_count; ++j) {
-            uint32_t field_size;
-            wah_repr_t field_repr;
-            WAH_CHECK_GOTO(wah_field_type_layout(td->field_types[j], &field_size, &field_repr), cleanup);
-            uint32_t align = field_size < sizeof(void *) ? field_size : sizeof(void *);
-            offset = (offset + align - 1) & ~(align - 1);
-            fields[j] = (wah_repr_field_t){ .offset = offset, .repr_id = field_repr };
-            offset += field_size;
-        }
-        size_t info_size = sizeof(wah_repr_info_t) + td->field_count * sizeof(wah_repr_field_t);
-        info = (wah_repr_info_t *)malloc(info_size);
-        if (!info) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
-        info->type = WAH_REPR_STRUCT;
-        info->typeidx = idx;
-        info->size = (offset + sizeof(void *) - 1) & ~(uint32_t)(sizeof(void *) - 1);
-        info->count = td->field_count;
-        if (td->field_count > 0) memcpy(info->fields, fields, td->field_count * sizeof(wah_repr_field_t));
+        WAH_CHECK_GOTO(wah_build_struct_repr_info(idx, td, &info), cleanup);
         target_repr_count++;
     } else if (td->kind == WAH_COMP_ARRAY) {
         uint32_t elem_size;
@@ -4288,7 +4418,6 @@ cleanup:
 done:
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     free(info);
-    free(fields);
 #endif
     return err;
 }
