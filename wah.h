@@ -1778,6 +1778,25 @@ static inline wah_error_t wah_repr_set_init(wah_repr_set_t *set, uint32_t repr_c
     return WAH_OK;
 }
 
+static inline wah_error_t wah_repr_set_resize(wah_repr_set_t *set, uint32_t repr_count) {
+    uint32_t new_word_count = (repr_count + 63) / 64;
+    if (new_word_count == set->word_count) return WAH_OK;
+    if (new_word_count == 0) {
+        free(set->bits);
+        set->bits = NULL;
+        set->word_count = 0;
+        return WAH_OK;
+    }
+    uint64_t *new_bits = (uint64_t *)realloc(set->bits, (size_t)new_word_count * sizeof(set->bits[0]));
+    if (!new_bits) return WAH_ERROR_OUT_OF_MEMORY;
+    if (new_word_count > set->word_count) {
+        memset(new_bits + set->word_count, 0, (size_t)(new_word_count - set->word_count) * sizeof(new_bits[0]));
+    }
+    set->bits = new_bits;
+    set->word_count = new_word_count;
+    return WAH_OK;
+}
+
 static inline void wah_repr_set_add(wah_repr_set_t *set, wah_repr_t repr_id) {
     if (!set || repr_id < 0) return;
     uint32_t word = (uint32_t)repr_id / 64;
@@ -3927,6 +3946,26 @@ static bool wah_cross_module_subtype_cached(wah_exec_context_t *ctx,
 }
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+static wah_error_t wah_field_type_layout(wah_type_t ft, uint32_t *out_size, wah_repr_t *out_repr) {
+    *out_repr = WAH_REPR_NONE;
+    switch (ft) {
+        case WAH_TYPE_PACKED_I8:  *out_size = 1; return WAH_OK;
+        case WAH_TYPE_PACKED_I16: *out_size = 2; return WAH_OK;
+        case WAH_TYPE_I32:
+        case WAH_TYPE_F32:        *out_size = 4; return WAH_OK;
+        case WAH_TYPE_I64:
+        case WAH_TYPE_F64:        *out_size = 8; return WAH_OK;
+        case WAH_TYPE_V128:       *out_size = 16; return WAH_OK;
+        default:
+            if (WAH_TYPE_IS_REF(ft)) {
+                *out_size = sizeof(void *);
+                *out_repr = WAH_REPR_REF;
+                return WAH_OK;
+            }
+            return WAH_ERROR_VALIDATION_FAILED;
+    }
+}
+
 static wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx, const wah_repr_info_t *info, wah_repr_t *out_repr_id) {
     WAH_ENSURE(module && info && out_repr_id, WAH_ERROR_MISUSE);
     WAH_ENSURE(typeidx < module->type_count, WAH_ERROR_MISUSE);
@@ -3951,6 +3990,302 @@ static wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx,
     return WAH_OK;
 }
 #endif // WAH_FEATURE_GC
+
+static void wah_module_clear_type_metadata(wah_module_t *module) {
+    free(module->canonical_map);
+    module->canonical_map = NULL;
+    free(module->typeidx_to_repr);
+    module->typeidx_to_repr = NULL;
+    if (module->repr_infos) {
+        for (uint32_t i = 0; i < module->repr_count; ++i) free(module->repr_infos[i]);
+        free(module->repr_infos);
+    }
+    module->repr_infos = NULL;
+    module->repr_count = 0;
+    if (module->type_cast_sets) {
+        for (uint32_t i = 0; i < module->type_count; ++i) free(module->type_cast_sets[i].bits);
+        free(module->type_cast_sets);
+    }
+    module->type_cast_sets = NULL;
+}
+
+static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
+    wah_error_t err;
+    uint32_t *canonical_map = NULL;
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+    wah_repr_field_t *fields = NULL;
+    wah_repr_info_t *info = NULL;
+#endif
+
+    wah_module_clear_type_metadata(module);
+    if (module->type_count == 0) return WAH_OK;
+
+    WAH_MALLOC_ARRAY_GOTO(canonical_map, module->type_count, cleanup);
+    for (uint32_t i = 0; i < module->type_count; ++i) canonical_map[i] = i;
+
+    for (uint32_t i = 0; i < module->type_count; ++i) {
+        wah_type_def_t *td_i = &module->type_defs[i];
+        if (i != td_i->rec_group_start) continue;
+        uint32_t rg_size_i = td_i->rec_group_size;
+        for (uint32_t j = 0; j < i; ++j) {
+            wah_type_def_t *td_j = &module->type_defs[j];
+            if (j != td_j->rec_group_start) continue;
+            if (td_j->rec_group_size != rg_size_i) continue;
+            bool match = true;
+            for (uint32_t k = 0; k < rg_size_i && match; ++k) {
+                match = wah_types_structurally_equal(module, i + k, j + k, canonical_map);
+            }
+            if (match) {
+                for (uint32_t k = 0; k < rg_size_i; ++k) canonical_map[i + k] = j + k;
+                break;
+            }
+        }
+    }
+
+    for (uint32_t i = 0; i < module->type_count; ++i) {
+        wah_type_def_t *td = &module->type_defs[i];
+        if (td->supertype == WAH_NO_SUPERTYPE) continue;
+        wah_type_def_t *super_td = &module->type_defs[td->supertype];
+
+        #define WAH_SUBTYPE_CHECK(sub_t, sup_t) ( \
+            (sub_t) == (sup_t) || \
+            ((sub_t) >= 0 && (sup_t) >= 0 && canonical_map[WAH_TYIDX(sub_t)] == canonical_map[WAH_TYIDX(sup_t)]) || \
+            wah_type_is_subtype((sub_t), (sup_t), module) || \
+            ((sub_t) >= 0 && (sup_t) >= 0 && wah_type_is_subtype(WAH_TYPE_FROM_IDX(canonical_map[WAH_TYIDX(sub_t)], WAH_TYPE_IS_NULLABLE(sub_t)), \
+                                                                 WAH_TYPE_FROM_IDX(canonical_map[WAH_TYIDX(sup_t)], WAH_TYPE_IS_NULLABLE(sup_t)), module)) \
+        )
+
+        if (td->kind == WAH_COMP_FUNC) {
+            wah_func_type_t *sub_ft = &module->types[i];
+            wah_func_type_t *sup_ft = &module->types[td->supertype];
+            WAH_ENSURE_GOTO(sub_ft->param_count == sup_ft->param_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            WAH_ENSURE_GOTO(sub_ft->result_count == sup_ft->result_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            for (uint32_t j = 0; j < sub_ft->param_count; ++j) {
+                WAH_ENSURE_GOTO(WAH_SUBTYPE_CHECK(sup_ft->param_types[j], sub_ft->param_types[j]), WAH_ERROR_VALIDATION_FAILED, cleanup);
+            }
+            for (uint32_t j = 0; j < sub_ft->result_count; ++j) {
+                WAH_ENSURE_GOTO(WAH_SUBTYPE_CHECK(sub_ft->result_types[j], sup_ft->result_types[j]), WAH_ERROR_VALIDATION_FAILED, cleanup);
+            }
+        } else if (td->kind == WAH_COMP_STRUCT) {
+            WAH_ENSURE_GOTO(td->field_count >= super_td->field_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            for (uint32_t j = 0; j < super_td->field_count; ++j) {
+                if (super_td->field_mutables[j]) {
+                    WAH_ENSURE_GOTO(td->field_mutables[j], WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    wah_type_t st = super_td->field_types[j], tt = td->field_types[j];
+                    WAH_ENSURE_GOTO(st == tt || (st >= 0 && tt >= 0 && canonical_map[WAH_TYIDX(st)] == canonical_map[WAH_TYIDX(tt)]), WAH_ERROR_VALIDATION_FAILED, cleanup);
+                } else {
+                    WAH_ENSURE_GOTO(!td->field_mutables[j], WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    WAH_ENSURE_GOTO(WAH_SUBTYPE_CHECK(td->field_types[j], super_td->field_types[j]), WAH_ERROR_VALIDATION_FAILED, cleanup);
+                }
+            }
+        } else if (td->kind == WAH_COMP_ARRAY) {
+            WAH_ENSURE_GOTO(td->field_count == 1 && super_td->field_count == 1, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            if (super_td->field_mutables[0]) {
+                WAH_ENSURE_GOTO(td->field_mutables[0], WAH_ERROR_VALIDATION_FAILED, cleanup);
+                wah_type_t st = super_td->field_types[0], tt = td->field_types[0];
+                WAH_ENSURE_GOTO(st == tt || (st >= 0 && tt >= 0 && canonical_map[WAH_TYIDX(st)] == canonical_map[WAH_TYIDX(tt)]), WAH_ERROR_VALIDATION_FAILED, cleanup);
+            } else {
+                WAH_ENSURE_GOTO(!td->field_mutables[0], WAH_ERROR_VALIDATION_FAILED, cleanup);
+                WAH_ENSURE_GOTO(WAH_SUBTYPE_CHECK(td->field_types[0], super_td->field_types[0]), WAH_ERROR_VALIDATION_FAILED, cleanup);
+            }
+        }
+        #undef WAH_SUBTYPE_CHECK
+    }
+
+    WAH_MALLOC_ARRAY_GOTO(module->typeidx_to_repr, module->type_count, cleanup);
+    for (uint32_t i = 0; i < module->type_count; ++i) module->typeidx_to_repr[i] = WAH_REPR_NONE;
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+    for (uint32_t i = 0; i < module->type_count; ++i) {
+        wah_type_def_t *td = &module->type_defs[i];
+        if (td->kind == WAH_COMP_STRUCT) {
+            uint32_t offset = 0;
+            if (td->field_count > 0) WAH_MALLOC_ARRAY_GOTO(fields, td->field_count, cleanup);
+            for (uint32_t j = 0; j < td->field_count; ++j) {
+                uint32_t field_size;
+                wah_repr_t field_repr;
+                WAH_CHECK_GOTO(wah_field_type_layout(td->field_types[j], &field_size, &field_repr), cleanup);
+                uint32_t align = field_size < sizeof(void *) ? field_size : sizeof(void *);
+                offset = (offset + align - 1) & ~(align - 1);
+                fields[j] = (wah_repr_field_t){ .offset = offset, .repr_id = field_repr };
+                offset += field_size;
+            }
+            size_t info_size = sizeof(wah_repr_info_t) + td->field_count * sizeof(wah_repr_field_t);
+            info = (wah_repr_info_t *)malloc(info_size);
+            if (!info) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
+            info->type = WAH_REPR_STRUCT;
+            info->typeidx = i;
+            info->size = (offset + sizeof(void *) - 1) & ~(uint32_t)(sizeof(void *) - 1);
+            info->count = td->field_count;
+            if (td->field_count > 0) memcpy(info->fields, fields, td->field_count * sizeof(wah_repr_field_t));
+            wah_repr_t repr_id;
+            WAH_CHECK_GOTO(wah_module_alloc_repr(module, i, info, &repr_id), cleanup);
+            free(info); info = NULL;
+            free(fields); fields = NULL;
+        } else if (td->kind == WAH_COMP_ARRAY) {
+            uint32_t elem_size;
+            wah_repr_t elem_repr;
+            WAH_CHECK_GOTO(wah_field_type_layout(td->field_types[0], &elem_size, &elem_repr), cleanup);
+            size_t info_size = sizeof(wah_repr_info_t) + sizeof(wah_repr_field_t);
+            info = (wah_repr_info_t *)malloc(info_size);
+            if (!info) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
+            info->type = WAH_REPR_ARRAY;
+            info->typeidx = i;
+            info->size = elem_size;
+            info->count = 1;
+            info->fields[0] = (wah_repr_field_t){ .offset = 0, .repr_id = elem_repr };
+            wah_repr_t repr_id;
+            WAH_CHECK_GOTO(wah_module_alloc_repr(module, i, info, &repr_id), cleanup);
+            free(info); info = NULL;
+        }
+    }
+
+    WAH_MALLOC_ARRAY_GOTO(module->type_cast_sets, module->type_count, cleanup);
+    memset(module->type_cast_sets, 0, (size_t)module->type_count * sizeof(module->type_cast_sets[0]));
+    for (uint32_t i = 0; i < module->type_count; ++i) {
+        WAH_CHECK_GOTO(wah_repr_set_init(&module->type_cast_sets[i], module->repr_count), cleanup);
+    }
+    for (uint32_t i = 0; i < module->type_count; ++i) {
+        wah_repr_t repr_id = module->typeidx_to_repr[i];
+        if (repr_id == WAH_REPR_NONE) continue;
+        uint32_t t = i;
+        while (t != WAH_NO_SUPERTYPE) {
+            wah_repr_set_add(&module->type_cast_sets[canonical_map[t]], repr_id);
+            t = module->type_defs[t].supertype;
+        }
+    }
+    for (uint32_t i = 0; i < module->type_count; ++i) {
+        uint32_t canonical = canonical_map[i];
+        if (canonical == i) continue;
+        if (module->type_cast_sets[i].word_count > 0) {
+            memcpy(module->type_cast_sets[i].bits,
+                   module->type_cast_sets[canonical].bits,
+                   (size_t)module->type_cast_sets[i].word_count * sizeof(module->type_cast_sets[i].bits[0]));
+        }
+    }
+#endif
+
+    module->canonical_map = canonical_map;
+    return WAH_OK;
+
+cleanup:
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+    free(info);
+    free(fields);
+#endif
+    free(canonical_map);
+    wah_module_clear_type_metadata(module);
+    return err;
+}
+
+static void wah_module_rollback_last_type_metadata(wah_module_t *module, uint32_t idx) {
+    if (module->type_cast_sets && idx < module->type_count) {
+        free(module->type_cast_sets[idx].bits);
+        module->type_cast_sets[idx] = (wah_repr_set_t){0};
+    }
+    if (module->typeidx_to_repr && idx < module->type_count && module->typeidx_to_repr[idx] >= 0) {
+        uint32_t repr_id = (uint32_t)module->typeidx_to_repr[idx];
+        if (repr_id + 1 == module->repr_count && module->repr_infos) {
+            free(module->repr_infos[repr_id]);
+            module->repr_infos[repr_id] = NULL;
+            module->repr_count--;
+        }
+        module->typeidx_to_repr[idx] = WAH_REPR_NONE;
+    }
+}
+
+static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
+    wah_error_t err;
+    uint32_t idx;
+    void *new_ptr;
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+    wah_repr_field_t *fields = NULL;
+    wah_repr_info_t *info = NULL;
+    wah_repr_t repr_id = WAH_REPR_NONE;
+#endif
+
+    WAH_ASSERT(module->type_count > 0);
+    idx = module->type_count - 1;
+
+    new_ptr = module->canonical_map;
+    WAH_CHECK(wah_realloc(module->type_count, sizeof(module->canonical_map[0]), &new_ptr));
+    module->canonical_map = (uint32_t *)new_ptr;
+    module->canonical_map[idx] = idx;
+
+    new_ptr = module->typeidx_to_repr;
+    WAH_CHECK(wah_realloc(module->type_count, sizeof(module->typeidx_to_repr[0]), &new_ptr));
+    module->typeidx_to_repr = (int32_t *)new_ptr;
+    module->typeidx_to_repr[idx] = WAH_REPR_NONE;
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+    uint32_t target_repr_count = module->repr_count;
+    wah_type_def_t *td = &module->type_defs[idx];
+
+    if (td->kind == WAH_COMP_STRUCT) {
+        uint32_t offset = 0;
+        if (td->field_count > 0) WAH_MALLOC_ARRAY_GOTO(fields, td->field_count, cleanup);
+        for (uint32_t j = 0; j < td->field_count; ++j) {
+            uint32_t field_size;
+            wah_repr_t field_repr;
+            WAH_CHECK_GOTO(wah_field_type_layout(td->field_types[j], &field_size, &field_repr), cleanup);
+            uint32_t align = field_size < sizeof(void *) ? field_size : sizeof(void *);
+            offset = (offset + align - 1) & ~(align - 1);
+            fields[j] = (wah_repr_field_t){ .offset = offset, .repr_id = field_repr };
+            offset += field_size;
+        }
+        size_t info_size = sizeof(wah_repr_info_t) + td->field_count * sizeof(wah_repr_field_t);
+        info = (wah_repr_info_t *)malloc(info_size);
+        if (!info) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
+        info->type = WAH_REPR_STRUCT;
+        info->typeidx = idx;
+        info->size = (offset + sizeof(void *) - 1) & ~(uint32_t)(sizeof(void *) - 1);
+        info->count = td->field_count;
+        if (td->field_count > 0) memcpy(info->fields, fields, td->field_count * sizeof(wah_repr_field_t));
+        target_repr_count++;
+    } else if (td->kind == WAH_COMP_ARRAY) {
+        uint32_t elem_size;
+        wah_repr_t elem_repr;
+        WAH_CHECK_GOTO(wah_field_type_layout(td->field_types[0], &elem_size, &elem_repr), cleanup);
+        size_t info_size = sizeof(wah_repr_info_t) + sizeof(wah_repr_field_t);
+        info = (wah_repr_info_t *)malloc(info_size);
+        if (!info) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
+        info->type = WAH_REPR_ARRAY;
+        info->typeidx = idx;
+        info->size = elem_size;
+        info->count = 1;
+        info->fields[0] = (wah_repr_field_t){ .offset = 0, .repr_id = elem_repr };
+        target_repr_count++;
+    }
+
+    new_ptr = module->type_cast_sets;
+    WAH_CHECK_GOTO(wah_realloc(module->type_count, sizeof(module->type_cast_sets[0]), &new_ptr), cleanup);
+    module->type_cast_sets = (wah_repr_set_t *)new_ptr;
+    module->type_cast_sets[idx] = (wah_repr_set_t){0};
+    for (uint32_t i = 0; i + 1 < module->type_count; ++i) {
+        WAH_CHECK_GOTO(wah_repr_set_resize(&module->type_cast_sets[i], target_repr_count), cleanup);
+    }
+    WAH_CHECK_GOTO(wah_repr_set_init(&module->type_cast_sets[idx], target_repr_count), cleanup);
+
+    if (info) {
+        WAH_CHECK_GOTO(wah_module_alloc_repr(module, idx, info, &repr_id), cleanup);
+        wah_repr_set_add(&module->type_cast_sets[idx], repr_id);
+    }
+#endif
+
+    err = WAH_OK;
+    goto done;
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+cleanup:
+    wah_module_rollback_last_type_metadata(module, idx);
+#endif
+done:
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+    free(info);
+    free(fields);
+#endif
+    return err;
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Parsing utilities ///////////////////////////////////////////////////////////
@@ -6738,25 +7073,6 @@ static wah_error_t wah_parse_array_type(const uint8_t **ptr, const uint8_t *end,
     return WAH_OK;
 }
 
-static wah_error_t wah_field_type_layout(wah_type_t ft, uint32_t *out_size, wah_repr_t *out_repr) {
-    *out_repr = WAH_REPR_NONE;
-    switch (ft) {
-        case WAH_TYPE_PACKED_I8:  *out_size = 1; return WAH_OK;
-        case WAH_TYPE_PACKED_I16: *out_size = 2; return WAH_OK;
-        case WAH_TYPE_I32:
-        case WAH_TYPE_F32:        *out_size = 4; return WAH_OK;
-        case WAH_TYPE_I64:
-        case WAH_TYPE_F64:        *out_size = 8; return WAH_OK;
-        case WAH_TYPE_V128:       *out_size = 16; return WAH_OK;
-        default:
-            if (WAH_TYPE_IS_REF(ft)) {
-                *out_size = sizeof(void *);
-                *out_repr = WAH_REPR_REF;
-                return WAH_OK;
-            }
-            return WAH_ERROR_VALIDATION_FAILED;
-    }
-}
 #endif // WAH_FEATURE_GC
 
 static wah_error_t wah_parse_composite_type(const uint8_t **ptr, const uint8_t *end, wah_func_type_t *ft, wah_type_def_t *td) {
@@ -6881,176 +7197,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
     }
     #undef WAH_VALIDATE_HEAP_TYPE_IDX
 
-    // Build canonical type equivalence map.
-    // canonical_map[i] = j means type i is canonically equal to type j (j <= i).
-    uint32_t *canonical_map;
-    WAH_MALLOC_ARRAY(canonical_map, module->type_count);
-    for (uint32_t i = 0; i < module->type_count; ++i) canonical_map[i] = i;
-    for (uint32_t i = 0; i < module->type_count; ++i) {
-        wah_type_def_t *td_i = &module->type_defs[i];
-        if (i != td_i->rec_group_start) continue;
-        uint32_t rg_size_i = td_i->rec_group_size;
-        for (uint32_t j = 0; j < i; ++j) {
-            wah_type_def_t *td_j = &module->type_defs[j];
-            if (j != td_j->rec_group_start) continue;
-            if (td_j->rec_group_size != rg_size_i) continue;
-            bool match = true;
-            for (uint32_t k = 0; k < rg_size_i && match; ++k) {
-                match = wah_types_structurally_equal(module, i + k, j + k, canonical_map);
-            }
-            if (match) {
-                for (uint32_t k = 0; k < rg_size_i; ++k) canonical_map[i + k] = j + k;
-                break;
-            }
-        }
-    }
-
-    // Validate structural subtype compatibility (requires canonical_map)
-    for (uint32_t i = 0; i < module->type_count; ++i) {
-        wah_type_def_t *td = &module->type_defs[i];
-        if (td->supertype == WAH_NO_SUPERTYPE) continue;
-        wah_type_def_t *super_td = &module->type_defs[td->supertype];
-
-        #define WAH_SUBTYPE_CHECK(sub_t, sup_t) ( \
-            (sub_t) == (sup_t) || \
-            ((sub_t) >= 0 && (sup_t) >= 0 && canonical_map[WAH_TYIDX(sub_t)] == canonical_map[WAH_TYIDX(sup_t)]) || \
-            wah_type_is_subtype((sub_t), (sup_t), module) || \
-            ((sub_t) >= 0 && (sup_t) >= 0 && wah_type_is_subtype(WAH_TYPE_FROM_IDX(canonical_map[WAH_TYIDX(sub_t)], WAH_TYPE_IS_NULLABLE(sub_t)), \
-                                                                 WAH_TYPE_FROM_IDX(canonical_map[WAH_TYIDX(sup_t)], WAH_TYPE_IS_NULLABLE(sup_t)), module)) \
-        )
-
-        if (td->kind == WAH_COMP_FUNC) {
-            wah_func_type_t *sub_ft = &module->types[i];
-            wah_func_type_t *sup_ft = &module->types[td->supertype];
-            WAH_ENSURE(sub_ft->param_count == sup_ft->param_count, WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(sub_ft->result_count == sup_ft->result_count, WAH_ERROR_VALIDATION_FAILED);
-            for (uint32_t j = 0; j < sub_ft->param_count; ++j) {
-                WAH_ENSURE(WAH_SUBTYPE_CHECK(sup_ft->param_types[j], sub_ft->param_types[j]), WAH_ERROR_VALIDATION_FAILED);
-            }
-            for (uint32_t j = 0; j < sub_ft->result_count; ++j) {
-                WAH_ENSURE(WAH_SUBTYPE_CHECK(sub_ft->result_types[j], sup_ft->result_types[j]), WAH_ERROR_VALIDATION_FAILED);
-            }
-        } else if (td->kind == WAH_COMP_STRUCT) {
-            WAH_ENSURE(td->field_count >= super_td->field_count, WAH_ERROR_VALIDATION_FAILED);
-            for (uint32_t j = 0; j < super_td->field_count; ++j) {
-                if (super_td->field_mutables[j]) {
-                    WAH_ENSURE(td->field_mutables[j], WAH_ERROR_VALIDATION_FAILED);
-                    wah_type_t st = super_td->field_types[j], tt = td->field_types[j];
-                    WAH_ENSURE(st == tt || (st >= 0 && tt >= 0 && canonical_map[WAH_TYIDX(st)] == canonical_map[WAH_TYIDX(tt)]), WAH_ERROR_VALIDATION_FAILED);
-                } else {
-                    WAH_ENSURE(!td->field_mutables[j], WAH_ERROR_VALIDATION_FAILED);
-                    WAH_ENSURE(WAH_SUBTYPE_CHECK(td->field_types[j], super_td->field_types[j]), WAH_ERROR_VALIDATION_FAILED);
-                }
-            }
-        } else if (td->kind == WAH_COMP_ARRAY) {
-            WAH_ENSURE(td->field_count == 1 && super_td->field_count == 1, WAH_ERROR_VALIDATION_FAILED);
-            if (super_td->field_mutables[0]) {
-                WAH_ENSURE(td->field_mutables[0], WAH_ERROR_VALIDATION_FAILED);
-                wah_type_t st = super_td->field_types[0], tt = td->field_types[0];
-                WAH_ENSURE(st == tt || (st >= 0 && tt >= 0 && canonical_map[WAH_TYIDX(st)] == canonical_map[WAH_TYIDX(tt)]), WAH_ERROR_VALIDATION_FAILED);
-            } else {
-                WAH_ENSURE(!td->field_mutables[0], WAH_ERROR_VALIDATION_FAILED);
-                WAH_ENSURE(WAH_SUBTYPE_CHECK(td->field_types[0], super_td->field_types[0]), WAH_ERROR_VALIDATION_FAILED);
-            }
-        }
-        #undef WAH_SUBTYPE_CHECK
-    }
-
-    WAH_MALLOC_ARRAY(module->typeidx_to_repr, module->type_count);
-    for (uint32_t i = 0; i < module->type_count; ++i) {
-        module->typeidx_to_repr[i] = WAH_REPR_NONE;
-    }
-
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-    // Build repr metadata for struct and array types
-    for (uint32_t i = 0; i < module->type_count; ++i) {
-        wah_type_def_t *td = &module->type_defs[i];
-        if (td->kind == WAH_COMP_STRUCT) {
-            uint32_t offset = 0;
-            wah_repr_field_t *fields = NULL;
-            if (td->field_count > 0) {
-                WAH_MALLOC_ARRAY(fields, td->field_count);
-            }
-            for (uint32_t j = 0; j < td->field_count; ++j) {
-                uint32_t field_size;
-                wah_repr_t field_repr;
-                wah_error_t fterr = wah_field_type_layout(td->field_types[j], &field_size, &field_repr);
-                if (fterr != WAH_OK) { free(fields); return fterr; }
-                uint32_t align = field_size < sizeof(void *) ? field_size : sizeof(void *);
-                offset = (offset + align - 1) & ~(align - 1);
-                fields[j] = (wah_repr_field_t){ .offset = offset, .repr_id = field_repr };
-                offset += field_size;
-            }
-
-            uint32_t total_align = sizeof(void *);
-            uint32_t total_size = (offset + total_align - 1) & ~(total_align - 1);
-
-            size_t info_size = sizeof(wah_repr_info_t) + td->field_count * sizeof(wah_repr_field_t);
-            wah_repr_info_t *info = (wah_repr_info_t *)malloc(info_size);
-            if (!info) { free(fields); return WAH_ERROR_OUT_OF_MEMORY; }
-            info->type = WAH_REPR_STRUCT;
-            info->typeidx = i;
-            info->size = total_size;
-            info->count = td->field_count;
-            if (td->field_count > 0) {
-                memcpy(info->fields, fields, td->field_count * sizeof(wah_repr_field_t));
-            }
-            free(fields);
-
-            wah_repr_t repr_id;
-            WAH_CHECK(wah_module_alloc_repr(module, i, info, &repr_id));
-            free(info);
-        } else if (td->kind == WAH_COMP_ARRAY) {
-            uint32_t elem_size;
-            wah_repr_t elem_repr;
-            WAH_CHECK(wah_field_type_layout(td->field_types[0], &elem_size, &elem_repr));
-
-            wah_repr_field_t elem_field = { .offset = 0, .repr_id = elem_repr };
-            size_t info_size = sizeof(wah_repr_info_t) + sizeof(wah_repr_field_t);
-            wah_repr_info_t *info = (wah_repr_info_t *)malloc(info_size);
-            if (!info) return WAH_ERROR_OUT_OF_MEMORY;
-            info->type = WAH_REPR_ARRAY;
-            info->typeidx = i;
-            info->size = elem_size;
-            info->count = 1;
-            info->fields[0] = elem_field;
-
-            wah_repr_t repr_id;
-            WAH_CHECK(wah_module_alloc_repr(module, i, info, &repr_id));
-            free(info);
-        }
-    }
-
-    // Build accepted-subtype repr sets for runtime cast/test
-    WAH_MALLOC_ARRAY(module->type_cast_sets, module->type_count);
-    memset(module->type_cast_sets, 0, (size_t)module->type_count * sizeof(module->type_cast_sets[0]));
-    for (uint32_t i = 0; i < module->type_count; ++i) {
-        WAH_CHECK(wah_repr_set_init(&module->type_cast_sets[i], module->repr_count));
-    }
-    for (uint32_t i = 0; i < module->type_count; ++i) {
-        wah_repr_t repr_id = module->typeidx_to_repr[i];
-        if (repr_id == WAH_REPR_NONE) continue;
-        // This concrete type's repr is accepted by itself and each supertype's
-        // canonical class. Equivalent target types share the class bitset below.
-        uint32_t t = i;
-        while (t != WAH_NO_SUPERTYPE) {
-            wah_repr_set_add(&module->type_cast_sets[canonical_map[t]], repr_id);
-            t = module->type_defs[t].supertype;
-        }
-    }
-    for (uint32_t i = 0; i < module->type_count; ++i) {
-        uint32_t canonical = canonical_map[i];
-        if (canonical == i) continue;
-        if (module->type_cast_sets[i].word_count > 0) {
-            memcpy(module->type_cast_sets[i].bits,
-                   module->type_cast_sets[canonical].bits,
-                   (size_t)module->type_cast_sets[i].word_count * sizeof(module->type_cast_sets[i].bits[0]));
-        }
-    }
-#endif // WAH_FEATURE_GC (repr metadata + cast sets)
-
-    module->canonical_map = canonical_map;
-    return WAH_OK;
+    return wah_module_build_type_metadata(module);
 }
 
 static wah_error_t wah_parse_function_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
