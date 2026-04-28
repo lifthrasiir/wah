@@ -233,6 +233,70 @@ static void test_memory64_basic() {
     wah_free_module(&module);
 }
 
+static void test_memory64_nonzero_memory_scalar_load_store() {
+    wah_module_t module = {0};
+    wah_exec_context_t ctx = {0};
+    wah_value_t result;
+
+    printf("Running memory64 non-zero memory scalar load/store tests...\n");
+
+    const char *spec = "wasm \
+        types {[ fn [] [i64] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1, limits.i64/1 1 ]} \
+        code {[ {[] \
+            i64.const 0 i32.const 287454020 i32.store align=4.mem# 1 offset=0 \
+            i64.const 8 i64.const 1234605616436508552 i64.store align=8.mem# 1 offset=0 \
+            i64.const 24 f32.const 1.5f32 f32.store align=4.mem# 1 offset=0 \
+            i64.const 32 f64.const 2.5f64 f64.store align=8.mem# 1 offset=0 \
+            i64.const 40 i32.const -1 i32.store8 align=1.mem# 1 offset=0 \
+            i64.const 42 i32.const 32769 i32.store16 align=2.mem# 1 offset=0 \
+            i64.const 44 i64.const -2 i64.store8 align=1.mem# 1 offset=0 \
+            i64.const 46 i64.const 32770 i64.store16 align=2.mem# 1 offset=0 \
+            i64.const 48 i64.const 2147483651 i64.store32 align=4.mem# 1 offset=0 \
+            i64.const 0 i32.load align=4.mem# 1 offset=0 drop \
+            i64.const 8 i64.load align=8.mem# 1 offset=0 drop \
+            i64.const 24 f32.load align=4.mem# 1 offset=0 drop \
+            i64.const 32 f64.load align=8.mem# 1 offset=0 drop \
+            i64.const 40 i32.load8_s align=1.mem# 1 offset=0 drop \
+            i64.const 40 i32.load8_u align=1.mem# 1 offset=0 drop \
+            i64.const 42 i32.load16_s align=2.mem# 1 offset=0 drop \
+            i64.const 42 i32.load16_u align=2.mem# 1 offset=0 drop \
+            i64.const 44 i64.load8_s align=1.mem# 1 offset=0 drop \
+            i64.const 44 i64.load8_u align=1.mem# 1 offset=0 drop \
+            i64.const 46 i64.load16_s align=2.mem# 1 offset=0 drop \
+            i64.const 46 i64.load16_u align=2.mem# 1 offset=0 drop \
+            i64.const 48 i64.load32_s align=4.mem# 1 offset=0 drop \
+            i64.const 48 i64.load32_u align=4.mem# 1 offset=0 drop \
+            i64.const 42 \
+        end } ]}";
+
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i64(result.i64, 42);
+
+    uint8_t *mem = wah_debug_memory_data(&ctx, 1);
+    assert_eq_u32(mem[0], 0x44);
+    assert_eq_u32(mem[1], 0x33);
+    assert_eq_u32(mem[2], 0x22);
+    assert_eq_u32(mem[3], 0x11);
+    assert_eq_u32(mem[40], 0xff);
+    assert_eq_u32(mem[42], 0x01);
+    assert_eq_u32(mem[43], 0x80);
+    assert_eq_u32(mem[44], 0xfe);
+    assert_eq_u32(mem[46], 0x02);
+    assert_eq_u32(mem[47], 0x80);
+    assert_eq_u32(mem[48], 0x03);
+    assert_eq_u32(mem[49], 0x00);
+    assert_eq_u32(mem[50], 0x00);
+    assert_eq_u32(mem[51], 0x80);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 static void test_memory64_size_grow() {
     wah_module_t module;
     wah_exec_context_t ctx;
@@ -559,6 +623,7 @@ int main() {
     test_memory64_address_types();
     test_table_copy_mixed_addr();
     test_memory64_basic();
+    test_memory64_nonzero_memory_scalar_load_store();
     test_memory64_size_grow();
     test_memory64_data_segment();
     test_memory64_validation();

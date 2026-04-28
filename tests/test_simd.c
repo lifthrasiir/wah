@@ -147,6 +147,34 @@ void test_v128_load_store() {
         ]}");
 }
 
+void test_v128_memory64_load_store() {
+    wah_v128_t expected = {{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10}};
+
+    run_simd_v128_op_test("v128 memory64 load/store mem0", &expected, "wasm \
+        types {[ fn [] [v128] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i64/1 1 ]} \
+        code {[ {[] \
+            i64.const 0 \
+            v128.const %'0102030405060708090a0b0c0d0e0f10' \
+            v128.store align=1 offset=0 \
+            i64.const 0 \
+            v128.load align=1 offset=0 \
+        end} ]}");
+
+    run_simd_v128_op_test("v128 memory64 load/store mem1", &expected, "wasm \
+        types {[ fn [] [v128] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1, limits.i64/1 1 ]} \
+        code {[ {[] \
+            i64.const 0 \
+            v128.const %'0102030405060708090a0b0c0d0e0f10' \
+            v128.store align=1.mem# 1 offset=0 \
+            i64.const 0 \
+            v128.load align=1.mem# 1 offset=0 \
+        end} ]}");
+}
+
 void test_v128_const() {
     wah_v128_t expected_v128_val = {{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}};
     run_simd_v128_op_test("v128.const", &expected_v128_val, "wasm \
@@ -164,53 +192,72 @@ void test_all_v128_loads() {
         code {[ {[] i32.const 0 %t align=1 offset=0 end} ]} \
         data {[ data.active.table#0 i32.const 0 end {%'0182038405860788098A0B8C0D8E0F90'} ]}";
 
+    const char *load_mem1_wasm_spec = "wasm \
+        types {[ fn [] [v128] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1, limits.i32/1 1 ]} \
+        code {[ {[] i32.const 0 %t align=1.mem# 1 offset=0 end} ]} \
+        data {[ data.active.table# 1 i32.const 0 end {%'0182038405860788098A0B8C0D8E0F90'} ]}";
+
     // v128.load8x8_s: 0x01, 0x82(-126), 0x03, 0x84(-124), 0x05, 0x86(-122), 0x07, 0x88(-120) sign-extended to 16-bit
     wah_v128_t expected_8x8_s = {{0x01, 0x00, 0x82, 0xFF, 0x03, 0x00, 0x84, 0xFF, 0x05, 0x00, 0x86, 0xFF, 0x07, 0x00, 0x88, 0xFF}};
     run_simd_nullary_op_test("v128.load8x8_s", load_test_wasm_spec, &expected_8x8_s);
+    run_simd_nullary_op_test("v128.load8x8_s mem1", load_mem1_wasm_spec, &expected_8x8_s);
 
     // v128.load8x8_u: 0x01, 0x82, 0x03, 0x84, 0x05, 0x86, 0x07, 0x88
     wah_v128_t expected_8x8_u = {{0x01, 0x00, 0x82, 0x00, 0x03, 0x00, 0x84, 0x00, 0x05, 0x00, 0x86, 0x00, 0x07, 0x00, 0x88, 0x00}};
     run_simd_nullary_op_test("v128.load8x8_u", load_test_wasm_spec, &expected_8x8_u);
+    run_simd_nullary_op_test("v128.load8x8_u mem1", load_mem1_wasm_spec, &expected_8x8_u);
 
     // v128.load16x4_s: 0x8201, 0x8403, 0x8605, 0x8807 sign-extended to 32-bit
     wah_v128_t expected_16x4_s = {{0x01, 0x82, 0xFF, 0xFF, 0x03, 0x84, 0xFF, 0xFF, 0x05, 0x86, 0xFF, 0xFF, 0x07, 0x88, 0xFF, 0xFF}};
     run_simd_nullary_op_test("v128.load16x4_s", load_test_wasm_spec, &expected_16x4_s);
+    run_simd_nullary_op_test("v128.load16x4_s mem1", load_mem1_wasm_spec, &expected_16x4_s);
 
     // v128.load16x4_u:  0x8201, 0x8403, 0x8605, 0x8807 zero-extended to 32-bit
     wah_v128_t expected_16x4_u = {{0x01, 0x82, 0x00, 0x00, 0x03, 0x84, 0x00, 0x00, 0x05, 0x86, 0x00, 0x00, 0x07, 0x88, 0x00, 0x00}};
     run_simd_nullary_op_test("v128.load16x4_u", load_test_wasm_spec, &expected_16x4_u);
+    run_simd_nullary_op_test("v128.load16x4_u mem1", load_mem1_wasm_spec, &expected_16x4_u);
 
     // v128.load32x2_s: 0x84038201, 0x88078605 sign-extended to 64-bit
     wah_v128_t expected_32x2_s = {{0x01, 0x82, 0x03, 0x84, 0xFF, 0xFF, 0xFF, 0xFF, 0x05, 0x86, 0x07, 0x88, 0xFF, 0xFF, 0xFF, 0xFF}};
     run_simd_nullary_op_test("v128.load32x2_s", load_test_wasm_spec, &expected_32x2_s);
+    run_simd_nullary_op_test("v128.load32x2_s mem1", load_mem1_wasm_spec, &expected_32x2_s);
 
     // v128.load32x2_u: 0x84038201, 0x88078605 zero-extended to 64-bit
     wah_v128_t expected_32x2_u = {{0x01, 0x82, 0x03, 0x84, 0x00, 0x00, 0x00, 0x00, 0x05, 0x86, 0x07, 0x88, 0x00, 0x00, 0x00, 0x00}};
     run_simd_nullary_op_test("v128.load32x2_u", load_test_wasm_spec, &expected_32x2_u);
+    run_simd_nullary_op_test("v128.load32x2_u mem1", load_mem1_wasm_spec, &expected_32x2_u);
 
     // v128.load8_splat: 0x01 splatted
     wah_v128_t expected_8_splat = {{0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01}};
     run_simd_nullary_op_test("v128.load8_splat", load_test_wasm_spec, &expected_8_splat);
+    run_simd_nullary_op_test("v128.load8_splat mem1", load_mem1_wasm_spec, &expected_8_splat);
 
     // v128.load16_splat: 0x8201 splatted
     wah_v128_t expected_16_splat = {{0x01, 0x82, 0x01, 0x82, 0x01, 0x82, 0x01, 0x82, 0x01, 0x82, 0x01, 0x82, 0x01, 0x82, 0x01, 0x82}};
     run_simd_nullary_op_test("v128.load16_splat", load_test_wasm_spec, &expected_16_splat);
+    run_simd_nullary_op_test("v128.load16_splat mem1", load_mem1_wasm_spec, &expected_16_splat);
 
     // v128.load32_splat: 0x84038201 splatted
     wah_v128_t expected_32_splat = {{0x01, 0x82, 0x03, 0x84, 0x01, 0x82, 0x03, 0x84, 0x01, 0x82, 0x03, 0x84, 0x01, 0x82, 0x03, 0x84}};
     run_simd_nullary_op_test("v128.load32_splat", load_test_wasm_spec, &expected_32_splat);
+    run_simd_nullary_op_test("v128.load32_splat mem1", load_mem1_wasm_spec, &expected_32_splat);
 
     // v128.load64_splat: 0x8807860584038201 splatted
     wah_v128_t expected_64_splat = {{0x01, 0x82, 0x03, 0x84, 0x05, 0x86, 0x07, 0x88, 0x01, 0x82, 0x03, 0x84, 0x05, 0x86, 0x07, 0x88}};
     run_simd_nullary_op_test("v128.load64_splat", load_test_wasm_spec, &expected_64_splat);
+    run_simd_nullary_op_test("v128.load64_splat mem1", load_mem1_wasm_spec, &expected_64_splat);
 
     // v128.load32_zero: 0x84038201, rest zero
     wah_v128_t expected_32_zero = {{0x01, 0x82, 0x03, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
     run_simd_nullary_op_test("v128.load32_zero", load_test_wasm_spec, &expected_32_zero);
+    run_simd_nullary_op_test("v128.load32_zero mem1", load_mem1_wasm_spec, &expected_32_zero);
 
     // v128.load64_zero: 0x8807860584038201, rest zero
     wah_v128_t expected_64_zero = {{0x01, 0x82, 0x03, 0x84, 0x05, 0x86, 0x07, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
     run_simd_nullary_op_test("v128.load64_zero", load_test_wasm_spec, &expected_64_zero);
+    run_simd_nullary_op_test("v128.load64_zero mem1", load_mem1_wasm_spec, &expected_64_zero);
 
     const char *load_lane_test_wasm_spec = "wasm \
         types {[ fn [] [v128] ]} \
@@ -227,21 +274,255 @@ void test_all_v128_loads() {
             data.active.table#0 i32.const 0 end {%'0182038405860788098A0B8C0D8E0F90'} \
         ]}";
 
+    const char *load_lane_mem1_wasm_spec = "wasm \
+        types {[ fn [] [v128] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1, limits.i32/1 1 ]} \
+        code {[ \
+            {[] \
+                i32.const 0 \
+                v128.const %'00000000000000000000000000000000' \
+                %t align=1.mem# 1 offset=0 %'00' \
+            end} \
+        ]} \
+        data {[ \
+            data.active.table# 1 i32.const 0 end {%'0182038405860788098A0B8C0D8E0F90'} \
+        ]}";
+
     // v128.load8_lane: initial all zeros, lane 0 gets 0x01
     wah_v128_t expected_8_lane = {{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
     run_simd_nullary_op_test("v128.load8_lane", load_lane_test_wasm_spec, &expected_8_lane);
+    run_simd_nullary_op_test("v128.load8_lane mem1", load_lane_mem1_wasm_spec, &expected_8_lane);
 
     // v128.load16_lane: initial all zeros, lane 0 gets 0x8201
     wah_v128_t expected_16_lane = {{0x01, 0x82, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
     run_simd_nullary_op_test("v128.load16_lane", load_lane_test_wasm_spec, &expected_16_lane);
+    run_simd_nullary_op_test("v128.load16_lane mem1", load_lane_mem1_wasm_spec, &expected_16_lane);
 
     // v128.load32_lane: initial all zeros, lane 0 gets 0x84038201
     wah_v128_t expected_32_lane = {{0x01, 0x82, 0x03, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
     run_simd_nullary_op_test("v128.load32_lane", load_lane_test_wasm_spec, &expected_32_lane);
+    run_simd_nullary_op_test("v128.load32_lane mem1", load_lane_mem1_wasm_spec, &expected_32_lane);
 
     // v128.load64_lane: initial all zeros, lane 0 gets 0x8807860584038201
     wah_v128_t expected_64_lane = {{0x01, 0x82, 0x03, 0x84, 0x05, 0x86, 0x07, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
     run_simd_nullary_op_test("v128.load64_lane", load_lane_test_wasm_spec, &expected_64_lane);
+    run_simd_nullary_op_test("v128.load64_lane mem1", load_lane_mem1_wasm_spec, &expected_64_lane);
+}
+
+void test_all_v128_memory64_loads() {
+    const char *mem0_spec = "wasm \
+        types {[ fn [] [v128] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i64/1 1 ]} \
+        code {[ {[] i64.const 0 %t align=1 offset=0 end} ]} \
+        data {[ data.active.table#0 i64.const 0 end {%'0182038405860788098A0B8C0D8E0F90'} ]}";
+
+    const char *mem1_spec = "wasm \
+        types {[ fn [] [v128] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1, limits.i64/1 1 ]} \
+        code {[ {[] i64.const 0 %t align=1.mem# 1 offset=0 end} ]} \
+        data {[ data.active.table# 1 i64.const 0 end {%'0182038405860788098A0B8C0D8E0F90'} ]}";
+
+    wah_v128_t expected_8x8_s = {{0x01, 0x00, 0x82, 0xFF, 0x03, 0x00, 0x84, 0xFF, 0x05, 0x00, 0x86, 0xFF, 0x07, 0x00, 0x88, 0xFF}};
+    wah_v128_t expected_8x8_u = {{0x01, 0x00, 0x82, 0x00, 0x03, 0x00, 0x84, 0x00, 0x05, 0x00, 0x86, 0x00, 0x07, 0x00, 0x88, 0x00}};
+    wah_v128_t expected_16x4_s = {{0x01, 0x82, 0xFF, 0xFF, 0x03, 0x84, 0xFF, 0xFF, 0x05, 0x86, 0xFF, 0xFF, 0x07, 0x88, 0xFF, 0xFF}};
+    wah_v128_t expected_16x4_u = {{0x01, 0x82, 0x00, 0x00, 0x03, 0x84, 0x00, 0x00, 0x05, 0x86, 0x00, 0x00, 0x07, 0x88, 0x00, 0x00}};
+    wah_v128_t expected_32x2_s = {{0x01, 0x82, 0x03, 0x84, 0xFF, 0xFF, 0xFF, 0xFF, 0x05, 0x86, 0x07, 0x88, 0xFF, 0xFF, 0xFF, 0xFF}};
+    wah_v128_t expected_32x2_u = {{0x01, 0x82, 0x03, 0x84, 0x00, 0x00, 0x00, 0x00, 0x05, 0x86, 0x07, 0x88, 0x00, 0x00, 0x00, 0x00}};
+    wah_v128_t expected_8_splat = {{0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01}};
+    wah_v128_t expected_16_splat = {{0x01, 0x82, 0x01, 0x82, 0x01, 0x82, 0x01, 0x82, 0x01, 0x82, 0x01, 0x82, 0x01, 0x82, 0x01, 0x82}};
+    wah_v128_t expected_32_splat = {{0x01, 0x82, 0x03, 0x84, 0x01, 0x82, 0x03, 0x84, 0x01, 0x82, 0x03, 0x84, 0x01, 0x82, 0x03, 0x84}};
+    wah_v128_t expected_64_splat = {{0x01, 0x82, 0x03, 0x84, 0x05, 0x86, 0x07, 0x88, 0x01, 0x82, 0x03, 0x84, 0x05, 0x86, 0x07, 0x88}};
+    wah_v128_t expected_32_zero = {{0x01, 0x82, 0x03, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
+    wah_v128_t expected_64_zero = {{0x01, 0x82, 0x03, 0x84, 0x05, 0x86, 0x07, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
+
+    run_simd_nullary_op_test("v128.load8x8_s memory64 mem0", mem0_spec, &expected_8x8_s);
+    run_simd_nullary_op_test("v128.load8x8_u memory64 mem0", mem0_spec, &expected_8x8_u);
+    run_simd_nullary_op_test("v128.load16x4_s memory64 mem0", mem0_spec, &expected_16x4_s);
+    run_simd_nullary_op_test("v128.load16x4_u memory64 mem0", mem0_spec, &expected_16x4_u);
+    run_simd_nullary_op_test("v128.load32x2_s memory64 mem0", mem0_spec, &expected_32x2_s);
+    run_simd_nullary_op_test("v128.load32x2_u memory64 mem0", mem0_spec, &expected_32x2_u);
+    run_simd_nullary_op_test("v128.load8_splat memory64 mem0", mem0_spec, &expected_8_splat);
+    run_simd_nullary_op_test("v128.load16_splat memory64 mem0", mem0_spec, &expected_16_splat);
+    run_simd_nullary_op_test("v128.load32_splat memory64 mem0", mem0_spec, &expected_32_splat);
+    run_simd_nullary_op_test("v128.load64_splat memory64 mem0", mem0_spec, &expected_64_splat);
+    run_simd_nullary_op_test("v128.load32_zero memory64 mem0", mem0_spec, &expected_32_zero);
+    run_simd_nullary_op_test("v128.load64_zero memory64 mem0", mem0_spec, &expected_64_zero);
+
+    run_simd_nullary_op_test("v128.load8x8_s memory64 mem1", mem1_spec, &expected_8x8_s);
+    run_simd_nullary_op_test("v128.load8x8_u memory64 mem1", mem1_spec, &expected_8x8_u);
+    run_simd_nullary_op_test("v128.load16x4_s memory64 mem1", mem1_spec, &expected_16x4_s);
+    run_simd_nullary_op_test("v128.load16x4_u memory64 mem1", mem1_spec, &expected_16x4_u);
+    run_simd_nullary_op_test("v128.load32x2_s memory64 mem1", mem1_spec, &expected_32x2_s);
+    run_simd_nullary_op_test("v128.load32x2_u memory64 mem1", mem1_spec, &expected_32x2_u);
+    run_simd_nullary_op_test("v128.load8_splat memory64 mem1", mem1_spec, &expected_8_splat);
+    run_simd_nullary_op_test("v128.load16_splat memory64 mem1", mem1_spec, &expected_16_splat);
+    run_simd_nullary_op_test("v128.load32_splat memory64 mem1", mem1_spec, &expected_32_splat);
+    run_simd_nullary_op_test("v128.load64_splat memory64 mem1", mem1_spec, &expected_64_splat);
+    run_simd_nullary_op_test("v128.load32_zero memory64 mem1", mem1_spec, &expected_32_zero);
+    run_simd_nullary_op_test("v128.load64_zero memory64 mem1", mem1_spec, &expected_64_zero);
+}
+
+static void run_v128_lane_store_test(const char *name, const char *spec, uint32_t memidx) {
+    wah_module_t module = {0};
+    wah_exec_context_t ctx = {0};
+
+    (void)memidx;
+    printf("Testing %s...\n", name);
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 141); // 4 + (5+6) + (5+6+7+8) + (9+10+11+12+13+14+15+16)
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+void test_v128_memory64_lanes() {
+    const char *load_lane_mem0 = "wasm \
+        types {[ fn [] [v128] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i64/1 1 ]} \
+        code {[ {[] i64.const 0 v128.const %'00000000000000000000000000000000' %t align=1 offset=0 %'00' end} ]} \
+        data {[ data.active.table#0 i64.const 0 end {%'0182038405860788098A0B8C0D8E0F90'} ]}";
+
+    const char *load_lane_mem1 = "wasm \
+        types {[ fn [] [v128] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1, limits.i64/1 1 ]} \
+        code {[ {[] i64.const 0 v128.const %'00000000000000000000000000000000' %t align=1.mem# 1 offset=0 %'00' end} ]} \
+        data {[ data.active.table# 1 i64.const 0 end {%'0182038405860788098A0B8C0D8E0F90'} ]}";
+
+    wah_v128_t expected_8_lane = {{0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
+    wah_v128_t expected_16_lane = {{0x01, 0x82, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
+    wah_v128_t expected_32_lane = {{0x01, 0x82, 0x03, 0x84, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
+    wah_v128_t expected_64_lane = {{0x01, 0x82, 0x03, 0x84, 0x05, 0x86, 0x07, 0x88, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
+
+    run_simd_nullary_op_test("v128.load8_lane memory64 mem0", load_lane_mem0, &expected_8_lane);
+    run_simd_nullary_op_test("v128.load16_lane memory64 mem0", load_lane_mem0, &expected_16_lane);
+    run_simd_nullary_op_test("v128.load32_lane memory64 mem0", load_lane_mem0, &expected_32_lane);
+    run_simd_nullary_op_test("v128.load64_lane memory64 mem0", load_lane_mem0, &expected_64_lane);
+    run_simd_nullary_op_test("v128.load8_lane memory64 mem1", load_lane_mem1, &expected_8_lane);
+    run_simd_nullary_op_test("v128.load16_lane memory64 mem1", load_lane_mem1, &expected_16_lane);
+    run_simd_nullary_op_test("v128.load32_lane memory64 mem1", load_lane_mem1, &expected_32_lane);
+    run_simd_nullary_op_test("v128.load64_lane memory64 mem1", load_lane_mem1, &expected_64_lane);
+
+    const char *store_lane_mem0 = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i64/1 1 ]} \
+        code {[ {[] \
+            i64.const 0 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store8_lane align=1 offset=0 %'03' \
+            i64.const 2 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store16_lane align=1 offset=0 %'02' \
+            i64.const 8 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store32_lane align=1 offset=0 %'01' \
+            i64.const 16 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store64_lane align=1 offset=0 %'01' \
+            i64.const 0 i32.load8_u align=1 offset=0 \
+            i64.const 2 i32.load8_u align=1 offset=0 i32.add \
+            i64.const 3 i32.load8_u align=1 offset=0 i32.add \
+            i64.const 8 i32.load8_u align=1 offset=0 i32.add \
+            i64.const 9 i32.load8_u align=1 offset=0 i32.add \
+            i64.const 10 i32.load8_u align=1 offset=0 i32.add \
+            i64.const 11 i32.load8_u align=1 offset=0 i32.add \
+            i64.const 16 i32.load8_u align=1 offset=0 i32.add \
+            i64.const 17 i32.load8_u align=1 offset=0 i32.add \
+            i64.const 18 i32.load8_u align=1 offset=0 i32.add \
+            i64.const 19 i32.load8_u align=1 offset=0 i32.add \
+            i64.const 20 i32.load8_u align=1 offset=0 i32.add \
+            i64.const 21 i32.load8_u align=1 offset=0 i32.add \
+            i64.const 22 i32.load8_u align=1 offset=0 i32.add \
+            i64.const 23 i32.load8_u align=1 offset=0 i32.add \
+        end} ]}";
+
+    const char *store_lane_mem1 = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1, limits.i64/1 1 ]} \
+        code {[ {[] \
+            i64.const 0 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store8_lane align=1.mem# 1 offset=0 %'03' \
+            i64.const 2 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store16_lane align=1.mem# 1 offset=0 %'02' \
+            i64.const 8 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store32_lane align=1.mem# 1 offset=0 %'01' \
+            i64.const 16 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store64_lane align=1.mem# 1 offset=0 %'01' \
+            i64.const 0 i32.load8_u align=1.mem# 1 offset=0 \
+            i64.const 2 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i64.const 3 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i64.const 8 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i64.const 9 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i64.const 10 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i64.const 11 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i64.const 16 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i64.const 17 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i64.const 18 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i64.const 19 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i64.const 20 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i64.const 21 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i64.const 22 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i64.const 23 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+        end} ]}";
+
+    run_v128_lane_store_test("v128.store*_lane memory64 mem0", store_lane_mem0, 0);
+    run_v128_lane_store_test("v128.store*_lane memory64 mem1", store_lane_mem1, 1);
+}
+
+void test_v128_i32_store_lanes() {
+    const char *store_lane_mem0 = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        code {[ {[] \
+            i32.const 0 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store8_lane align=1 offset=0 %'03' \
+            i32.const 2 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store16_lane align=1 offset=0 %'02' \
+            i32.const 8 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store32_lane align=1 offset=0 %'01' \
+            i32.const 16 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store64_lane align=1 offset=0 %'01' \
+            i32.const 0 i32.load8_u align=1 offset=0 \
+            i32.const 2 i32.load8_u align=1 offset=0 i32.add \
+            i32.const 3 i32.load8_u align=1 offset=0 i32.add \
+            i32.const 8 i32.load8_u align=1 offset=0 i32.add \
+            i32.const 9 i32.load8_u align=1 offset=0 i32.add \
+            i32.const 10 i32.load8_u align=1 offset=0 i32.add \
+            i32.const 11 i32.load8_u align=1 offset=0 i32.add \
+            i32.const 16 i32.load8_u align=1 offset=0 i32.add \
+            i32.const 17 i32.load8_u align=1 offset=0 i32.add \
+            i32.const 18 i32.load8_u align=1 offset=0 i32.add \
+            i32.const 19 i32.load8_u align=1 offset=0 i32.add \
+            i32.const 20 i32.load8_u align=1 offset=0 i32.add \
+            i32.const 21 i32.load8_u align=1 offset=0 i32.add \
+            i32.const 22 i32.load8_u align=1 offset=0 i32.add \
+            i32.const 23 i32.load8_u align=1 offset=0 i32.add \
+        end} ]}";
+
+    const char *store_lane_mem1 = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1, limits.i32/1 1 ]} \
+        code {[ {[] \
+            i32.const 0 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store8_lane align=1.mem# 1 offset=0 %'03' \
+            i32.const 2 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store16_lane align=1.mem# 1 offset=0 %'02' \
+            i32.const 8 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store32_lane align=1.mem# 1 offset=0 %'01' \
+            i32.const 16 v128.const %'0102030405060708090a0b0c0d0e0f10' v128.store64_lane align=1.mem# 1 offset=0 %'01' \
+            i32.const 0 i32.load8_u align=1.mem# 1 offset=0 \
+            i32.const 2 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i32.const 3 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i32.const 8 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i32.const 9 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i32.const 10 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i32.const 11 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i32.const 16 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i32.const 17 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i32.const 18 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i32.const 19 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i32.const 20 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i32.const 21 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i32.const 22 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+            i32.const 23 i32.load8_u align=1.mem# 1 offset=0 i32.add \
+        end} ]}";
+
+    run_v128_lane_store_test("v128.store*_lane i32 mem0", store_lane_mem0, 0);
+    run_v128_lane_store_test("v128.store*_lane i32 mem1", store_lane_mem1, 1);
 }
 
 void test_v128_not() {
@@ -1232,7 +1513,11 @@ int main() {
 
     test_v128_const();
     test_v128_load_store();
+    test_v128_memory64_load_store();
     test_all_v128_loads();
+    test_all_v128_memory64_loads();
+    test_v128_memory64_lanes();
+    test_v128_i32_store_lanes();
     test_v128_not();
     test_i8x16_add();
     test_f32x4_add();
