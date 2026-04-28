@@ -2645,6 +2645,18 @@ static WAH_ALWAYS_INLINE int32_t wah_i64x2_bitmask_sse2(__m128i v) {
 
 #endif
 
+// abs/neg as bitwise operations (wasm spec requires NaN payload preservation)
+static WAH_ALWAYS_INLINE float wah_fabsf(float f) {
+    union { float f; uint32_t i; } u = { .f = f };
+    u.i &= 0x7fffffffU;
+    return u.f;
+}
+static WAH_ALWAYS_INLINE double wah_fabs(double d) {
+    union { double f; uint64_t i; } u = { .f = d };
+    u.i &= 0x7fffffffffffffffULL;
+    return u.f;
+}
+
 // nearest (round to nearest, ties to even)
 // XXX: Clang doesn't support __builtin_roundeven(f) without recent enough -march, so we opt in for known archs
 static WAH_ALWAYS_INLINE float wah_nearest_f32(float f) {
@@ -11290,7 +11302,7 @@ WAH_RUN(END) { // End of function
     WAH_RUN(I##N##_GE_U) CMP_I_U(N,>=) \
     WAH_RUN(I##N##_EQZ) { sp[-1].i32 = (sp[-1].i##N == 0) ? 1 : 0; WAH_NEXT(); } \
     \
-    WAH_RUN(F##N##_ABS) { sp[-1].f##N = fabs##_F(sp[-1].f##N); WAH_NEXT(); } \
+    WAH_RUN(F##N##_ABS) { sp[-1].f##N = wah_fabs##_F(sp[-1].f##N); WAH_NEXT(); } \
     WAH_RUN(F##N##_NEG) { sp[-1].f##N = -(sp[-1].f##N); WAH_NEXT(); } \
     WAH_RUN(F##N##_CEIL) UNOP_F_FN(N, ceil##_F) \
     WAH_RUN(F##N##_FLOOR) UNOP_F_FN(N, floor##_F) \
@@ -12910,7 +12922,7 @@ WAH_RUN(F32X4_TRUNC) N128_FP_UNARY_OP_F32(wah_vrndq_f32, V128_UNARY_OP_LANE_FN(3
 WAH_RUN(F32X4_NEAREST) N128_FP_UNARY_OP_F32(wah_vrndnq_f32, V128_UNARY_OP_LANE_FN(32, wah_nearest_f32, f32))
 WAH_RUN(F32X4_ABS)
     WAH_IF_X86_64({ sp[-1]._m128 = _mm_andnot_ps(_mm_set1_ps(-0.0f), sp[-1]._m128); WAH_NEXT(); },
-        N128_UNARY_OP(wah_vabsq_f32, V128_UNARY_OP_LANE_FN(32, fabsf, f32)))
+        N128_UNARY_OP(wah_vabsq_f32, V128_UNARY_OP_LANE_FN(32, wah_fabsf, f32)))
 WAH_RUN(F32X4_NEG)
     WAH_IF_X86_64({ sp[-1]._m128 = _mm_xor_ps(_mm_set1_ps(-0.0f), sp[-1]._m128); WAH_NEXT(); },
         N128_UNARY_OP(wah_vnegq_f32, V128_UNARY_OP_LANE(32, -, f32)))
@@ -12926,7 +12938,7 @@ WAH_RUN(F64X2_TRUNC) N128_FP_UNARY_OP_F64(wah_vrndq_f64, V128_UNARY_OP_LANE_FN(6
 WAH_RUN(F64X2_NEAREST) N128_FP_UNARY_OP_F64(wah_vrndnq_f64, V128_UNARY_OP_LANE_FN(64, wah_nearest_f64, f64))
 WAH_RUN(F64X2_ABS)
     WAH_IF_X86_64({ sp[-1]._m128d = _mm_andnot_pd(_mm_set1_pd(-0.0), sp[-1]._m128d); WAH_NEXT(); },
-        N128_UNARY_OP(wah_vabsq_f64, V128_UNARY_OP_LANE_FN(64, fabs, f64)))
+        N128_UNARY_OP(wah_vabsq_f64, V128_UNARY_OP_LANE_FN(64, wah_fabs, f64)))
 WAH_RUN(F64X2_NEG)
     WAH_IF_X86_64({ sp[-1]._m128d = _mm_xor_pd(_mm_set1_pd(-0.0), sp[-1]._m128d); WAH_NEXT(); },
         N128_UNARY_OP(wah_vnegq_f64, V128_UNARY_OP_LANE(64, -, f64)))
