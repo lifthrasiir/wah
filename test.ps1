@@ -24,20 +24,18 @@ if ($msvc) {
 }
 
 if ($compiler -eq 'clang') {
-    $msys2Clang = 'C:\msys64\ucrt64\bin\clang.exe'
-    if (Test-Path $msys2Clang) {
+    $clangCandidates = @(
+        'C:\msys64\clang64\bin\clang.exe',
+        'C:\msys64\ucrt64\bin\clang.exe'
+    )
+    $msys2Clang = $clangCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+    if ($msys2Clang) {
         $compiler = $msys2Clang
-    } elseif ($env:GITHUB_ACTIONS) {
-        Write-Host "## Error: expected MSYS2 clang at $msys2Clang"
-        exit 1
     }
 } elseif ($compiler -eq 'gcc') {
     $msys2Gcc = 'C:\msys64\ucrt64\bin\gcc.exe'
     if (Test-Path $msys2Gcc) {
         $compiler = $msys2Gcc
-    } elseif ($env:GITHUB_ACTIONS) {
-        Write-Host "## Error: expected MSYS2 gcc at $msys2Gcc"
-        exit 1
     }
 }
 

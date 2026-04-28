@@ -60,34 +60,27 @@ jobs:
           install: mingw-w64-ucrt-x86_64-gcc
           path-type: minimal
 
-      - name: Add MSYS2 GCC to PATH
-        if: runner.os == 'Windows' && matrix.cc == 'gcc'
-        shell: pwsh
-        run: Add-Content $env:GITHUB_PATH 'C:\msys64\ucrt64\bin'
-
       - name: Set up MSYS2 Clang
         if: runner.os == 'Windows' && matrix.cc == 'clang'
         uses: msys2/setup-msys2@v2
         with:
-          msystem: UCRT64
+          msystem: CLANG64
           update: true
-          install: mingw-w64-ucrt-x86_64-clang
+          install: mingw-w64-clang-x86_64-clang
           path-type: minimal
-
-      - name: Add MSYS2 Clang to PATH
-        if: runner.os == 'Windows' && matrix.cc == 'clang'
-        shell: pwsh
-        run: Add-Content $env:GITHUB_PATH 'C:\msys64\ucrt64\bin'
 
       - name: Build and test
         if: matrix.test == 'make'
         run: make -j$(getconf _NPROCESSORS_ONLN) test CC=${{ matrix.cc }}
 
       - name: Build and test
-        if: matrix.test == 'ps1'
+        if: matrix.test == 'ps1' && matrix.cc == 'msvc'
         shell: pwsh
+        run: ./test.ps1 -msvc
+
+      - name: Build and test
+        if: matrix.test == 'ps1' && matrix.cc != 'msvc'
+        shell: msys2 {0}
         run: |
-          if ('${{ matrix.cc }}' -eq 'clang' -or '${{ matrix.cc }}' -eq 'gcc') {
-            $env:Path = 'C:\msys64\ucrt64\bin;' + $env:Path
-          }
-          ./test.ps1 -${{ matrix.cc }}
+          which ${{ matrix.cc }}
+          powershell -ExecutionPolicy Bypass -File ./test.ps1 -${{ matrix.cc }}
