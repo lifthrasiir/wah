@@ -28,10 +28,10 @@ int main(void) {
         wah_export_desc_t entry = {0};
         assert_ok(wah_module_export_by_name(&mod, "memory", &entry));
         assert_eq_i32(entry.kind, WAH_KIND_MEMORY);
-        uint64_t min_p, max_p;
-        assert_ok(wah_debug_memory_type(&mod, 0, NULL, &min_p, &max_p));
-        assert_eq_u64(min_p, 1);
-        assert_eq_u64(max_p, 10);
+        wah_memory_desc_t memory;
+        assert_ok(wah_module_memory(&mod, 0, &memory));
+        assert_eq_u64(memory.min_pages, 1);
+        assert_eq_u64(memory.max_pages, 10);
 
         wah_free_module(&mod);
     }
@@ -48,10 +48,10 @@ int main(void) {
         assert_ok(wah_module_export_by_name(&mod, "const_i32", &entry));
         assert_eq_i32(entry.kind, WAH_KIND_GLOBAL);
         assert_eq_i32(entry.u.global.type, WAH_TYPE_I32);
-        wah_type_t gtype; bool gmut;
-        assert_ok(wah_debug_global_def(&mod, 0, &gtype, &gmut));
-        assert_eq_i32(gtype, WAH_TYPE_I32);
-        assert_false(gmut);
+        wah_global_desc_t global;
+        assert_ok(wah_module_global(&mod, 0, &global));
+        assert_eq_i32(global.type, WAH_TYPE_I32);
+        assert_false(global.is_mutable);
 
         // Verify initial value through execution context
         wah_exec_context_t ctx;
@@ -71,9 +71,9 @@ int main(void) {
         assert_ok(wah_new_module(&mod));
         assert_ok(wah_module_export_global_i32(&mod, "mut_i32", true, -100));
 
-        bool gmut;
-        assert_ok(wah_debug_global_def(&mod, 0, NULL, &gmut));
-        assert_true(gmut);
+        wah_global_desc_t global;
+        assert_ok(wah_module_global(&mod, 0, &global));
+        assert_true(global.is_mutable);
 
         // Verify initial value through execution context
         wah_exec_context_t ctx;
@@ -94,9 +94,9 @@ int main(void) {
 
         int64_t test_value = 0x123456789ABCDEF0LL;
         assert_ok(wah_module_export_global_i64(&mod, "const_i64", false, test_value));
-        wah_type_t gtype;
-        assert_ok(wah_debug_global_def(&mod, 0, &gtype, NULL));
-        assert_eq_i32(gtype, WAH_TYPE_I64);
+        wah_global_desc_t global;
+        assert_ok(wah_module_global(&mod, 0, &global));
+        assert_eq_i32(global.type, WAH_TYPE_I64);
 
         // Verify initial value through execution context
         wah_exec_context_t ctx;
@@ -117,9 +117,9 @@ int main(void) {
 
         float test_value = 3.14159f;
         assert_ok(wah_module_export_global_f32(&mod, "const_f32", false, test_value));
-        wah_type_t gtype;
-        assert_ok(wah_debug_global_def(&mod, 0, &gtype, NULL));
-        assert_eq_i32(gtype, WAH_TYPE_F32);
+        wah_global_desc_t global;
+        assert_ok(wah_module_global(&mod, 0, &global));
+        assert_eq_i32(global.type, WAH_TYPE_F32);
 
         wah_free_module(&mod);
     }
@@ -132,9 +132,9 @@ int main(void) {
 
         double test_value = 2.718281828459045;
         assert_ok(wah_module_export_global_f64(&mod, "const_f64", false, test_value));
-        wah_type_t gtype;
-        assert_ok(wah_debug_global_def(&mod, 0, &gtype, NULL));
-        assert_eq_i32(gtype, WAH_TYPE_F64);
+        wah_global_desc_t global;
+        assert_ok(wah_module_global(&mod, 0, &global));
+        assert_eq_i32(global.type, WAH_TYPE_F64);
 
         wah_free_module(&mod);
     }
@@ -147,9 +147,9 @@ int main(void) {
 
         wah_v128_t test_value = {{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}};
         assert_ok(wah_module_export_global_v128(&mod, "const_v128", false, &test_value));
-        wah_type_t gtype;
-        assert_ok(wah_debug_global_def(&mod, 0, &gtype, NULL));
-        assert_eq_i32(gtype, WAH_TYPE_V128);
+        wah_global_desc_t global;
+        assert_ok(wah_module_global(&mod, 0, &global));
+        assert_eq_i32(global.type, WAH_TYPE_V128);
 
         wah_free_module(&mod);
     }

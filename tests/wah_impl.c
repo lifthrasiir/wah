@@ -6,7 +6,6 @@
 #include <stdlib.h>
 
 uint32_t wah_debug_wasm_page_size(void) { return WAH_WASM_PAGE_SIZE; }
-uint32_t wah_debug_no_supertype(void) { return WAH_NO_SUPERTYPE; }
 
 uint8_t *wah_debug_memory_data(const wah_exec_context_t *ctx, uint32_t mem_idx) {
     return ctx->memories[mem_idx].data;
@@ -14,36 +13,8 @@ uint8_t *wah_debug_memory_data(const wah_exec_context_t *ctx, uint32_t mem_idx) 
 uint64_t wah_debug_memory_size(const wah_exec_context_t *ctx, uint32_t mem_idx) {
     return ctx->memories[mem_idx].size;
 }
-wah_error_t wah_debug_memory_type(const wah_module_t *mod, uint32_t idx,
-    wah_type_t *out_addr_type, uint64_t *out_min_pages, uint64_t *out_max_pages)
-{
-    if (idx >= mod->memory_count + mod->import_memory_count) return WAH_ERROR_NOT_FOUND;
-    if (out_addr_type) *out_addr_type = mod->memories[idx].addr_type;
-    if (out_min_pages) *out_min_pages = mod->memories[idx].min_pages;
-    if (out_max_pages) *out_max_pages = mod->memories[idx].max_pages;
-    return WAH_OK;
-}
-
-wah_error_t wah_debug_table_type(const wah_module_t *mod, uint32_t idx,
-    wah_type_t *out_elem_type, uint64_t *out_min_elements, uint64_t *out_max_elements)
-{
-    if (idx >= mod->table_count + mod->import_table_count) return WAH_ERROR_NOT_FOUND;
-    if (out_elem_type) *out_elem_type = mod->tables[idx].elem_type;
-    if (out_min_elements) *out_min_elements = mod->tables[idx].min_elements;
-    if (out_max_elements) *out_max_elements = mod->tables[idx].max_elements;
-    return WAH_OK;
-}
 uint64_t wah_debug_table_size(const wah_exec_context_t *ctx, uint32_t tbl_idx) {
     return ctx->tables[tbl_idx].size;
-}
-
-wah_error_t wah_debug_global_def(const wah_module_t *mod, uint32_t idx,
-    wah_type_t *out_type, bool *out_is_mutable)
-{
-    if (idx >= mod->global_count) return WAH_ERROR_NOT_FOUND;
-    if (out_type) *out_type = mod->globals[idx].type;
-    if (out_is_mutable) *out_is_mutable = mod->globals[idx].is_mutable;
-    return WAH_OK;
 }
 
 wah_value_t wah_debug_global_value(const wah_exec_context_t *ctx,
@@ -56,34 +27,12 @@ wah_value_t wah_debug_global_value(const wah_exec_context_t *ctx,
     return ctx->globals[global_idx];
 }
 
-wah_error_t wah_debug_func_type(const wah_module_t *mod, uint32_t type_idx,
-    uint32_t *out_param_count, const wah_type_t **out_param_types,
-    uint32_t *out_result_count, const wah_type_t **out_result_types)
-{
-    if (type_idx >= mod->type_count) return WAH_ERROR_NOT_FOUND;
-    if (out_param_count) *out_param_count = mod->types[type_idx].param_count;
-    if (out_param_types) *out_param_types = mod->types[type_idx].param_types;
-    if (out_result_count) *out_result_count = mod->types[type_idx].result_count;
-    if (out_result_types) *out_result_types = mod->types[type_idx].result_types;
-    return WAH_OK;
-}
-
-uint32_t wah_debug_type_def_supertype(const wah_module_t *mod, uint32_t type_idx) {
-    if (!mod->type_defs || type_idx >= mod->type_count) return UINT32_MAX;
-    return mod->type_defs[type_idx].supertype;
-}
-
 wah_error_t wah_debug_element_segment(const wah_module_t *mod, uint32_t idx,
     wah_type_t *out_elem_type)
 {
     if (idx >= mod->element_segment_count) return WAH_ERROR_NOT_FOUND;
     if (out_elem_type) *out_elem_type = mod->element_segments[idx].elem_type;
     return WAH_OK;
-}
-
-bool wah_debug_is_mutable_import_global(const wah_module_t *mod, uint32_t idx) {
-    if (idx >= mod->import_global_count) return false;
-    return mod->global_imports[idx].is_mutable;
 }
 
 wah_error_t wah_debug_module_export_table(wah_module_t *mod, const char *name,

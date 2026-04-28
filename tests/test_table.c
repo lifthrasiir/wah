@@ -596,8 +596,8 @@ void wah_test_table_no_max_is_unbounded() {
             {[] ref.null funcref i32.const 5 table.grow 0 end}, \
         ]}";
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    { uint64_t mn, mx; assert_ok(wah_debug_table_type(&module, 0, NULL, &mn, &mx));
-      assert_eq_u32((uint32_t)mn, 3); assert_eq_u32((uint32_t)mx, UINT32_MAX); }
+    { wah_table_desc_t td; assert_ok(wah_module_table(&module, 0, &td));
+      assert_eq_u32((uint32_t)td.min_elements, 3); assert_eq_u32((uint32_t)td.max_elements, UINT32_MAX); }
 
     wah_exec_context_t ctx;
     assert_ok(wah_exec_context_create(&ctx, &module));

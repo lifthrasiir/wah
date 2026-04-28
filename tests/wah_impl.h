@@ -8,39 +8,21 @@
 
 // --- Constants as functions ---
 uint32_t wah_debug_wasm_page_size(void);
-uint32_t wah_debug_no_supertype(void);
 
 // --- Memory accessors ---
 uint8_t *wah_debug_memory_data(const wah_exec_context_t *ctx, uint32_t mem_idx);
 uint64_t wah_debug_memory_size(const wah_exec_context_t *ctx, uint32_t mem_idx);
-wah_error_t wah_debug_memory_type(const wah_module_t *mod, uint32_t idx,
-    wah_type_t *out_addr_type, uint64_t *out_min_pages, uint64_t *out_max_pages);
 
 // --- Table accessors ---
-wah_error_t wah_debug_table_type(const wah_module_t *mod, uint32_t idx,
-    wah_type_t *out_elem_type, uint64_t *out_min_elements, uint64_t *out_max_elements);
 uint64_t wah_debug_table_size(const wah_exec_context_t *ctx, uint32_t tbl_idx);
 
 // --- Global accessors ---
-wah_error_t wah_debug_global_def(const wah_module_t *mod, uint32_t idx,
-    wah_type_t *out_type, bool *out_is_mutable);
 wah_value_t wah_debug_global_value(const wah_exec_context_t *ctx,
     const wah_module_t *mod, uint32_t global_idx);
-
-// --- Func type accessors ---
-wah_error_t wah_debug_func_type(const wah_module_t *mod, uint32_t type_idx,
-    uint32_t *out_param_count, const wah_type_t **out_param_types,
-    uint32_t *out_result_count, const wah_type_t **out_result_types);
-
-// --- Type def accessors ---
-uint32_t wah_debug_type_def_supertype(const wah_module_t *mod, uint32_t type_idx);
 
 // --- Element segment accessors ---
 wah_error_t wah_debug_element_segment(const wah_module_t *mod, uint32_t idx,
     wah_type_t *out_elem_type);
-
-// --- Import global info ---
-bool wah_debug_is_mutable_import_global(const wah_module_t *mod, uint32_t idx);
 
 // --- Module export table (programmatic table export creation) ---
 wah_error_t wah_debug_module_export_table(wah_module_t *mod, const char *name,

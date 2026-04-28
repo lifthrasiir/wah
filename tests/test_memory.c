@@ -165,7 +165,7 @@ void test_memory_api() {
         ]}";
     assert_ok(wah_parse_module_from_spec(&module, wasm_memory_spec));
     assert_eq_u32(module.memory_count, 1);
-    { uint64_t mp; assert_ok(wah_debug_memory_type(&module, 0, NULL, &mp, NULL)); assert_eq_u64(mp, 1); }
+    { wah_memory_desc_t md; assert_ok(wah_module_memory(&module, 0, &md)); assert_eq_u64(md.min_pages, 1); }
 
     // Test 2: Create execution context
     assert_ok(wah_exec_context_create(&ctx, &module));
@@ -254,8 +254,8 @@ void test_memory_ops() {
         ]}";
     assert_ok(wah_parse_module_from_spec(&module, wasm_memory_spec_2));
     assert_eq_u32(module.memory_count, 1);
-    { uint64_t mnp, mxp; assert_ok(wah_debug_memory_type(&module, 0, NULL, &mnp, &mxp));
-      assert_eq_u64(mnp, 1); assert_eq_u64(mxp, 2); }
+    { wah_memory_desc_t md; assert_ok(wah_module_memory(&module, 0, &md));
+      assert_eq_u64(md.min_pages, 1); assert_eq_u64(md.max_pages, 2); }
 
     // Test 9: Create execution context for memory operations
     assert_ok(wah_exec_context_create(&ctx, &module));
@@ -499,8 +499,8 @@ void test_memory_no_max_is_unbounded() {
             {[] local.get 0 memory.grow 0 end}, \
         ]}";
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    { uint64_t mnp, mxp; assert_ok(wah_debug_memory_type(&module, 0, NULL, &mnp, &mxp));
-      assert_eq_u64(mnp, 1); assert_eq_u64(mxp, UINT64_MAX); }
+    { wah_memory_desc_t md; assert_ok(wah_module_memory(&module, 0, &md));
+      assert_eq_u64(md.min_pages, 1); assert_eq_u64(md.max_pages, UINT64_MAX); }
 
     assert_ok(wah_exec_context_create(&ctx, &module));
 
@@ -621,4 +621,3 @@ int main() {
     printf("\nAll memory tests passed!\n");
     return 0;
 }
-

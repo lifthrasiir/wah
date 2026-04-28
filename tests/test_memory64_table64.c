@@ -207,9 +207,9 @@ static void test_memory64_basic() {
 
     assert_ok(wah_parse_module_from_spec(&module, spec));
     assert_eq_u32(module.memory_count, 1);
-    { wah_type_t at; uint64_t mnp;
-      assert_ok(wah_debug_memory_type(&module, 0, &at, &mnp, NULL));
-      assert_true(at == WAH_TYPE_I64); assert_eq_u64(mnp, 1); }
+    { wah_memory_desc_t md;
+      assert_ok(wah_module_memory(&module, 0, &md));
+      assert_true(md.addr_type == WAH_TYPE_I64); assert_eq_u64(md.min_pages, 1); }
 
     assert_ok(wah_exec_context_create(&ctx, &module));
     assert_true(wah_debug_memory_data(&ctx, 0) != NULL);
@@ -258,9 +258,9 @@ static void test_memory64_size_grow() {
         ]}";
 
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    { wah_type_t at; uint64_t mnp, mxp;
-      assert_ok(wah_debug_memory_type(&module, 0, &at, &mnp, &mxp));
-      assert_true(at == WAH_TYPE_I64); assert_eq_u64(mnp, 1); assert_eq_u64(mxp, 2); }
+    { wah_memory_desc_t md;
+      assert_ok(wah_module_memory(&module, 0, &md));
+      assert_true(md.addr_type == WAH_TYPE_I64); assert_eq_u64(md.min_pages, 1); assert_eq_u64(md.max_pages, 2); }
 
     assert_ok(wah_exec_context_create(&ctx, &module));
 
@@ -378,8 +378,8 @@ static void test_memory64_large_limits() {
     wah_module_t module = {0};
     const char *spec = "wasm memories {[ limits.i64/2 1 8589934592 ]}";
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    { uint64_t mnp, mxp; assert_ok(wah_debug_memory_type(&module, 0, NULL, &mnp, &mxp));
-      assert_eq_u64(mnp, 1); assert_eq_u64(mxp, 8589934592ULL); }
+    { wah_memory_desc_t md; assert_ok(wah_module_memory(&module, 0, &md));
+      assert_eq_u64(md.min_pages, 1); assert_eq_u64(md.max_pages, 8589934592ULL); }
     wah_free_module(&module);
 }
 
