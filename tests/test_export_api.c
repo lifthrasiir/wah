@@ -25,9 +25,9 @@ int main(void) {
         assert_ok(wah_module_export_memory(&mod, "memory", 1, 10));
 
         // Verify export
-        wah_entry_t entry = {0};
+        wah_export_desc_t entry = {0};
         assert_ok(wah_module_export_by_name(&mod, "memory", &entry));
-        assert_true(WAH_TYPE_IS_MEMORY(entry.type));
+        assert_eq_i32(entry.kind, WAH_KIND_MEMORY);
         uint64_t min_p, max_p;
         assert_ok(wah_debug_memory_type(&mod, 0, NULL, &min_p, &max_p));
         assert_eq_u64(min_p, 1);
@@ -44,10 +44,10 @@ int main(void) {
         assert_ok(wah_module_export_global_i32(&mod, "const_i32", false, 42));
 
         // Verify export
-        wah_entry_t entry = {0};
+        wah_export_desc_t entry = {0};
         assert_ok(wah_module_export_by_name(&mod, "const_i32", &entry));
-        assert_true(WAH_TYPE_IS_GLOBAL(entry.type));
-        assert_eq_i32(entry.type, WAH_TYPE_I32);
+        assert_eq_i32(entry.kind, WAH_KIND_GLOBAL);
+        assert_eq_i32(entry.u.global.type, WAH_TYPE_I32);
         wah_type_t gtype; bool gmut;
         assert_ok(wah_debug_global_def(&mod, 0, &gtype, &gmut));
         assert_eq_i32(gtype, WAH_TYPE_I32);
@@ -183,7 +183,7 @@ int main(void) {
         wah_free_module(&mod);
     }
 
-    // Test: Host function type flags are exposed through wah_entry_t and wah_call_context_t
+    // Test: Host function type flags are exposed through wah_export_desc_t and wah_call_context_t
     printf("Testing host function type flags exposure...\n");
     {
         wah_module_t host_mod = {0};
@@ -191,8 +191,8 @@ int main(void) {
         assert_ok(wah_module_export_func(&host_mod, "check", "(funcref, i32) -> i32",
                                          check_flags_host, NULL, NULL));
 
-        // Verify flags through wah_entry_t
-        wah_entry_t entry;
+        // Verify flags through wah_export_desc_t
+        wah_export_desc_t entry;
         assert_ok(wah_module_export_by_name(&host_mod, "check", &entry));
         assert_true(WAH_TYPE_IS_NULLABLE(entry.u.func.param_types[0]));
         assert_true(!WAH_TYPE_IS_NULLABLE(entry.u.func.param_types[1]));
@@ -250,9 +250,10 @@ int main(void) {
         assert_ok(wah_module_export_func(&mod, "hfunc", "(i32) -> i32",
             check_flags_host, NULL, NULL));
 
-        wah_entry_t entry;
+        wah_export_desc_t entry;
         assert_ok(wah_module_export_by_name(&mod, "hfunc", &entry));
-        assert_eq_i32(entry.type, wah_debug_type_host_function());
+        assert_eq_i32(entry.kind, WAH_KIND_FUNCTION);
+        assert_true(entry.u.func.is_host);
         assert_eq_u32(entry.u.func.param_count, 1);
         assert_eq_i32(entry.u.func.param_types[0], WAH_TYPE_I32);
         assert_eq_u32(entry.u.func.result_count, 1);

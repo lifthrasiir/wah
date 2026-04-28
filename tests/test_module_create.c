@@ -40,11 +40,11 @@ int main() {
     assert_err(wah_module_export_func(&mod2, "bad_struct", "struct { i32 }", test_host_func, NULL, NULL), WAH_ERROR_BAD_SPEC);
 
     // Verify export exists
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&mod2, "test_func", &entry));
 
     // Check it's a function
-    assert_true(WAH_TYPE_IS_FUNCTION(entry.type));
+    assert_eq_i32(entry.kind, WAH_KIND_FUNCTION);
 
     wah_free_module(&mod2);
 
@@ -77,7 +77,7 @@ int main() {
     }
 
     // Check export count
-    assert_eq_u64(wah_module_num_exports(&mod4), 3);
+    assert_eq_u32(wah_module_export_count(&mod4), 3);
 
     wah_free_module(&mod4);
 

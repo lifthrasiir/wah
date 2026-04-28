@@ -6,18 +6,7 @@
 #include <stdlib.h>
 
 uint32_t wah_debug_wasm_page_size(void) { return WAH_WASM_PAGE_SIZE; }
-wah_type_t wah_debug_type_host_function(void) { return WAH_TYPE_HOST_FUNCTION; }
 uint32_t wah_debug_no_supertype(void) { return WAH_NO_SUPERTYPE; }
-uint32_t wah_debug_entry_kind_function(void) { return WAH_ENTRY_KIND_FUNCTION; }
-uint32_t wah_debug_entry_kind_table(void) { return WAH_ENTRY_KIND_TABLE; }
-uint32_t wah_debug_entry_kind_memory(void) { return WAH_ENTRY_KIND_MEMORY; }
-uint32_t wah_debug_entry_kind_global(void) { return WAH_ENTRY_KIND_GLOBAL; }
-
-wah_entry_id_t wah_debug_make_entry_id(uint32_t kind, uint32_t index) {
-    return WAH_MAKE_ENTRY_ID(kind, index);
-}
-uint32_t wah_debug_get_entry_kind(wah_entry_id_t id) { return WAH_GET_ENTRY_KIND(id); }
-uint32_t wah_debug_get_entry_index(wah_entry_id_t id) { return WAH_GET_ENTRY_INDEX(id); }
 
 uint8_t *wah_debug_memory_data(const wah_exec_context_t *ctx, uint32_t mem_idx) {
     return ctx->memories[mem_idx].data;

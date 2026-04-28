@@ -34,12 +34,12 @@ void wah_test_table_indirect_call() {
     assert_ok(wah_exec_context_create(&exec_ctx, &module));
 
     // Find the exported function indices by name
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&module, "call_indirect_add", &entry));
-    uint32_t call_indirect_add_func_idx = (uint32_t)entry.id;
+    uint32_t call_indirect_add_func_idx = (uint32_t)entry.index;
 
     assert_ok(wah_module_export_by_name(&module, "call_indirect_sub", &entry));
-    uint32_t call_indirect_sub_func_idx = (uint32_t)entry.id;
+    uint32_t call_indirect_sub_func_idx = (uint32_t)entry.index;
 
     // Test call_indirect_add (calls add_one indirectly)
     // The first wah_call call should automatically call wah_instantiate.
@@ -75,9 +75,9 @@ void wah_test_table_size() {
     wah_exec_context_t exec_ctx;
     assert_ok(wah_exec_context_create(&exec_ctx, &module));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&module, "get_table_size", &entry));
-    uint32_t func_idx = (uint32_t)entry.id;
+    uint32_t func_idx = (uint32_t)entry.index;
 
     wah_value_t result;
     assert_ok(wah_call(&exec_ctx, func_idx, NULL, 0, &result));
@@ -104,9 +104,9 @@ void wah_test_table_grow() {
     wah_exec_context_t exec_ctx;
     assert_ok(wah_exec_context_create(&exec_ctx, &module));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&module, "grow_table", &entry));
-    uint32_t func_idx = (uint32_t)entry.id;
+    uint32_t func_idx = (uint32_t)entry.index;
 
     wah_value_t result;
     assert_ok(wah_call(&exec_ctx, func_idx, NULL, 0, &result));
@@ -138,9 +138,9 @@ void wah_test_table_fill() {
     wah_exec_context_t exec_ctx;
     assert_ok(wah_exec_context_create(&exec_ctx, &module));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&module, "test_fill", &entry));
-    uint32_t func_idx = (uint32_t)entry.id;
+    uint32_t func_idx = (uint32_t)entry.index;
 
     wah_value_t result;
     assert_ok(wah_call(&exec_ctx, func_idx, NULL, 0, &result));
@@ -175,9 +175,9 @@ void wah_test_table_copy() {
     wah_exec_context_t exec_ctx;
     assert_ok(wah_exec_context_create(&exec_ctx, &module));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&module, "test_copy", &entry));
-    uint32_t func_idx = (uint32_t)entry.id;
+    uint32_t func_idx = (uint32_t)entry.index;
 
     wah_value_t result;
     assert_ok(wah_call(&exec_ctx, func_idx, NULL, 0, &result));
@@ -212,9 +212,9 @@ void wah_test_table_init() {
     wah_exec_context_t exec_ctx;
     assert_ok(wah_exec_context_create(&exec_ctx, &module));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&module, "test_init", &entry));
-    uint32_t func_idx = (uint32_t)entry.id;
+    uint32_t func_idx = (uint32_t)entry.index;
 
     wah_value_t result;
     assert_ok(wah_call(&exec_ctx, func_idx, NULL, 0, &result));
@@ -246,9 +246,9 @@ void wah_test_elem_drop() {
     wah_exec_context_t exec_ctx;
     assert_ok(wah_exec_context_create(&exec_ctx, &module));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&module, "test_drop", &entry));
-    uint32_t func_idx = (uint32_t)entry.id;
+    uint32_t func_idx = (uint32_t)entry.index;
 
     wah_value_t result;
     assert_err(wah_call(&exec_ctx, func_idx, NULL, 0, &result), WAH_ERROR_TRAP); // Should trap because element segment was dropped
@@ -278,9 +278,9 @@ void wah_test_elem_active_table1() {
     wah_exec_context_t exec_ctx;
     assert_ok(wah_exec_context_create(&exec_ctx, &module));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&module, "test_call", &entry));
-    uint32_t func_idx = (uint32_t)entry.id;
+    uint32_t func_idx = (uint32_t)entry.index;
 
     // Test calling function from table#1
     wah_value_t params[1] = {{.i32 = 10}};
@@ -337,9 +337,9 @@ void wah_test_elem_import_index_drift() {
     assert_ok(wah_link_module(&exec_ctx, "mod", &host_mod));
     assert_ok(wah_instantiate(&exec_ctx));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&module, "test_call", &entry));
-    uint32_t func_idx = (uint32_t)entry.id;
+    uint32_t func_idx = (uint32_t)entry.index;
 
     // Test calling local function (index 4, which is the second local function after 2 imports)
     wah_value_t params[1] = {{.i32 = 10}};
@@ -372,9 +372,9 @@ void wah_test_elem_declarative() {
     wah_exec_context_t exec_ctx;
     assert_ok(wah_exec_context_create(&exec_ctx, &module));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&module, "test_fn", &entry));
-    uint32_t func_idx = (uint32_t)entry.id;
+    uint32_t func_idx = (uint32_t)entry.index;
 
     // Test that the function works correctly
     wah_value_t params[1] = {{.i32 = 10}};
@@ -408,12 +408,12 @@ void wah_test_elem_expr_style() {
     wah_exec_context_t exec_ctx;
     assert_ok(wah_exec_context_create(&exec_ctx, &module));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&module, "call_first", &entry));
-    uint32_t first_func_idx = (uint32_t)entry.id;
+    uint32_t first_func_idx = (uint32_t)entry.index;
 
     assert_ok(wah_module_export_by_name(&module, "call_second", &entry));
-    uint32_t second_func_idx = (uint32_t)entry.id;
+    uint32_t second_func_idx = (uint32_t)entry.index;
 
     // Test calling first function via table
     wah_value_t params[1] = {{.i32 = 10}};
@@ -467,9 +467,9 @@ void wah_test_elem_multiple_segments() {
     wah_exec_context_t exec_ctx;
     assert_ok(wah_exec_context_create(&exec_ctx, &module));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&module, "test_all", &entry));
-    uint32_t func_idx = (uint32_t)entry.id;
+    uint32_t func_idx = (uint32_t)entry.index;
 
     // Test calling all functions from table
     wah_value_t params[1] = {{.i32 = 0}};
@@ -521,9 +521,9 @@ void wah_test_elem_passive_with_imports() {
     assert_ok(wah_link_module(&exec_ctx, "mod", &host_mod));
     assert_ok(wah_instantiate(&exec_ctx));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&module, "test_init", &entry));
-    uint32_t func_idx = (uint32_t)entry.id;
+    uint32_t func_idx = (uint32_t)entry.index;
 
     // Test that passive element with index 1 refers to first local function (after import)
     wah_value_t params[1] = {{.i32 = 10}};
@@ -557,11 +557,11 @@ void wah_test_table_grow_isolated() {
     assert_ok(wah_exec_context_create(&ctx1, &module));
     assert_ok(wah_exec_context_create(&ctx2, &module));
 
-    wah_entry_t grow_entry, size_entry;
+    wah_export_desc_t grow_entry, size_entry;
     assert_ok(wah_module_export_by_name(&module, "grow", &grow_entry));
     assert_ok(wah_module_export_by_name(&module, "size", &size_entry));
-    uint32_t grow_idx = (uint32_t)grow_entry.id;
-    uint32_t size_idx = (uint32_t)size_entry.id;
+    uint32_t grow_idx = (uint32_t)grow_entry.index;
+    uint32_t size_idx = (uint32_t)size_entry.index;
 
     wah_value_t result;
 

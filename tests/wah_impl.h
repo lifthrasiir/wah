@@ -8,17 +8,7 @@
 
 // --- Constants as functions ---
 uint32_t wah_debug_wasm_page_size(void);
-wah_type_t wah_debug_type_host_function(void);
 uint32_t wah_debug_no_supertype(void);
-uint32_t wah_debug_entry_kind_function(void);
-uint32_t wah_debug_entry_kind_table(void);
-uint32_t wah_debug_entry_kind_memory(void);
-uint32_t wah_debug_entry_kind_global(void);
-
-// --- Entry ID helpers ---
-wah_entry_id_t wah_debug_make_entry_id(uint32_t kind, uint32_t index);
-uint32_t wah_debug_get_entry_kind(wah_entry_id_t id);
-uint32_t wah_debug_get_entry_index(wah_entry_id_t id);
 
 // --- Memory accessors ---
 uint8_t *wah_debug_memory_data(const wah_exec_context_t *ctx, uint32_t mem_idx);

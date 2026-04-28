@@ -175,7 +175,84 @@ typedef uint64_t wah_features_t;
     WAH_FEATURE_GC | WAH_FEATURE_TYPED_FUNCREF | WAH_FEATURE_MEMORY64 | WAH_FEATURE_RELAXED_SIMD)
 #define WAH_FEATURE_ALL WAH_FEATURE_WASM_V3
 
-typedef uint64_t wah_entry_id_t;
+typedef enum {
+    WAH_COMP_FUNC   = 0x60,
+    WAH_COMP_STRUCT = 0x5F,
+    WAH_COMP_ARRAY  = 0x5E,
+} wah_comp_type_kind_t;
+
+#define WAH_KIND_FUNCTION 0
+#define WAH_KIND_TABLE    1
+#define WAH_KIND_MEMORY   2
+#define WAH_KIND_GLOBAL   3
+#define WAH_KIND_TAG      4
+
+typedef struct {
+    wah_comp_type_kind_t kind;
+    bool is_final;
+    uint32_t supertype; // UINT32_MAX if no supertype
+    uint32_t rec_group_start;
+    uint32_t rec_group_size;
+    uint32_t param_count, result_count;
+    const wah_type_t *param_types, *result_types;
+    uint32_t field_count;
+    const wah_type_t *field_types;
+    const bool *field_mutables;
+} wah_type_desc_t;
+
+typedef struct {
+    bool is_import;
+    bool is_host;
+    uint32_t type_index;
+    uint32_t param_count, result_count;
+    const wah_type_t *param_types, *result_types;
+} wah_func_desc_t;
+
+typedef struct {
+    wah_type_t type;
+    bool is_mutable;
+} wah_global_desc_t;
+
+typedef struct {
+    wah_type_t addr_type;
+    uint64_t min_pages, max_pages;
+} wah_memory_desc_t;
+
+typedef struct {
+    wah_type_t elem_type;
+    wah_type_t addr_type;
+    uint64_t min_elements, max_elements;
+} wah_table_desc_t;
+
+typedef struct {
+    uint32_t type_index;
+    uint32_t param_count;
+    const wah_type_t *param_types;
+} wah_tag_desc_t;
+
+typedef struct {
+    uint8_t kind;
+    uint32_t index;
+    const char *module;
+    size_t module_len;
+    const char *name;
+    size_t name_len;
+    union wah_extern_desc_u {
+        wah_func_desc_t func;
+        wah_table_desc_t table;
+        wah_memory_desc_t memory;
+        wah_global_desc_t global;
+        wah_tag_desc_t tag;
+    } u;
+} wah_import_desc_t;
+
+typedef struct {
+    uint8_t kind;
+    uint32_t index;
+    const char *name;
+    size_t name_len;
+    union wah_extern_desc_u u;
+} wah_export_desc_t;
 
 typedef struct {
     wah_exec_state_t state;
@@ -209,30 +286,6 @@ typedef struct wah_call_context_s {
 typedef void (*wah_func_t)(wah_call_context_t *ctx, void *userdata);
 typedef void (*wah_finalize_t)(void *userdata);
 
-typedef struct {
-    wah_entry_id_t id;
-    wah_type_t type;
-    const char *name;
-    size_t name_len;
-    bool is_mutable;
-
-    // Semi-private fields:
-    union {
-        wah_value_t global_val; // For WAH_TYPE_IS_GLOBAL
-        struct { // For WAH_TYPE_IS_MEMORY
-            uint64_t min_pages, max_pages;
-        } memory;
-        struct { // For WAH_TYPE_IS_TABLE
-            wah_type_t elem_type;
-            uint64_t min_elements, max_elements;
-        } table;
-        struct { // For WAH_TYPE_IS_FUNCTION
-            uint32_t param_count, result_count;
-            const wah_type_t *param_types, *result_types;
-        } func;
-    } u;
-} wah_entry_t;
-
 typedef struct wah_module_s {
     uint32_t type_count;
     uint32_t wasm_function_count;
@@ -243,6 +296,7 @@ typedef struct wah_module_s {
     uint32_t element_segment_count;
     uint32_t data_segment_count;
     uint32_t tag_count;
+    uint32_t import_count;
     uint32_t export_count;
 
     uint32_t start_function_idx;
@@ -261,6 +315,7 @@ typedef struct wah_module_s {
     struct wah_element_segment_s *element_segments;
     struct wah_data_segment_s *data_segments;
     struct wah_tag_s *tags;
+    wah_import_desc_t *imports;
     struct wah_export_s *exports;
 
     // Unified function table: functions[0..wasm_function_count) are WASM functions,
@@ -424,12 +479,25 @@ typedef struct {
 wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah_module_t *module);
 wah_error_t wah_parse_module_ex(const uint8_t *wasm_binary, size_t binary_size, const wah_parse_options_t *options, wah_module_t *module);
 
-size_t wah_module_num_exports(const wah_module_t *module);
-wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_entry_t *out);
-wah_error_t wah_module_export_by_name(const wah_module_t *module, const char *name, wah_entry_t *out);
-wah_error_t wah_module_export_by_name_len(const wah_module_t *module, const char *name, size_t name_len, wah_entry_t *out);
+uint32_t wah_module_type_count(const wah_module_t *module);
+uint32_t wah_module_function_count(const wah_module_t *module);
+uint32_t wah_module_global_count(const wah_module_t *module);
+uint32_t wah_module_memory_count(const wah_module_t *module);
+uint32_t wah_module_table_count(const wah_module_t *module);
+uint32_t wah_module_tag_count(const wah_module_t *module);
+uint32_t wah_module_import_count(const wah_module_t *module);
+uint32_t wah_module_export_count(const wah_module_t *module);
 
-wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id, wah_entry_t *out);
+wah_error_t wah_module_type(const wah_module_t *module, uint32_t typeidx, wah_type_desc_t *out);
+wah_error_t wah_module_function(const wah_module_t *module, uint32_t funcidx, wah_func_desc_t *out);
+wah_error_t wah_module_global(const wah_module_t *module, uint32_t globalidx, wah_global_desc_t *out);
+wah_error_t wah_module_memory(const wah_module_t *module, uint32_t memidx, wah_memory_desc_t *out);
+wah_error_t wah_module_table(const wah_module_t *module, uint32_t tableidx, wah_table_desc_t *out);
+wah_error_t wah_module_tag(const wah_module_t *module, uint32_t tagidx, wah_tag_desc_t *out);
+wah_error_t wah_module_import(const wah_module_t *module, uint32_t importidx, wah_import_desc_t *out);
+wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_export_desc_t *out);
+wah_error_t wah_module_export_by_name(const wah_module_t *module, const char *name, wah_export_desc_t *out);
+wah_error_t wah_module_export_by_name_len(const wah_module_t *module, const char *name, size_t name_len, wah_export_desc_t *out);
 
 // --- Resource Limits ---
 #define WAH_RLIMIT_UNLIMITED UINT64_MAX
@@ -459,11 +527,11 @@ void wah_exec_context_get_limits(
 void wah_exec_context_destroy(wah_exec_context_t *exec_ctx);
 
 // The main entry point to call a WebAssembly function.
-// func_idx can be either a function index or a wah_entry_id_t (always fits in uint64_t).
+// func_idx is a function index in the module's global function index space.
 wah_error_t wah_call(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
 
 // Entry point to call a WebAssembly function with multiple return values.
-// func_idx can be either a function index or a wah_entry_id_t (always fits in uint64_t).
+// func_idx is a function index in the module's global function index space.
 wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *results, uint32_t max_results, uint32_t *actual_results);
 
 // Fuel metering control. Default fuel is INT64_MAX (effectively unlimited).
@@ -582,67 +650,6 @@ void wah_request_interrupt(wah_exec_context_t *ctx);
 // Returns true if an interrupt has been requested and not yet consumed.
 // Safe to call from another thread.
 bool wah_is_interrupted(const wah_exec_context_t *ctx);
-
-wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id, wah_entry_t *out);
-
-// Accessors for wah_entry_t
-static inline int32_t wah_entry_i32(const wah_entry_t *entry) {
-    WAH_ASSERT(entry);
-    return entry->type == WAH_TYPE_I32 ? entry->u.global_val.i32 : 0;
-}
-
-static inline int64_t wah_entry_i64(const wah_entry_t *entry) {
-    WAH_ASSERT(entry);
-    return entry->type == WAH_TYPE_I64 ? entry->u.global_val.i64 : 0;
-}
-
-static inline float wah_entry_f32(const wah_entry_t *entry) {
-    WAH_ASSERT(entry);
-    return entry->type == WAH_TYPE_F32 ? entry->u.global_val.f32 : NAN;
-}
-
-static inline double wah_entry_f64(const wah_entry_t *entry) {
-    WAH_ASSERT(entry);
-    return entry->type == WAH_TYPE_F64 ? entry->u.global_val.f64 : NAN;
-}
-
-static inline wah_error_t wah_entry_memory(const wah_entry_t *entry, uint64_t *min_pages, uint64_t *max_pages) {
-    if (!entry) return WAH_ERROR_MISUSE;
-    if (!min_pages) return WAH_ERROR_MISUSE;
-    if (!max_pages) return WAH_ERROR_MISUSE;
-    if (!WAH_TYPE_IS_MEMORY(entry->type)) return WAH_ERROR_MISUSE;
-    *min_pages = entry->u.memory.min_pages;
-    *max_pages = entry->u.memory.max_pages;
-    return WAH_OK;
-}
-
-static inline wah_error_t wah_entry_table(const wah_entry_t *entry, wah_type_t *elem_type, uint64_t *min_elements, uint64_t *max_elements) {
-    if (!entry) return WAH_ERROR_MISUSE;
-    if (!elem_type) return WAH_ERROR_MISUSE;
-    if (!min_elements) return WAH_ERROR_MISUSE;
-    if (!max_elements) return WAH_ERROR_MISUSE;
-    if (!WAH_TYPE_IS_TABLE(entry->type)) return WAH_ERROR_MISUSE;
-    *elem_type = entry->u.table.elem_type; // Directly assign wah_type_t
-    *min_elements = entry->u.table.min_elements;
-    *max_elements = entry->u.table.max_elements;
-    return WAH_OK;
-}
-
-static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
-                                         uint32_t *out_nargs, const wah_type_t **out_args,
-                                         uint32_t *out_nrets, const wah_type_t **out_rets) {
-    if (!entry) return WAH_ERROR_MISUSE;
-    if (!out_nargs) return WAH_ERROR_MISUSE;
-    if (!out_args) return WAH_ERROR_MISUSE;
-    if (!out_nrets) return WAH_ERROR_MISUSE;
-    if (!out_rets) return WAH_ERROR_MISUSE;
-    if (!WAH_TYPE_IS_FUNCTION(entry->type)) return WAH_ERROR_MISUSE;
-    *out_nargs = entry->u.func.param_count;
-    *out_args = entry->u.func.param_types;
-    *out_nrets = entry->u.func.result_count;
-    *out_rets = entry->u.func.result_types;
-    return WAH_OK;
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -770,21 +777,8 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
 #define WAH_IF_AARCH64(then, ...) __VA_ARGS__
 #endif
 
-#define WAH_TYPE_FUNCTION -100
-#define WAH_TYPE_HOST_FUNCTION -101
-#define WAH_TYPE_MEMORY   -200
-#define WAH_TYPE_TABLE    -300
-
 #define WAH_TYPE_BOT -99
-
-#define WAH_ENTRY_KIND_FUNCTION 0
-#define WAH_ENTRY_KIND_TABLE    1
-#define WAH_ENTRY_KIND_MEMORY   2
-#define WAH_ENTRY_KIND_GLOBAL   3
-
-#define WAH_MAKE_ENTRY_ID(kind, index) (((wah_entry_id_t)(kind) << 32) | (index))
-#define WAH_GET_ENTRY_KIND(id)         ((uint32_t)((id) >> 32))
-#define WAH_GET_ENTRY_INDEX(id)        ((uint32_t)((id) & 0xFFFFFFFF))
+#define WAH_TYPE_FUNCTION -100
 
 ////////////////////////////////////////////////////////////////////////////////
 // Feature configuration ///////////////////////////////////////////////////////
@@ -1625,12 +1619,6 @@ typedef struct wah_repr_set_s {
     bool accepts_i31;
 } wah_repr_set_t;
 
-typedef enum {
-    WAH_COMP_FUNC   = 0x60,
-    WAH_COMP_STRUCT = 0x5F,
-    WAH_COMP_ARRAY  = 0x5E,
-} wah_comp_type_kind_t;
-
 #define WAH_NO_SUPERTYPE UINT32_MAX
 
 typedef struct wah_type_def_s {
@@ -2167,6 +2155,10 @@ static inline wah_type_t wah_global_type(const wah_module_t *m, uint32_t idx) {
 static inline bool wah_global_is_mutable(const wah_module_t *m, uint32_t idx) {
     if (idx < m->import_global_count) return m->global_imports[idx].is_mutable;
     return m->globals[idx - m->import_global_count].is_mutable;
+}
+static inline uint32_t wah_tag_type_index(const wah_module_t *m, uint32_t idx) {
+    if (idx < m->import_tag_count) return m->tag_imports[idx].type_index;
+    return m->tags[idx - m->import_tag_count].type_index;
 }
 
 // Helper function to duplicate a string
@@ -7586,6 +7578,8 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
 
     if (count == 0) return WAH_OK;
 
+    module->import_count = count;
+    WAH_MALLOC_ARRAY_GOTO(module->imports, count, cleanup);
     WAH_MALLOC_ARRAY_GOTO(module->func_imports, count, cleanup);
     WAH_MALLOC_ARRAY_GOTO(module->table_imports, count, cleanup);
     WAH_MALLOC_ARRAY_GOTO(module->memory_imports, count, cleanup);
@@ -7601,8 +7595,13 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
         // kind
         WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
         uint8_t kind = *(*ptr)++;
+        module->imports[i] = (wah_import_desc_t) {
+            .kind = kind,
+            .module = imp_name.module, .module_len = imp_name.module_len,
+            .name = imp_name.field, .name_len = imp_name.field_len,
+        };
 
-        if (kind == 0) {
+        if (kind == WAH_KIND_FUNCTION) {
             // Function import
             uint32_t type_index;
             WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &type_index), cleanup);
@@ -7611,8 +7610,9 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             wah_func_import_t *fi = &module->func_imports[import_func_count];
             fi->name = imp_name;
             fi->type_index = type_index;
+            module->imports[i].index = import_func_count;
             import_func_count++;
-        } else if (kind == 1) {
+        } else if (kind == WAH_KIND_TABLE) {
             // Table import
             wah_table_import_t *ti = &module->table_imports[import_table_count];
             ti->name = imp_name;
@@ -7641,8 +7641,9 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
                 }
             }
             WAH_ENSURE_GOTO(ti->type.min_elements <= ti->type.max_elements, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            module->imports[i].index = import_table_count;
             import_table_count++;
-        } else if (kind == 2) {
+        } else if (kind == WAH_KIND_MEMORY) {
             // Memory import
             wah_memory_import_t *mi = &module->memory_imports[import_memory_count];
             mi->name = imp_name;
@@ -7680,8 +7681,9 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             WAH_ENSURE_GOTO(mi->type.min_pages <= page_limit, WAH_ERROR_VALIDATION_FAILED, cleanup);
             WAH_ENSURE_GOTO(mi->type.max_pages <= page_limit || mi->type.max_pages == UINT64_MAX, WAH_ERROR_VALIDATION_FAILED, cleanup);
             WAH_ENSURE_GOTO(mi->type.min_pages <= mi->type.max_pages, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            module->imports[i].index = import_memory_count;
             import_memory_count++;
-        } else if (kind == 3) {
+        } else if (kind == WAH_KIND_GLOBAL) {
             // Global import
             wah_global_import_t *gi = &module->global_imports[import_global_count];
             gi->name = imp_name;
@@ -7691,8 +7693,9 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             uint8_t mut_byte = *(*ptr)++;
             WAH_ENSURE_GOTO(mut_byte <= 1, WAH_ERROR_MALFORMED, cleanup);
             gi->is_mutable = (mut_byte == 1);
+            module->imports[i].index = import_global_count;
             import_global_count++;
-        } else if (kind == 4) {
+        } else if (kind == WAH_KIND_TAG) {
             // Tag import
             wah_tag_import_t *tgi = &module->tag_imports[import_tag_count];
             tgi->name = imp_name;
@@ -7703,12 +7706,12 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &tgi->type_index), cleanup);
             WAH_ENSURE_GOTO(tgi->type_index < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
             WAH_ENSURE_GOTO(module->types[tgi->type_index].result_count == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            module->imports[i].index = import_tag_count;
             import_tag_count++;
         } else {
             free(imp_name.module);
             free(imp_name.field);
             err = WAH_ERROR_MALFORMED;
-            WAH_LOG("Unknown import kind=%u", kind);
             goto cleanup;
         }
     }
@@ -7737,6 +7740,9 @@ cleanup:
     WAH_FREE_IMPORTS(module->global_imports, import_global_count);
     WAH_FREE_IMPORTS(module->tag_imports, import_tag_count);
 #undef WAH_FREE_IMPORTS
+    free(module->imports);
+    module->imports = NULL;
+    module->import_count = 0;
     module->import_function_count = 0;
     module->import_table_count = 0;
     module->import_memory_count = 0;
@@ -7780,20 +7786,20 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
 
         // Basic validation of index based on kind
         switch (export_entry->kind) {
-            case 0: // Function
+            case WAH_KIND_FUNCTION:
                 WAH_ENSURE_GOTO(export_entry->index < wah_func_index_limit(module), WAH_ERROR_VALIDATION_FAILED, cleanup);
                 WAH_CHECK_GOTO(wah_declare_func(module, export_entry->index), cleanup);
                 break;
-            case 1: // Table
+            case WAH_KIND_TABLE:
                 WAH_ENSURE_GOTO(export_entry->index < wah_table_index_limit(module), WAH_ERROR_VALIDATION_FAILED, cleanup);
                 break;
-            case 2: // Memory
+            case WAH_KIND_MEMORY:
                 WAH_ENSURE_GOTO(export_entry->index < wah_memory_index_limit(module), WAH_ERROR_VALIDATION_FAILED, cleanup);
                 break;
-            case 3: // Global
+            case WAH_KIND_GLOBAL:
                 WAH_ENSURE_GOTO(export_entry->index < wah_global_index_limit(module), WAH_ERROR_VALIDATION_FAILED, cleanup);
                 break;
-            case 4: // Tag
+            case WAH_KIND_TAG:
                 WAH_ENSURE_GOTO(export_entry->index < module->import_tag_count + module->tag_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
                 break;
             default:
@@ -13885,7 +13891,7 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_
         WAH_CHECK(wah_instantiate(exec_ctx));
     }
 
-    // func_idx is always uint32_t for functions (wah_entry_id_t values for functions always fit in uint32_t)
+    // func_idx is always uint32_t for functions.
     return wah_call_module(exec_ctx, (uint32_t)func_idx, params, param_count, result);
 }
 
@@ -13901,7 +13907,7 @@ wah_error_t wah_call_multi(
         WAH_CHECK(wah_instantiate(exec_ctx));
     }
 
-    // func_idx is always uint32_t for functions (wah_entry_id_t values for functions always fit in uint32_t)
+    // func_idx is always uint32_t for functions.
     return wah_call_module_multi(exec_ctx, (uint32_t)func_idx, params, param_count, results, max_results, actual_results);
 }
 
@@ -13942,6 +13948,7 @@ void wah_free_module(wah_module_t *module) {
     WAH_FREE_IMPORTS(module->global_imports, module->import_global_count);
     WAH_FREE_IMPORTS(module->tag_imports, module->import_tag_count);
     #undef WAH_FREE_IMPORTS
+    free(module->imports);
 
     free(module->tags);
 
@@ -13980,7 +13987,7 @@ void wah_free_module(wah_module_t *module) {
     if (module->exports) {
         for (uint32_t i = 0; i < module->export_count; ++i) {
             uint32_t idx = module->exports[i].index;
-            bool is_host_export = (module->exports[i].kind == 0 &&
+            bool is_host_export = (module->exports[i].kind == WAH_KIND_FUNCTION &&
                                    module->functions &&
                                    idx < module->local_function_count &&
                                    module->functions[idx].is_host);
@@ -14184,7 +14191,7 @@ wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const ch
     };
     mod->local_function_count++;
     mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
-                                                        .kind = 0 /*FUNCTION*/, .index = new_func_idx };
+                                                        .kind = WAH_KIND_FUNCTION, .index = new_func_idx };
     name_copy = NULL;
     param_types_copy = NULL;
     result_types_copy = NULL;
@@ -14255,7 +14262,7 @@ static wah_error_t wah_module_export_global_internal(wah_module_t *mod, const ch
     mod->globals[mod->global_count] = (wah_global_t){ .type = type, .is_mutable = is_mutable };
     WAH_CHECK_GOTO(wah_create_const_expr(type, init_value, &mod->globals[mod->global_count].init_expr), cleanup);
     mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
-                                                        .kind = 3 /*GLOBAL*/, .index = mod->global_count };
+                                                        .kind = WAH_KIND_GLOBAL, .index = mod->global_count };
     mod->global_count++;
     return WAH_OK;
 
@@ -14287,7 +14294,7 @@ wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64
 
     mod->memories[mod->memory_count] = (wah_memory_type_t){ .addr_type = WAH_TYPE_I32, .min_pages = min_pages, .max_pages = max_pages };
     mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
-                                                        .kind = 2 /*MEMORY*/, .index = mod->memory_count };
+                                                        .kind = WAH_KIND_MEMORY, .index = mod->memory_count };
     mod->memory_count++;
     return WAH_OK;
 
@@ -14822,7 +14829,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     WAH_ENSURE_GOTO(provider != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
                     const wah_export_t *exp = NULL;
                     for (uint32_t m = 0; m < provider->export_count; m++) {
-                        if (provider->exports[m].kind == 0 &&
+                        if (provider->exports[m].kind == WAH_KIND_FUNCTION &&
                             wah_name_matches(provider->exports[m].name, provider->exports[m].name_len,
                                              fi->name.field, fi->name.field_len)) {
                             exp = &provider->exports[m];
@@ -14945,74 +14952,178 @@ cleanup:
 }
 
 // --- Export API Implementation ---
-size_t wah_module_num_exports(const wah_module_t *module) {
-    if (!module) return 0;
-    return module->export_count;
+uint32_t wah_module_type_count(const wah_module_t *module) {
+    return module ? module->type_count : 0;
+}
+uint32_t wah_module_function_count(const wah_module_t *module) {
+    return module ? module->import_function_count + module->local_function_count : 0;
+}
+uint32_t wah_module_global_count(const wah_module_t *module) {
+    return module ? wah_global_index_limit(module) : 0;
+}
+uint32_t wah_module_memory_count(const wah_module_t *module) {
+    return module ? wah_memory_index_limit(module) : 0;
+}
+uint32_t wah_module_table_count(const wah_module_t *module) {
+    return module ? wah_table_index_limit(module) : 0;
+}
+uint32_t wah_module_tag_count(const wah_module_t *module) {
+    return module ? module->import_tag_count + module->tag_count : 0;
+}
+uint32_t wah_module_import_count(const wah_module_t *module) {
+    return module ? module->import_count : 0;
+}
+uint32_t wah_module_export_count(const wah_module_t *module) {
+    return module ? module->export_count : 0;
 }
 
-wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_entry_t *out) {
+wah_error_t wah_module_type(const wah_module_t *module, uint32_t typeidx, wah_type_desc_t *out) {
+    WAH_ENSURE(module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(out, WAH_ERROR_MISUSE);
+    WAH_ENSURE(typeidx < module->type_count, WAH_ERROR_NOT_FOUND);
+
+    const wah_func_type_t *ft = &module->types[typeidx];
+    const wah_type_def_t *td = &module->type_defs[typeidx];
+    *out = (wah_type_desc_t){
+        .kind = td->kind, .is_final = td->is_final, .supertype = td->supertype,
+        .rec_group_start = td->rec_group_start, .rec_group_size = td->rec_group_size,
+        .param_count = ft->param_count, .result_count = ft->result_count,
+        .param_types = ft->param_types, .result_types = ft->result_types,
+        .field_count = td->field_count, .field_types = td->field_types, .field_mutables = td->field_mutables,
+    };
+    return WAH_OK;
+}
+
+wah_error_t wah_module_function(const wah_module_t *module, uint32_t funcidx, wah_func_desc_t *out) {
+    WAH_ENSURE(module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(out, WAH_ERROR_MISUSE);
+    WAH_ENSURE(funcidx < wah_module_function_count(module), WAH_ERROR_NOT_FOUND);
+
+    *out = (wah_func_desc_t){0};
+    if (funcidx < module->import_function_count) {
+        const wah_func_import_t *fi = &module->func_imports[funcidx];
+        WAH_ENSURE(fi->type_index < module->type_count, WAH_ERROR_NOT_FOUND);
+        const wah_func_type_t *ft = &module->types[fi->type_index];
+        *out = (wah_func_desc_t){
+            .is_import = true, .type_index = fi->type_index,
+            .param_count = ft->param_count, .param_types = ft->param_types,
+            .result_count = ft->result_count, .result_types = ft->result_types,
+        };
+        return WAH_OK;
+    }
+
+    uint32_t local_fn_idx = funcidx - module->import_function_count;
+    WAH_ENSURE(module->functions && local_fn_idx < module->local_function_count, WAH_ERROR_NOT_FOUND);
+    if (module->functions[local_fn_idx].is_host) {
+        const wah_function_t *fn = &module->functions[local_fn_idx];
+        *out = (wah_func_desc_t){
+            .is_host = true, .type_index = UINT32_MAX,
+            .param_count = (uint32_t)fn->nparams, .param_types = fn->param_types,
+            .result_count = (uint32_t)fn->nresults, .result_types = fn->result_types,
+        };
+        return WAH_OK;
+    }
+
+    WAH_ENSURE(local_fn_idx < module->wasm_function_count, WAH_ERROR_NOT_FOUND);
+    uint32_t type_idx = module->function_type_indices[local_fn_idx];
+    WAH_ENSURE(type_idx < module->type_count, WAH_ERROR_NOT_FOUND);
+    const wah_func_type_t *ft = &module->types[type_idx];
+    *out = (wah_func_desc_t){
+        .type_index = type_idx,
+        .param_count = ft->param_count, .param_types = ft->param_types,
+        .result_count = ft->result_count, .result_types = ft->result_types,
+    };
+    return WAH_OK;
+}
+
+
+wah_error_t wah_module_global(const wah_module_t *module, uint32_t globalidx, wah_global_desc_t *out) {
+    WAH_ENSURE(module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(out, WAH_ERROR_MISUSE);
+    WAH_ENSURE(globalidx < wah_global_index_limit(module), WAH_ERROR_NOT_FOUND);
+    *out = (wah_global_desc_t){
+        .type = wah_global_type(module, globalidx),
+        .is_mutable = wah_global_is_mutable(module, globalidx),
+    };
+    return WAH_OK;
+}
+
+wah_error_t wah_module_memory(const wah_module_t *module, uint32_t memidx, wah_memory_desc_t *out) {
+    WAH_ENSURE(module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(out, WAH_ERROR_MISUSE);
+    WAH_ENSURE(memidx < wah_memory_index_limit(module), WAH_ERROR_NOT_FOUND);
+    const wah_memory_type_t *mt = wah_memory_type(module, memidx);
+    *out = (wah_memory_desc_t){ .addr_type = mt->addr_type, .min_pages = mt->min_pages, .max_pages = mt->max_pages };
+    return WAH_OK;
+}
+
+wah_error_t wah_module_table(const wah_module_t *module, uint32_t tableidx, wah_table_desc_t *out) {
+    WAH_ENSURE(module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(out, WAH_ERROR_MISUSE);
+    WAH_ENSURE(tableidx < wah_table_index_limit(module), WAH_ERROR_NOT_FOUND);
+    const wah_table_type_t *tt = wah_table_type(module, tableidx);
+    *out = (wah_table_desc_t){
+        .elem_type = tt->elem_type, .addr_type = tt->addr_type,
+        .min_elements = tt->min_elements, .max_elements = tt->max_elements,
+    };
+    return WAH_OK;
+}
+
+wah_error_t wah_module_tag(const wah_module_t *module, uint32_t tagidx, wah_tag_desc_t *out) {
+    WAH_ENSURE(module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(out, WAH_ERROR_MISUSE);
+    WAH_ENSURE(tagidx < wah_module_tag_count(module), WAH_ERROR_NOT_FOUND);
+    uint32_t type_index = wah_tag_type_index(module, tagidx);
+    WAH_ENSURE(type_index < module->type_count, WAH_ERROR_NOT_FOUND);
+    const wah_func_type_t *ft = &module->types[type_index];
+    *out = (wah_tag_desc_t){ .type_index = type_index, .param_count = ft->param_count, .param_types = ft->param_types };
+    return WAH_OK;
+}
+
+wah_error_t wah_module_import(const wah_module_t *module, uint32_t importidx, wah_import_desc_t *out) {
+    WAH_ENSURE(module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(out, WAH_ERROR_MISUSE);
+    WAH_ENSURE(importidx < module->import_count, WAH_ERROR_NOT_FOUND);
+    *out = module->imports[importidx];
+    switch (out->kind) {
+        case WAH_KIND_FUNCTION: return wah_module_function(module, out->index, &out->u.func);
+        case WAH_KIND_TABLE: return wah_module_table(module, out->index, &out->u.table);
+        case WAH_KIND_MEMORY: return wah_module_memory(module, out->index, &out->u.memory);
+        case WAH_KIND_GLOBAL: return wah_module_global(module, out->index, &out->u.global);
+        case WAH_KIND_TAG: return wah_module_tag(module, out->index, &out->u.tag);
+        default: return WAH_ERROR_VALIDATION_FAILED;
+    }
+}
+
+wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_export_desc_t *out) {
     WAH_ENSURE(module, WAH_ERROR_MISUSE);
     WAH_ENSURE(out, WAH_ERROR_MISUSE);
     WAH_ENSURE(idx < module->export_count, WAH_ERROR_NOT_FOUND);
 
     const wah_export_t *export_entry = &module->exports[idx];
+    *out = (wah_export_desc_t){
+        .kind = export_entry->kind, .index = export_entry->index,
+        .name = export_entry->name, .name_len = export_entry->name_len,
+    };
 
-    // For host function exports, handle directly via the unified functions[] table.
-    // export_entry->index is a global function index; convert to functions[] local index.
-    uint32_t exp_local_idx = export_entry->index - module->import_function_count;
-    if (export_entry->kind == 0 &&
-        module->functions &&
-        export_entry->index >= module->import_function_count &&
-        exp_local_idx < module->local_function_count &&
-        module->functions[exp_local_idx].is_host) {
-        const wah_function_t *fn = &module->functions[exp_local_idx];
-
-        out->id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_FUNCTION, export_entry->index);
-        out->type = WAH_TYPE_HOST_FUNCTION;
-        out->name = export_entry->name;
-        out->name_len = export_entry->name_len;
-        out->is_mutable = false;
-
-        out->u.func.param_count = (uint32_t)fn->nparams;
-        out->u.func.param_types = fn->param_types;
-        out->u.func.result_count = (uint32_t)fn->nresults;
-        out->u.func.result_types = fn->result_types;
-
-        return WAH_OK;
-    }
-
-    wah_entry_id_t entry_id;
     switch (export_entry->kind) {
-        case 0: // Function
-            entry_id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_FUNCTION, export_entry->index);
-            break;
-        case 1: // Table
-            entry_id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_TABLE, export_entry->index);
-            break;
-        case 2: // Memory
-            entry_id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_MEMORY, export_entry->index);
-            break;
-        case 3: // Global
-            entry_id = WAH_MAKE_ENTRY_ID(WAH_ENTRY_KIND_GLOBAL, export_entry->index);
-            break;
+        case WAH_KIND_FUNCTION: return wah_module_function(module, export_entry->index, &out->u.func);
+        case WAH_KIND_TABLE: return wah_module_table(module, export_entry->index, &out->u.table);
+        case WAH_KIND_MEMORY: return wah_module_memory(module, export_entry->index, &out->u.memory);
+        case WAH_KIND_GLOBAL: return wah_module_global(module, export_entry->index, &out->u.global);
+        case WAH_KIND_TAG: return wah_module_tag(module, export_entry->index, &out->u.tag);
         default:
             WAH_ASSERT(false && "verification should have prevented invalid export kinds");
             return WAH_ERROR_VALIDATION_FAILED;
     }
-
-    WAH_CHECK(wah_module_entry(module, entry_id, out));
-
-    out->name = export_entry->name;
-    out->name_len = export_entry->name_len;
-
-    return WAH_OK;
 }
 
-wah_error_t wah_module_export_by_name(const wah_module_t *module, const char *name, wah_entry_t *out) {
+wah_error_t wah_module_export_by_name(const wah_module_t *module, const char *name, wah_export_desc_t *out) {
+    WAH_ENSURE(name, WAH_ERROR_MISUSE);
     return wah_module_export_by_name_len(module, name, strlen(name), out);
 }
 
-wah_error_t wah_module_export_by_name_len(const wah_module_t *module, const char *name, size_t name_len, wah_entry_t *out) {
+wah_error_t wah_module_export_by_name_len(const wah_module_t *module, const char *name, size_t name_len, wah_export_desc_t *out) {
     WAH_ENSURE(module, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(out, WAH_ERROR_MISUSE);
@@ -15024,85 +15135,6 @@ wah_error_t wah_module_export_by_name_len(const wah_module_t *module, const char
         }
     }
     return WAH_ERROR_NOT_FOUND;
-}
-
-wah_error_t wah_module_entry(const wah_module_t *module, wah_entry_id_t entry_id, wah_entry_t *out) {
-    WAH_ENSURE(module, WAH_ERROR_MISUSE);
-    WAH_ENSURE(out, WAH_ERROR_MISUSE);
-
-    uint32_t kind = WAH_GET_ENTRY_KIND(entry_id);
-    uint32_t index = WAH_GET_ENTRY_INDEX(entry_id);
-
-    out->id = entry_id;
-    out->name = NULL; // No name for non-exported entries
-    out->name_len = 0;
-    out->is_mutable = false; // Default to false
-
-    switch (kind) {
-        case WAH_ENTRY_KIND_FUNCTION: {
-            uint32_t import_count = module->import_function_count;
-            if (index < import_count) {
-                // Import range: return type from func_imports
-                WAH_ENSURE(module->func_imports && index < import_count, WAH_ERROR_NOT_FOUND);
-                wah_func_import_t *fi = &module->func_imports[index];
-                WAH_ENSURE(fi->type_index < module->type_count, WAH_ERROR_NOT_FOUND);
-                const wah_func_type_t *ft = &module->types[fi->type_index];
-                out->type = WAH_TYPE_FUNCTION;
-                out->u.func.param_count = ft->param_count;
-                out->u.func.param_types = ft->param_types;
-                out->u.func.result_count = ft->result_count;
-                out->u.func.result_types = ft->result_types;
-            } else {
-                // Local/host range: index into functions[] is (index - import_count)
-                uint32_t local_fn_idx = index - import_count;
-                WAH_ENSURE(module->functions && local_fn_idx < module->local_function_count, WAH_ERROR_NOT_FOUND);
-                if (module->functions[local_fn_idx].is_host) {
-                    const wah_function_t *fn = &module->functions[local_fn_idx];
-                    out->type = WAH_TYPE_HOST_FUNCTION;
-                    out->u.func.param_count = (uint32_t)fn->nparams;
-                    out->u.func.param_types = fn->param_types;
-                    out->u.func.result_count = (uint32_t)fn->nresults;
-                    out->u.func.result_types = fn->result_types;
-                } else {
-                    WAH_ENSURE(local_fn_idx < module->wasm_function_count, WAH_ERROR_NOT_FOUND);
-                    out->type = WAH_TYPE_FUNCTION;
-                    const wah_func_type_t *func_type = &module->types[module->function_type_indices[local_fn_idx]];
-                    out->u.func.param_count = func_type->param_count;
-                    out->u.func.param_types = func_type->param_types;
-                    out->u.func.result_count = func_type->result_count;
-                    out->u.func.result_types = func_type->result_types;
-                }
-            }
-            break;
-        }
-        case WAH_ENTRY_KIND_TABLE:
-            WAH_ENSURE(index < wah_table_index_limit(module), WAH_ERROR_NOT_FOUND);
-            out->type = WAH_TYPE_TABLE;
-            const wah_table_type_t *tt = wah_table_type(module, index);
-            out->u.table.elem_type = tt->elem_type;
-            out->u.table.min_elements = tt->min_elements;
-            out->u.table.max_elements = tt->max_elements;
-            break;
-        case WAH_ENTRY_KIND_MEMORY:
-            WAH_ENSURE(index < wah_memory_index_limit(module), WAH_ERROR_NOT_FOUND);
-            out->type = WAH_TYPE_MEMORY;
-            const wah_memory_type_t *mt = wah_memory_type(module, index);
-            out->u.memory.min_pages = mt->min_pages;
-            out->u.memory.max_pages = mt->max_pages;
-            break;
-        case WAH_ENTRY_KIND_GLOBAL:
-            WAH_ENSURE(index < wah_global_index_limit(module), WAH_ERROR_NOT_FOUND);
-            out->type = wah_global_type(module, index);
-            out->is_mutable = wah_global_is_mutable(module, index);
-            // Note: Global initial values are now evaluated at instantiation time
-            // and stored in the execution context, not in the module.
-            // This API only provides type information, not current values.
-            memset(&out->u.global_val, 0, sizeof(wah_value_t));
-            break;
-        default:
-            return WAH_ERROR_NOT_FOUND; // Unknown entry kind
-    }
-    return WAH_OK;
 }
 
 ////////////////////////////////////////////////////////////////////////////////

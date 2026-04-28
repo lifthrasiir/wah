@@ -60,13 +60,13 @@ int main(void) {
     err = wah_instantiate(&ctx);
     if (err) { fprintf(stderr, "Instantiate error: %s\n", wah_strerror(err)); goto cleanup; }
 
-    wah_entry_t run_entry;
+    wah_export_desc_t run_entry;
     err = wah_module_export_by_name(&mod, "run", &run_entry);
     if (err) { fprintf(stderr, "Cannot find 'run' export: %s\n", wah_strerror(err)); goto cleanup; }
 
     printf("Running CoreMark...\n");
     wah_value_t result;
-    err = wah_call(&ctx, run_entry.id, NULL, 0, &result);
+    err = wah_call(&ctx, run_entry.index, NULL, 0, &result);
     if (err) { fprintf(stderr, "Call error: %s\n", wah_strerror(err)); goto cleanup; }
 
     printf("CoreMark result: %.2f\n", result.f32);

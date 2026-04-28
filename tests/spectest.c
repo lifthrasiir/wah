@@ -368,7 +368,7 @@ static int ensure_instance_instantiated(spectest_instance_t *instance) {
 static int action_export(spectest_instance_t *instance,
                          const char *field_name,
                          size_t field_name_len,
-                         wah_entry_t *entry,
+                         wah_export_desc_t *entry,
                          char *error_buf,
                          size_t error_buf_size) {
     wah_error_t err;
@@ -394,7 +394,7 @@ static int execute_action(const wast_node_t *action_node,
     spectest_instance_t *instance = NULL;
     char *field_name = NULL;
     size_t field_name_len = 0;
-    wah_entry_t entry = {0};
+    wah_export_desc_t entry = {0};
     size_t arg_index = 1;
     size_t param_count = 0;
     uint32_t actual_results = 0;
@@ -433,7 +433,7 @@ static int execute_action(const wast_node_t *action_node,
             free(field_name);
             return 0;
         }
-        if (!WAH_TYPE_IS_FUNCTION(entry.type)) {
+        if (entry.kind != WAH_KIND_FUNCTION) {
             snprintf(error_buf, error_buf_size, "\"%s\" is not a function export", field_name);
             free(field_name);
             return 0;
@@ -455,15 +455,13 @@ static int execute_action(const wast_node_t *action_node,
         }
         {
             wah_value_t raw_results[WAST_MAX_RESULTS];
-            wah_error_t err = wah_call_multi(&instance->exec, entry.id, params,
+            wah_error_t err = wah_call_multi(&instance->exec, entry.index, params,
                                              (uint32_t)param_count,
                                              raw_results, WAST_MAX_RESULTS, &actual_results);
             if (out_err) *out_err = err;
             if (err == WAH_OK) {
-                uint32_t i, nargs = 0, nrets = 0;
-                const wah_type_t *arg_types = NULL;
-                const wah_type_t *ret_types = NULL;
-                (void)wah_entry_func(&entry, &nargs, &arg_types, &nrets, &ret_types);
+                uint32_t i;
+                const wah_type_t *ret_types = entry.u.func.result_types;
                 for (i = 0; i < actual_results; ++i) {
                     result->values[i].value = raw_results[i];
                     result->values[i].type = ret_types ? ret_types[i] : WAH_TYPE_I32;
@@ -503,7 +501,7 @@ static int execute_action(const wast_node_t *action_node,
             free(field_name);
             return 0;
         }
-        if (wah_debug_get_entry_kind(entry.id) != wah_debug_entry_kind_global()) {
+        if (entry.kind != WAH_KIND_GLOBAL) {
             snprintf(error_buf, error_buf_size, "\"%s\" is not a global export", field_name);
             free(field_name);
             return 0;
@@ -513,13 +511,13 @@ static int execute_action(const wast_node_t *action_node,
             free(field_name);
             return 1;
         }
-        global_idx = wah_debug_get_entry_index(entry.id);
+        global_idx = entry.index;
         if (global_idx >= instance->exec.global_count) {
             snprintf(error_buf, error_buf_size, "global index out of range");
             free(field_name);
             return 0;
         }
-        result->values[0].type = entry.type;
+        result->values[0].type = entry.u.global.type;
         result->values[0].value = wah_debug_global_value(&instance->exec,
             instance->exec.module, global_idx);
         result->count = 1;

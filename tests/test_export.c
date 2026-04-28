@@ -27,58 +27,139 @@ void test_basic_exports() {
     wah_module_t module;
     assert_ok(wah_parse_module_from_spec(&module, module_spec));
 
-    assert_eq_u64(wah_module_num_exports(&module), 4);
+    assert_eq_u32(wah_module_export_count(&module), 4);
+    assert_eq_u32(wah_module_type_count(&module), 1);
+    assert_eq_u32(wah_module_function_count(&module), 1);
+    assert_eq_u32(wah_module_table_count(&module), 1);
+    assert_eq_u32(wah_module_memory_count(&module), 1);
+    assert_eq_u32(wah_module_global_count(&module), 1);
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
+    wah_type_desc_t type_desc;
+    assert_ok(wah_module_type(&module, 0, &type_desc));
+    assert_eq_i32(type_desc.kind, WAH_COMP_FUNC);
+    assert_eq_u32(type_desc.param_count, 2);
+    assert_eq_i32(type_desc.param_types[0], WAH_TYPE_I32);
+    assert_eq_i32(type_desc.param_types[1], WAH_TYPE_I32);
+    assert_eq_u32(type_desc.result_count, 1);
+    assert_eq_i32(type_desc.result_types[0], WAH_TYPE_I32);
+
+    wah_func_desc_t func_desc;
+    assert_ok(wah_module_function(&module, 0, &func_desc));
+    assert_false(func_desc.is_import);
+    assert_false(func_desc.is_host);
+    assert_eq_u32(func_desc.type_index, 0);
+    assert_eq_u32(func_desc.param_count, 2);
+
+    wah_table_desc_t table_desc;
+    assert_ok(wah_module_table(&module, 0, &table_desc));
+    assert_eq_i32(table_desc.elem_type, WAH_TYPE_FUNCREF);
+    assert_eq_u64(table_desc.min_elements, 1);
+    assert_eq_u64(table_desc.max_elements, UINT64_MAX);
+
+    wah_memory_desc_t memory_desc;
+    assert_ok(wah_module_memory(&module, 0, &memory_desc));
+    assert_eq_i32(memory_desc.addr_type, WAH_TYPE_I32);
+    assert_eq_u64(memory_desc.min_pages, 1);
+    assert_eq_u64(memory_desc.max_pages, UINT64_MAX);
+
+    wah_global_desc_t global_desc;
+    assert_ok(wah_module_global(&module, 0, &global_desc));
+    assert_eq_i32(global_desc.type, WAH_TYPE_I32);
+    assert_true(global_desc.is_mutable);
 
     // Test export by index
     assert_ok(wah_module_export(&module, 0, &entry));
-    assert_true(WAH_TYPE_IS_FUNCTION(entry.type));
-    assert_eq_i32(wah_debug_get_entry_kind(entry.id), wah_debug_entry_kind_function());
-    assert_eq_i32(wah_debug_get_entry_index(entry.id), 0);
+    assert_eq_i32(entry.kind, WAH_KIND_FUNCTION);
+    assert_eq_u32(entry.index, 0);
     assert_eq_str(entry.name, "add");
     assert_eq_u64(entry.name_len, 3);
 
     assert_ok(wah_module_export(&module, 1, &entry));
-    assert_eq_i32(entry.type, WAH_TYPE_I32);
-    assert_true(WAH_TYPE_IS_GLOBAL(entry.type));
-    assert_eq_i32(wah_debug_get_entry_kind(entry.id), wah_debug_entry_kind_global());
-    assert_eq_i32(wah_debug_get_entry_index(entry.id), 0);
+    assert_eq_i32(entry.kind, WAH_KIND_GLOBAL);
+    assert_eq_i32(entry.u.global.type, WAH_TYPE_I32);
+    assert_eq_u32(entry.index, 0);
     assert_eq_str(entry.name, "g");
     assert_eq_u64(entry.name_len, 1);
 
     assert_ok(wah_module_export(&module, 2, &entry));
-    assert_true(WAH_TYPE_IS_MEMORY(entry.type));
-    assert_eq_i32(wah_debug_get_entry_kind(entry.id), wah_debug_entry_kind_memory());
-    assert_eq_i32(wah_debug_get_entry_index(entry.id), 0);
+    assert_eq_i32(entry.kind, WAH_KIND_MEMORY);
+    assert_eq_u32(entry.index, 0);
     assert_eq_str(entry.name, "mem");
     assert_eq_u64(entry.name_len, 3);
 
     assert_ok(wah_module_export(&module, 3, &entry));
-    assert_true(WAH_TYPE_IS_TABLE(entry.type));
-    assert_eq_i32(wah_debug_get_entry_kind(entry.id), wah_debug_entry_kind_table());
-    assert_eq_i32(wah_debug_get_entry_index(entry.id), 0);
+    assert_eq_i32(entry.kind, WAH_KIND_TABLE);
+    assert_eq_u32(entry.index, 0);
     assert_eq_str(entry.name, "tbl");
     assert_eq_u64(entry.name_len, 3);
 
     // Test export by name
     assert_ok(wah_module_export_by_name(&module, "add", &entry));
-    assert_true(WAH_TYPE_IS_FUNCTION(entry.type));
+    assert_eq_i32(entry.kind, WAH_KIND_FUNCTION);
     assert_eq_str(entry.name, "add");
 
     assert_ok(wah_module_export_by_name(&module, "g", &entry));
-    assert_eq_i32(entry.type, WAH_TYPE_I32);
-    assert_true(WAH_TYPE_IS_GLOBAL(entry.type));
+    assert_eq_i32(entry.kind, WAH_KIND_GLOBAL);
+    assert_eq_i32(entry.u.global.type, WAH_TYPE_I32);
     assert_eq_str(entry.name, "g");
 
     assert_err(wah_module_export_by_name(&module, "nonexistent", &entry), WAH_ERROR_NOT_FOUND);
 
-    // Test wah_module_entry for exported function
-    wah_entry_id_t func_id = wah_debug_make_entry_id(wah_debug_entry_kind_function(), 0);
-    assert_ok(wah_module_entry(&module, func_id, &entry));
-    assert_true(WAH_TYPE_IS_FUNCTION(entry.type));
-    assert_eq_u64(entry.id, func_id);
-    assert_null(entry.name); // wah_module_entry doesn't return name for non-exported
+    // Test per-kind descriptor for exported function
+    wah_func_desc_t func;
+    assert_ok(wah_module_function(&module, 0, &func));
+    assert_eq_u32(func.param_count, 2);
+    assert_eq_u32(func.result_count, 1);
+
+    wah_free_module(&module);
+}
+
+void test_import_descriptors() {
+    printf("Running test_import_descriptors...\n");
+
+    const char *module_spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        imports {[ \
+            {'env'} {'get'} fn# 0, \
+            {'env'} {'tbl'} export.table funcref limits.i32/1 1, \
+            {'env'} {'mem'} export.memory limits.i32/2 1 2, \
+            {'env'} {'g'} export.global i32 immut \
+        ]}";
+
+    wah_module_t module;
+    assert_ok(wah_parse_module_from_spec(&module, module_spec));
+
+    assert_eq_u32(wah_module_import_count(&module), 4);
+    assert_eq_u32(wah_module_function_count(&module), 1);
+    assert_eq_u32(wah_module_table_count(&module), 1);
+    assert_eq_u32(wah_module_memory_count(&module), 1);
+    assert_eq_u32(wah_module_global_count(&module), 1);
+
+    wah_import_desc_t import_desc;
+    assert_ok(wah_module_import(&module, 0, &import_desc));
+    assert_eq_i32(import_desc.kind, 0);
+    assert_eq_u32(import_desc.index, 0);
+    assert_eq_u64(import_desc.module_len, 3);
+    assert_true(memcmp(import_desc.module, "env", 3) == 0);
+    assert_eq_u64(import_desc.name_len, 3);
+    assert_true(memcmp(import_desc.name, "get", 3) == 0);
+    assert_eq_u32(import_desc.u.func.result_count, 1);
+    assert_eq_i32(import_desc.u.func.result_types[0], WAH_TYPE_I32);
+
+    assert_ok(wah_module_import(&module, 1, &import_desc));
+    assert_eq_i32(import_desc.kind, 1);
+    assert_eq_i32(import_desc.u.table.elem_type, WAH_TYPE_FUNCREF);
+
+    assert_ok(wah_module_import(&module, 2, &import_desc));
+    assert_eq_i32(import_desc.kind, 2);
+    assert_eq_u64(import_desc.u.memory.min_pages, 1);
+    assert_eq_u64(import_desc.u.memory.max_pages, 2);
+
+    assert_ok(wah_module_import(&module, 3, &import_desc));
+    assert_eq_i32(import_desc.kind, 3);
+    assert_eq_i32(import_desc.u.global.type, WAH_TYPE_I32);
+    assert_false(import_desc.u.global.is_mutable);
 
     wah_free_module(&module);
 }
@@ -151,18 +232,18 @@ void test_module_no_exports() {
     wah_module_t module;
     assert_ok(wah_parse_module_from_spec(&module, module_spec_no_exports));
 
-    assert_eq_u64(wah_module_num_exports(&module), 0);
+    assert_eq_u32(wah_module_export_count(&module), 0);
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_err(wah_module_export(&module, 0, &entry), WAH_ERROR_NOT_FOUND);
     assert_err(wah_module_export_by_name(&module, "any", &entry), WAH_ERROR_NOT_FOUND);
 
     wah_free_module(&module);
 }
 
-void test_wah_module_entry_non_exported() {
-    printf("Running test_wah_module_entry_non_exported...\n");
-    // Test wah_module_entry for a function that is not exported
+void test_wah_module_function_non_exported() {
+    printf("Running test_wah_module_function_non_exported...\n");
+    // Test per-kind descriptor for a function that is not exported
 
     const char *module_spec_no_exports = "wasm \
         types {[ fn [i32, i32] [i32] ]} \
@@ -172,19 +253,16 @@ void test_wah_module_entry_non_exported() {
     wah_module_t module;
     assert_ok(wah_parse_module_from_spec(&module, module_spec_no_exports));
 
-    wah_entry_t entry;
-    wah_entry_id_t func_id = wah_debug_make_entry_id(wah_debug_entry_kind_function(), 0);
-    assert_ok(wah_module_entry(&module, func_id, &entry));
-    assert_true(WAH_TYPE_IS_FUNCTION(entry.type));
-    assert_eq_u64(entry.id, func_id);
-    assert_null(entry.name);
-    assert_eq_u64(entry.name_len, 0);
+    wah_func_desc_t func;
+    assert_ok(wah_module_function(&module, 0, &func));
+    assert_eq_u32(func.param_count, 2);
+    assert_eq_u32(func.result_count, 1);
 
     wah_free_module(&module);
 }
 
-void test_wah_module_entry_invalid_id() {
-    printf("Running test_wah_module_entry_invalid_id...\n");
+void test_wah_module_function_invalid_id() {
+    printf("Running test_wah_module_function_invalid_id...\n");
 
     const char *module_spec_invalid_id = "wasm \
         types {[ fn [i32, i32] [i32] ]} \
@@ -195,15 +273,8 @@ void test_wah_module_entry_invalid_id() {
     wah_module_t module;
     assert_ok(wah_parse_module_from_spec(&module, module_spec_invalid_id));
 
-    wah_entry_t entry;
-
-    // Invalid function index
-    wah_entry_id_t invalid_func_id = wah_debug_make_entry_id(wah_debug_entry_kind_function(), 999);
-    assert_err(wah_module_entry(&module, invalid_func_id, &entry), WAH_ERROR_NOT_FOUND);
-
-    // Invalid kind
-    wah_entry_id_t invalid_kind_id = wah_debug_make_entry_id(0xFF, 0); // 0xFF is an unknown kind
-    assert_err(wah_module_entry(&module, invalid_kind_id, &entry), WAH_ERROR_NOT_FOUND);
+    wah_func_desc_t func;
+    assert_err(wah_module_function(&module, 999, &func), WAH_ERROR_NOT_FOUND);
 
     wah_free_module(&module);
 }
@@ -221,15 +292,14 @@ void test_export_name_with_null_byte() {
     wah_module_t module;
     assert_ok(wah_parse_module_from_spec(&module, module_spec_null_byte));
 
-    assert_eq_u64(wah_module_num_exports(&module), 1);
+    assert_eq_u32(wah_module_export_count(&module), 1);
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
 
     // Verify by index
     assert_ok(wah_module_export(&module, 0, &entry));
-    assert_true(WAH_TYPE_IS_FUNCTION(entry.type));
-    assert_eq_i32(wah_debug_get_entry_kind(entry.id), wah_debug_entry_kind_function());
-    assert_eq_i32(wah_debug_get_entry_index(entry.id), 0);
+    assert_eq_i32(entry.kind, WAH_KIND_FUNCTION);
+    assert_eq_u32(entry.index, 0);
     assert_eq_u64(entry.name_len, 8);
     assert_true(memcmp(entry.name, "bad\0name", 8) == 0);
 
@@ -242,7 +312,7 @@ void test_export_name_with_null_byte() {
 
     // ec03097: wah_module_export_by_name_len should find it with explicit length
     assert_ok(wah_module_export_by_name_len(&module, "bad\0name", 8, &entry));
-    assert_true(WAH_TYPE_IS_FUNCTION(entry.type));
+    assert_eq_i32(entry.kind, WAH_KIND_FUNCTION);
     assert_eq_u64(entry.name_len, 8);
 
     // Wrong length should not match
@@ -253,12 +323,13 @@ void test_export_name_with_null_byte() {
 
 int main() {
     test_basic_exports();
+    test_import_descriptors();
     test_duplicate_export_names();
     test_invalid_export_kind_or_index();
     test_non_utf8_export_name();
     test_module_no_exports();
-    test_wah_module_entry_non_exported();
-    test_wah_module_entry_invalid_id();
+    test_wah_module_function_non_exported();
+    test_wah_module_function_invalid_id();
     test_export_name_with_null_byte();
 
     printf("All export tests passed!\n");

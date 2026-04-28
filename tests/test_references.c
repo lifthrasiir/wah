@@ -570,11 +570,11 @@ static void test_ref_func_in_elem_with_import() {
     assert_ok(wah_link_module(&ctx, "env", &env_mod));
     assert_ok(wah_instantiate(&ctx));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&wasm_mod, "call_via_table", &entry));
 
     wah_value_t result;
-    assert_ok(wah_call(&ctx, entry.id, NULL, 0, &result));
+    assert_ok(wah_call(&ctx, entry.index, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
 
     wah_exec_context_destroy(&ctx);

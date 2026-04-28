@@ -230,13 +230,13 @@ int main() {
         assert_ok(wah_link_module(&ctx, "env", &env_mod));
         assert_ok(wah_instantiate(&ctx));
 
-        wah_entry_t entry;
+        wah_export_desc_t entry;
         assert_ok(wah_module_export_by_name(&wasm_mod, "f", &entry));
 
         // param=7 -> host writes result=0xDEAD, reads param (must be 7), sets result=7*3=21
         wah_value_t param = { .i32 = 7 };
         wah_value_t result = {0};
-        assert_ok(wah_call(&ctx, entry.id, &param, 1, &result));
+        assert_ok(wah_call(&ctx, entry.index, &param, 1, &result));
         assert_eq_i32(result.i32, 21);
 
         wah_exec_context_destroy(&ctx);
@@ -266,13 +266,13 @@ int main() {
         assert_ok(wah_link_module(&ctx, "env", &env_mod));
         assert_ok(wah_instantiate(&ctx));
 
-        wah_entry_t entry;
+        wah_export_desc_t entry;
         assert_ok(wah_module_export_by_name(&wasm_mod, "f", &entry));
 
         // params=(10,20) -> host writes result, then reads a=10,b=20 -> result=30
         wah_value_t params[2] = {{ .i32 = 10 }, { .i32 = 20 }};
         wah_value_t result = {0};
-        assert_ok(wah_call(&ctx, entry.id, params, 2, &result));
+        assert_ok(wah_call(&ctx, entry.index, params, 2, &result));
         assert_eq_i32(result.i32, 30);
 
         wah_exec_context_destroy(&ctx);
@@ -302,13 +302,13 @@ int main() {
         assert_ok(wah_link_module(&ctx, "env", &env_mod));
         assert_ok(wah_instantiate(&ctx));
 
-        wah_entry_t entry;
+        wah_export_desc_t entry;
         assert_ok(wah_module_export_by_name(&wasm_mod, "f", &entry));
 
         // params=(10,20,30) -> host writes result, then reads all three -> result=60
         wah_value_t params[3] = {{ .i32 = 10 }, { .i32 = 20 }, { .i32 = 30 }};
         wah_value_t result = {0};
-        assert_ok(wah_call(&ctx, entry.id, params, 3, &result));
+        assert_ok(wah_call(&ctx, entry.index, params, 3, &result));
         assert_eq_i32(result.i32, 60);
 
         wah_exec_context_destroy(&ctx);

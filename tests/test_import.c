@@ -43,15 +43,15 @@ static void test_basic_import_resolution(void) {
     assert_ok(wah_link_module(&ctx, "env", &env_mod));
     assert_ok(wah_instantiate(&ctx));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&wasm_mod, "callAdd", &entry));
-    uint32_t export_idx = wah_debug_get_entry_index(entry.id);
+    uint32_t export_idx = entry.index;
     assert_eq_u32(export_idx, 1);
 
     wah_value_t params[2] = {{ .i32 = 10 }, { .i32 = 20 }};
     wah_value_t result = {0};
     g_add_called = 0;
-    assert_ok(wah_call(&ctx, entry.id, params, 2, &result));
+    assert_ok(wah_call(&ctx, entry.index, params, 2, &result));
     assert_true(g_add_called);
     assert_eq_i32(result.i32, 30);
 
@@ -105,19 +105,17 @@ static void test_import_index_space(void) {
 
     assert_ok(wah_parse_module_from_spec(&wasm_mod, k_import_spec));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&wasm_mod, "callAdd", &entry));
-    uint32_t idx = wah_debug_get_entry_index(entry.id);
+    uint32_t idx = entry.index;
     assert_eq_u32(idx, 1);
 
-    uint32_t nargs, nrets;
-    const wah_type_t *args, *rets;
-    assert_ok(wah_entry_func(&entry, &nargs, &args, &nrets, &rets));
-    assert_eq_u32(nargs, 2);
-    assert_eq_u32(nrets, 1);
-    assert_eq_i32(args[0], WAH_TYPE_I32);
-    assert_eq_i32(args[1], WAH_TYPE_I32);
-    assert_eq_i32(rets[0], WAH_TYPE_I32);
+    assert_eq_i32(entry.kind, WAH_KIND_FUNCTION);
+    assert_eq_u32(entry.u.func.param_count, 2);
+    assert_eq_u32(entry.u.func.result_count, 1);
+    assert_eq_i32(entry.u.func.param_types[0], WAH_TYPE_I32);
+    assert_eq_i32(entry.u.func.param_types[1], WAH_TYPE_I32);
+    assert_eq_i32(entry.u.func.result_types[0], WAH_TYPE_I32);
 
     wah_free_module(&wasm_mod);
 }
@@ -137,13 +135,13 @@ static void test_no_imports_unchanged(void) {
     assert_eq_u32(mod.import_function_count, 0);
     assert_ok(wah_exec_context_create(&ctx, &mod));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&mod, "add", &entry));
-    assert_eq_u32(wah_debug_get_entry_index(entry.id), 0);
+    assert_eq_u32(entry.index, 0);
 
     wah_value_t params[2] = {{ .i32 = 7 }, { .i32 = 8 }};
     wah_value_t result = {0};
-    assert_ok(wah_call(&ctx, entry.id, params, 2, &result));
+    assert_ok(wah_call(&ctx, entry.index, params, 2, &result));
     assert_eq_i32(result.i32, 15);
 
     wah_exec_context_destroy(&ctx);
@@ -176,11 +174,11 @@ static void test_global_import_i32(void) {
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_ok(wah_instantiate(&ctx));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&wasm_mod, "get", &entry));
 
     wah_value_t result = {0};
-    assert_ok(wah_call(&ctx, entry.id, NULL, 0, &result));
+    assert_ok(wah_call(&ctx, entry.index, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
 
     wah_exec_context_destroy(&ctx);
@@ -213,16 +211,16 @@ static void test_global_import_set(void) {
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_ok(wah_instantiate(&ctx));
 
-    wah_entry_t get_entry, inc_entry;
+    wah_export_desc_t get_entry, inc_entry;
     assert_ok(wah_module_export_by_name(&wasm_mod, "get", &get_entry));
     assert_ok(wah_module_export_by_name(&wasm_mod, "inc", &inc_entry));
 
     wah_value_t result = {0};
-    assert_ok(wah_call(&ctx, get_entry.id, NULL, 0, &result));
+    assert_ok(wah_call(&ctx, get_entry.index, NULL, 0, &result));
     assert_eq_i32(result.i32, 10);
 
-    assert_ok(wah_call(&ctx, inc_entry.id, NULL, 0, NULL));
-    assert_ok(wah_call(&ctx, get_entry.id, NULL, 0, &result));
+    assert_ok(wah_call(&ctx, inc_entry.index, NULL, 0, NULL));
+    assert_ok(wah_call(&ctx, get_entry.index, NULL, 0, &result));
     assert_eq_i32(result.i32, 11);
 
     wah_exec_context_destroy(&ctx);
@@ -255,11 +253,11 @@ static void test_global_import_with_local_globals(void) {
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_ok(wah_instantiate(&ctx));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&wasm_mod, "sum", &entry));
 
     wah_value_t result = {0};
-    assert_ok(wah_call(&ctx, entry.id, NULL, 0, &result));
+    assert_ok(wah_call(&ctx, entry.index, NULL, 0, &result));
     assert_eq_i32(result.i32, 300);
 
     wah_exec_context_destroy(&ctx);
@@ -326,11 +324,11 @@ static void test_memory_import(void) {
     uint32_t val = 0x12345678;
     memcpy(wah_debug_memory_data(&ctx, 0), &val, 4);
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&wasm_mod, "load", &entry));
 
     wah_value_t result = {0};
-    assert_ok(wah_call(&ctx, entry.id, NULL, 0, &result));
+    assert_ok(wah_call(&ctx, entry.index, NULL, 0, &result));
     assert_eq_u32((uint32_t)result.i32, 0x12345678);
 
     wah_exec_context_destroy(&ctx);
@@ -391,11 +389,11 @@ static void test_table_import(void) {
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_ok(wah_instantiate(&ctx));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&wasm_mod, "tsize", &entry));
 
     wah_value_t result = {0};
-    assert_ok(wah_call(&ctx, entry.id, NULL, 0, &result));
+    assert_ok(wah_call(&ctx, entry.index, NULL, 0, &result));
     assert_eq_i32(result.i32, 1);
 
     wah_exec_context_destroy(&ctx);
@@ -467,11 +465,11 @@ static void test_mixed_imports(void) {
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_ok(wah_instantiate(&ctx));
 
-    wah_entry_t entry;
+    wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&wasm_mod, "test", &entry));
 
     wah_value_t result = {0};
-    assert_ok(wah_call(&ctx, entry.id, NULL, 0, &result));
+    assert_ok(wah_call(&ctx, entry.index, NULL, 0, &result));
     assert_eq_i32(result.i32, 142);
 
     wah_exec_context_destroy(&ctx);
