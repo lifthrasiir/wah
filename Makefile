@@ -1,6 +1,7 @@
 CC ?= gcc
 CFLAGS ?= -W -Wall -Wextra
 LDFLAGS ?= -lm
+TEST_SANITIZERS ?= address,undefined
 
 ifneq ($(OS),Windows_NT)
     LDFLAGS += -pthread
@@ -10,6 +11,22 @@ ifdef DEBUG
     CFLAGS += -DWAH_DEBUG -g -O0
 else
     CFLAGS += -DWAH_ASSERT=assert -O2
+endif
+
+ifneq ($(strip $(TEST_SANITIZERS)),)
+    TEST_SANITIZER_FLAGS := -fsanitize=$(TEST_SANITIZERS) -fno-omit-frame-pointer
+endif
+
+TEST_CFLAGS := $(CFLAGS) $(TEST_SANITIZER_FLAGS)
+TEST_LDFLAGS := $(LDFLAGS) $(TEST_SANITIZER_FLAGS)
+
+TEST_RUN_PREFIX ?=
+ifneq ($(strip $(TEST_SANITIZERS)),)
+ifdef WSL_DISTRO_NAME
+ifeq ($(strip $(TEST_RUN_PREFIX)),)
+    TEST_RUN_PREFIX := setarch $(shell uname -m) -R
+endif
+endif
 endif
 
 ALL_TEST_SRCS := $(sort $(wildcard tests/test_*.c))
@@ -24,26 +41,28 @@ API_SRCS := $(filter-out $(IMPL_SRCS), $(ALL_TEST_SRCS))
 
 tests/wah_impl.o: tests/wah_impl.c tests/wah_impl.h wah.h
 	@echo "## Compiling wah_impl.o..."
-	@$(CC) $(CFLAGS) -c $< -o $@
+	@$(CC) $(TEST_CFLAGS) -c $< -o $@
 
 tests/common.o: tests/common.c tests/common.h wah.h
 	@echo "## Compiling common.o..."
-	@$(CC) $(CFLAGS) -c $< -o $@
+	@$(CC) $(TEST_CFLAGS) -c $< -o $@
 
 # --- Test binaries ---
 
 # Standalone tests (have WAH_IMPLEMENTATION): link with common.o
 $(patsubst %.c, %, $(IMPL_SRCS)): tests/test_%: tests/test_%.c tests/common.o wah.h tests/common.h
 	@echo "## Compiling test_$*.c..."
-	@$(CC) $(CFLAGS) -c $< -o tests/test_$*.o
-	@$(CC) tests/test_$*.o tests/common.o -o $@ $(LDFLAGS)
+	@$(CC) $(TEST_CFLAGS) -c $< -o tests/test_$*.o
+	@$(CC) tests/test_$*.o tests/common.o -o $@ $(TEST_LDFLAGS)
 	@rm -f tests/test_$*.o
+
+tests/test_spectest: tests/spectest.c tests/wast.c
 
 # API-only tests: link with wah_impl.o + common.o
 $(patsubst %.c, %, $(API_SRCS)): tests/test_%: tests/test_%.c tests/wah_impl.o tests/common.o wah.h tests/common.h tests/wah_impl.h
 	@echo "## Compiling test_$*.c..."
-	@$(CC) $(CFLAGS) -c $< -o tests/test_$*.o
-	@$(CC) tests/test_$*.o tests/wah_impl.o tests/common.o -o $@ $(LDFLAGS)
+	@$(CC) $(TEST_CFLAGS) -c $< -o tests/test_$*.o
+	@$(CC) tests/test_$*.o tests/wah_impl.o tests/common.o -o $@ $(TEST_LDFLAGS)
 	@rm -f tests/test_$*.o
 
 # --- Run targets ---
@@ -56,7 +75,7 @@ define MAKE_RUN_RULE
 .PHONY: run_$(1)
 run_$(1): tests/test_$(1)
 	@echo "## Running test_$(1).c..."
-	@./tests/test_$(1)
+	@$(TEST_RUN_PREFIX) ./tests/test_$(1)
 	@echo ""
 endef
 $(foreach t,$(ALL_TEST_NAMES),$(eval $(call MAKE_RUN_RULE,$(t))))
@@ -72,7 +91,7 @@ define MAKE_SINGLE_TEST
 .PHONY: test_$(1)
 test_$(1): tests/test_$(1)
 	@echo "## Running test_$(1).c..."
-	@./tests/test_$(1)
+	@$(TEST_RUN_PREFIX) ./tests/test_$(1)
 	@echo ""
 endef
 $(foreach t,$(ALL_TEST_NAMES),$(eval $(call MAKE_SINGLE_TEST,$(t))))
