@@ -531,8 +531,8 @@ void test_i32x4_ne() {
 }
 
 void test_i32x4_lt_s() {
-    wah_v128_t operand1 = { .i32 = {1, 2, -2147483648, 2147483647} }, operand2 = { .i32 = {2, 1, 2147483647, -2147483648} };
-    wah_v128_t expected = { .u32 = {~0U, 0, ~0U, 0} }; // 1<2, 2<1(F), -2147483648<2147483647, 2147483647<-2147483648(F)
+    wah_v128_t operand1 = { .i32 = {1, 2, (-2147483647 - 1), 2147483647} }, operand2 = { .i32 = {2, 1, 2147483647, (-2147483647 - 1)} };
+    wah_v128_t expected = { .u32 = {~0U, 0, ~0U, 0} }; // 1<2, 2<1(F), (-2147483647 - 1)<2147483647, 2147483647<(-2147483647 - 1)(F)
     run_simd_binary_op_test("i32x4.lt_s", binary_op_wasm_spec, &operand1, &operand2, &expected);
 }
 
@@ -543,8 +543,8 @@ void test_i32x4_lt_u() {
 }
 
 void test_i32x4_gt_s() {
-    wah_v128_t operand1 = { .i32 = {2, 1, 2147483647, -2147483648} }, operand2 = { .i32 = {1, 2, -2147483648, 2147483647} };
-    wah_v128_t expected = { .u32 = {~0U, 0, ~0U, 0} }; // 2>1, 1>2(F), 2147483647>-2147483648, -2147483648>2147483647(F)
+    wah_v128_t operand1 = { .i32 = {2, 1, 2147483647, (-2147483647 - 1)} }, operand2 = { .i32 = {1, 2, (-2147483647 - 1), 2147483647} };
+    wah_v128_t expected = { .u32 = {~0U, 0, ~0U, 0} }; // 2>1, 1>2(F), 2147483647>(-2147483647 - 1), (-2147483647 - 1)>2147483647(F)
     run_simd_binary_op_test("i32x4.gt_s", binary_op_wasm_spec, &operand1, &operand2, &expected);
 }
 
@@ -555,8 +555,8 @@ void test_i32x4_gt_u() {
 }
 
 void test_i32x4_le_s() {
-    wah_v128_t operand1 = { .i32 = {1, 2, -2147483648, 2147483647} }, operand2 = { .i32 = {1, 1, -2147483648, 2147483647} };
-    wah_v128_t expected = { .u32 = {~0U, 0, ~0U, ~0U} }; // 1<=1, 2<=1(F), -2147483648<=-2147483648, 2147483647<=2147483647
+    wah_v128_t operand1 = { .i32 = {1, 2, (-2147483647 - 1), 2147483647} }, operand2 = { .i32 = {1, 1, (-2147483647 - 1), 2147483647} };
+    wah_v128_t expected = { .u32 = {~0U, 0, ~0U, ~0U} }; // 1<=1, 2<=1(F), (-2147483647 - 1)<=(-2147483647 - 1), 2147483647<=2147483647
     run_simd_binary_op_test("i32x4.le_s", binary_op_wasm_spec, &operand1, &operand2, &expected);
 }
 
@@ -567,8 +567,8 @@ void test_i32x4_le_u() {
 }
 
 void test_i32x4_ge_s() {
-    wah_v128_t operand1 = { .i32 = {1, 2, -2147483648, 2147483647} }, operand2 = { .i32 = {1, 1, -2147483648, 2147483647} };
-    wah_v128_t expected = { .u32 = {~0U, ~0U, ~0U, ~0U} }; // 1>=1, 2>=1, -2147483648>=-2147483648, 2147483647>=2147483647
+    wah_v128_t operand1 = { .i32 = {1, 2, (-2147483647 - 1), 2147483647} }, operand2 = { .i32 = {1, 1, (-2147483647 - 1), 2147483647} };
+    wah_v128_t expected = { .u32 = {~0U, ~0U, ~0U, ~0U} }; // 1>=1, 2>=1, (-2147483647 - 1)>=(-2147483647 - 1), 2147483647>=2147483647
     run_simd_binary_op_test("i32x4.ge_s", binary_op_wasm_spec, &operand1, &operand2, &expected);
 }
 
@@ -780,7 +780,7 @@ void test_f64x2_splat() {
 
 void test_i32x4_trunc_sat_f32x4_s() {
     wah_v128_t operand = { .f32 = {1.5f, -2.5f, 2147483647.0f, -2147483648.0f} };
-    wah_v128_t expected = { .i32 = {1, -2, 2147483647, -2147483648} };
+    wah_v128_t expected = { .i32 = {1, -2, 2147483647, (-2147483647 - 1)} };
     run_simd_unary_op_test("i32x4.trunc_sat_f32x4_s", unary_op_wasm_spec, &operand, &expected);
 }
 
@@ -989,7 +989,7 @@ void test_i8x16_relaxed_swizzle() {
 
 void test_i32x4_relaxed_trunc_f32x4_s() {
     wah_v128_t operand = { .f32 = {1.5f, -2.5f, 2147483647.0f, -2147483648.0f} };
-    wah_v128_t expected = { .i32 = {1, -2, 2147483647, -2147483648} };
+    wah_v128_t expected = { .i32 = {1, -2, 2147483647, (-2147483647 - 1)} };
     run_simd_unary_op_test("i32x4.relaxed_trunc_f32x4_s", unary_op_wasm_spec, &operand, &expected);
 }
 
@@ -1129,7 +1129,7 @@ void test_simd_fp_nan_canonicalization() {
 void test_f32x4_pmax_nan_handling() {
     wah_v128_t operand1 = { .f32 = {1.0f, NAN, 3.0f, NAN} };
     wah_v128_t operand2 = { .f32 = {2.0f, 2.0f, NAN, NAN} };
-    wah_v128_t expected = { .f32 = {2.0f, nanf(""), 3.0f, nanf("")} };
+    wah_v128_t expected = { .f32 = {2.0f, NAN, 3.0f, NAN} };
     run_simd_binary_op_test("f32x4.pmax (nan_handling)", binary_op_wasm_spec, &operand1, &operand2, &expected);
 }
 

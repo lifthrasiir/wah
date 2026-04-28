@@ -125,7 +125,7 @@ static void test_deep_recursion_default_stack(void) {
 }
 
 // Wide operand stack: function pushes many values (large max_stack_depth)
-// with a small stack budget → preflight catches overflow at call entry.
+// with a small stack budget -> preflight catches overflow at call entry.
 static void test_wide_operand_stack_preflight(void) {
     printf("Testing wide operand stack preflight...\n");
     wah_module_t mod = {0};
@@ -801,7 +801,7 @@ static void test_set_limits_partial(void) {
     assert_eq_u64(before.max_memory_bytes, 4 * PAGE_SIZE);
     assert_eq_u64(before.fuel, 200);
 
-    // Set only fuel — stack and memory should not change
+    // Set only fuel -- stack and memory should not change
     wah_rlimits_t fuel_only = { .fuel = 500 };
     assert_ok(wah_exec_context_set_limits(&ctx, &fuel_only));
 
@@ -811,7 +811,7 @@ static void test_set_limits_partial(void) {
     assert_eq_u64(after.max_memory_bytes, 4 * PAGE_SIZE);
     assert_eq_u64(after.fuel, 500);
 
-    // Set only memory — stack and fuel should not change
+    // Set only memory -- stack and fuel should not change
     wah_rlimits_t mem_only = { .max_memory_bytes = 2 * PAGE_SIZE };
     assert_ok(wah_exec_context_set_limits(&ctx, &mem_only));
 
@@ -820,7 +820,7 @@ static void test_set_limits_partial(void) {
     assert_eq_u64(after.max_memory_bytes, 2 * PAGE_SIZE);
     assert_eq_u64(after.fuel, 500);
 
-    // Set only stack — memory and fuel should not change
+    // Set only stack -- memory and fuel should not change
     wah_rlimits_t stack_only = { .max_stack_bytes = 16384 };
     assert_ok(wah_exec_context_set_limits(&ctx, &stack_only));
 

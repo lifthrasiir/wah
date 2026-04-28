@@ -115,9 +115,9 @@ static void test_import_index_space(void) {
     assert_ok(wah_entry_func(&entry, &nargs, &args, &nrets, &rets));
     assert_eq_u32(nargs, 2);
     assert_eq_u32(nrets, 1);
-    assert_eq_u32(args[0], WAH_TYPE_I32);
-    assert_eq_u32(args[1], WAH_TYPE_I32);
-    assert_eq_u32(rets[0], WAH_TYPE_I32);
+    assert_eq_i32(args[0], WAH_TYPE_I32);
+    assert_eq_i32(args[1], WAH_TYPE_I32);
+    assert_eq_i32(rets[0], WAH_TYPE_I32);
 
     wah_free_module(&wasm_mod);
 }

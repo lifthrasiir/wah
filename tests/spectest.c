@@ -10,6 +10,10 @@
 #include <stdarg.h>
 #include <string.h>
 
+#ifdef _MSC_VER
+#define strdup _strdup
+#endif
+
 typedef struct {
     void *ptr;
     uint32_t id;

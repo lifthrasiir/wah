@@ -29,7 +29,7 @@ void test_f32_global(wah_exec_context_t* exec_ctx) {
     printf("Testing f32 global...\n");
     // Get initial value
     assert_ok(wah_call(exec_ctx, 2, NULL, 0, &result));
-    assert_eq_f32(result.f32, 1.5f, 1e-6);
+    assert_eq_f32(result.f32, 1.5f, 1e-6f);
 
     // Set new value
     wah_value_t params_f32[1];
@@ -38,7 +38,7 @@ void test_f32_global(wah_exec_context_t* exec_ctx) {
 
     // Get new value
     assert_ok(wah_call(exec_ctx, 2, NULL, 0, &result));
-    assert_eq_f32(result.f32, 9.99f, 1e-6);
+    assert_eq_f32(result.f32, 9.99f, 1e-6f);
 }
 
 void test_global_type_mismatch(void) {

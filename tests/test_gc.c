@@ -118,8 +118,7 @@ int main() {
 
     printf("Testing non-GC execution unaffected...\n");
     assert_ok(wah_exec_context_create(&ctx, &module));
-    wah_value_t result;
-    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    { wah_value_t result; assert_ok(wah_call(&ctx, 0, NULL, 0, &result)); }
     wah_exec_context_destroy(&ctx);
 
     wah_free_module(&module);
@@ -1284,22 +1283,22 @@ int main() {
             end } ]}";
 
         assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
-        wah_exec_context_t ctx = {0};
-        assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
-        assert_ok(wah_link_module(&ctx, "env", &env_mod));
-        assert_ok(wah_gc_start(&ctx));
-        assert_ok(wah_instantiate(&ctx));
+        wah_exec_context_t ctx6 = {0};
+        assert_ok(wah_exec_context_create(&ctx6, &wasm_mod));
+        assert_ok(wah_link_module(&ctx6, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx6));
+        assert_ok(wah_instantiate(&ctx6));
 
-        ctx.gc->allocation_threshold = 1;
+        ctx6.gc->allocation_threshold = 1;
 
         wah_value_t result;
-        assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+        assert_ok(wah_call(&ctx6, 2, NULL, 0, &result));
         assert_eq_i32(result.i32, 10);
 
-        assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+        assert_ok(wah_call(&ctx6, 1, NULL, 0, &result));
         assert_eq_i32(result.i32, 1);
 
-        wah_exec_context_destroy(&ctx);
+        wah_exec_context_destroy(&ctx6);
         wah_free_module(&wasm_mod);
         wah_free_module(&env_mod);
     }
@@ -1312,21 +1311,21 @@ int main() {
             funcs {[ 1 ]} \
             code {[ {[] i32.const 42 struct.new 0 struct.get 0 0 end } ]}";
         assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
-        wah_exec_context_t ctx = {0};
-        assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
-        assert_ok(wah_gc_start(&ctx));
-        assert_ok(wah_instantiate(&ctx));
+        wah_exec_context_t ctx7 = {0};
+        assert_ok(wah_exec_context_create(&ctx7, &wasm_mod));
+        assert_ok(wah_gc_start(&ctx7));
+        assert_ok(wah_instantiate(&ctx7));
 
         wah_value_t result;
-        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_ok(wah_call(&ctx7, 0, NULL, 0, &result));
         assert_eq_i32(result.i32, 42);
 
-        assert_not_null(ctx.gc);
-        assert_true(ctx.gc->phase == WAH_GC_PHASE_IDLE);
-        wah_gc_step(&ctx);
-        assert_true(ctx.gc->phase == WAH_GC_PHASE_IDLE);
+        assert_not_null(ctx7.gc);
+        assert_true(ctx7.gc->phase == WAH_GC_PHASE_IDLE);
+        wah_gc_step(&ctx7);
+        assert_true(ctx7.gc->phase == WAH_GC_PHASE_IDLE);
 
-        wah_exec_context_destroy(&ctx);
+        wah_exec_context_destroy(&ctx7);
         wah_free_module(&wasm_mod);
     }
 

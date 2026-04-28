@@ -58,7 +58,7 @@ void test_params(wah_call_context_t *ctx, void *userdata) {
     // Verify values
     assert_eq_i32(i32_val, 42);
     assert_eq_i64(i64_val, 1234567890123LL);
-    assert_eq_f32(f32_val, 3.14f, 1e-5);
+    assert_eq_f32(f32_val, 3.14f, 1e-5f);
     assert_eq_f64(f64_val, 2.71828, 1e-5);
 
     printf(" PASS\n");
@@ -164,7 +164,7 @@ int main() {
 
         assert_eq_i32(results[0].i32, 100);
         assert_eq_i64(results[1].i64, 2000000000000LL);
-        assert_eq_f32(results[2].f32, 1.5f, 1e-5);
+        assert_eq_f32(results[2].f32, 1.5f, 1e-5f);
         assert_eq_f64(results[3].f64, 2.5, 1e-5);
     }
 

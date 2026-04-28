@@ -29,7 +29,7 @@ static const uint64_t NON_CANONICAL_F64_NAN_BITS_2 = 0x7ff0000000000002ULL;
 // A non-canonical NaN for testing (e.g., quiet NaN with some payload bits)
 // Sign: 0, Exponent: all 1s, Mantissa: 010...0 (bit 22 is 0, bit 21 is 1)
 // Canonical would be 0x7fc00000 (bit 22 is 1, rest 0)
-static const uint32_t NON_CANONICAL_F32_NAN_BITS = 0x7fa00000U; // Example: qNaN with payload
+#define NON_CANONICAL_F32_NAN_BITS 0x7fa00000U
 static const union { uint32_t i; float f; } non_canonical_f32_nan_union = { .i = NON_CANONICAL_F32_NAN_BITS };
 #define NON_CANONICAL_F32_NAN non_canonical_f32_nan_union.f
 

@@ -95,7 +95,7 @@ if ($filter -eq 'bench') {
 }
 
 if ($compiler -eq 'msvc') {
-    $cflags = @('/W4', '/std:c11')
+    $cflags = @('/W4', '/std:c11', '/wd5105', '/D_CRT_SECURE_NO_WARNINGS')
     if ($g) {
         $cflags += '/DWAH_DEBUG', '/Zi'
     } else {

@@ -166,7 +166,7 @@ void test_f32_mul(wah_exec_context_t* ctx) {
     params[0].f32 = 12.5f;
     params[1].f32 = -4.0f;
     assert_ok(wah_call(ctx, 0, params, 2, &result));
-    assert_eq_f32(result.f32, -50.0f, 1e-6);
+    assert_eq_f32(result.f32, -50.0f, 1e-6f);
 }
 
 static const char *f64_sub_spec = "wasm \

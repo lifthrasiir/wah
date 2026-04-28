@@ -887,7 +887,7 @@ static void test_poll_yield_without_fuel(void) {
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
 
-    // No fuel metering — just a loop that runs many iterations.
+    // No fuel metering -- just a loop that runs many iterations.
     // wah_request_interrupt should cause WAH_STATUS_YIELDED at POLL.
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [i32] [i32]]} funcs {[0]} \
@@ -943,7 +943,7 @@ static void test_bulk_table_fill_interrupt(void) {
     assert_ok(wah_exec_context_create(&ctx, &mod));
     assert_ok(wah_instantiate(&ctx));
 
-    // Run with interrupt — should yield and resume correctly
+    // Run with interrupt -- should yield and resume correctly
     assert_ok(wah_start(&ctx, 0, NULL, 0));
     wah_request_interrupt(&ctx);
     wah_error_t err = wah_resume(&ctx);
