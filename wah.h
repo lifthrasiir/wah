@@ -12,6 +12,7 @@
 #include <stdbool.h>
 #include <assert.h>
 #include <math.h>
+#include <stdarg.h>
 
 #ifndef WAH_FORCE_PORTABLE
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
@@ -649,7 +650,6 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
 #include <stdint.h> // For INT32_MIN, INT32_MAX
 #include <math.h> // For floating-point functions
 #include <errno.h> // For ETIMEDOUT
-#include <stdarg.h> // For va_list etc.
 #if defined(_MSC_VER)
 #include <intrin.h> // For MSVC intrinsics
 #endif
@@ -13449,6 +13449,8 @@ static bool wah_type_spec_take_kw(wah_type_spec_parser_t *p, const char *kw) {
 
 static bool wah_type_spec_fail(wah_type_spec_parser_t *p, const char *msg) {
     WAH_LOG("Type spec parse error: %s", msg);
+    (void)p;
+    (void)msg;
     return false;
 }
 

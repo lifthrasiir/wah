@@ -1027,18 +1027,26 @@ static size_t parse_tokens(buffer_t *buf, const char *fmt, va_list *args, bool *
                     wah_spec_fail_at(start, hex_start - 2, error, "missing closing quote for hex bytes");
                     return 0;
                 }
-                if ((hex_len % 2) != 0) {
-                    wah_spec_fail_at(start, hex_start, error, "hex byte string has odd length");
-                    return 0;
-                }
                 // Parse hex string
-                for (size_t i = 0; i < hex_len; i += 2) {
-                    if (!isxdigit((unsigned char)hex_start[i]) ||
-                        !isxdigit((unsigned char)hex_start[i + 1])) {
+                size_t i = 0;
+                while (i < hex_len) {
+                    while (i < hex_len && isspace((unsigned char)hex_start[i])) i++;
+                    if (i >= hex_len) break;
+                    if (!isxdigit((unsigned char)hex_start[i])) {
                         wah_spec_fail_at(start, hex_start + i, error, "hex byte string contains non-hex digit");
                         return 0;
                     }
-                    char byte_str[3] = {hex_start[i], hex_start[i+1], '\0'};
+                    char hi = hex_start[i++];
+                    while (i < hex_len && isspace((unsigned char)hex_start[i])) i++;
+                    if (i >= hex_len) {
+                        wah_spec_fail_at(start, hex_start + i, error, "hex byte string has odd length");
+                        return 0;
+                    }
+                    if (!isxdigit((unsigned char)hex_start[i])) {
+                        wah_spec_fail_at(start, hex_start + i, error, "hex byte string contains non-hex digit");
+                        return 0;
+                    }
+                    char byte_str[3] = {hi, hex_start[i++], '\0'};
                     uint8_t byte = (uint8_t)strtol(byte_str, NULL, 16);
                     buffer_append(buf, &byte, 1);
                 }
