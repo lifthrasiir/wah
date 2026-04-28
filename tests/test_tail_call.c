@@ -108,6 +108,31 @@ static void test_return_call_indirect_basic(void) {
     wah_free_module(&module);
 }
 
+// return_call_indirect through a table64 table.
+static void test_return_call_indirect_table64(void) {
+    printf("Test: return_call_indirect table64\n");
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0, 0 ]} \
+        tables {[ funcref limits.i64/1 1 ]} \
+        elements {[ elem.active.table#0 i64.const 0 end [ 1 ] ]} \
+        code {[ \
+            {[] i64.const 0 return_call_indirect 0 0 end}, \
+            {[] i32.const 123 end} \
+        ]}";
+
+    wah_module_t module = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 123);
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 // return_call_indirect deep recursion
 // func 0: [i32] -> [i32], table[0] = func 0
 // if n == 0: return 0, else: return_call_indirect(n-1) through table[0]
@@ -265,6 +290,7 @@ int main(void) {
     test_return_call_with_params();
     test_return_call_deep_recursion();
     test_return_call_indirect_basic();
+    test_return_call_indirect_table64();
     test_return_call_indirect_deep_recursion();
     test_return_call_ref_basic();
     test_return_call_ref_null_trap();
