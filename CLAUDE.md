@@ -9,7 +9,7 @@ This project implements a WebAssembly (WASM) interpreter entirely within a singl
 - `tests/test_*.c`: Individual test files, each is a standalone program that includes `common.c` (which includes `wah.h`).
 - `tests/spectest.c` / `tests/wast.c`: WebAssembly spec test runner infrastructure.
 - `tests/spectest/`: Directory containing `.wast` spec test files.
-- `test.bat`: Windows test runner (uses `clang`). `Makefile`: POSIX test runner (uses `gcc`).
+- `test.ps1`: Windows test runner with compiler selection (`-clang`, `-gcc`, `-msvc`). `Makefile`: POSIX test runner.
 
 ## Implementation Strategy
 
@@ -107,13 +107,14 @@ Internal error propagation uses helper macros:
 - **Dependencies:** Standard C libraries only (`stdint.h`, `stddef.h`, `stdbool.h`, `string.h`, `stdlib.h`, `assert.h`, `math.h`, `stdio.h`).
 - **Platform-specific SIMD:** x86-64 uses SSE2 baseline with runtime detection for SSSE3/SSE4.1/SSE4.2/AVX2/AVX-512 via CPUID. AArch64 uses NEON. Inline asm wrappers (`WAH_ASM_*` macros) allow using higher ISA instructions without `-march` flags. Generic fallbacks exist for all SIMD ops.
 - **Emoji Prohibition:** No emoji usage in source files. Use text-based markers.
-- **WAH_DEBUG:** Define for debugging. `WAH_LOG` provides printf-like logging with line numbers. Use `./test.bat -g` to enable in test runs.
+- **WAH_DEBUG:** Define for debugging. `WAH_LOG` provides printf-like logging with line numbers. Use `./test.ps1 -g` on Windows or `make DEBUG=1 test` on POSIX to enable in test runs.
 - **Coding conventions:** Assume C99. Strive to be compact as long as readability is maintained. Avoid non-portable features, including using `memset` to initialize struct with pointers (use a compound literal instead).
 
 ## Testing
 
 - **Windows:** Run `./test.ps1` for all tests. Run `./test.ps1 <prefix>` for specific tests (e.g., `./test.ps1 linkage`).
-    - Uses `clang` compiler. Successful test binaries get automatically removed. Consider using `gdb` on failed tests.
+    - Uses `clang` by default. Pass exactly one of `-clang`, `-gcc`, or `-msvc` to select a compiler (e.g., `./test.ps1 -msvc`, `./test.ps1 -gcc linkage`).
+    - Successful test binaries get automatically removed. Precompiled helper objects are reused; run clean-up manually when you need a fully fresh build.
 - **POSIX:** Run `make test` for all tests. Run `make test_<prefix>` for specific tests.
     - Uses `gcc` compiler. Set `DEBUG=1` for debug builds.
 - **Exit Codes:** Tests return 0 only on success, non-zero on any failure.

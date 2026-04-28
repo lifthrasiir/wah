@@ -12,18 +12,38 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: gcc x86-64
+          - name: Linux gcc x86-64
             runner: ubuntu-latest
             cc: gcc
-          - name: clang x86-64
+            test: make
+          - name: Linux clang x86-64
             runner: ubuntu-latest
             cc: clang
-          - name: gcc aarch64
+            test: make
+          - name: Linux gcc aarch64
             runner: ubuntu-24.04-arm
             cc: gcc
-          - name: clang aarch64
+            test: make
+          - name: Linux clang aarch64
             runner: ubuntu-24.04-arm
             cc: clang
+            test: make
+          - name: macOS clang
+            runner: macos-latest
+            cc: clang
+            test: make
+          - name: Windows msvc
+            runner: windows-latest
+            cc: msvc
+            test: ps1
+          - name: Windows clang
+            runner: windows-latest
+            cc: clang
+            test: ps1
+          - name: Windows gcc
+            runner: windows-latest
+            cc: gcc
+            test: ps1
 
     name: ${{ matrix.name }}
     runs-on: ${{ matrix.runner }}
@@ -31,5 +51,29 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Set up MSVC developer environment
+        if: runner.os == 'Windows' && matrix.cc == 'clang'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Set up MSYS2 GCC
+        if: runner.os == 'Windows' && matrix.cc == 'gcc'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-gcc
+          path-type: minimal
+
+      - name: Add MSYS2 GCC to PATH
+        if: runner.os == 'Windows' && matrix.cc == 'gcc'
+        shell: pwsh
+        run: Add-Content $env:GITHUB_PATH 'C:\msys64\ucrt64\bin'
+
       - name: Build and test
-        run: make -j$(nproc) test CC=${{ matrix.cc }}
+        if: matrix.test == 'make'
+        run: make -j$(getconf _NPROCESSORS_ONLN) test CC=${{ matrix.cc }}
+
+      - name: Build and test
+        if: matrix.test == 'ps1'
+        shell: pwsh
+        run: ./test.ps1 -${{ matrix.cc }}
