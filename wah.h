@@ -8070,24 +8070,9 @@ static wah_error_t wah_parse_name(const uint8_t **ptr, const uint8_t *section_en
 
 // Helper to calculate effective address with overflow and bounds checking
 static inline wah_error_t wah_check_effective_addr(uint64_t addr, uint64_t offset, uint64_t size, uint64_t memory_size, uint64_t *effective_addr) {
-#if WAH_HAS_BUILTIN(__builtin_add_overflow) || __GNUC__ >= 5
-    uint64_t end;
-    if (__builtin_add_overflow(addr, offset, effective_addr) ||
-        __builtin_add_overflow(*effective_addr, size, &end) || end > memory_size) {
-        return WAH_ERROR_MEMORY_OUT_OF_BOUNDS;
-    }
-#else
-    // Check for overflow in addr + offset
-    if (offset > UINT64_MAX - addr) return WAH_ERROR_MEMORY_OUT_OF_BOUNDS;
-    *effective_addr = addr + offset;
-
-    // Check for overflow in effective_addr + size
-    if (size > UINT64_MAX - *effective_addr) return WAH_ERROR_MEMORY_OUT_OF_BOUNDS;
-
-    // Check that effective_addr + size <= memory_size
-    if (*effective_addr + size > memory_size) return WAH_ERROR_MEMORY_OUT_OF_BOUNDS;
-#endif
-
+    uint64_t ea = addr + offset;
+    if (ea < addr || size > memory_size || ea > memory_size - size) return WAH_ERROR_MEMORY_OUT_OF_BOUNDS;
+    *effective_addr = ea;
     return WAH_OK;
 }
 
