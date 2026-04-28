@@ -178,7 +178,7 @@ if (-not $wahImplObjOk) {
         } else {
             & $compiler @cflags -c $src -o $out 2>&1
         }
-        if ($LASTEXITCODE -ne 0) { throw "wah_impl$objExt compilation failed" }
+        $LASTEXITCODE
     } -ArgumentList $compiler, $cflags, $wahImplSrc, $wahImplObj, $projDir
 }
 if (-not $commonObjOk) {
@@ -191,16 +191,30 @@ if (-not $commonObjOk) {
         } else {
             & $compiler @cflags -c $src -o $out 2>&1
         }
-        if ($LASTEXITCODE -ne 0) { throw "common$objExt compilation failed" }
+        $LASTEXITCODE
     } -ArgumentList $compiler, $cflags, $commonSrc, $commonObj, $projDir
 }
 
 $objFailed = $false
 foreach ($j in $jobs) {
-    $null = Receive-Job $j -Wait -ErrorAction SilentlyContinue
+    $output = @(Receive-Job $j -Wait)
     if ($j.State -eq 'Failed') {
+        $jobErr = $j.ChildJobs[0].JobStateInfo.Reason
+        if ($null -ne $jobErr) { Write-Host $jobErr }
         Write-Host "## Precompiled object build failed."
         $objFailed = $true
+    } elseif ($output.Count -eq 0) {
+        Write-Host "## Precompiled object build failed without an exit code."
+        $objFailed = $true
+    }
+    else {
+        $exitCode = $output[-1]
+        $messages = if ($output.Count -gt 1) { $output[0..($output.Count - 2)] } else { @() }
+        if ($messages.Count -gt 0) { $messages | ForEach-Object { Write-Host $_ } }
+        if ($exitCode -ne 0) {
+            Write-Host "## Precompiled object build failed with exit code $exitCode."
+            $objFailed = $true
+        }
     }
     Remove-Job $j
 }

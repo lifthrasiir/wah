@@ -51,10 +51,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up MSVC developer environment
-        if: runner.os == 'Windows' && matrix.cc == 'clang'
-        uses: ilammy/msvc-dev-cmd@v1
-
       - name: Set up MSYS2 GCC
         if: runner.os == 'Windows' && matrix.cc == 'gcc'
         uses: msys2/setup-msys2@v2
@@ -66,6 +62,20 @@ jobs:
 
       - name: Add MSYS2 GCC to PATH
         if: runner.os == 'Windows' && matrix.cc == 'gcc'
+        shell: pwsh
+        run: Add-Content $env:GITHUB_PATH 'C:\msys64\ucrt64\bin'
+
+      - name: Set up MSYS2 Clang
+        if: runner.os == 'Windows' && matrix.cc == 'clang'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: mingw-w64-ucrt-x86_64-clang
+          path-type: minimal
+
+      - name: Add MSYS2 Clang to PATH
+        if: runner.os == 'Windows' && matrix.cc == 'clang'
         shell: pwsh
         run: Add-Content $env:GITHUB_PATH 'C:\msys64\ucrt64\bin'
 
