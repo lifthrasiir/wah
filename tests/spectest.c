@@ -215,6 +215,17 @@ static int is_func_ref(const spectest_instance_t *instance, void *ref) {
     return 0;
 }
 
+static void free_result_refs(spectest_instance_t *instance, wast_const_result_t *result) {
+    const wah_module_t *module = instance ? instance->exec.module : NULL;
+    for (uint32_t i = 0; i < result->count; ++i) {
+        if (wah_debug_type_is_exnref(module, result->values[i].type) && result->values[i].value.ref) {
+            wah_debug_free_exnref(instance ? &instance->exec : NULL, result->values[i].value.ref);
+            result->values[i].value.ref = NULL;
+        }
+    }
+    result->count = 0;
+}
+
 static int match_num_pat_i32(int32_t actual, const wast_num_pat_t *pat) {
     return pat->kind == WAST_NUM_LITERAL && actual == pat->literal.i32;
 }
@@ -611,6 +622,7 @@ static spectest_instance_t *add_instance(spectest_env_t *env, const char *name, 
     }
     if (env->instances != old_base && old_base != NULL) {
         ptrdiff_t delta = (char *)env->instances - (char *)old_base;
+        size_t old_byte_size = env->instance_count * sizeof(*env->instances);
         if (env->current_instance)
             env->current_instance = (spectest_instance_t *)((char *)env->current_instance + delta);
         for (size_t ri = 0; ri < env->registered_count; ri++) {
@@ -619,14 +631,7 @@ static spectest_instance_t *add_instance(spectest_env_t *env, const char *name, 
         }
         for (size_t ii = 0; ii < env->instance_count; ii++) {
             if (env->instances[ii].live) {
-                wah_exec_context_t *ec = &env->instances[ii].exec;
-                for (uint32_t j = 0; j < ec->linked_module_count; j++) {
-                    char *p = (char *)wah_debug_linked_ctx(ec, j);
-                    if (p >= (char *)old_base &&
-                        p < (char *)old_base + env->instance_count * sizeof(*env->instances)) {
-                        wah_debug_set_linked_ctx(ec, j, (wah_exec_context_t *)(p + delta));
-                    }
-                }
+                wah_debug_relocate_exec_refs(&env->instances[ii].exec, old_base, old_byte_size, delta);
             }
         }
     }
@@ -767,16 +772,19 @@ static int handle_assert_return(const wast_node_t *node, spectest_env_t *env) {
         return 0;
     }
     if (err != WAH_OK) {
+        free_result_refs(instance, &actual);
         fail_check(env, "assert_return action failed with %s", wah_strerror(err));
         return 0;
     }
     if (actual.count != node->child_count - 2) {
+        free_result_refs(instance, &actual);
         fail_check(env, "result count mismatch: expected %zu, got %u", node->child_count - 2, actual.count);
         return 0;
     }
     for (i = 2; i < node->child_count && i - 2 < WAST_MAX_RESULTS; ++i) {
         if (!wast_parse_result_pattern(node->children[i], &patterns[i - 2])) {
             fail_check(env, "unsupported result pattern");
+            free_result_refs(instance, &actual);
             ok = 0;
             break;
         }
@@ -810,6 +818,7 @@ static int handle_assert_return(const wast_node_t *node, spectest_env_t *env) {
     for (i = 0; i < node->child_count - 2 && i < WAST_MAX_RESULTS; ++i) {
         wast_free_result_pattern(&patterns[i]);
     }
+    free_result_refs(instance, &actual);
     if (ok) pass_check(env);
     return ok;
 }
@@ -827,9 +836,11 @@ static int handle_assert_trap_like(const wast_node_t *node, spectest_env_t *env,
     }
     if ((!exhaustion && expect_trap_like(err)) ||
         (exhaustion && (err == WAH_ERROR_STACK_OVERFLOW || err == WAH_ERROR_OUT_OF_MEMORY || err == WAH_ERROR_TRAP))) {
+        free_result_refs(instance, &actual);
         pass_check(env);
         return 1;
     }
+    free_result_refs(instance, &actual);
     fail_check(env, "%s expected, got %s",
                exhaustion ? "exhaustion" : "trap", wah_strerror(err));
     return 0;
@@ -847,9 +858,11 @@ static int handle_assert_exception(const wast_node_t *node, spectest_env_t *env)
         return 0;
     }
     if (err == WAH_ERROR_EXCEPTION) {
+        free_result_refs(instance, &actual);
         pass_check(env);
         return 1;
     }
+    free_result_refs(instance, &actual);
     fail_check(env, "exception expected, got %s", wah_strerror(err));
     return 0;
 }
@@ -893,13 +906,13 @@ static int handle_module_instance(const wast_node_t *node, spectest_env_t *env, 
     err = instantiate_def_into_instance(env, def, instance);
     if (expect_failure_kind == 1) {
         if (expect_unlinkable(err)) {
-            if (instance == &tmp && tmp.exec.function_table) {
+            if (instance == &tmp) {
                 wah_exec_context_destroy(&tmp.exec);
             }
             pass_check(env);
             return 1;
         }
-        if (instance == &tmp && tmp.exec.function_table) {
+        if (instance == &tmp) {
             wah_exec_context_destroy(&tmp.exec);
         }
         fail_check(env, "expected unlinkable, got %s", wah_strerror(err));
@@ -915,7 +928,7 @@ static int handle_module_instance(const wast_node_t *node, spectest_env_t *env, 
             pass_check(env);
             return 1;
         }
-        if (instance == &tmp && tmp.exec.function_table) {
+        if (instance == &tmp) {
             wah_exec_context_destroy(&tmp.exec);
         }
         fail_check(env, "expected instantiation trap, got %s", wah_strerror(err));
@@ -980,9 +993,11 @@ static int execute_command(const wast_node_t *node, spectest_env_t *env) {
             return 0;
         }
         if (err == WAH_OK) {
+            free_result_refs(owner, &actual);
             pass_check(env);
             return 1;
         }
+        free_result_refs(owner, &actual);
         fail_check(env, "action failed: %s", wah_strerror(err));
         return 0;
     }
@@ -1040,9 +1055,7 @@ static void free_env(spectest_env_t *env) {
         free(env->instances[i].name);
     }
     for (i = 0; i < env->def_count; ++i) {
-        if (env->defs[i].valid) {
-            wah_free_module(&env->defs[i].module);
-        }
+        wah_free_module(&env->defs[i].module);
         free(env->defs[i].name);
     }
     for (i = 0; i < env->registered_count; ++i) {

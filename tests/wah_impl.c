@@ -88,6 +88,15 @@ bool wah_debug_is_func_ref_in_module(const wah_module_t *mod, const void *ref) {
                                 sizeof(wah_function_t), ref) != 0;
 }
 
+bool wah_debug_type_is_exnref(const wah_module_t *mod, wah_type_t type) {
+    if (!mod || !WAH_TYPE_IS_REF(type)) return false;
+    return wah_type_is_subtype(type, WAH_TYPE_EXNREF, mod);
+}
+
+void wah_debug_free_exnref(wah_exec_context_t *ctx, void *ref) {
+    wah_exception_free(ctx, (wah_exception_t *)ref);
+}
+
 const wah_module_t *wah_debug_linked_module(const wah_exec_context_t *ctx, uint32_t i) {
     if (i >= ctx->linked_module_count) return NULL;
     return ctx->linked_modules[i].module;
@@ -103,6 +112,34 @@ void wah_debug_set_linked_module(wah_exec_context_t *ctx, uint32_t i, const wah_
 }
 void wah_debug_set_linked_ctx(wah_exec_context_t *ctx, uint32_t i, wah_exec_context_t *lctx) {
     if (i < ctx->linked_module_count) ctx->linked_modules[i].ctx = lctx;
+}
+
+static int ptr_in_range(const void *p, const void *base, size_t byte_size) {
+    const char *pc = (const char *)p;
+    return pc >= (const char *)base && pc < (const char *)base + byte_size;
+}
+
+static wah_exec_context_t *relocate_ctx_ptr(wah_exec_context_t *p, void *old_base, size_t byte_size, ptrdiff_t delta) {
+    if (!p || !ptr_in_range(p, old_base, byte_size)) return p;
+    return (wah_exec_context_t *)((char *)p + delta);
+}
+
+void wah_debug_relocate_exec_refs(wah_exec_context_t *ctx, void *old_base, size_t byte_size, ptrdiff_t delta) {
+    if (!ctx || !old_base || byte_size == 0 || delta == 0) return;
+    for (uint32_t i = 0; i < ctx->linked_module_count; i++) {
+        ctx->linked_modules[i].ctx = relocate_ctx_ptr(ctx->linked_modules[i].ctx, old_base, byte_size, delta);
+    }
+    for (uint32_t i = 0; i < ctx->function_table_count; i++) {
+        if (!ctx->function_table[i].is_host) {
+            ctx->function_table[i].fn_ctx = relocate_ctx_ptr(ctx->function_table[i].fn_ctx, old_base, byte_size, delta);
+        }
+    }
+    for (uint32_t i = 0; i < ctx->table_count; i++) {
+        ctx->tables[i].import_ctx = relocate_ctx_ptr(ctx->tables[i].import_ctx, old_base, byte_size, delta);
+    }
+    for (uint32_t i = 0; i < ctx->memory_count; i++) {
+        ctx->memories[i].import_ctx = relocate_ctx_ptr(ctx->memories[i].import_ctx, old_base, byte_size, delta);
+    }
 }
 
 wah_error_t wah_debug_repr_info(const wah_module_t *mod, wah_type_t type,

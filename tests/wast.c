@@ -443,7 +443,9 @@ static char *wast_atom_dup_cstr(const wast_node_t *node) {
     if (!text) {
         return NULL;
     }
-    memcpy(text, node->atom.data, node->atom.len);
+    if (node->atom.len > 0) {
+        memcpy(text, node->atom.data, node->atom.len);
+    }
     text[node->atom.len] = '\0';
     return text;
 }

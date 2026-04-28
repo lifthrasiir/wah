@@ -32,6 +32,8 @@ wah_error_t wah_debug_module_export_table(wah_module_t *mod, const char *name,
 // --- Func ref range check (for spectest) ---
 bool wah_debug_is_func_ref_in_ctx(const wah_exec_context_t *ctx, const void *ref);
 bool wah_debug_is_func_ref_in_module(const wah_module_t *mod, const void *ref);
+bool wah_debug_type_is_exnref(const wah_module_t *mod, wah_type_t type);
+void wah_debug_free_exnref(wah_exec_context_t *ctx, void *ref);
 
 // --- Linked module accessors ---
 const wah_module_t *wah_debug_linked_module(const wah_exec_context_t *ctx, uint32_t i);
@@ -40,6 +42,7 @@ const wah_exec_context_t *wah_debug_linked_ctx(const wah_exec_context_t *ctx, ui
 // --- Linked module patching (for spectest realloc fixups) ---
 void wah_debug_set_linked_module(wah_exec_context_t *ctx, uint32_t i, const wah_module_t *mod);
 void wah_debug_set_linked_ctx(wah_exec_context_t *ctx, uint32_t i, wah_exec_context_t *lctx);
+void wah_debug_relocate_exec_refs(wah_exec_context_t *ctx, void *old_base, size_t byte_size, ptrdiff_t delta);
 
 typedef struct {
     uint32_t offset;

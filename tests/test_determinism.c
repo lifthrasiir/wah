@@ -137,9 +137,6 @@ static void test_f32_reinterpret_nan_canonicalization() {
     param.i32 = NON_CANONICAL_F32_NAN_BITS; // Pass non-canonical NaN bit pattern as i32
     assert_ok(wah_call(&exec_ctx, 2, &param, 1, &result)); // Call "test_f32_reinterpret_nan" (func_idx 2)
 
-    wah_exec_context_destroy(&exec_ctx);
-    wah_free_module(&module);
-
     uint32_t result_i32_bits = (uint32_t)result.i32;
     if (result_i32_bits != NON_CANONICAL_F32_NAN_BITS) {
         printf("f32.reinterpret_i32/i32.reinterpret_f32 test FAILED: Reinterpreted non-canonical NaN was NOT preserved.\n");
