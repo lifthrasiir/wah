@@ -90,9 +90,7 @@ jobs:
           if ('${{ matrix.cc }}' -eq 'clang' -or '${{ matrix.cc }}' -eq 'gcc') {
             $env:Path = 'C:\msys64\ucrt64\bin;' + $env:Path
           }
-          if ('${{ matrix.cc }}' -eq 'msvc') {
-            Get-Command cl | Format-List Source
-          } else {
+          if ('${{ matrix.cc }}' -ne 'msvc') {
             Get-Command ${{ matrix.cc }} | Format-List Source
           }
           ./test.ps1 -${{ matrix.cc }}
