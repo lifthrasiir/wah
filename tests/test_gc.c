@@ -1262,6 +1262,119 @@ int main() {
         wah_free_module(&env_mod);
     }
 
+    printf("Testing GC mark: nested exnref payload traces refs...\n");
+    {
+        wah_module_t wasm_mod = {0};
+        wah_exec_context_t ctx5 = {0};
+
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [] ]} \
+            funcs {[ 1 ]} \
+            code {[ {[] end } ]}";
+
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        assert_ok(wah_exec_context_create(&ctx5, &wasm_mod));
+        assert_ok(wah_gc_start(&ctx5));
+        assert_ok(wah_instantiate(&ctx5));
+
+        wah_repr_t struct_repr = wasm_mod.typeidx_to_repr[0];
+        const wah_repr_info_t *struct_info = wasm_mod.repr_infos[struct_repr];
+        void *struct_ref = wah_gc_alloc_struct(&ctx5, struct_repr, struct_info);
+        assert_not_null(struct_ref);
+        wah_value_t field_value = { .i32 = 123 };
+        wah_gc_store_field(WAH_TYPE_I32, (uint8_t *)struct_ref + struct_info->fields[0].offset, &field_value);
+
+        wah_exception_t *inner = (wah_exception_t *)calloc(1, sizeof(*inner));
+        wah_exception_t *outer = (wah_exception_t *)calloc(1, sizeof(*outer));
+        assert_not_null(inner);
+        assert_not_null(outer);
+        inner->value_count = 1;
+        inner->values = (wah_value_t *)calloc(1, sizeof(wah_value_t));
+        inner->value_types = (wah_type_t *)calloc(1, sizeof(wah_type_t));
+        outer->value_count = 1;
+        outer->values = (wah_value_t *)calloc(1, sizeof(wah_value_t));
+        outer->value_types = (wah_type_t *)calloc(1, sizeof(wah_type_t));
+        assert_not_null(inner->values);
+        assert_not_null(inner->value_types);
+        assert_not_null(outer->values);
+        assert_not_null(outer->value_types);
+
+        inner->values[0].ref = struct_ref;
+        inner->value_types[0] = 0; // (ref null type 0), the struct type.
+        outer->values[0].ref = inner;
+        outer->value_types[0] = WAH_TYPE_EXNREF;
+        wah_exception_track(&ctx5, inner);
+        wah_exception_track(&ctx5, outer);
+        ctx5.pending_exception = outer;
+
+        wah_gc_step(&ctx5);
+        assert_eq_u32(ctx5.gc->object_count, 1);
+        assert_true(wah_gc_verify_heap(&ctx5));
+
+        ctx5.pending_exception = NULL;
+        wah_exception_free_all(&ctx5);
+        wah_gc_step(&ctx5);
+        assert_eq_u32(ctx5.gc->object_count, 0);
+
+        wah_exec_context_destroy(&ctx5);
+        wah_free_module(&wasm_mod);
+    }
+
+    printf("Testing GC mark: array ref elements survive collection...\n");
+    {
+        // Keep only the array itself in a local across a host-triggered GC.
+        // The struct stored in array[0] is reachable only through
+        // wah_gc_scan_object's array-element reference branch.
+        wah_module_t env_mod = {0}, wasm_mod = {0};
+
+        assert_ok(wah_new_module(&env_mod));
+        assert_ok(wah_module_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
+        assert_ok(wah_module_export_func(&env_mod, "count", "() -> i32", host_gc_object_count, NULL, NULL));
+
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], array type.ref.null 0 mut, fn [] [], fn [] [i32] ]} \
+            imports {[ {'env'} {'gc'} fn# 2, {'env'} {'count'} fn# 3 ]} \
+            funcs {[ 3 ]} \
+            exports {[ {'f'} fn# 2 ]} \
+            code {[ {[1 type.ref.null 1] \
+                ref.null 0 \
+                i32.const 1 \
+                array.new 1 \
+                local.set 0 \
+                local.get 0 \
+                i32.const 0 \
+                i32.const 77 \
+                struct.new 0 \
+                array.set 1 \
+                call 0 \
+                local.get 0 \
+                i32.const 0 \
+                array.get 1 \
+                struct.get 0 0 \
+            end } ]}";
+
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        wah_exec_context_t ctx6 = {0};
+        assert_ok(wah_exec_context_create(&ctx6, &wasm_mod));
+        assert_ok(wah_link_module(&ctx6, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx6));
+        assert_ok(wah_instantiate(&ctx6));
+
+        ctx6.gc->allocation_threshold = 1;
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx6, 2, NULL, 0, &result));
+        assert_eq_i32(result.i32, 77);
+
+        assert_ok(wah_call(&ctx6, 0, NULL, 0, NULL));
+        assert_ok(wah_call(&ctx6, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 0);
+
+        wah_exec_context_destroy(&ctx6);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
     printf("Testing GC sweep unlink (dead object from middle of list)...\n");
     {
         wah_module_t env_mod = {0}, wasm_mod = {0};
