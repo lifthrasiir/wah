@@ -13,6 +13,20 @@ uint8_t *wah_debug_memory_data(const wah_exec_context_t *ctx, uint32_t mem_idx) 
 uint64_t wah_debug_memory_size(const wah_exec_context_t *ctx, uint32_t mem_idx) {
     return ctx->memories[mem_idx].size;
 }
+
+wah_error_t wah_debug_replace_data_segment_fill(wah_module_t *mod,
+    uint32_t data_idx, uint32_t size, uint8_t value)
+{
+    if (!mod || data_idx >= mod->data_segment_count) return WAH_ERROR_NOT_FOUND;
+    uint8_t *data = (uint8_t *)malloc(size);
+    if (!data) return WAH_ERROR_OUT_OF_MEMORY;
+    memset(data, value, size);
+    free((void *)mod->data_segments[data_idx].data);
+    mod->data_segments[data_idx].data = data;
+    mod->data_segments[data_idx].data_len = size;
+    return WAH_OK;
+}
+
 uint64_t wah_debug_table_size(const wah_exec_context_t *ctx, uint32_t tbl_idx) {
     return ctx->tables[tbl_idx].size;
 }

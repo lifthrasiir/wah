@@ -12,6 +12,8 @@ uint32_t wah_debug_wasm_page_size(void);
 // --- Memory accessors ---
 uint8_t *wah_debug_memory_data(const wah_exec_context_t *ctx, uint32_t mem_idx);
 uint64_t wah_debug_memory_size(const wah_exec_context_t *ctx, uint32_t mem_idx);
+wah_error_t wah_debug_replace_data_segment_fill(wah_module_t *mod,
+    uint32_t data_idx, uint32_t size, uint8_t value);
 
 // --- Table accessors ---
 uint64_t wah_debug_table_size(const wah_exec_context_t *ctx, uint32_t tbl_idx);

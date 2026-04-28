@@ -1,10 +1,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include "../wah.h"
 #include "common.h"
+#include "wah_impl.h"
 
 static const wah_parse_options_t fuel_opts = { .features = WAH_FEATURE_ALL, .enable_fuel_metering = true };
+
+static void host_request_interrupt(wah_call_context_t *call, void *userdata) {
+    (void)userdata;
+    wah_request_interrupt(call->exec);
+}
+
+static void replace_data_segment_with_fill(wah_module_t *mod, uint32_t data_idx, uint32_t size, uint8_t value) {
+    assert_ok(wah_debug_replace_data_segment_fill(mod, data_idx, size, value));
+}
 
 #define PARSE_FUEL(mod, spec) \
     assert_ok(wah_parse_module_from_spec_ex((mod), &fuel_opts, (spec)))
@@ -1033,30 +1044,40 @@ static void test_bulk_memory_copy_interrupt(void) {
 
 static void test_bulk_memory_fill_large(void) {
     printf("Testing bulk memory.fill > 2^24 bytes with actual chunk interrupt...\n");
+    wah_module_t env = {0};
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
+
+    assert_ok(wah_new_module(&env));
+    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
 
     // 512 pages = 32MB > 2^24 (16MB). The chunked fill must cross at least one
     // chunk boundary, so wah_bulk_should_interrupt fires between chunks.
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
-        types {[fn [] [i32]]} funcs {[0]} \
+        types {[fn [] [i32], fn [] []]} \
+        imports {[ {'env'} {'interrupt'} fn# 1 ]} \
+        funcs {[0]} \
         memories {[limits.i32/2 512 512]} \
         code {[{[] \
+            call 0 \
             i32.const 0 i32.const 0xAB i32.const %d32 memory.fill 0 \
             i32.const %d32 i32.load8_u 0 0 \
         end}]}", 512 * 65536, 512 * 65536 - 1));
     assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_link_module(&ctx, "env", &env));
     assert_ok(wah_instantiate(&ctx));
 
-    // Start execution and immediately request interrupt.
-    // The interrupt should be picked up at a bulk-op chunk boundary.
-    assert_ok(wah_start(&ctx, 0, NULL, 0));
-    wah_request_interrupt(&ctx);
+    // The host call requests interrupt immediately before the bulk op, so the
+    // interrupt is picked up at a bulk-op chunk boundary.
+    assert_ok(wah_start(&ctx, 1, NULL, 0));
     wah_error_t err = wah_resume(&ctx);
     // With 32MB fill and 16MB chunks, the first chunk completes then
     // the interrupt check fires -> WAH_STATUS_YIELDED.
     assert_eq_i32(err, WAH_STATUS_YIELDED);
     assert_true(wah_is_suspended(&ctx));
+    assert_eq_u32(ctx.memory_base[0], 0xAB);
+    assert_eq_u32(ctx.memory_base[(1u << 24) - 1], 0xAB);
+    assert_eq_u32(ctx.memory_base[1u << 24], 0x00);
     printf("  yielded after first chunk (expected)\n");
 
     // Resume to completion
@@ -1073,6 +1094,311 @@ static void test_bulk_memory_fill_large(void) {
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&mod);
+    wah_free_module(&env);
+}
+
+static void test_bulk_memory_copy_large(void) {
+    printf("Testing bulk memory.copy > 2^24 bytes with partial commit interrupt...\n");
+    wah_module_t env = {0};
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    const uint32_t chunk = 1u << 24;
+    const uint32_t copy_size = chunk * 2;
+    const uint32_t dest = copy_size;
+
+    assert_ok(wah_new_module(&env));
+    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32], fn [] []]} \
+        imports {[ {'env'} {'interrupt'} fn# 1 ]} \
+        funcs {[0]} \
+        memories {[limits.i32/2 1024 1024]} \
+        code {[{[] \
+            call 0 \
+            i32.const %d32 i32.const 0 i32.const %d32 memory.copy 0 0 \
+            i32.const %d32 i32.load8_u 0 0 \
+        end}]}", (int32_t)dest, (int32_t)copy_size, (int32_t)(dest + copy_size - 1)));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_link_module(&ctx, "env", &env));
+    assert_ok(wah_instantiate(&ctx));
+
+    memset(ctx.memory_base, 0xCD, copy_size);
+
+    assert_ok(wah_start(&ctx, 1, NULL, 0));
+    wah_error_t err = wah_resume(&ctx);
+    assert_eq_i32(err, WAH_STATUS_YIELDED);
+    assert_true(wah_is_suspended(&ctx));
+    assert_eq_u32(ctx.memory_base[dest], 0xCD);
+    assert_eq_u32(ctx.memory_base[dest + chunk - 1], 0xCD);
+    assert_eq_u32(ctx.memory_base[dest + chunk], 0x00);
+
+    while ((err = wah_resume(&ctx)) > 0) {
+    }
+    assert_eq_i32(err, WAH_OK);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 0xCD);
+    assert_eq_u32(ctx.memory_base[dest + copy_size - 1], 0xCD);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+    wah_free_module(&env);
+}
+
+static void test_bulk_memory_init_large(void) {
+    printf("Testing bulk memory.init > 2^24 bytes with partial commit interrupt...\n");
+    wah_module_t env = {0};
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    const uint32_t chunk = 1u << 24;
+    const uint32_t init_size = chunk * 2;
+
+    assert_ok(wah_new_module(&env));
+    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32], fn [] []]} \
+        imports {[ {'env'} {'interrupt'} fn# 1 ]} \
+        funcs {[0]} \
+        memories {[limits.i32/2 512 512]} \
+        datacount {1} \
+        code {[{[] \
+            call 0 \
+            i32.const 0 i32.const 0 i32.const %d32 memory.init 0 0 \
+            i32.const %d32 i32.load8_u 0 0 \
+        end}]} \
+        data {[data.passive {%'00'}]}", (int32_t)init_size, (int32_t)(init_size - 1)));
+    replace_data_segment_with_fill(&mod, 0, init_size, 0x5A);
+
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_link_module(&ctx, "env", &env));
+    assert_ok(wah_instantiate(&ctx));
+
+    assert_ok(wah_start(&ctx, 1, NULL, 0));
+    wah_error_t err = wah_resume(&ctx);
+    assert_eq_i32(err, WAH_STATUS_YIELDED);
+    assert_eq_u32(ctx.memory_base[0], 0x5A);
+    assert_eq_u32(ctx.memory_base[chunk - 1], 0x5A);
+    assert_eq_u32(ctx.memory_base[chunk], 0x00);
+
+    while ((err = wah_resume(&ctx)) > 0) {
+    }
+    assert_eq_i32(err, WAH_OK);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 0x5A);
+    assert_eq_u32(ctx.memory_base[init_size - 1], 0x5A);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+    wah_free_module(&env);
+}
+
+static void test_bulk_memory_copy_backward_large(void) {
+    printf("Testing overlapping bulk memory.copy backward > 2^24 bytes with partial commit interrupt...\n");
+    wah_module_t env = {0};
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    const uint32_t chunk = 1u << 24;
+    const uint32_t copy_size = chunk * 2;
+    const uint32_t dest = chunk / 2;
+
+    assert_ok(wah_new_module(&env));
+    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32], fn [] []]} \
+        imports {[ {'env'} {'interrupt'} fn# 1 ]} \
+        funcs {[0]} \
+        memories {[limits.i32/2 640 640]} \
+        code {[{[] \
+            call 0 \
+            i32.const %d32 i32.const 0 i32.const %d32 memory.copy 0 0 \
+            i32.const %d32 i32.load8_u 0 0 \
+        end}]}", (int32_t)dest, (int32_t)copy_size, (int32_t)(dest + chunk - 1)));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_link_module(&ctx, "env", &env));
+    assert_ok(wah_instantiate(&ctx));
+
+    memset(ctx.memory_base, 0xA1, chunk);
+    memset(ctx.memory_base + chunk, 0xB2, chunk);
+
+    assert_ok(wah_start(&ctx, 1, NULL, 0));
+    wah_error_t err = wah_resume(&ctx);
+    assert_eq_i32(err, WAH_STATUS_YIELDED);
+    assert_eq_u32(ctx.memory_base[dest + chunk - 1], 0xB2);
+    assert_eq_u32(ctx.memory_base[dest + chunk], 0xB2);
+    assert_eq_u32(ctx.memory_base[dest + copy_size - 1], 0xB2);
+
+    while ((err = wah_resume(&ctx)) > 0) {
+    }
+    assert_eq_i32(err, WAH_OK);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 0xA1);
+    assert_eq_u32(ctx.memory_base[dest + copy_size - 1], 0xB2);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+    wah_free_module(&env);
+}
+
+static void test_bulk_memory64_fill_large(void) {
+    printf("Testing memory64 memory.fill > 2^24 bytes with actual chunk interrupt...\n");
+    wah_module_t env = {0};
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    const uint32_t chunk = 1u << 24;
+    const uint32_t fill_size = chunk * 2;
+
+    assert_ok(wah_new_module(&env));
+    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32], fn [] []]} \
+        imports {[ {'env'} {'interrupt'} fn# 1 ]} \
+        funcs {[0]} \
+        memories {[limits.i64/2 512 512]} \
+        code {[{[] \
+            call 0 \
+            i64.const 0 i32.const 0xC3 i64.const %d64 memory.fill 0 \
+            i64.const %d64 i32.load8_u 0 0 \
+        end}]}", (int64_t)fill_size, (int64_t)(fill_size - 1)));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_link_module(&ctx, "env", &env));
+    assert_ok(wah_instantiate(&ctx));
+
+    assert_ok(wah_start(&ctx, 1, NULL, 0));
+    wah_error_t err = wah_resume(&ctx);
+    assert_eq_i32(err, WAH_STATUS_YIELDED);
+    assert_eq_u32(ctx.memory_base[0], 0xC3);
+    assert_eq_u32(ctx.memory_base[chunk - 1], 0xC3);
+    assert_eq_u32(ctx.memory_base[chunk], 0x00);
+
+    while ((err = wah_resume(&ctx)) > 0) {
+    }
+    assert_eq_i32(err, WAH_OK);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 0xC3);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+    wah_free_module(&env);
+}
+
+static void test_bulk_memory64_init_large(void) {
+    printf("Testing memory64 memory.init > 2^24 bytes with partial commit interrupt...\n");
+    wah_module_t env = {0};
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    const uint32_t chunk = 1u << 24;
+    const uint32_t init_size = chunk * 2;
+
+    assert_ok(wah_new_module(&env));
+    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32], fn [] []]} \
+        imports {[ {'env'} {'interrupt'} fn# 1 ]} \
+        funcs {[0]} \
+        memories {[limits.i64/2 512 512]} \
+        datacount {1} \
+        code {[{[] \
+            call 0 \
+            i64.const 0 i32.const 0 i32.const %d32 memory.init 0 0 \
+            i64.const %d64 i32.load8_u 0 0 \
+        end}]} \
+        data {[data.passive {%'00'}]}", (int32_t)init_size, (int64_t)(init_size - 1)));
+    replace_data_segment_with_fill(&mod, 0, init_size, 0x6B);
+
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_link_module(&ctx, "env", &env));
+    assert_ok(wah_instantiate(&ctx));
+
+    assert_ok(wah_start(&ctx, 1, NULL, 0));
+    wah_error_t err = wah_resume(&ctx);
+    assert_eq_i32(err, WAH_STATUS_YIELDED);
+    assert_eq_u32(ctx.memory_base[0], 0x6B);
+    assert_eq_u32(ctx.memory_base[chunk - 1], 0x6B);
+    assert_eq_u32(ctx.memory_base[chunk], 0x00);
+
+    while ((err = wah_resume(&ctx)) > 0) {
+    }
+    assert_eq_i32(err, WAH_OK);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 0x6B);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+    wah_free_module(&env);
+}
+
+static void test_bulk_memory64_copy_large(void) {
+    printf("Testing memory64 memory.copy > 2^24 bytes with partial commit interrupt...\n");
+    wah_module_t env = {0};
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    const uint32_t chunk = 1u << 24;
+    const uint32_t copy_size = chunk * 2;
+    const uint32_t dest = copy_size;
+
+    assert_ok(wah_new_module(&env));
+    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32], fn [] []]} \
+        imports {[ {'env'} {'interrupt'} fn# 1 ]} \
+        funcs {[0]} \
+        memories {[limits.i64/2 1024 1024]} \
+        code {[{[] \
+            call 0 \
+            i64.const %d64 i64.const 0 i64.const %d64 memory.copy 0 0 \
+            i64.const %d64 i32.load8_u 0 0 \
+        end}]}", (int64_t)dest, (int64_t)copy_size, (int64_t)(dest + copy_size - 1)));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_link_module(&ctx, "env", &env));
+    assert_ok(wah_instantiate(&ctx));
+
+    memset(ctx.memory_base, 0xD4, copy_size);
+
+    assert_ok(wah_start(&ctx, 1, NULL, 0));
+    wah_error_t err = wah_resume(&ctx);
+    assert_eq_i32(err, WAH_STATUS_YIELDED);
+    assert_eq_u32(ctx.memory_base[dest], 0xD4);
+    assert_eq_u32(ctx.memory_base[dest + chunk - 1], 0xD4);
+    assert_eq_u32(ctx.memory_base[dest + chunk], 0x00);
+
+    while ((err = wah_resume(&ctx)) > 0) {
+    }
+    assert_eq_i32(err, WAH_OK);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 0xD4);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+    wah_free_module(&env);
 }
 
 int main(void) {
@@ -1105,6 +1431,12 @@ int main(void) {
     test_bulk_memory_fill_interrupt();
     test_bulk_memory_copy_interrupt();
     test_bulk_memory_fill_large();
+    test_bulk_memory_copy_large();
+    test_bulk_memory_init_large();
+    test_bulk_memory_copy_backward_large();
+    test_bulk_memory64_fill_large();
+    test_bulk_memory64_init_large();
+    test_bulk_memory64_copy_large();
 
     printf("\n=== All resume tests passed ===\n");
     return 0;
