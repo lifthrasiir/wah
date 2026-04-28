@@ -7123,7 +7123,7 @@ static wah_error_t wah_parse_sub_type(const uint8_t **ptr, const uint8_t *end, u
 
 static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     uint32_t rec_count;
-    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &rec_count));
+    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &rec_count, 1));
 
     module->type_count = 0;
     module->types_cap = 0;
@@ -13577,19 +13577,6 @@ cleanup:
     return err;
 }
 
-static wah_error_t wah_type_spec_push_field(wah_type_def_t *td, wah_type_t type, bool is_mutable) {
-    wah_error_t err;
-    uint32_t new_count = td->field_count + 1;
-    WAH_REALLOC_ARRAY_GOTO(td->field_types, new_count, cleanup);
-    WAH_REALLOC_ARRAY_GOTO(td->field_mutables, new_count, cleanup);
-    td->field_types[td->field_count] = type;
-    td->field_mutables[td->field_count] = is_mutable;
-    td->field_count = new_count;
-    return WAH_OK;
-cleanup:
-    return err;
-}
-
 static wah_error_t wah_type_spec_parse_func(wah_type_spec_parser_t *p, wah_func_type_t *ft, bool implicit_fn) {
     wah_error_t err;
     if (!implicit_fn && !wah_type_spec_take_kw(p, "fn")) return WAH_ERROR_BAD_SPEC;
@@ -13615,6 +13602,19 @@ cleanup:
 }
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+static wah_error_t wah_type_spec_push_field(wah_type_def_t *td, wah_type_t type, bool is_mutable) {
+    wah_error_t err;
+    uint32_t new_count = td->field_count + 1;
+    WAH_REALLOC_ARRAY_GOTO(td->field_types, new_count, cleanup);
+    WAH_REALLOC_ARRAY_GOTO(td->field_mutables, new_count, cleanup);
+    td->field_types[td->field_count] = type;
+    td->field_mutables[td->field_count] = is_mutable;
+    td->field_count = new_count;
+    return WAH_OK;
+cleanup:
+    return err;
+}
+
 static wah_error_t wah_type_spec_parse_struct(wah_type_spec_parser_t *p, wah_type_def_t *td) {
     wah_error_t err;
     if (!wah_type_spec_take_kw(p, "struct")) return WAH_ERROR_BAD_SPEC;
