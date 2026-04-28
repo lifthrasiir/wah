@@ -15,6 +15,9 @@ endif
 
 ifneq ($(strip $(TEST_SANITIZERS)),)
     TEST_SANITIZER_FLAGS := -fsanitize=$(TEST_SANITIZERS) -fno-omit-frame-pointer
+ifneq ($(findstring undefined,$(TEST_SANITIZERS)),)
+    TEST_SANITIZER_FLAGS += -DWAH_SANITIZE_UNDEFINED
+endif
 endif
 
 TEST_CFLAGS := $(CFLAGS) $(TEST_SANITIZER_FLAGS)
