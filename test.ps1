@@ -167,6 +167,10 @@ if ($apiTests.Count -gt 0) {
     $wahImplObjOk = Test-ObjUpToDate $wahImplObj @($wahH, $wahImplSrc, $wahImplHdr)
 }
 
+# -O1 for wah_impl so that musttail dispatch compiles to actual tail calls;
+# without it, -O0 musttail is ~15x slower than switch dispatch.
+$wahImplCflags = if ($compiler -ne 'msvc') { $cflags + '-O1' } else { $cflags }
+
 $jobs = @()
 if (-not $wahImplObjOk) {
     Write-Host "## Compiling wah_impl$objExt..."
@@ -179,7 +183,7 @@ if (-not $wahImplObjOk) {
             & $compiler @cflags -c $src -o $out 2>&1
         }
         $LASTEXITCODE
-    } -ArgumentList $compiler, $cflags, $wahImplSrc, $wahImplObj, $projDir
+    } -ArgumentList $compiler, $wahImplCflags, $wahImplSrc, $wahImplObj, $projDir
 }
 if (-not $commonObjOk) {
     Write-Host "## Compiling common$objExt..."
