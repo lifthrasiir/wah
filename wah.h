@@ -12484,7 +12484,9 @@ WAH_NEVER_RUN(RETURN_CALL_REF)
     sp = frame->locals; \
     ctx->call_depth--; \
     ctx->frame_ptr++; \
-    if (results_to_keep_ > 0) { \
+    if (results_to_keep_ == 1) { \
+        *sp++ = *results_src_; \
+    } else if (results_to_keep_ > 0) { \
         memmove(sp, results_src_, sizeof(wah_value_t) * results_to_keep_); \
         sp += results_to_keep_; \
     } \
