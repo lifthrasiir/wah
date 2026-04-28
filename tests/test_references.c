@@ -1378,7 +1378,7 @@ int main() {
         assert_ok(wah_exec_context_create(&ctx, &module));
         assert_ok(wah_gc_start(&ctx));
         assert_ok(wah_instantiate(&ctx));
-        wah_value_t args[1] = {{.i32 = 0}};
+        wah_value_t args[1] = {{.ref = NULL}};
         wah_value_t result;
         // null input: br_on_null takes the branch, returns default i32 0
         assert_ok(wah_call(&ctx, 0, args, 1, &result));
