@@ -481,13 +481,9 @@ void wah_free_module(wah_module_t *module);
 
 // --- Programmatically create modules ---
 wah_error_t wah_new_module(wah_module_t *mod);
+wah_error_t wah_module_define_type(wah_module_t *mod, wah_type_t *out_type, const char *spec, ...);
+wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, const char *spec, va_list *args);
 
-// Legacy host function export APIs.
-// These accept only MVP value types and ref shorthands (funcref, externref)
-// via wah_type_t. Typed references with concrete typeidx or non-default
-// nullability are not expressible through these interfaces; use wah_entry_t
-// introspection for inspecting such signatures from parsed modules.
-wah_error_t wah_module_export_funcv(wah_module_t *mod, const char *name, size_t nparams, const wah_type_t *param_types, size_t nresults, const wah_type_t *result_types, wah_func_t func, void *userdata, wah_finalize_t finalize);
 wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const char *types, wah_func_t func, void *userdata, wah_finalize_t finalize);
 wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages);
 wah_error_t wah_module_export_global_i32(wah_module_t *mod, const char *name, bool mutable, int32_t init_value);
@@ -653,6 +649,7 @@ static inline wah_error_t wah_entry_func(const wah_entry_t *entry,
 #include <stdint.h> // For INT32_MIN, INT32_MAX
 #include <math.h> // For floating-point functions
 #include <errno.h> // For ETIMEDOUT
+#include <stdarg.h> // For va_list etc.
 #if defined(_MSC_VER)
 #include <intrin.h> // For MSVC intrinsics
 #endif
@@ -2323,7 +2320,7 @@ const char *wah_strerror(wah_error_t err) {
         case WAH_ERROR_MEMORY_OUT_OF_BOUNDS: return "Memory access out of bounds";
         case WAH_ERROR_NOT_FOUND: return "Item not found";
         case WAH_ERROR_MISUSE: return "API misused: invalid arguments";
-        case WAH_ERROR_BAD_SPEC: return "Invalid DSL spec";
+        case WAH_ERROR_BAD_SPEC: return "Invalid DSL spec (turn on WAH_DEBUG for more info)";
         case WAH_ERROR_IMPORT_NOT_FOUND: return "Import not found (or incompatible)";
         case WAH_ERROR_EXCEPTION: return "Uncaught exception";
         case WAH_ERROR_DISABLED_FEATURE: return "Feature not enabled";
@@ -8133,7 +8130,7 @@ wah_error_t wah_parse_module_ex(const uint8_t *wasm_binary, size_t binary_size, 
     if (uses_mut_import) WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_MUTABLE_GLOBALS), cleanup_parse);
 
     // Build the unified functions[] array for the WASM functions.
-    // Host functions may be appended later via wah_module_export_funcv.
+    // Host functions may be appended later via wah_module_export_func().
     if (module->wasm_function_count > 0) {
         WAH_MALLOC_ARRAY_GOTO(module->functions, module->wasm_function_count, cleanup_parse);
         for (uint32_t i = 0; i < module->wasm_function_count; i++) {
@@ -13387,6 +13384,276 @@ cleanup:
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
+// Type specification DSL parser ///////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+typedef struct {
+    const char *cur;
+    wah_module_t *module;
+    va_list *args;
+    bool allow_placeholders;
+} wah_type_spec_parser_t;
+
+typedef struct {
+    const char *kw;
+    wah_type_t type;
+    bool packed;
+} wah_type_spec_kw_t;
+
+static const wah_type_spec_kw_t wah_type_spec_type_kws[] = {
+    {"i32", WAH_TYPE_I32, false}, {"i64", WAH_TYPE_I64, false},
+    {"f32", WAH_TYPE_F32, false}, {"f64", WAH_TYPE_F64, false},
+    {"v128", WAH_TYPE_V128, false}, {"i8", WAH_TYPE_PACKED_I8, true},
+    {"i16", WAH_TYPE_PACKED_I16, true}, {"funcref", WAH_TYPE_FUNCREF, false},
+    {"externref", WAH_TYPE_EXTERNREF, false}, {"exnref", WAH_TYPE_EXNREF, false},
+    {"anyref", WAH_TYPE_ANYREF, false}, {"eqref", WAH_TYPE_EQREF, false},
+    {"i31ref", WAH_TYPE_I31REF, false}, {"structref", WAH_TYPE_STRUCTREF, false},
+    {"arrayref", WAH_TYPE_ARRAYREF, false}, {"nullref", WAH_TYPE_NULLREF, false},
+    {"nullfuncref", WAH_TYPE_NULLFUNCREF, false},
+    {"nullexternref", WAH_TYPE_NULLEXTERNREF, false},
+    {"nullexnref", WAH_TYPE_NULLEXNREF, false}, {NULL, 0, false}
+};
+
+static const wah_type_spec_kw_t wah_type_spec_heap_kws[] = {
+    {"func", WAH_TYPE_FUNC, false}, {"extern", WAH_TYPE_EXTERN, false},
+    {"exn", WAH_TYPE_EXN, false}, {"any", WAH_TYPE_ANY, false},
+    {"eq", WAH_TYPE_EQ, false}, {"i31", WAH_TYPE_I31, false},
+    {"struct", WAH_TYPE_STRUCT, false}, {"array", WAH_TYPE_ARRAY, false},
+    {"nofunc", WAH_TYPE_NOFUNC, false}, {"noextern", WAH_TYPE_NOEXTERN, false},
+    {"noexn", WAH_TYPE_NOEXN, false}, {NULL, 0, false}
+};
+
+static void wah_type_spec_skip_ws(wah_type_spec_parser_t *p) {
+    while (*p->cur == ' ' || *p->cur == '\n' || *p->cur == '\r' || *p->cur == '\t') p->cur++;
+}
+
+static bool wah_type_spec_is_ident_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+}
+
+static bool wah_type_spec_take_lit(wah_type_spec_parser_t *p, const char *lit) {
+    size_t n = strlen(lit);
+    wah_type_spec_skip_ws(p);
+    if (strncmp(p->cur, lit, n) != 0) return false;
+    p->cur += n;
+    return true;
+}
+
+static bool wah_type_spec_take_kw(wah_type_spec_parser_t *p, const char *kw) {
+    size_t n = strlen(kw);
+    wah_type_spec_skip_ws(p);
+    if (strncmp(p->cur, kw, n) != 0 || wah_type_spec_is_ident_char(p->cur[n])) return false;
+    p->cur += n;
+    return true;
+}
+
+static bool wah_type_spec_fail(wah_type_spec_parser_t *p, const char *msg) {
+    WAH_LOG("Type spec parse error: %s", msg);
+    return false;
+}
+
+static bool wah_type_spec_take_kw_type(wah_type_spec_parser_t *p, const wah_type_spec_kw_t *kws,
+                                       bool allow_packed, wah_type_t *out) {
+    for (; kws->kw; kws++) {
+        if (kws->packed && !allow_packed) continue;
+        if (wah_type_spec_take_kw(p, kws->kw)) {
+            *out = kws->type;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool wah_type_spec_is_known_builtin(wah_type_t t) {
+    const wah_type_spec_kw_t *kw;
+    for (kw = wah_type_spec_type_kws; kw->kw; kw++) if (kw->type == t) return true;
+    for (kw = wah_type_spec_heap_kws; kw->kw; kw++) if (kw->type == t) return true;
+    return false;
+}
+
+static bool wah_type_spec_check_typeidx(wah_type_spec_parser_t *p, wah_type_t t) {
+    if (t >= 0 && WAH_TYIDX(t) >= p->module->type_count) {
+        return wah_type_spec_fail(p, "%T references an unknown module type");
+    }
+    return true;
+}
+
+static bool wah_type_spec_parse_type(wah_type_spec_parser_t *p, bool allow_packed, wah_type_t *out);
+
+static bool wah_type_spec_parse_placeholder(wah_type_spec_parser_t *p, bool allow_packed, wah_type_t *out) {
+    if (!wah_type_spec_take_lit(p, "%T")) return false;
+    if (!p->allow_placeholders) return wah_type_spec_fail(p, "%T is not valid in this type spec");
+    wah_type_t t = va_arg(*p->args, wah_type_t);
+    if (!allow_packed && (t == WAH_TYPE_PACKED_I8 || t == WAH_TYPE_PACKED_I16)) {
+        return wah_type_spec_fail(p, "%T packed type is only valid in struct fields and array elements");
+    }
+    if (t < 0 && !wah_type_spec_is_known_builtin(t)) {
+        return wah_type_spec_fail(p, "%T is not a known builtin type");
+    }
+    if (t <= WAH_TYPE_FUNC && t >= WAH_TYPE_NOEXN && !WAH_TYPE_IS_NULLABLE(t)) {
+        return wah_type_spec_fail(p, "%T non-null heap type must be written as ref %T or ref null %T");
+    }
+    if (!wah_type_spec_check_typeidx(p, t)) return false;
+    *out = t;
+    return true;
+}
+
+static bool wah_type_spec_parse_named_scalar(wah_type_spec_parser_t *p, bool allow_packed, wah_type_t *out) {
+    return wah_type_spec_take_kw_type(p, wah_type_spec_type_kws, allow_packed, out);
+}
+
+static bool wah_type_spec_parse_ref_type(wah_type_spec_parser_t *p, wah_type_t *out) {
+    const char *save = p->cur;
+    wah_type_t ht = 0;
+    bool nullable;
+    if (!wah_type_spec_take_kw(p, "ref")) return false;
+    nullable = wah_type_spec_take_kw(p, "null");
+    if (wah_type_spec_take_lit(p, "%T")) {
+        if (!p->allow_placeholders) return wah_type_spec_fail(p, "%T is not valid in this type spec");
+        wah_type_t t = va_arg(*p->args, wah_type_t);
+        if (t < 0) {
+            if (!wah_type_spec_is_known_builtin(t)) return wah_type_spec_fail(p, "ref %T is not a known builtin type");
+            if (!(t <= WAH_TYPE_FUNC && t >= WAH_TYPE_NOEXN) || WAH_TYPE_IS_NULLABLE(t)) {
+                return wah_type_spec_fail(p, "ref %T requires a non-null heap type or non-negative type use");
+            }
+            *out = nullable ? WAH_TYPE_AS_NULLABLE(t) : t;
+            return true;
+        }
+        if (!wah_type_spec_check_typeidx(p, t)) return false;
+        *out = WAH_TYPE_FROM_IDX(WAH_TYIDX(t), nullable);
+        return true;
+    }
+    if (wah_type_spec_take_kw_type(p, wah_type_spec_heap_kws, false, &ht)) {
+        *out = nullable ? WAH_TYPE_AS_NULLABLE(ht) : ht;
+        return true;
+    }
+    p->cur = save;
+    return false;
+}
+
+static bool wah_type_spec_parse_type(wah_type_spec_parser_t *p, bool allow_packed, wah_type_t *out) {
+    const char *save = p->cur;
+    if (wah_type_spec_parse_placeholder(p, allow_packed, out)) return true; p->cur = save;
+    if (wah_type_spec_parse_named_scalar(p, allow_packed, out)) return true; p->cur = save;
+    if (wah_type_spec_parse_ref_type(p, out)) return true; p->cur = save;
+    return false;
+}
+
+static wah_error_t wah_type_spec_push_type(wah_type_t **arr, uint32_t *count, wah_type_t type) {
+    wah_error_t err;
+    uint32_t new_count = *count + 1;
+    WAH_REALLOC_ARRAY_GOTO(*arr, new_count, cleanup);
+    (*arr)[*count] = type;
+    *count = new_count;
+    return WAH_OK;
+cleanup:
+    return err;
+}
+
+static wah_error_t wah_type_spec_parse_types_until(wah_type_spec_parser_t *p, char end,
+                                                   bool allow_packed, wah_type_t **out_types,
+                                                   uint32_t *out_count) {
+    wah_error_t err;
+    *out_types = NULL;
+    *out_count = 0;
+    wah_type_spec_skip_ws(p);
+    if (*p->cur == end) return WAH_OK;
+    for (;;) {
+        wah_type_t t;
+        if (!wah_type_spec_parse_type(p, allow_packed, &t)) { err = WAH_ERROR_BAD_SPEC; goto cleanup; }
+        WAH_CHECK_GOTO(wah_type_spec_push_type(out_types, out_count, t), cleanup);
+        wah_type_spec_skip_ws(p);
+        if (*p->cur != ',') return WAH_OK;
+        p->cur++;
+        wah_type_spec_skip_ws(p);
+        if (*p->cur == end) return WAH_OK;
+    }
+cleanup:
+    free(*out_types);
+    *out_types = NULL;
+    *out_count = 0;
+    return err;
+}
+
+static wah_error_t wah_type_spec_push_field(wah_type_def_t *td, wah_type_t type, bool is_mutable) {
+    wah_error_t err;
+    uint32_t new_count = td->field_count + 1;
+    WAH_REALLOC_ARRAY_GOTO(td->field_types, new_count, cleanup);
+    WAH_REALLOC_ARRAY_GOTO(td->field_mutables, new_count, cleanup);
+    td->field_types[td->field_count] = type;
+    td->field_mutables[td->field_count] = is_mutable;
+    td->field_count = new_count;
+    return WAH_OK;
+cleanup:
+    return err;
+}
+
+static wah_error_t wah_type_spec_parse_func(wah_type_spec_parser_t *p, wah_func_type_t *ft, bool implicit_fn) {
+    wah_error_t err;
+    if (!implicit_fn && !wah_type_spec_take_kw(p, "fn")) return WAH_ERROR_BAD_SPEC;
+    if (!wah_type_spec_take_lit(p, "(")) return WAH_ERROR_BAD_SPEC;
+    WAH_CHECK_GOTO(wah_type_spec_parse_types_until(p, ')', false, &ft->param_types, &ft->param_count), cleanup);
+    if (!wah_type_spec_take_lit(p, ")")) { err = WAH_ERROR_BAD_SPEC; goto cleanup; }
+    if (wah_type_spec_take_lit(p, "->")) {
+        if (wah_type_spec_take_lit(p, "(")) {
+            WAH_CHECK_GOTO(wah_type_spec_parse_types_until(p, ')', false, &ft->result_types, &ft->result_count), cleanup);
+            if (!wah_type_spec_take_lit(p, ")")) { err = WAH_ERROR_BAD_SPEC; goto cleanup; }
+        } else {
+            wah_type_t result_type;
+            if (!wah_type_spec_parse_type(p, false, &result_type)) { err = WAH_ERROR_BAD_SPEC; goto cleanup; }
+            WAH_CHECK_GOTO(wah_type_spec_push_type(&ft->result_types, &ft->result_count, result_type), cleanup);
+        }
+    }
+    return WAH_OK;
+cleanup:
+    free(ft->param_types);
+    free(ft->result_types);
+    *ft = (wah_func_type_t){0};
+    return err;
+}
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+static wah_error_t wah_type_spec_parse_struct(wah_type_spec_parser_t *p, wah_type_def_t *td) {
+    wah_error_t err;
+    if (!wah_type_spec_take_kw(p, "struct")) return WAH_ERROR_BAD_SPEC;
+    if (!wah_type_spec_take_lit(p, "{")) return WAH_ERROR_BAD_SPEC;
+    wah_type_spec_skip_ws(p);
+    while (*p->cur != '}') {
+        bool is_mutable = wah_type_spec_take_kw(p, "mut");
+        wah_type_t field_type;
+        if (!wah_type_spec_parse_type(p, true, &field_type)) { err = WAH_ERROR_BAD_SPEC; goto cleanup; }
+        WAH_CHECK_GOTO(wah_type_spec_push_field(td, field_type, is_mutable), cleanup);
+        wah_type_spec_skip_ws(p);
+        if (*p->cur != ',') break;
+        p->cur++;
+        wah_type_spec_skip_ws(p);
+    }
+    if (!wah_type_spec_take_lit(p, "}")) { err = WAH_ERROR_BAD_SPEC; goto cleanup; }
+    return WAH_OK;
+cleanup:
+    free(td->field_types);
+    free(td->field_mutables);
+    td->field_types = NULL;
+    td->field_mutables = NULL;
+    td->field_count = 0;
+    return err;
+}
+
+static wah_error_t wah_type_spec_parse_array(wah_type_spec_parser_t *p, wah_type_def_t *td) {
+    wah_error_t err;
+    bool is_mutable;
+    wah_type_t elem_type;
+    if (!wah_type_spec_take_kw(p, "array")) return WAH_ERROR_BAD_SPEC;
+    is_mutable = wah_type_spec_take_kw(p, "mut");
+    if (!wah_type_spec_parse_type(p, true, &elem_type)) return WAH_ERROR_BAD_SPEC;
+    WAH_CHECK_GOTO(wah_type_spec_push_field(td, elem_type, is_mutable), cleanup);
+    return WAH_OK;
+cleanup:
+    return err;
+}
+#endif // WAH_FEATURE_GC
+
+////////////////////////////////////////////////////////////////////////////////
 // Public API implementation ///////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -13754,6 +14021,89 @@ wah_error_t wah_new_module(wah_module_t *mod) {
     return WAH_OK;
 }
 
+wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, const char *spec, va_list *args) {
+    wah_error_t err;
+    wah_type_spec_parser_t p;
+    wah_func_type_t ft = {0};
+    wah_type_def_t td = { .kind = WAH_COMP_FUNC, .is_final = true, .supertype = WAH_NO_SUPERTYPE };
+    uint32_t idx;
+
+    WAH_ENSURE(mod, WAH_ERROR_MISUSE);
+    WAH_ENSURE(out_type, WAH_ERROR_MISUSE);
+    WAH_ENSURE(spec, WAH_ERROR_MISUSE);
+
+    p = (wah_type_spec_parser_t){ .cur = spec, .module = mod, .args = args, .allow_placeholders = true };
+    if (wah_type_spec_take_kw(&p, "fn")) {
+        p.cur = spec;
+        td.kind = WAH_COMP_FUNC;
+        WAH_CHECK_GOTO(wah_type_spec_parse_func(&p, &ft, false), cleanup);
+    } else if (wah_type_spec_take_kw(&p, "struct")) {
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+        p.cur = spec;
+        td.kind = WAH_COMP_STRUCT;
+        WAH_CHECK_GOTO(wah_type_spec_parse_struct(&p, &td), cleanup);
+#else
+        err = WAH_ERROR_DISABLED_FEATURE; goto cleanup;
+#endif
+    } else if (wah_type_spec_take_kw(&p, "array")) {
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+        p.cur = spec;
+        td.kind = WAH_COMP_ARRAY;
+        WAH_CHECK_GOTO(wah_type_spec_parse_array(&p, &td), cleanup);
+#else
+        err = WAH_ERROR_DISABLED_FEATURE; goto cleanup;
+#endif
+    } else {
+        err = WAH_ERROR_BAD_SPEC;
+        goto cleanup;
+    }
+
+    wah_type_spec_skip_ws(&p);
+    WAH_ENSURE_GOTO(*p.cur == '\0', WAH_ERROR_BAD_SPEC, cleanup);
+
+    idx = mod->type_count;
+    WAH_CHECK_GOTO(wah_type_section_ensure_capacity(mod, idx + 1), cleanup);
+    mod->types[idx] = ft;
+    mod->type_defs[idx] = td;
+    mod->type_defs[idx].rec_group_start = idx;
+    mod->type_defs[idx].rec_group_size = 1;
+    mod->type_count++;
+    ft = (wah_func_type_t){0};
+    td = (wah_type_def_t){0};
+
+    err = wah_module_add_latest_type_metadata(mod);
+    if (err != WAH_OK) {
+        wah_module_rollback_last_type_metadata(mod, idx);
+        mod->type_count--;
+        free(mod->types[idx].param_types);
+        free(mod->types[idx].result_types);
+        free(mod->type_defs[idx].field_types);
+        free(mod->type_defs[idx].field_mutables);
+        mod->types[idx] = (wah_func_type_t){0};
+        mod->type_defs[idx] = (wah_type_def_t){0};
+        return err;
+    }
+
+    *out_type = WAH_TYPE_FROM_IDX(idx, false);
+    return WAH_OK;
+
+cleanup:
+    free(ft.param_types);
+    free(ft.result_types);
+    free(td.field_types);
+    free(td.field_mutables);
+    return err == WAH_OK ? WAH_ERROR_BAD_SPEC : err;
+}
+
+wah_error_t wah_module_define_type(wah_module_t *mod, wah_type_t *out_type, const char *spec, ...) {
+    wah_error_t err;
+    va_list args;
+    va_start(args, spec);
+    err = wah_module_define_typev(mod, out_type, spec, &args);
+    va_end(args);
+    return err;
+}
+
 static wah_error_t wah_module_ensure_export(wah_module_t *mod, const char *name) {
     for (uint32_t i = 0; i < mod->export_count; ++i) {
         if (mod->exports[i].name && strcmp(mod->exports[i].name, name) == 0) {
@@ -13764,213 +14114,63 @@ static wah_error_t wah_module_ensure_export(wah_module_t *mod, const char *name)
     return WAH_OK;
 }
 
-wah_error_t wah_module_export_funcv(
-    wah_module_t *mod, const char *name,
-    size_t nparams, const wah_type_t *param_types,
-    size_t nresults, const wah_type_t *result_types,
-    wah_func_t func, void *userdata, wah_finalize_t finalize
-) {
+wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const char *types, wah_func_t func, void *userdata, wah_finalize_t finalize) {
     wah_error_t err;
+    wah_type_spec_parser_t p;
+    wah_func_type_t ft = {0};
     char *name_copy = NULL;
     wah_type_t *param_types_copy = NULL;
     wah_type_t *result_types_copy = NULL;
+    uint32_t new_func_idx;
 
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
+    WAH_ENSURE(types, WAH_ERROR_MISUSE);
     WAH_ENSURE(func, WAH_ERROR_MISUSE);
-    WAH_ENSURE(nparams == 0 || param_types, WAH_ERROR_MISUSE);
-    WAH_ENSURE(nresults == 0 || result_types, WAH_ERROR_MISUSE);
+
+    p = (wah_type_spec_parser_t){ .cur = types, .module = mod, .allow_placeholders = false };
+    bool has_fn = wah_type_spec_take_kw(&p, "fn");
+    p.cur = types;
+    WAH_CHECK_GOTO(wah_type_spec_parse_func(&p, &ft, !has_fn), cleanup);
+    wah_type_spec_skip_ws(&p);
+    WAH_ENSURE_GOTO(*p.cur == '\0', WAH_ERROR_BAD_SPEC, cleanup);
 
     WAH_CHECK_GOTO(wah_module_ensure_export(mod, name), cleanup);
-
     WAH_ENSURE_CAP_GOTO(mod->functions, mod->local_function_count + 1, cleanup);
 
-    // Duplicate name and type arrays
     name_copy = wah_strdup(name);
     WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
 
-    if (nparams > 0) {
-        WAH_MALLOC_ARRAY_GOTO(param_types_copy, nparams, cleanup);
-        memcpy(param_types_copy, param_types, nparams * sizeof(wah_type_t));
+    if (ft.param_count > 0) {
+        WAH_MALLOC_ARRAY_GOTO(param_types_copy, ft.param_count, cleanup);
+        memcpy(param_types_copy, ft.param_types, ft.param_count * sizeof(wah_type_t));
     }
 
-    if (nresults > 0) {
-        WAH_MALLOC_ARRAY_GOTO(result_types_copy, nresults, cleanup);
-        memcpy(result_types_copy, result_types, nresults * sizeof(wah_type_t));
+    if (ft.result_count > 0) {
+        WAH_MALLOC_ARRAY_GOTO(result_types_copy, ft.result_count, cleanup);
+        memcpy(result_types_copy, ft.result_types, ft.result_count * sizeof(wah_type_t));
     }
 
-    uint32_t new_func_idx = mod->local_function_count;
+    new_func_idx = mod->local_function_count;
     mod->functions[new_func_idx] = (wah_function_t){
         .fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER, .is_host = true,
         .name = name_copy, .func = func, .userdata = userdata, .finalize = finalize,
-        .nparams = nparams, .param_types = param_types_copy,
-        .nresults = nresults, .result_types = result_types_copy,
+        .nparams = ft.param_count, .param_types = param_types_copy,
+        .nresults = ft.result_count, .result_types = result_types_copy,
     };
     mod->local_function_count++;
     mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
                                                         .kind = 0 /*FUNCTION*/, .index = new_func_idx };
-    return WAH_OK;
-
+    name_copy = NULL;
+    param_types_copy = NULL;
+    result_types_copy = NULL;
+    err = WAH_OK;
 cleanup:
     free(param_types_copy);
     free(result_types_copy);
     free(name_copy);
-    return err;
-}
-
-static int wah_is_ignorable_in_types(const char c) {
-    return c == ' ' || c == '\t' || c == ',' || c == '\n' || c == '\r';
-}
-
-// Parse a sequence of types separated by whitespace and commas
-// types_end points to the end of the sequence (exclusive)
-static wah_error_t wah_parse_type_seq(const char *types, const char *types_end, size_t *out_ntypes, wah_type_t **out_types) {
-    *out_ntypes = 0;
-    *out_types = NULL;
-
-    // Count types
-    size_t ntypes = 0;
-    const char *p = types;
-    while (p < types_end) {
-        // Skip whitespace and commas
-        while (p < types_end && wah_is_ignorable_in_types(*p)) ++p;
-        if (p < types_end) {
-            ntypes++;
-            // Validate and skip type identifier (must be exactly i32, i64, f32, f64, or v128)
-            if (p + 2 < types_end && (*p == 'i' || *p == 'f')) {
-                // Check for i32/f32 (3 characters: letter + '3' + '2')
-                if (p[1] == '3' && p[2] == '2') {
-                    // Make sure the next character (if any) is a separator
-                    if (p + 3 >= types_end || wah_is_ignorable_in_types(p[3])) {
-                        p += 3;
-                        continue;
-                    }
-                }
-                // Check for i64/f64 (3 characters: letter + '6' + '4')
-                if (p[1] == '6' && p[2] == '4') {
-                    // Make sure the next character (if any) is a separator
-                    if (p + 3 >= types_end || wah_is_ignorable_in_types(p[3])) {
-                        p += 3;
-                        continue;
-                    }
-                }
-            } else if (p + 3 < types_end && *p == 'v') {
-                // Check for v128 (4 characters: 'v' + '1' + '2' + '8')
-                if (p[1] == '1' && p[2] == '2' && p[3] == '8') {
-                    // Make sure the next character (if any) is a separator
-                    if (p + 4 >= types_end || wah_is_ignorable_in_types(p[4])) {
-                        p += 4;
-                        continue;
-                    }
-                }
-            }
-            return WAH_ERROR_BAD_SPEC;  // Invalid type
-        }
-    }
-
-    // Allocate types array
-    wah_type_t *type_array = NULL;
-    if (ntypes > 0) {
-        wah_error_t err;
-        WAH_MALLOC_ARRAY_GOTO(type_array, ntypes, cleanup);
-
-        // Parse types
-        p = types;
-        size_t idx = 0;
-        while (p < types_end) {
-            // Skip whitespace and commas
-            while (p < types_end && wah_is_ignorable_in_types(*p)) ++p;
-            if (p < types_end) {
-                if (p + 2 < types_end && (*p == 'i' || *p == 'f')) {
-                    char type_char = *p;
-                    // Check for i32/f32
-                    if (p[1] == '3' && p[2] == '2') {
-                        p += 3;
-                        type_array[idx++] = (type_char == 'i') ? WAH_TYPE_I32 : WAH_TYPE_F32;
-                        continue;
-                    }
-                    // Check for i64/f64
-                    if (p[1] == '6' && p[2] == '4') {
-                        p += 3;
-                        type_array[idx++] = (type_char == 'i') ? WAH_TYPE_I64 : WAH_TYPE_F64;
-                        continue;
-                    }
-                } else if (p + 3 < types_end && *p == 'v') {
-                    // Check for v128
-                    if (p[1] == '1' && p[2] == '2' && p[3] == '8') {
-                        p += 4;
-                        type_array[idx++] = WAH_TYPE_V128;
-                        continue;
-                    }
-                }
-                err = WAH_ERROR_BAD_SPEC;  // Invalid type
-                goto cleanup;
-            }
-        }
-    }
-
-    *out_ntypes = ntypes;
-    *out_types = type_array;
-    return WAH_OK;
-
-cleanup:
-    free(type_array);
-    return WAH_ERROR_BAD_SPEC;
-}
-
-wah_error_t wah_parse_func_spec(const char *types, size_t *out_nparams, wah_type_t **out_param_types, size_t *out_nresults, wah_type_t **out_result_types) {
-    // Initialize all outputs first to ensure they're set even on early return
-    *out_nparams = 0;
-    *out_nresults = 0;
-    *out_param_types = NULL;
-    *out_result_types = NULL;
-
-    // Validate input pointers
-    WAH_ENSURE(types, WAH_ERROR_MISUSE);
-    WAH_ENSURE(out_nparams, WAH_ERROR_MISUSE);
-    WAH_ENSURE(out_param_types, WAH_ERROR_MISUSE);
-    WAH_ENSURE(out_nresults, WAH_ERROR_MISUSE);
-    WAH_ENSURE(out_result_types, WAH_ERROR_MISUSE);
-
-    // Find the separator '->'
-    const char *arrow = strstr(types, "->");
-    WAH_ENSURE(arrow, WAH_ERROR_BAD_SPEC);
-
-    // Parse parameter types (before '->')
-    WAH_CHECK(wah_parse_type_seq(types, arrow, out_nparams, out_param_types));
-
-    // Parse result types (after '->')
-    wah_error_t err;
-    WAH_CHECK_GOTO(wah_parse_type_seq(arrow + 2, types + strlen(types), out_nresults, out_result_types), cleanup);
-
-    return WAH_OK;
-
-cleanup:
-    free(*out_param_types);
-    *out_param_types = NULL;  // Prevent double-free
-    return err;
-}
-
-wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const char *types, wah_func_t func, void *userdata, wah_finalize_t finalize) {
-    WAH_ENSURE(mod, WAH_ERROR_MISUSE);
-    WAH_ENSURE(name, WAH_ERROR_MISUSE);
-    WAH_ENSURE(types, WAH_ERROR_MISUSE);
-    WAH_ENSURE(func, WAH_ERROR_MISUSE);
-
-    // Parse type string
-    size_t nparams, nresults;
-    wah_type_t *param_types = NULL, *result_types = NULL;
-    wah_error_t err;
-
-    WAH_CHECK_GOTO(wah_parse_func_spec(types, &nparams, &param_types, &nresults, &result_types), cleanup);
-
-    // Delegate to wah_module_export_funcv
-    err = wah_module_export_funcv(mod, name, nparams, param_types, nresults, result_types, func, userdata, finalize);
-
-cleanup:
-    // Free the parsed type arrays (wah_module_export_funcv makes copies)
-    free(param_types);
-    free(result_types);
+    free(ft.param_types);
+    free(ft.result_types);
 
     return err;
 }

@@ -188,10 +188,8 @@ int main(void) {
     {
         wah_module_t host_mod = {0};
         assert_ok(wah_new_module(&host_mod));
-        wah_type_t ptypes[2] = { WAH_TYPE_FUNCREF, WAH_TYPE_I32 };
-        wah_type_t rtypes[1] = { WAH_TYPE_I32 };
-        assert_ok(wah_module_export_funcv(&host_mod, "check", 2, ptypes, 1, rtypes,
-                                          check_flags_host, NULL, NULL));
+        assert_ok(wah_module_export_func(&host_mod, "check", "(funcref, i32) -> i32",
+                                         check_flags_host, NULL, NULL));
 
         // Verify flags through wah_entry_t
         wah_entry_t entry;
@@ -249,8 +247,7 @@ int main(void) {
     {
         wah_module_t mod = {0};
         assert_ok(wah_new_module(&mod));
-        assert_ok(wah_module_export_funcv(&mod, "hfunc",
-            1, (wah_type_t[]){WAH_TYPE_I32}, 1, (wah_type_t[]){WAH_TYPE_I32},
+        assert_ok(wah_module_export_func(&mod, "hfunc", "(i32) -> i32",
             check_flags_host, NULL, NULL));
 
         wah_entry_t entry;

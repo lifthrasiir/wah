@@ -150,4 +150,4 @@ wah_parse_module_from_spec(&mod,
 
 - **Exception Handling:** Uses `try_table` with a fixed-depth exception handler stack (`WAH_MAX_EXCEPTION_HANDLER_DEPTH = 64`). `wah_exception_t` carries tag ID, values, and types. `throw` sets `pending_exception` and unwinds the call stack looking for matching handlers.
 
-- **Host Function Integration:** `wah_module_export_func()` accepts a type string DSL (e.g., `"ii_i"` for `(i32, i32) -> i32`). `wah_module_export_funcv()` takes explicit type arrays. Host functions receive a `wah_call_context_t` with typed param/result accessors.
+- **Host Function Integration:** `wah_module_export_func()` accepts a function type string DSL (e.g., `"(i32, i32) -> i32"`). Host functions receive a `wah_call_context_t` with typed param/result accessors.

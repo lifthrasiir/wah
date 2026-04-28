@@ -23,9 +23,7 @@ static const char *k_import_spec = "wasm \
 static wah_error_t make_env_module(wah_module_t *mod) {
     wah_error_t err = wah_new_module(mod);
     if (err != WAH_OK) return err;
-    wah_type_t params[2] = { WAH_TYPE_I32, WAH_TYPE_I32 };
-    wah_type_t results[1] = { WAH_TYPE_I32 };
-    return wah_module_export_funcv(mod, "add", 2, params, 1, results, host_add, NULL, NULL);
+    return wah_module_export_func(mod, "add", "(i32, i32) -> i32", host_add, NULL, NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -87,9 +85,7 @@ static void test_import_not_found_bad_field(void) {
 
     assert_ok(wah_new_module(&env_mod));
 
-    wah_type_t params[2] = { WAH_TYPE_I32, WAH_TYPE_I32 };
-    wah_type_t results[1] = { WAH_TYPE_I32 };
-    wah_module_export_funcv(&env_mod, "wrong_func", 2, params, 1, results, host_add, NULL, NULL);
+    wah_module_export_func(&env_mod, "wrong_func", "(i32, i32) -> i32", host_add, NULL, NULL);
 
     assert_ok(wah_parse_module_from_spec(&wasm_mod, k_import_spec));
     assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
@@ -445,8 +441,7 @@ static void test_mixed_imports(void) {
 
     wah_module_t provider = {0};
     assert_ok(wah_new_module(&provider));
-    wah_type_t result_types[1] = { WAH_TYPE_I32 };
-    assert_ok(wah_module_export_funcv(&provider, "get42", 0, NULL, 1, result_types, host_get42, NULL, NULL));
+    assert_ok(wah_module_export_func(&provider, "get42", "() -> i32", host_get42, NULL, NULL));
     assert_ok(wah_module_export_global_i32(&provider, "g", 0, 100));
     assert_ok(wah_module_export_memory(&provider, "mem", 1, 1));
 

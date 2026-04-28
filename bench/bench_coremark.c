@@ -51,7 +51,7 @@ int main(void) {
 
     wah_module_t env = {0};
     wah_new_module(&env);
-    wah_module_export_func(&env, "clock_ms", "->i32", clock_ms_host, NULL, NULL);
+    wah_module_export_func(&env, "clock_ms", "() -> i32", clock_ms_host, NULL, NULL);
 
     wah_exec_context_t ctx = {0};
     wah_exec_context_create(&ctx, &mod);

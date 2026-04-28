@@ -222,9 +222,7 @@ int main() {
         wah_exec_context_t ctx = {0};
 
         assert_ok(wah_new_module(&env_mod));
-        wah_type_t hp[] = { WAH_TYPE_I32 };
-        wah_type_t hr[] = { WAH_TYPE_I32 };
-        assert_ok(wah_module_export_funcv(&env_mod, "f", 1, hp, 1, hr,
+        assert_ok(wah_module_export_func(&env_mod, "f", "(i32) -> i32",
             host_write_result_then_read_param, NULL, NULL));
 
         assert_ok(wah_parse_module_from_spec(&wasm_mod, wasm_spec));
@@ -260,9 +258,7 @@ int main() {
         wah_exec_context_t ctx = {0};
 
         assert_ok(wah_new_module(&env_mod));
-        wah_type_t hp[] = { WAH_TYPE_I32, WAH_TYPE_I32 };
-        wah_type_t hr[] = { WAH_TYPE_I32 };
-        assert_ok(wah_module_export_funcv(&env_mod, "f", 2, hp, 1, hr,
+        assert_ok(wah_module_export_func(&env_mod, "f", "(i32, i32) -> i32",
             host_write_result_then_read_two_params, NULL, NULL));
 
         assert_ok(wah_parse_module_from_spec(&wasm_mod, wasm_spec));
@@ -298,9 +294,7 @@ int main() {
         wah_exec_context_t ctx = {0};
 
         assert_ok(wah_new_module(&env_mod));
-        wah_type_t hp[] = { WAH_TYPE_I32, WAH_TYPE_I32, WAH_TYPE_I32 };
-        wah_type_t hr[] = { WAH_TYPE_I32 };
-        assert_ok(wah_module_export_funcv(&env_mod, "f", 3, hp, 1, hr,
+        assert_ok(wah_module_export_func(&env_mod, "f", "(i32, i32, i32) -> i32",
             host_write_result_then_read_three_params, NULL, NULL));
 
         assert_ok(wah_parse_module_from_spec(&wasm_mod, wasm_spec));

@@ -77,4 +77,26 @@ wah_error_t wah_debug_parse_func_spec(const char *types,
     size_t *out_nparams, wah_type_t **out_param_types,
     size_t *out_nresults, wah_type_t **out_result_types);
 
+typedef enum {
+    WAH_DEBUG_TYPE_SPEC_FUNC = 1,
+    WAH_DEBUG_TYPE_SPEC_STRUCT = 2,
+    WAH_DEBUG_TYPE_SPEC_ARRAY = 3,
+} wah_debug_type_spec_kind_t;
+
+typedef struct {
+    wah_debug_type_spec_kind_t kind;
+    uint32_t param_count;
+    wah_type_t *param_types;
+    uint32_t result_count;
+    wah_type_t *result_types;
+    uint32_t field_count;
+    wah_type_t *field_types;
+    bool *field_mutables;
+} wah_debug_type_spec_t;
+
+// --- type spec parser ---
+wah_error_t wah_debug_parse_define_type_spec(wah_module_t *mod, wah_debug_type_spec_t *out, const char *spec, ...);
+wah_error_t wah_debug_parse_export_func_type_spec(wah_module_t *mod, wah_debug_type_spec_t *out, const char *spec);
+void wah_debug_free_type_spec(wah_debug_type_spec_t *spec);
+
 #endif

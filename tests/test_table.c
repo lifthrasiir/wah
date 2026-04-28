@@ -329,8 +329,8 @@ void wah_test_elem_import_index_drift() {
     wah_module_t host_mod;
     assert_ok(wah_new_module(&host_mod));
 
-    assert_ok(wah_module_export_func(&host_mod, "add_one", "i32->i32", host_add_one, NULL, NULL));
-    assert_ok(wah_module_export_func(&host_mod, "sub_one", "i32->i32", host_sub_one, NULL, NULL));
+    assert_ok(wah_module_export_func(&host_mod, "add_one", "(i32) -> i32", host_add_one, NULL, NULL));
+    assert_ok(wah_module_export_func(&host_mod, "sub_one", "(i32) -> i32", host_sub_one, NULL, NULL));
 
     wah_exec_context_t exec_ctx;
     assert_ok(wah_exec_context_create(&exec_ctx, &module));
@@ -514,7 +514,7 @@ void wah_test_elem_passive_with_imports() {
     wah_module_t host_mod;
     assert_ok(wah_new_module(&host_mod));
 
-    assert_ok(wah_module_export_func(&host_mod, "imported_fn", "i32->i32", host_imported_fn, NULL, NULL));
+    assert_ok(wah_module_export_func(&host_mod, "imported_fn", "(i32) -> i32", host_imported_fn, NULL, NULL));
 
     wah_exec_context_t exec_ctx;
     assert_ok(wah_exec_context_create(&exec_ctx, &module));

@@ -191,5 +191,143 @@ wah_error_t wah_debug_parse_func_spec(const char *types,
     size_t *out_nparams, wah_type_t **out_param_types,
     size_t *out_nresults, wah_type_t **out_result_types)
 {
-    return wah_parse_func_spec(types, out_nparams, out_param_types, out_nresults, out_result_types);
+    wah_error_t err;
+    wah_type_spec_parser_t p;
+    wah_func_type_t ft = {0};
+    WAH_ENSURE(types && out_nparams && out_param_types && out_nresults && out_result_types, WAH_ERROR_MISUSE);
+    *out_nparams = 0;
+    *out_param_types = NULL;
+    *out_nresults = 0;
+    *out_result_types = NULL;
+    p = (wah_type_spec_parser_t){ .cur = types, .module = NULL, .allow_placeholders = false };
+    bool has_fn = wah_type_spec_take_kw(&p, "fn");
+    p.cur = types;
+    WAH_CHECK_GOTO(wah_type_spec_parse_func(&p, &ft, !has_fn), cleanup);
+    wah_type_spec_skip_ws(&p);
+    WAH_ENSURE_GOTO(*p.cur == '\0', WAH_ERROR_BAD_SPEC, cleanup);
+    *out_nparams = ft.param_count;
+    *out_param_types = ft.param_types;
+    *out_nresults = ft.result_count;
+    *out_result_types = ft.result_types;
+    return WAH_OK;
+cleanup:
+    free(ft.param_types);
+    free(ft.result_types);
+    return err == WAH_OK ? WAH_ERROR_BAD_SPEC : err;
+}
+
+void wah_debug_free_type_spec(wah_debug_type_spec_t *spec) {
+    if (!spec) return;
+    free(spec->param_types);
+    free(spec->result_types);
+    free(spec->field_types);
+    free(spec->field_mutables);
+    *spec = (wah_debug_type_spec_t){0};
+}
+
+static wah_error_t wah_debug_parse_define_type_specv(wah_module_t *mod, wah_debug_type_spec_t *out,
+                                                     const char *spec, va_list *args) {
+    wah_error_t err;
+    wah_type_spec_parser_t p;
+    wah_func_type_t ft = {0};
+    wah_type_def_t td = { .kind = WAH_COMP_FUNC, .is_final = true, .supertype = WAH_NO_SUPERTYPE };
+
+    WAH_ENSURE(mod && out && spec, WAH_ERROR_MISUSE);
+    *out = (wah_debug_type_spec_t){0};
+    p = (wah_type_spec_parser_t){ .cur = spec, .module = mod, .args = args, .allow_placeholders = true };
+
+    if (wah_type_spec_take_kw(&p, "fn")) {
+        p.cur = spec;
+        td.kind = WAH_COMP_FUNC;
+        WAH_CHECK_GOTO(wah_type_spec_parse_func(&p, &ft, false), cleanup);
+        out->kind = WAH_DEBUG_TYPE_SPEC_FUNC;
+        out->param_count = ft.param_count;
+        out->param_types = ft.param_types;
+        out->result_count = ft.result_count;
+        out->result_types = ft.result_types;
+        ft = (wah_func_type_t){0};
+    } else if (wah_type_spec_take_kw(&p, "struct")) {
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+        p.cur = spec;
+        td.kind = WAH_COMP_STRUCT;
+        WAH_CHECK_GOTO(wah_type_spec_parse_struct(&p, &td), cleanup);
+        out->kind = WAH_DEBUG_TYPE_SPEC_STRUCT;
+        out->field_count = td.field_count;
+        out->field_types = td.field_types;
+        out->field_mutables = td.field_mutables;
+        td.field_count = 0;
+        td.field_types = NULL;
+        td.field_mutables = NULL;
+#else
+        err = WAH_ERROR_DISABLED_FEATURE; goto cleanup;
+#endif
+    } else if (wah_type_spec_take_kw(&p, "array")) {
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+        p.cur = spec;
+        td.kind = WAH_COMP_ARRAY;
+        WAH_CHECK_GOTO(wah_type_spec_parse_array(&p, &td), cleanup);
+        out->kind = WAH_DEBUG_TYPE_SPEC_ARRAY;
+        out->field_count = td.field_count;
+        out->field_types = td.field_types;
+        out->field_mutables = td.field_mutables;
+        td.field_count = 0;
+        td.field_types = NULL;
+        td.field_mutables = NULL;
+#else
+        err = WAH_ERROR_DISABLED_FEATURE; goto cleanup;
+#endif
+    } else {
+        err = WAH_ERROR_BAD_SPEC;
+        goto cleanup;
+    }
+
+    wah_type_spec_skip_ws(&p);
+    WAH_ENSURE_GOTO(*p.cur == '\0', WAH_ERROR_BAD_SPEC, cleanup);
+    return WAH_OK;
+
+cleanup:
+    free(ft.param_types);
+    free(ft.result_types);
+    free(td.field_types);
+    free(td.field_mutables);
+    wah_debug_free_type_spec(out);
+    return err == WAH_OK ? WAH_ERROR_BAD_SPEC : err;
+}
+
+wah_error_t wah_debug_parse_define_type_spec(wah_module_t *mod, wah_debug_type_spec_t *out, const char *spec, ...) {
+    wah_error_t err;
+    va_list args;
+    va_start(args, spec);
+    err = wah_debug_parse_define_type_specv(mod, out, spec, &args);
+    va_end(args);
+    return err;
+}
+
+wah_error_t wah_debug_parse_export_func_type_spec(wah_module_t *mod, wah_debug_type_spec_t *out, const char *spec) {
+    wah_error_t err;
+    wah_type_spec_parser_t p;
+    wah_func_type_t ft = {0};
+
+    WAH_ENSURE(mod && out && spec, WAH_ERROR_MISUSE);
+    *out = (wah_debug_type_spec_t){0};
+    p = (wah_type_spec_parser_t){ .cur = spec, .module = mod, .allow_placeholders = false };
+    bool has_fn = wah_type_spec_take_kw(&p, "fn");
+    p.cur = spec;
+    WAH_CHECK_GOTO(wah_type_spec_parse_func(&p, &ft, !has_fn), cleanup);
+    wah_type_spec_skip_ws(&p);
+    WAH_ENSURE_GOTO(*p.cur == '\0', WAH_ERROR_BAD_SPEC, cleanup);
+
+    out->kind = WAH_DEBUG_TYPE_SPEC_FUNC;
+    out->param_count = ft.param_count;
+    out->param_types = ft.param_types;
+    out->result_count = ft.result_count;
+    out->result_types = ft.result_types;
+    ft = (wah_func_type_t){0};
+    return WAH_OK;
+
+cleanup:
+    free(ft.param_types);
+    free(ft.result_types);
+    wah_debug_free_type_spec(out);
+    return err == WAH_OK ? WAH_ERROR_BAD_SPEC : err;
 }

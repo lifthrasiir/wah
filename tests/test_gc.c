@@ -568,8 +568,7 @@ int main() {
         wah_exec_context_t ctx2 = {0};
 
         assert_ok(wah_new_module(&env_mod));
-        wah_type_t i32_result[] = { WAH_TYPE_I32 };
-        assert_ok(wah_module_export_funcv(&env_mod, "count_roots", 0, NULL, 1, i32_result, host_count_roots, NULL, NULL));
+        assert_ok(wah_module_export_func(&env_mod, "count_roots", "() -> i32", host_count_roots, NULL, NULL));
 
         const char *spec = "wasm \
             types {[ fn [funcref] [i32], fn [] [i32] ]} \
@@ -597,8 +596,7 @@ int main() {
         wah_module_t env_mod = {0}, wasm_mod = {0};
         wah_exec_context_t ctx2 = {0};
         assert_ok(wah_new_module(&env_mod));
-        wah_type_t i32_result[] = { WAH_TYPE_I32 };
-        assert_ok(wah_module_export_funcv(&env_mod, "count_roots", 0, NULL, 1, i32_result, host_count_roots, NULL, NULL));
+        assert_ok(wah_module_export_func(&env_mod, "count_roots", "() -> i32", host_count_roots, NULL, NULL));
 
         // fn takes funcref param, pushes ref.null on operand stack, calls host
         // local 0 = funcref param, local 1 = i32 temp
@@ -899,7 +897,7 @@ int main() {
         wah_exec_context_t ctx5 = {0};
 
         assert_ok(wah_new_module(&env_mod));
-        assert_ok(wah_module_export_funcv(&env_mod, "gc", 0, NULL, 0, NULL, host_trigger_gc, NULL, NULL));
+        assert_ok(wah_module_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
 
         const char *spec = "wasm \
             types {[ struct [i32 mut], fn [] [i32], fn [] [] ]} \
@@ -935,7 +933,7 @@ int main() {
         wah_exec_context_t ctx5 = {0};
 
         assert_ok(wah_new_module(&env_mod));
-        assert_ok(wah_module_export_funcv(&env_mod, "gc", 0, NULL, 0, NULL, host_trigger_gc, NULL, NULL));
+        assert_ok(wah_module_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
 
         // struct.new leaves ref on operand stack, then we call gc, then struct.get reads it
         const char *spec = "wasm \
@@ -970,8 +968,7 @@ int main() {
         wah_exec_context_t ctx5 = {0};
 
         assert_ok(wah_new_module(&env_mod));
-        wah_type_t i32_result[] = { WAH_TYPE_I32 };
-        assert_ok(wah_module_export_funcv(&env_mod, "gc_count", 0, NULL, 1, i32_result, host_gc_object_count, NULL, NULL));
+        assert_ok(wah_module_export_func(&env_mod, "gc_count", "() -> i32", host_gc_object_count, NULL, NULL));
 
         // Allocate struct, drop it, then call gc_count which triggers GC internally
         const char *spec = "wasm \
@@ -1008,7 +1005,7 @@ int main() {
         wah_exec_context_t ctx5 = {0};
 
         assert_ok(wah_new_module(&env_mod));
-        assert_ok(wah_module_export_funcv(&env_mod, "gc", 0, NULL, 0, NULL, host_trigger_gc, NULL, NULL));
+        assert_ok(wah_module_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
 
         const char *spec = "wasm \
             types {[ array i32 mut, fn [] [i32], fn [] [] ]} \
@@ -1045,7 +1042,7 @@ int main() {
         wah_exec_context_t ctx5 = {0};
 
         assert_ok(wah_new_module(&env_mod));
-        assert_ok(wah_module_export_funcv(&env_mod, "gc", 0, NULL, 0, NULL, host_trigger_gc, NULL, NULL));
+        assert_ok(wah_module_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
 
         const char *spec = "wasm \
             types {[ struct [i32 mut], struct [type.ref.null 0 mut], fn [] [i32], fn [] [] ]} \
@@ -1082,8 +1079,7 @@ int main() {
         wah_exec_context_t ctx5 = {0};
 
         assert_ok(wah_new_module(&env_mod));
-        wah_type_t i32_result[] = { WAH_TYPE_I32 };
-        assert_ok(wah_module_export_funcv(&env_mod, "count_structref", 0, NULL, 1, i32_result, host_count_structref, NULL, NULL));
+        assert_ok(wah_module_export_func(&env_mod, "count_structref", "() -> i32", host_count_structref, NULL, NULL));
 
         // struct.new_default leaves structref on operand stack, then call host
         const char *spec = "wasm \
@@ -1172,7 +1168,7 @@ int main() {
         wah_exec_context_t ctx5 = {0};
 
         assert_ok(wah_new_module(&env_mod));
-        assert_ok(wah_module_export_funcv(&env_mod, "gc", 0, NULL, 0, NULL, host_trigger_gc, NULL, NULL));
+        assert_ok(wah_module_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
 
         const char *spec = "wasm \
             types {[ struct [i32 mut], fn [type.ref.null 0] [], fn [] [i32], fn [] [], fn [] [type.ref.null 0] ]} \
@@ -1227,7 +1223,7 @@ int main() {
         wah_exec_context_t ctx5 = {0};
 
         assert_ok(wah_new_module(&env_mod));
-        assert_ok(wah_module_export_funcv(&env_mod, "gc", 0, NULL, 0, NULL, host_trigger_gc, NULL, NULL));
+        assert_ok(wah_module_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
 
         const char *spec = "wasm \
             types {[ struct [i32 mut], fn [type.ref.null 0] [], fn [] [i32], fn [] [], fn [] [type.ref.null 0] ]} \
@@ -1271,8 +1267,8 @@ int main() {
     {
         wah_module_t env_mod = {0}, wasm_mod = {0};
         assert_ok(wah_new_module(&env_mod));
-        assert_ok(wah_module_export_funcv(&env_mod, "gc", 0, NULL, 0, NULL, host_trigger_gc, NULL, NULL));
-        assert_ok(wah_module_export_funcv(&env_mod, "count", 0, NULL, 1, (wah_type_t[]){WAH_TYPE_I32}, host_gc_object_count, NULL, NULL));
+        assert_ok(wah_module_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
+        assert_ok(wah_module_export_func(&env_mod, "count", "() -> i32", host_gc_object_count, NULL, NULL));
 
         const char *spec = "wasm \
             types {[ struct [i32 mut], fn [] [], fn [] [i32] ]} \

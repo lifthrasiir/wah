@@ -240,17 +240,11 @@ static void test_externref_host_roundtrip() {
 
     wah_module_t host_mod = {0};
     assert_ok(wah_new_module(&host_mod));
-    assert_ok(wah_module_export_funcv(&host_mod, "identity",
-        1, (wah_type_t[]){WAH_TYPE_EXTERNREF},
-        1, (wah_type_t[]){WAH_TYPE_EXTERNREF},
+    assert_ok(wah_module_export_func(&host_mod, "identity", "(externref) -> externref",
         host_externref_identity, NULL, NULL));
-    assert_ok(wah_module_export_funcv(&host_mod, "isNull",
-        1, (wah_type_t[]){WAH_TYPE_EXTERNREF},
-        1, (wah_type_t[]){WAH_TYPE_I32},
+    assert_ok(wah_module_export_func(&host_mod, "isNull", "(externref) -> i32",
         host_externref_is_null, NULL, NULL));
-    assert_ok(wah_module_export_funcv(&host_mod, "make",
-        0, NULL,
-        1, (wah_type_t[]){WAH_TYPE_EXTERNREF},
+    assert_ok(wah_module_export_func(&host_mod, "make", "() -> externref",
         host_return_externref, NULL, NULL));
 
     const char *spec = "wasm \
@@ -301,11 +295,9 @@ static void test_externref_table_host_boundary() {
 
     wah_module_t host_mod = {0};
     assert_ok(wah_new_module(&host_mod));
-    assert_ok(wah_module_export_funcv(&host_mod, "make",
-        0, NULL, 1, (wah_type_t[]){WAH_TYPE_EXTERNREF},
+    assert_ok(wah_module_export_func(&host_mod, "make", "() -> externref",
         host_return_externref, NULL, NULL));
-    assert_ok(wah_module_export_funcv(&host_mod, "isNull",
-        1, (wah_type_t[]){WAH_TYPE_EXTERNREF}, 1, (wah_type_t[]){WAH_TYPE_I32},
+    assert_ok(wah_module_export_func(&host_mod, "isNull", "(externref) -> i32",
         host_externref_is_null, NULL, NULL));
 
     const char *spec = "wasm \
@@ -349,11 +341,9 @@ static void test_externref_global_host_boundary() {
 
     wah_module_t host_mod = {0};
     assert_ok(wah_new_module(&host_mod));
-    assert_ok(wah_module_export_funcv(&host_mod, "make",
-        0, NULL, 1, (wah_type_t[]){WAH_TYPE_EXTERNREF},
+    assert_ok(wah_module_export_func(&host_mod, "make", "() -> externref",
         host_return_externref, NULL, NULL));
-    assert_ok(wah_module_export_funcv(&host_mod, "isNull",
-        1, (wah_type_t[]){WAH_TYPE_EXTERNREF}, 1, (wah_type_t[]){WAH_TYPE_I32},
+    assert_ok(wah_module_export_func(&host_mod, "isNull", "(externref) -> i32",
         host_externref_is_null, NULL, NULL));
 
     const char *spec = "wasm \
@@ -399,8 +389,7 @@ static void test_externref_ref_test() {
     {
         wah_module_t host_mod = {0};
         assert_ok(wah_new_module(&host_mod));
-        assert_ok(wah_module_export_funcv(&host_mod, "make",
-            0, NULL, 1, (wah_type_t[]){WAH_TYPE_EXTERNREF},
+        assert_ok(wah_module_export_func(&host_mod, "make", "() -> externref",
             host_return_externref, NULL, NULL));
 
         const char *spec = "wasm \
@@ -466,11 +455,9 @@ static void test_externref_ref_cast() {
     {
         wah_module_t host_mod = {0};
         assert_ok(wah_new_module(&host_mod));
-        assert_ok(wah_module_export_funcv(&host_mod, "make",
-            0, NULL, 1, (wah_type_t[]){WAH_TYPE_EXTERNREF},
+        assert_ok(wah_module_export_func(&host_mod, "make", "() -> externref",
             host_return_externref, NULL, NULL));
-        assert_ok(wah_module_export_funcv(&host_mod, "isNull",
-            1, (wah_type_t[]){WAH_TYPE_EXTERNREF}, 1, (wah_type_t[]){WAH_TYPE_I32},
+        assert_ok(wah_module_export_func(&host_mod, "isNull", "(externref) -> i32",
             host_externref_is_null, NULL, NULL));
 
         const char *spec = "wasm \
@@ -513,8 +500,7 @@ static void test_externref_ref_cast() {
     {
         wah_module_t host_mod = {0};
         assert_ok(wah_new_module(&host_mod));
-        assert_ok(wah_module_export_funcv(&host_mod, "make",
-            0, NULL, 1, (wah_type_t[]){WAH_TYPE_EXTERNREF},
+        assert_ok(wah_module_export_func(&host_mod, "make", "() -> externref",
             host_return_externref, NULL, NULL));
 
         const char *spec = "wasm \
@@ -574,9 +560,7 @@ static void test_ref_func_in_elem_with_import() {
     wah_module_t wasm_mod = {0};
     wah_module_t env_mod = {0};
     assert_ok(wah_new_module(&env_mod));
-    wah_type_t no_params[1];
-    wah_type_t result_i32[1] = { WAH_TYPE_I32 };
-    assert_ok(wah_module_export_funcv(&env_mod, "return42", 0, no_params, 1, result_i32, host_return42, NULL, NULL));
+    assert_ok(wah_module_export_func(&env_mod, "return42", "() -> i32", host_return42, NULL, NULL));
 
     assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
     assert_eq_u32(wasm_mod.import_function_count, 1);

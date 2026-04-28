@@ -58,7 +58,7 @@ static void test_is_interrupted_in_host_function(void) {
     wah_value_t result = {0};
 
     assert_ok(wah_new_module(&mod));
-    assert_ok(wah_module_export_func(&mod, "observe", "->i32", host_observe_interrupt, NULL, NULL));
+    assert_ok(wah_module_export_func(&mod, "observe", "() -> i32", host_observe_interrupt, NULL, NULL));
     assert_ok(wah_exec_context_create(&ctx, &mod));
     assert_ok(wah_instantiate(&ctx));
 

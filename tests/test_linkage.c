@@ -33,7 +33,7 @@ int main() {
         wah_module_t host_mod = {0};
         assert_ok(wah_new_module(&host_mod));
 
-        assert_ok(wah_module_export_funcv(&host_mod, "testFunc", 0, NULL, 1, (wah_type_t[]){WAH_TYPE_I32}, simple_host_func, NULL, NULL));
+        assert_ok(wah_module_export_func(&host_mod, "testFunc", "() -> i32", simple_host_func, NULL, NULL));
 
         // Create execution context with host module as primary
         wah_exec_context_t ctx = {0};
@@ -62,12 +62,12 @@ int main() {
         // Create first host module
         wah_module_t mod1 = {0};
         wah_new_module(&mod1);
-        assert_ok(wah_module_export_funcv(&mod1, "func1", 0, NULL, 1, (wah_type_t[]){WAH_TYPE_I32}, simple_host_func, NULL, NULL));
+        assert_ok(wah_module_export_func(&mod1, "func1", "() -> i32", simple_host_func, NULL, NULL));
 
         // Create second host module
         wah_module_t mod2 = {0};
         assert_ok(wah_new_module(&mod2));
-        assert_ok(wah_module_export_funcv(&mod2, "func2", 0, NULL, 1, (wah_type_t[]){WAH_TYPE_I32}, simple_host_func, NULL, NULL));
+        assert_ok(wah_module_export_func(&mod2, "func2", "() -> i32", simple_host_func, NULL, NULL));
 
         // Create execution context
         wah_exec_context_t ctx = {0};
@@ -97,8 +97,8 @@ int main() {
         wah_module_t mod = {0};
         assert_ok(wah_new_module(&mod));
 
-        assert_ok(wah_module_export_funcv(&mod, "dup", 0, NULL, 1, (wah_type_t[]){WAH_TYPE_I32}, simple_host_func, NULL, NULL));
-        assert_err(wah_module_export_funcv(&mod, "dup", 0, NULL, 1, (wah_type_t[]){WAH_TYPE_I32}, simple_host_func, NULL, NULL), WAH_ERROR_VALIDATION_FAILED);
+        assert_ok(wah_module_export_func(&mod, "dup", "() -> i32", simple_host_func, NULL, NULL));
+        assert_err(wah_module_export_func(&mod, "dup", "() -> i32", simple_host_func, NULL, NULL), WAH_ERROR_VALIDATION_FAILED);
 
         wah_free_module(&mod);
     }
@@ -108,7 +108,7 @@ int main() {
     {
         wah_module_t mod = {0};
         assert_ok(wah_new_module(&mod));
-        assert_ok(wah_module_export_funcv(&mod, "func", 0, NULL, 1, (wah_type_t[]){WAH_TYPE_I32}, simple_host_func, NULL, NULL));
+        assert_ok(wah_module_export_func(&mod, "func", "() -> i32", simple_host_func, NULL, NULL));
 
         wah_exec_context_t ctx = {0};
         assert_ok(wah_exec_context_create(&ctx, &mod));
@@ -251,8 +251,8 @@ int main() {
     {
         wah_module_t host_mod = {0};
         assert_ok(wah_new_module(&host_mod));
-        assert_ok(wah_module_export_funcv(&host_mod, "initFunc", 0, NULL, 0, NULL,
-                                          imported_start_host_func, NULL, NULL));
+        assert_ok(wah_module_export_func(&host_mod, "initFunc", "()",
+                                         imported_start_host_func, NULL, NULL));
 
         // Module imports initFunc from 'host' and declares it (index 0) as start function.
         const char *spec_a = "wasm \
@@ -327,9 +327,8 @@ int main() {
         // Module C (host): exports "getConst" () -> i32 returning 42.
         wah_module_t mod_c = {0};
         assert_ok(wah_new_module(&mod_c));
-        assert_ok(wah_module_export_funcv(&mod_c, "getConst", 0, NULL, 1,
-                                          (wah_type_t[]){WAH_TYPE_I32},
-                                          simple_host_func, NULL, NULL));
+        assert_ok(wah_module_export_func(&mod_c, "getConst", "() -> i32",
+                                         simple_host_func, NULL, NULL));
 
         // Module B: imports "moduleC"."getConst" (func idx 0).
         // global[0] = funcref mut ref.func 0 (= the IMPORT, not a local).

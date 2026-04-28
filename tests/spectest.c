@@ -544,13 +544,13 @@ static int setup_spectest_host(spectest_env_t *env) {
     if (wah_module_export_memory(&env->spectest_host, "memory", 1, 2) != WAH_OK) return 0;
     if (!add_table_export_ex(&env->spectest_host, "table", 10, 20, WAH_TYPE_I32)) return 0;
     if (!add_table_export_ex(&env->spectest_host, "table64", 10, 20, WAH_TYPE_I64)) return 0;
-    if (wah_module_export_func(&env->spectest_host, "print", "->", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
-    if (wah_module_export_func(&env->spectest_host, "print_i32", "i32->", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
-    if (wah_module_export_func(&env->spectest_host, "print_i64", "i64->", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
-    if (wah_module_export_func(&env->spectest_host, "print_f32", "f32->", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
-    if (wah_module_export_func(&env->spectest_host, "print_f64", "f64->", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
-    if (wah_module_export_func(&env->spectest_host, "print_i32_f32", "i32,f32->", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
-    if (wah_module_export_func(&env->spectest_host, "print_f64_f64", "f64,f64->", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
+    if (wah_module_export_func(&env->spectest_host, "print", "()", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
+    if (wah_module_export_func(&env->spectest_host, "print_i32", "(i32)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
+    if (wah_module_export_func(&env->spectest_host, "print_i64", "(i64)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
+    if (wah_module_export_func(&env->spectest_host, "print_f32", "(f32)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
+    if (wah_module_export_func(&env->spectest_host, "print_f64", "(f64)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
+    if (wah_module_export_func(&env->spectest_host, "print_i32_f32", "(i32, f32)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
+    if (wah_module_export_func(&env->spectest_host, "print_f64_f64", "(f64, f64)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
     env->host_ready = 1;
     return 1;
 }
