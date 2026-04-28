@@ -14181,25 +14181,52 @@ wah_error_t wah_new_module(wah_module_t *mod) {
     return WAH_OK;
 }
 
+static bool wah_define_type_matches(const wah_module_t *mod, uint32_t i,
+                                    const wah_func_type_t *ft, const wah_type_def_t *td) {
+    const wah_type_def_t *ei = &mod->type_defs[i];
+    if (ei->kind != td->kind) return false;
+    if (ei->is_final != td->is_final) return false;
+    if (ei->supertype != td->supertype) return false;
+    if (td->kind == WAH_COMP_FUNC) {
+        const wah_func_type_t *ef = &mod->types[i];
+        if (ef->param_count != ft->param_count) return false;
+        if (ef->result_count != ft->result_count) return false;
+        for (uint32_t j = 0; j < ft->param_count; ++j)
+            if (ef->param_types[j] != ft->param_types[j]) return false;
+        for (uint32_t j = 0; j < ft->result_count; ++j)
+            if (ef->result_types[j] != ft->result_types[j]) return false;
+    } else {
+        if (ei->field_count != td->field_count) return false;
+        for (uint32_t j = 0; j < td->field_count; ++j) {
+            if (ei->field_types[j] != td->field_types[j]) return false;
+            if (ei->field_mutables[j] != td->field_mutables[j]) return false;
+        }
+    }
+    return true;
+}
+
 wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, const char *spec, va_list *args) {
     wah_error_t err;
     wah_type_spec_parser_t p;
     wah_func_type_t ft = {0};
     wah_type_def_t td = { .kind = WAH_COMP_FUNC, .is_final = true, .supertype = WAH_NO_SUPERTYPE };
     uint32_t idx;
+    bool fresh;
 
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
     WAH_ENSURE(out_type, WAH_ERROR_MISUSE);
     WAH_ENSURE(spec, WAH_ERROR_MISUSE);
 
     p = (wah_type_spec_parser_t){ .cur = spec, .module = mod, .args = args, .allow_placeholders = true };
+    fresh = wah_type_spec_take_kw(&p, "fresh");
+    const char *after_fresh = p.cur;
     if (wah_type_spec_take_kw(&p, "fn")) {
-        p.cur = spec;
+        p.cur = after_fresh;
         td.kind = WAH_COMP_FUNC;
         WAH_CHECK_GOTO(wah_type_spec_parse_func(&p, &ft, false), cleanup);
     } else if (wah_type_spec_take_kw(&p, "struct")) {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-        p.cur = spec;
+        p.cur = after_fresh;
         td.kind = WAH_COMP_STRUCT;
         WAH_CHECK_GOTO(wah_type_spec_parse_struct(&p, &td), cleanup);
 #else
@@ -14207,7 +14234,7 @@ wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, con
 #endif
     } else if (wah_type_spec_take_kw(&p, "array")) {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-        p.cur = spec;
+        p.cur = after_fresh;
         td.kind = WAH_COMP_ARRAY;
         WAH_CHECK_GOTO(wah_type_spec_parse_array(&p, &td), cleanup);
 #else
@@ -14220,6 +14247,19 @@ wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, con
 
     wah_type_spec_skip_ws(&p);
     WAH_ENSURE_GOTO(*p.cur == '\0', WAH_ERROR_BAD_SPEC, cleanup);
+
+    if (!fresh) {
+        for (uint32_t i = 0; i < mod->type_count; ++i) {
+            if (wah_define_type_matches(mod, i, &ft, &td)) {
+                free(ft.param_types);
+                free(ft.result_types);
+                free(td.field_types);
+                free(td.field_mutables);
+                *out_type = WAH_TYPE_FROM_IDX(i, false);
+                return WAH_OK;
+            }
+        }
+    }
 
     idx = mod->type_count;
     WAH_CHECK_GOTO(wah_type_section_ensure_capacity(mod, idx + 1), cleanup);

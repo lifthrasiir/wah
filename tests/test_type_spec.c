@@ -161,11 +161,69 @@ static void test_placeholders(void) {
     wah_free_module(&mod);
 }
 
+static void test_type_reuse(void) {
+    printf("Testing type reuse and fresh...\n");
+    wah_module_t mod = {0};
+    wah_type_t t1, t2, t3, t4;
+    assert_ok(wah_new_module(&mod));
+
+    // Same function type should reuse
+    assert_ok(wah_module_define_type(&mod, &t1, "fn (i32, i32) -> (i32)"));
+    assert_ok(wah_module_define_type(&mod, &t2, "fn (i32, i32) -> (i32)"));
+    assert_eq_i32(t1, t2);
+
+    // Different function type should not reuse
+    assert_ok(wah_module_define_type(&mod, &t3, "fn (i32) -> (i32)"));
+    assert_true(t1 != t3);
+
+    // fresh should always create a new type
+    assert_ok(wah_module_define_type(&mod, &t4, "fresh fn (i32, i32) -> (i32)"));
+    assert_true(t1 != t4);
+
+    // Reuse should still find t1, not t4, since t1 comes first
+    wah_type_t t5;
+    assert_ok(wah_module_define_type(&mod, &t5, "fn (i32, i32) -> (i32)"));
+    assert_eq_i32(t1, t5);
+
+    // fresh struct
+    wah_type_t s1, s2, s3;
+    assert_ok(wah_module_define_type(&mod, &s1, "struct { i32, i64 }"));
+    assert_ok(wah_module_define_type(&mod, &s2, "struct { i32, i64 }"));
+    assert_eq_i32(s1, s2);
+    assert_ok(wah_module_define_type(&mod, &s3, "fresh struct { i32, i64 }"));
+    assert_true(s1 != s3);
+
+    // Struct with different mutability should not reuse
+    wah_type_t s4;
+    assert_ok(wah_module_define_type(&mod, &s4, "struct { mut i32, i64 }"));
+    assert_true(s1 != s4);
+
+    // fresh array
+    wah_type_t a1, a2, a3;
+    assert_ok(wah_module_define_type(&mod, &a1, "array i32"));
+    assert_ok(wah_module_define_type(&mod, &a2, "array i32"));
+    assert_eq_i32(a1, a2);
+    assert_ok(wah_module_define_type(&mod, &a3, "fresh array i32"));
+    assert_true(a1 != a3);
+
+    // Type referring to another type via %T should reuse correctly
+    wah_type_t r1, r2, r3;
+    assert_ok(wah_module_define_type(&mod, &r1, "fn (ref %T) -> ()", s1));
+    assert_ok(wah_module_define_type(&mod, &r2, "fn (ref %T) -> ()", s1));
+    assert_eq_i32(r1, r2);
+    // Same shape but different referenced type should not reuse
+    assert_ok(wah_module_define_type(&mod, &r3, "fn (ref %T) -> ()", s3));
+    assert_true(r1 != r3);
+
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_function_specs();
     test_struct_and_array_specs();
     test_edge_cases();
     test_placeholders();
+    test_type_reuse();
     printf("All type spec tests passed!\n");
     return 0;
 }
