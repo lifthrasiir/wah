@@ -23,6 +23,27 @@ if ($msvc) {
     $compiler = 'clang'
 }
 
+if ($compiler -eq 'clang') {
+    $msys2Clang = 'C:\msys64\ucrt64\bin\clang.exe'
+    if (Test-Path $msys2Clang) {
+        $compiler = $msys2Clang
+    } elseif ($env:GITHUB_ACTIONS) {
+        Write-Host "## Error: expected MSYS2 clang at $msys2Clang"
+        exit 1
+    }
+} elseif ($compiler -eq 'gcc') {
+    $msys2Gcc = 'C:\msys64\ucrt64\bin\gcc.exe'
+    if (Test-Path $msys2Gcc) {
+        $compiler = $msys2Gcc
+    } elseif ($env:GITHUB_ACTIONS) {
+        Write-Host "## Error: expected MSYS2 gcc at $msys2Gcc"
+        exit 1
+    }
+}
+
+$compilerKind = if ($msvc) { 'msvc' } elseif ($gcc) { 'gcc' } else { 'clang' }
+Write-Host "## Using $compilerKind compiler: $compiler"
+
 $filter = ''
 if ($Remaining.Count -gt 0) { $filter = $Remaining[0] }
 
@@ -30,7 +51,7 @@ $projDir = $PSScriptRoot
 if (-not $projDir) { $projDir = Get-Location }
 
 # --- MSVC environment setup ---
-if ($compiler -eq 'msvc') {
+if ($compilerKind -eq 'msvc') {
     $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
     if (-not (Test-Path $vsWhere)) {
         Write-Host "## Error: vswhere.exe not found at $vsWhere"
@@ -63,19 +84,19 @@ if ($compiler -eq 'msvc') {
 }
 
 # --- Compiler driver helpers ---
-$objExt = if ($compiler -eq 'msvc') { '.obj' } else { '.o' }
+$objExt = if ($compilerKind -eq 'msvc') { '.obj' } else { '.o' }
 
 # --- Bench command ---
 if ($filter -eq 'bench') {
     $benchSrc = "$projDir\bench\bench_coremark.c"
     $benchExe = "$projDir\bench\bench_coremark.exe"
-    if ($compiler -eq 'msvc') {
+    if ($compilerKind -eq 'msvc') {
         $benchCflags = @('/W4', '/O2', '/DWAH_ASSERT=assert')
     } else {
         $benchCflags = @('-W', '-Wall', '-Wextra', '-DWAH_ASSERT=assert', '-O3')
     }
-    Write-Host "## Compiling bench_coremark ($compiler)..."
-    if ($compiler -eq 'msvc') {
+    Write-Host "## Compiling bench_coremark ($compilerKind)..."
+    if ($compilerKind -eq 'msvc') {
         & cl /nologo @benchCflags $benchSrc /Fe"$benchExe"
         $compExit = $LASTEXITCODE
         Remove-Item ($benchSrc -replace '\.c$', '.obj') -ErrorAction SilentlyContinue
@@ -94,7 +115,7 @@ if ($filter -eq 'bench') {
     exit $benchExit
 }
 
-if ($compiler -eq 'msvc') {
+if ($compilerKind -eq 'msvc') {
     $cflags = @('/W4', '/std:c11', '/wd5105', '/D_CRT_SECURE_NO_WARNINGS')
     if ($g) {
         $cflags += '/DWAH_DEBUG', '/Zi'
@@ -169,34 +190,34 @@ if ($apiTests.Count -gt 0) {
 
 # -O1 for wah_impl so that musttail dispatch compiles to actual tail calls;
 # without it, -O0 musttail is ~15x slower than switch dispatch.
-$wahImplCflags = if ($compiler -ne 'msvc') { $cflags + '-O1' } else { $cflags }
+$wahImplCflags = if ($compilerKind -ne 'msvc') { $cflags + '-O1' } else { $cflags }
 
 $jobs = @()
 if (-not $wahImplObjOk) {
     Write-Host "## Compiling wah_impl$objExt..."
     $jobs += Start-Job -ScriptBlock {
-        param($compiler, $cflags, $src, $out, $dir)
+        param($compiler, $compilerKind, $cflags, $src, $out, $dir)
         Set-Location $dir
-        if ($compiler -eq 'msvc') {
+        if ($compilerKind -eq 'msvc') {
             & cl /nologo @cflags /c $src /Fo"$out" 2>&1
         } else {
             & $compiler @cflags -c $src -o $out 2>&1
         }
         $LASTEXITCODE
-    } -ArgumentList $compiler, $wahImplCflags, $wahImplSrc, $wahImplObj, $projDir
+    } -ArgumentList $compiler, $compilerKind, $wahImplCflags, $wahImplSrc, $wahImplObj, $projDir
 }
 if (-not $commonObjOk) {
     Write-Host "## Compiling common$objExt..."
     $jobs += Start-Job -ScriptBlock {
-        param($compiler, $cflags, $src, $out, $dir)
+        param($compiler, $compilerKind, $cflags, $src, $out, $dir)
         Set-Location $dir
-        if ($compiler -eq 'msvc') {
+        if ($compilerKind -eq 'msvc') {
             & cl /nologo @cflags /c $src /Fo"$out" 2>&1
         } else {
             & $compiler @cflags -c $src -o $out 2>&1
         }
         $LASTEXITCODE
-    } -ArgumentList $compiler, $cflags, $commonSrc, $commonObj, $projDir
+    } -ArgumentList $compiler, $compilerKind, $cflags, $commonSrc, $commonObj, $projDir
 }
 
 $objFailed = $false
