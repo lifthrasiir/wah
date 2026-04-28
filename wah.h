@@ -13480,8 +13480,6 @@ static bool wah_type_spec_check_typeidx(wah_type_spec_parser_t *p, wah_type_t t)
     return true;
 }
 
-static bool wah_type_spec_parse_type(wah_type_spec_parser_t *p, bool allow_packed, wah_type_t *out);
-
 static bool wah_type_spec_parse_placeholder(wah_type_spec_parser_t *p, bool allow_packed, wah_type_t *out) {
     if (!wah_type_spec_take_lit(p, "%T")) return false;
     if (!p->allow_placeholders) return wah_type_spec_fail(p, "%T is not valid in this type spec");
@@ -13535,9 +13533,9 @@ static bool wah_type_spec_parse_ref_type(wah_type_spec_parser_t *p, wah_type_t *
 
 static bool wah_type_spec_parse_type(wah_type_spec_parser_t *p, bool allow_packed, wah_type_t *out) {
     const char *save = p->cur;
-    if (wah_type_spec_parse_placeholder(p, allow_packed, out)) return true; p->cur = save;
-    if (wah_type_spec_parse_named_scalar(p, allow_packed, out)) return true; p->cur = save;
-    if (wah_type_spec_parse_ref_type(p, out)) return true; p->cur = save;
+    if (wah_type_spec_parse_placeholder(p, allow_packed, out)) return true; else p->cur = save;
+    if (wah_type_spec_parse_named_scalar(p, allow_packed, out)) return true; else p->cur = save;
+    if (wah_type_spec_parse_ref_type(p, out)) return true; else p->cur = save;
     return false;
 }
 
