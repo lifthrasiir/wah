@@ -1,0 +1,1 @@
+Read the entirety of CLAUDE.md before doing anything else.
