@@ -529,7 +529,7 @@ static int execute_action(const wast_node_t *action_node,
 
 static int add_table_export_ex(wah_module_t *mod, const char *name, uint32_t min, uint32_t max, wah_type_t addr_type) {
     return wah_debug_module_export_table(mod, name,
-        WAH_TYPE_FUNCREF, WAH_TYPE_FLAG_NULLABLE, addr_type, min, max) == WAH_OK;
+        WAH_TYPE_FUNCREF, addr_type, min, max) == WAH_OK;
 }
 
 static int setup_spectest_host(spectest_env_t *env) {

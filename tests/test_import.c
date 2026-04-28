@@ -376,7 +376,7 @@ static void test_table_import(void) {
     wah_module_t provider = {0};
     assert_ok(wah_new_module(&provider));
     assert_ok(wah_debug_module_export_table(&provider, "tbl",
-        WAH_TYPE_FUNCREF, WAH_TYPE_FLAG_NULLABLE, WAH_TYPE_I32, 1, 10));
+        WAH_TYPE_FUNCREF, WAH_TYPE_I32, 1, 10));
 
     const char *spec = "wasm \
         types {[ fn [] [i32] ]} \

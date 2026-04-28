@@ -40,23 +40,21 @@ wah_value_t wah_debug_global_value(const wah_exec_context_t *ctx,
 // --- Func type accessors ---
 wah_error_t wah_debug_func_type(const wah_module_t *mod, uint32_t type_idx,
     uint32_t *out_param_count, const wah_type_t **out_param_types,
-    const wah_type_flags_t **out_param_type_flags,
-    uint32_t *out_result_count, const wah_type_t **out_result_types,
-    const wah_type_flags_t **out_result_type_flags);
+    uint32_t *out_result_count, const wah_type_t **out_result_types);
 
 // --- Type def accessors ---
 uint32_t wah_debug_type_def_supertype(const wah_module_t *mod, uint32_t type_idx);
 
 // --- Element segment accessors ---
 wah_error_t wah_debug_element_segment(const wah_module_t *mod, uint32_t idx,
-    wah_type_t *out_elem_type, wah_type_flags_t *out_elem_type_flags);
+    wah_type_t *out_elem_type);
 
 // --- Import global info ---
 bool wah_debug_is_mutable_import_global(const wah_module_t *mod, uint32_t idx);
 
 // --- Module export table (programmatic table export creation) ---
 wah_error_t wah_debug_module_export_table(wah_module_t *mod, const char *name,
-    wah_type_t elem_type, wah_type_flags_t elem_type_flags,
+    wah_type_t elem_type,
     wah_type_t addr_type, uint64_t min_elements, uint64_t max_elements);
 
 // --- Func ref range check (for spectest) ---

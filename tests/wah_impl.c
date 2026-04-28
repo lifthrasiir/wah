@@ -69,17 +69,13 @@ wah_value_t wah_debug_global_value(const wah_exec_context_t *ctx,
 
 wah_error_t wah_debug_func_type(const wah_module_t *mod, uint32_t type_idx,
     uint32_t *out_param_count, const wah_type_t **out_param_types,
-    const wah_type_flags_t **out_param_type_flags,
-    uint32_t *out_result_count, const wah_type_t **out_result_types,
-    const wah_type_flags_t **out_result_type_flags)
+    uint32_t *out_result_count, const wah_type_t **out_result_types)
 {
     if (type_idx >= mod->type_count) return WAH_ERROR_NOT_FOUND;
     if (out_param_count) *out_param_count = mod->types[type_idx].param_count;
     if (out_param_types) *out_param_types = mod->types[type_idx].param_types;
-    if (out_param_type_flags) *out_param_type_flags = mod->types[type_idx].param_type_flags;
     if (out_result_count) *out_result_count = mod->types[type_idx].result_count;
     if (out_result_types) *out_result_types = mod->types[type_idx].result_types;
-    if (out_result_type_flags) *out_result_type_flags = mod->types[type_idx].result_type_flags;
     return WAH_OK;
 }
 
@@ -89,11 +85,10 @@ uint32_t wah_debug_type_def_supertype(const wah_module_t *mod, uint32_t type_idx
 }
 
 wah_error_t wah_debug_element_segment(const wah_module_t *mod, uint32_t idx,
-    wah_type_t *out_elem_type, wah_type_flags_t *out_elem_type_flags)
+    wah_type_t *out_elem_type)
 {
     if (idx >= mod->element_segment_count) return WAH_ERROR_NOT_FOUND;
     if (out_elem_type) *out_elem_type = mod->element_segments[idx].elem_type;
-    if (out_elem_type_flags) *out_elem_type_flags = mod->element_segments[idx].elem_type_flags;
     return WAH_OK;
 }
 
@@ -103,7 +98,7 @@ bool wah_debug_is_mutable_import_global(const wah_module_t *mod, uint32_t idx) {
 }
 
 wah_error_t wah_debug_module_export_table(wah_module_t *mod, const char *name,
-    wah_type_t elem_type, wah_type_flags_t elem_type_flags,
+    wah_type_t elem_type,
     wah_type_t addr_type, uint64_t min_elements, uint64_t max_elements)
 {
     wah_table_type_t *new_tables = (wah_table_type_t *)realloc(
@@ -112,7 +107,6 @@ wah_error_t wah_debug_module_export_table(wah_module_t *mod, const char *name,
     mod->tables = new_tables;
     mod->tables[mod->table_count] = (wah_table_type_t){0};
     mod->tables[mod->table_count].elem_type = elem_type;
-    mod->tables[mod->table_count].elem_type_flags = elem_type_flags;
     mod->tables[mod->table_count].addr_type = addr_type;
     mod->tables[mod->table_count].min_elements = min_elements;
     mod->tables[mod->table_count].max_elements = max_elements;

@@ -9,11 +9,9 @@
 static bool flags_checked = false;
 static void check_flags_host(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
-    assert_not_null(ctx->param_type_flags);
-    assert_not_null(ctx->result_type_flags);
-    assert_true(ctx->param_type_flags[0] & WAH_TYPE_FLAG_NULLABLE);
-    assert_true(ctx->param_type_flags[1] == 0);
-    assert_true(ctx->result_type_flags[0] == 0);
+    assert_true(WAH_TYPE_IS_NULLABLE(ctx->param_types[0]));
+    assert_true(!WAH_TYPE_IS_NULLABLE(ctx->param_types[1]));
+    assert_true(!WAH_TYPE_IS_NULLABLE(ctx->result_types[0]));
     flags_checked = true;
     wah_return_i32(ctx, 1);
 }
@@ -198,11 +196,9 @@ int main(void) {
         // Verify flags through wah_entry_t
         wah_entry_t entry;
         assert_ok(wah_module_export_by_name(&host_mod, "check", &entry));
-        assert_not_null(entry.u.func.param_type_flags);
-        assert_not_null(entry.u.func.result_type_flags);
-        assert_true(entry.u.func.param_type_flags[0] & WAH_TYPE_FLAG_NULLABLE);
-        assert_true(entry.u.func.param_type_flags[1] == 0);
-        assert_true(entry.u.func.result_type_flags[0] == 0);
+        assert_true(WAH_TYPE_IS_NULLABLE(entry.u.func.param_types[0]));
+        assert_true(!WAH_TYPE_IS_NULLABLE(entry.u.func.param_types[1]));
+        assert_true(!WAH_TYPE_IS_NULLABLE(entry.u.func.result_types[0]));
 
         // Call host function to verify flags in wah_call_context_t
         const char *spec = "wasm \

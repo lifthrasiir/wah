@@ -510,7 +510,7 @@ static void test_cross_module_type_with_extra_types() {
         assert_ok(wah_call(&ctx, 1, &param, 1, &result));
         assert_eq_i32(result.i32, 15);
     }
-    assert_true(has_type_check_cache_entry(&ctx, &provider, 1, &consumer, 0, true));
+    assert_true(has_type_check_cache_entry(&ctx, &provider, WAH_TYPE_FROM_IDX(1, 0), &consumer, WAH_TYPE_FROM_IDX(0, 0), true));
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&consumer);
@@ -546,7 +546,7 @@ static void test_cross_module_subtype_func_ref_test() {
     wah_value_t result;
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 1);
-    assert_true(has_type_check_cache_entry(&ctx, &provider, 1, &consumer, 0, true));
+    assert_true(has_type_check_cache_entry(&ctx, &provider, WAH_TYPE_FROM_IDX(1, 0), &consumer, WAH_TYPE_FROM_IDX(0, 0), true));
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&consumer);

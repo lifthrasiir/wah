@@ -613,9 +613,9 @@ static void test_typed_ref_decoding() {
         assert_ok(wah_parse_module_from_spec(&module, spec));
         // Verify the parsed type has non-nullable flag
         assert(module.type_count == 1);
-        { uint32_t pc, rc; const wah_type_t *pt, *rt; const wah_type_flags_t *pf, *rf;
-          assert_ok(wah_debug_func_type(&module, 0, &pc, &pt, &pf, &rc, &rt, &rf));
-          assert(pc == 1); assert(pt[0] == WAH_TYPE_FUNCREF); assert(!(pf[0] & WAH_TYPE_FLAG_NULLABLE));
+        { uint32_t pc, rc; const wah_type_t *pt, *rt;
+          assert_ok(wah_debug_func_type(&module, 0, &pc, &pt, &rc, &rt));
+          assert(pc == 1); assert(pt[0] == WAH_TYPE_FUNC); assert(!WAH_TYPE_IS_NULLABLE(pt[0]));
           assert(rc == 1); assert(rt[0] == WAH_TYPE_I32); }
         wah_free_module(&module);
     }
@@ -632,9 +632,9 @@ static void test_typed_ref_decoding() {
         wah_module_t module;
         assert_ok(wah_parse_module_from_spec(&module, spec));
         assert(module.type_count == 1);
-        { uint32_t pc; const wah_type_t *pt; const wah_type_flags_t *pf;
-          assert_ok(wah_debug_func_type(&module, 0, &pc, &pt, &pf, NULL, NULL, NULL));
-          assert(pc == 1); assert(pt[0] == WAH_TYPE_FUNCREF); assert(pf[0] & WAH_TYPE_FLAG_NULLABLE); }
+        { uint32_t pc; const wah_type_t *pt;
+          assert_ok(wah_debug_func_type(&module, 0, &pc, &pt, NULL, NULL));
+          assert(pc == 1); assert(pt[0] == WAH_TYPE_FUNCREF); assert(WAH_TYPE_IS_NULLABLE(pt[0])); }
         wah_free_module(&module);
     }
 
@@ -648,9 +648,9 @@ static void test_typed_ref_decoding() {
             code {[ {[] ref.null anyref end } ]}";
         wah_module_t module;
         assert_ok(wah_parse_module_from_spec(&module, spec));
-        { uint32_t rc; const wah_type_t *rt; const wah_type_flags_t *rf;
-          assert_ok(wah_debug_func_type(&module, 0, NULL, NULL, NULL, &rc, &rt, &rf));
-          assert(rc == 1); assert(rt[0] == WAH_TYPE_ANYREF); assert(rf[0] & WAH_TYPE_FLAG_NULLABLE); }
+        { uint32_t rc; const wah_type_t *rt;
+          assert_ok(wah_debug_func_type(&module, 0, NULL, NULL, &rc, &rt));
+          assert(rc == 1); assert(rt[0] == WAH_TYPE_ANYREF); assert(WAH_TYPE_IS_NULLABLE(rt[0])); }
         wah_exec_context_t ctx;
         assert_ok(wah_exec_context_create(&ctx, &module));
         assert_ok(wah_instantiate(&ctx));
@@ -692,9 +692,9 @@ static void test_typed_ref_decoding() {
             code {[ {[] ref.null nullfuncref end } ]}";
         wah_module_t module;
         assert_ok(wah_parse_module_from_spec(&module, spec));
-        { uint32_t rc; const wah_type_t *rt; const wah_type_flags_t *rf;
-          assert_ok(wah_debug_func_type(&module, 0, NULL, NULL, NULL, &rc, &rt, &rf));
-          assert(rc == 1); assert(rt[0] == 0); assert(rf[0] & WAH_TYPE_FLAG_NULLABLE); }
+        { uint32_t rc; const wah_type_t *rt;
+          assert_ok(wah_debug_func_type(&module, 0, NULL, NULL, &rc, &rt));
+          assert(rc == 1); assert(WAH_TYIDX(rt[0]) == 0); assert(WAH_TYPE_IS_NULLABLE(rt[0])); }
         wah_free_module(&module);
     }
 }
@@ -1551,9 +1551,9 @@ int main() {
             code {[ {[] i32.const 1 end } ]}";
         wah_module_t module;
         assert_ok(wah_parse_module_from_spec(&module, spec));
-        { wah_type_t et; wah_type_flags_t ef;
-          assert_ok(wah_debug_element_segment(&module, 0, &et, &ef));
-          assert_eq_i32(et, WAH_TYPE_EXTERNREF); assert_true(ef & WAH_TYPE_FLAG_NULLABLE); }
+        { wah_type_t et;
+          assert_ok(wah_debug_element_segment(&module, 0, &et));
+          assert_eq_i32(et, WAH_TYPE_EXTERNREF); assert_true(WAH_TYPE_IS_NULLABLE(et)); }
         wah_exec_context_t ctx;
         assert_ok(wah_exec_context_create(&ctx, &module));
         assert_ok(wah_instantiate(&ctx));
