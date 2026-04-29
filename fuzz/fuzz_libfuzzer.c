@@ -6,6 +6,7 @@
 
 #define WAH_FUZZ_MAX_INPUT_SIZE (10 * 1024 * 1024)
 #define WAH_FUZZ_CALL_FUEL 100000
+#define WAH_FUZZ_MAX_MEMORY_BYTES (64 * 1024 * 1024)
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     if (size == 0 || size > WAH_FUZZ_MAX_INPUT_SIZE) {
@@ -24,7 +25,10 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         return 0;
     }
 
-    err = wah_exec_context_create(&exec_ctx, &module);
+    wah_rlimits_t limits = {
+        .max_memory_bytes = WAH_FUZZ_MAX_MEMORY_BYTES,
+    };
+    err = wah_exec_context_create_with_limits(&exec_ctx, &module, &limits);
     if (err != WAH_OK) {
         wah_free_module(&module);
         return 0;
