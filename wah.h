@@ -8190,7 +8190,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
 
             // Parse num_elems
             uint32_t num_elems;
-            WAH_CHECK(wah_decode_uleb128(ptr, section_end, &num_elems));
+            WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &num_elems, 1));
 
             // If declarative, validate and skip elem* and mark as dropped
             if (segment->is_dropped) {
