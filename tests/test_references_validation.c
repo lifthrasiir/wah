@@ -433,6 +433,27 @@ static void test_gc_mutability_check() {
     wah_free_module(&good);
 }
 
+static void test_gc_array_numeric_operands() {
+    printf("Testing GC array numeric operand validation...\n");
+
+    const char *bad_array_new = "wasm \
+        types {[ array i8 mut, fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        elements {[ elem.declarative.expr funcref [ ref.func 0 end ] ]} \
+        code {[ {[] \
+            i32.const 0 \
+            ref.func 0 \
+            array.new 0 \
+            i32.const 0 \
+            array.get 0 \
+        end } ]}";
+
+    wah_module_t bad = {0};
+    assert_err(wah_parse_module_from_spec(&bad, bad_array_new), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad);
+}
+
 // 755875e: Validate br_on_cast branch type against target label.
 // 777f003: Fix br_on_cast/br_on_cast_fail validation and null handling.
 static void test_br_on_cast_label_type() {
@@ -530,6 +551,7 @@ int main() {
     test_subtype_validation();
     test_forward_ref_across_rec_groups();
     test_gc_mutability_check();
+    test_gc_array_numeric_operands();
     test_br_on_cast_label_type();
     test_br_on_cast_multi_value();
     printf("All references_validation tests passed!\n");

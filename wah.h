@@ -5984,7 +5984,7 @@ cleanup_block:
             WAH_ENSURE(typeidx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
             const wah_type_def_t *td = &vctx->module->type_defs[typeidx];
             WAH_ENSURE(td->kind == WAH_COMP_ARRAY, WAH_ERROR_VALIDATION_FAILED);
-            wah_type_t lt; POP_INTO(&lt); // length: i32
+            POP(I32);
             if (opcode_val == WAH_OP_ARRAY_NEW)
                 WAH_CHECK(wah_validation_pop_field_value(vctx, td->field_types[0]));
             PUSH(_(WAH_TYPE_FROM_IDX(typeidx, 0)));
@@ -6014,8 +6014,7 @@ cleanup_block:
             WAH_ENSURE(typeidx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
             const wah_type_def_t *td = &vctx->module->type_defs[typeidx];
             WAH_ENSURE(td->kind == WAH_COMP_ARRAY, WAH_ERROR_VALIDATION_FAILED);
-            wah_type_t it; POP_INTO(&it); // index: i32
-            POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(typeidx, 0))));
+            POP(I32); POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(typeidx, 0))));
             wah_type_t et = td->field_types[0];
             PUSH(_(WAH_TYPE_IS_PACKED(et) ? WAH_TYPE_I32 : et));
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = typeidx);
@@ -6029,8 +6028,7 @@ cleanup_block:
             WAH_ENSURE(td->kind == WAH_COMP_ARRAY, WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(td->field_mutables[0], WAH_ERROR_VALIDATION_FAILED);
             WAH_CHECK(wah_validation_pop_field_value(vctx, td->field_types[0]));
-            wah_type_t it; POP_INTO(&it); // index: i32
-            POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(typeidx, 0))));
+            POP(I32); POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(typeidx, 0))));
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = typeidx);
             break;
         }
@@ -6057,7 +6055,7 @@ cleanup_block:
                 WAH_CHECK(wah_validate_type_match(vctx->module->element_segments[segidx].elem_type,
                     vctx->module->type_defs[typeidx].field_types[0], vctx->module));
             }
-            wah_type_t ns_t; POP_INTO(&ns_t); POP_INTO(&ns_t); PUSH(_(WAH_TYPE_FROM_IDX(typeidx, 0)));
+            POP(I32); POP(I32); PUSH(_(WAH_TYPE_FROM_IDX(typeidx, 0)));
             EMIT_INSTR_EX(opcode_val, _di->imm.type_length.type_idx = typeidx; _di->imm.type_length.length = segidx);
             break;
         }
@@ -6068,9 +6066,9 @@ cleanup_block:
             const wah_type_def_t *td = &vctx->module->type_defs[typeidx];
             WAH_ENSURE(td->kind == WAH_COMP_ARRAY, WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(td->field_mutables[0], WAH_ERROR_VALIDATION_FAILED);
-            wah_type_t af_t; POP_INTO(&af_t);
+            POP(I32);
             WAH_CHECK(wah_validation_pop_field_value(vctx, td->field_types[0]));
-            POP_INTO(&af_t); POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(typeidx, 0))));
+            POP(I32); POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(typeidx, 0))));
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = typeidx);
             break;
         }
@@ -6087,10 +6085,8 @@ cleanup_block:
             const wah_type_def_t *src_td = &vctx->module->type_defs[src_typeidx];
             WAH_CHECK(wah_validate_type_match(src_td->field_types[0],
                 WAH_TYPE_AS_NULLABLE(dst_td->field_types[0]), vctx->module));
-            wah_type_t ac_t; POP_INTO(&ac_t); POP_INTO(&ac_t);
-            POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(src_typeidx, 0))));
-            WAH_CHECK(wah_validation_pop_type(vctx, &ac_t)); // dst_offset: i32
-            POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(dst_typeidx, 0))));
+            POP(I32); POP(I32); POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(src_typeidx, 0))));
+            POP(I32); POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(dst_typeidx, 0))));
             EMIT_INSTR_EX(opcode_val, _di->imm.type_length.type_idx = dst_typeidx; _di->imm.type_length.length = src_typeidx);
             break;
         }
@@ -6111,8 +6107,7 @@ cleanup_block:
                 WAH_CHECK(wah_validate_type_match(vctx->module->element_segments[segidx].elem_type,
                     td->field_types[0], vctx->module));
             }
-            wah_type_t is_t; POP_INTO(&is_t); POP_INTO(&is_t); POP_INTO(&is_t);
-            POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(typeidx, 0))));
+            POP(I32); POP(I32); POP(I32); POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(typeidx, 0))));
             EMIT_INSTR_EX(opcode_val, _di->imm.type_length.type_idx = typeidx; _di->imm.type_length.length = segidx);
             break;
         }
