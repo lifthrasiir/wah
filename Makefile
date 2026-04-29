@@ -1,7 +1,7 @@
 CC ?= gcc
 CFLAGS ?= -W -Wall -Wextra
 LDFLAGS ?= -lm
-TEST_SANITIZERS ?= address,undefined
+SANITIZERS ?= address,undefined
 
 ifneq ($(OS),Windows_NT)
     LDFLAGS += -pthread
@@ -13,18 +13,18 @@ else
     CFLAGS += -DWAH_ASSERT=assert -O2
 endif
 
-ifneq ($(strip $(TEST_SANITIZERS)),)
-    TEST_SANITIZER_FLAGS := -fsanitize=$(TEST_SANITIZERS) -fno-omit-frame-pointer
-ifneq ($(findstring undefined,$(TEST_SANITIZERS)),)
-    TEST_SANITIZER_FLAGS += -DWAH_SANITIZE_UNDEFINED
+ifneq ($(strip $(SANITIZERS)),)
+    SANITIZER_FLAGS := -fsanitize=$(SANITIZERS) -fno-omit-frame-pointer
+ifneq ($(findstring undefined,$(SANITIZERS)),)
+    SANITIZER_FLAGS += -DWAH_SANITIZE_UNDEFINED
 endif
 endif
 
-TEST_CFLAGS := $(CFLAGS) $(TEST_SANITIZER_FLAGS)
-TEST_LDFLAGS := $(LDFLAGS) $(TEST_SANITIZER_FLAGS)
+TEST_CFLAGS := $(CFLAGS) $(SANITIZER_FLAGS)
+TEST_LDFLAGS := $(LDFLAGS) $(SANITIZER_FLAGS)
 
 TEST_RUN_PREFIX ?=
-ifneq ($(strip $(TEST_SANITIZERS)),)
+ifneq ($(strip $(SANITIZERS)),)
 ifdef WSL_DISTRO_NAME
 ifeq ($(strip $(TEST_RUN_PREFIX)),)
     TEST_RUN_PREFIX := setarch $(shell uname -m) -R
@@ -119,13 +119,17 @@ FUZZ_HARNESS_BIN := fuzz/fuzz_afl
 IN_DIR ?= fuzz/in_dir
 OUT_DIR ?= fuzz/out_dir
 AFL_CC ?= afl-clang
+FUZZ_OPT ?= -O0
+
+FUZZ_CFLAGS := $(filter-out -O%,$(CFLAGS)) $(FUZZ_OPT) $(SANITIZER_FLAGS)
+FUZZ_LDFLAGS := $(LDFLAGS) $(SANITIZER_FLAGS)
 
 .PHONY: fuzz-afl
 fuzz-afl: $(FUZZ_HARNESS_BIN)
 	afl-fuzz -i $(IN_DIR) -o $(OUT_DIR) -- ./$(FUZZ_HARNESS_BIN)
 
 $(FUZZ_HARNESS_BIN): $(FUZZ_HARNESS_SRC)
-	$(AFL_CC) $(CFLAGS) $< -o $@ $(LDFLAGS)
+	AFL_DONT_OPTIMIZE=1 $(AFL_CC) $(FUZZ_CFLAGS) $< -o $@ $(FUZZ_LDFLAGS)
 
 # --- Coverage ---
 

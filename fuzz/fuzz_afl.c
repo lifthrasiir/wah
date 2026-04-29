@@ -7,6 +7,7 @@
 // Define maximum WASM input size to prevent excessive memory allocation.
 // afl-fuzz typically handles this by limiting input size.
 #define MAX_WASM_INPUT_SIZE (10 * 1024 * 1024) // 10 MB
+#define WAH_FUZZ_CALL_FUEL 100000
 
 int main(void) {
     wah_module_t module;
@@ -54,7 +55,11 @@ int main(void) {
 
     // 1. Parse the WASM module
     memset(&module, 0, sizeof(wah_module_t)); // Initialize module struct
-    err = wah_parse_module(wasm_binary, current_size, &module);
+    wah_parse_options_t parse_options = {
+        .features = WAH_DEFAULT_FEATURES,
+        .enable_fuel_metering = true,
+    };
+    err = wah_parse_module_ex(wasm_binary, current_size, &parse_options, &module);
     if (err != WAH_OK) {
         goto cleanup_binary; // Return non-zero for afl-fuzz to detect a crash/bug
     }
@@ -66,23 +71,37 @@ int main(void) {
         goto cleanup_module;
     }
 
-    // 3. Attempt to call the _start function if it exists
-    // This is a common entry point for WASM modules.
-    wah_entry_t start_func_entry;
-    wah_error_t find_start_err = wah_module_export_by_name(&module, "_start", &start_func_entry);
+    err = wah_instantiate(&exec_ctx);
+    if (err != WAH_OK) {
+        goto cleanup_exec_ctx;
+    }
 
-    if (find_start_err == WAH_OK && start_func_entry.type == WAH_TYPE_FUNCTION) {
-        err = wah_call(&exec_ctx, WAH_GET_ENTRY_INDEX(start_func_entry.id), NULL, 0, NULL);
+    // 3. Call every exported function that does not require parameters.
+    for (uint32_t i = 0; i < wah_module_export_count(&module); i++) {
+        wah_export_desc_t entry;
+        err = wah_module_export(&module, i, &entry);
         if (err != WAH_OK) {
             goto cleanup_exec_ctx;
         }
-    } else if (find_start_err != WAH_ERROR_NOT_FOUND) {
-        // If another error occurred while finding _start, or it's not a function
-        err = find_start_err;
-        goto cleanup_exec_ctx;
+
+        if (entry.kind != WAH_KIND_FUNCTION || entry.u.func.param_count != 0) {
+            continue;
+        }
+
+        wah_value_t results[16];
+        uint32_t actual_results = 0;
+        uint32_t max_results = entry.u.func.result_count <= 16 ? entry.u.func.result_count : 16;
+
+        wah_set_fuel(&exec_ctx, WAH_FUZZ_CALL_FUEL);
+        err = wah_call_multi(&exec_ctx, entry.index, NULL, 0, results, max_results, &actual_results);
+        if (err == WAH_STATUS_FUEL_EXHAUSTED) {
+            err = WAH_OK;
+            continue;
+        }
+        if (err != WAH_OK) {
+            goto cleanup_exec_ctx;
+        }
     }
-    // If _start is not found, it's not necessarily an error for fuzzing,
-    // as we're primarily testing parsing and context creation.
 
 cleanup_exec_ctx:
     wah_exec_context_destroy(&exec_ctx);
