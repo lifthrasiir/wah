@@ -709,7 +709,9 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 ////////////////////////////////////////////////////////////////////////////////
 
 // Adopted from https://stackoverflow.com/a/48045656
-#if __cplusplus <= 201703 && defined(__GNUC__) && !defined(__clang__) && !defined(__EDG__)
+#if defined(_MSC_VER) && !defined(__clang__) && !defined(__cplusplus)
+#define WAH_VA_OPT_SUPPORT(_) 0
+#elif __cplusplus <= 201703 && defined(__GNUC__) && !defined(__clang__) && !defined(__EDG__)
 #define WAH_VA_OPT_SUPPORT(_) 0
 #else
 #define WAH_VA_ARG1(x,y,...) y

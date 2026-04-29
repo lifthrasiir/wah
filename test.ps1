@@ -197,7 +197,8 @@ if (-not $wahImplObjOk) {
         param($compiler, $compilerKind, $cflags, $src, $out, $dir)
         Set-Location $dir
         if ($compilerKind -eq 'msvc') {
-            & cl /nologo @cflags /c $src /Fo"$out" 2>&1
+            $pdb = $out -replace '\.[^.\\/:]+$', '.pdb'
+            & cl /nologo @cflags /c $src /Fo"$out" /Fd"$pdb" 2>&1
         } else {
             & $compiler @cflags -c $src -o $out 2>&1
         }
@@ -210,7 +211,8 @@ if (-not $commonObjOk) {
         param($compiler, $compilerKind, $cflags, $src, $out, $dir)
         Set-Location $dir
         if ($compilerKind -eq 'msvc') {
-            & cl /nologo @cflags /c $src /Fo"$out" 2>&1
+            $pdb = $out -replace '\.[^.\\/:]+$', '.pdb'
+            & cl /nologo @cflags /c $src /Fo"$out" /Fd"$pdb" 2>&1
         } else {
             & $compiler @cflags -c $src -o $out 2>&1
         }
@@ -266,7 +268,8 @@ function Start-Compile($test) {
         $linkObjs = $linkObjStr -split '\|'
         $obj = $exe -replace '\.exe$', $objExt
         if ($cc -eq 'msvc') {
-            & cl /nologo @cflags /c $src /Fo"$obj" 2>&1
+            $pdb = $obj -replace '\.[^.\\/:]+$', '.pdb'
+            & cl /nologo @cflags /c $src /Fo"$obj" /Fd"$pdb" 2>&1
             if ($LASTEXITCODE -ne 0) { $LASTEXITCODE; return }
             & cl /nologo $obj @linkObjs /Fe"$exe" /link /nologo 2>&1
         } else {
@@ -334,6 +337,7 @@ for ($i = 0; $i -lt $testQueue.Count; $i++) {
         break
     }
     Remove-Item $currentExe -ErrorAction SilentlyContinue
+    Remove-Item ($currentExe -replace '\.exe$', '.pdb') -ErrorAction SilentlyContinue
     Write-Host ''
 
     # Wait for next compilation.

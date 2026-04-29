@@ -2,6 +2,7 @@
 *.o.tmp
 *.obj
 *.obj.tmp
+*.pdb
 *.exe
 tests/test_*
 !tests/test_*.c
