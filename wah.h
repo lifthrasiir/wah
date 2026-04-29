@@ -4192,7 +4192,8 @@ static wah_error_t wah_build_struct_repr_info(uint32_t typeidx, const wah_type_d
         if (live_end < offset + field_size) live_end = offset + field_size;
     }
 
-    if ((uint64_t)td->field_count > ((uint64_t)SIZE_MAX - sizeof(wah_repr_info_t)) / sizeof(wah_repr_field_t)) {
+    size_t max_fields = (SIZE_MAX - sizeof(wah_repr_info_t)) / sizeof(wah_repr_field_t);
+    if (max_fields < UINT32_MAX && (size_t)td->field_count > max_fields) {
         err = WAH_ERROR_TOO_LARGE;
         goto cleanup;
     }
@@ -4407,6 +4408,7 @@ cleanup:
     return err;
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 static void wah_module_rollback_last_type_metadata(wah_module_t *module, uint32_t idx, bool cast_slot_ready) {
     const wah_alloc_t *alloc = &module->alloc;
     if (cast_slot_ready && module->type_cast_sets && idx < module->type_count) {
@@ -4423,6 +4425,7 @@ static void wah_module_rollback_last_type_metadata(wah_module_t *module, uint32_
         module->typeidx_to_repr[idx] = WAH_REPR_NONE;
     }
 }
+#endif
 
 static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
     wah_error_t err;

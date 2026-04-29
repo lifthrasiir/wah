@@ -19,12 +19,15 @@ static void track_alloc_ptr(tracking_alloc_t *t, void *ptr) {
     t->xorv ^= h;
 }
 
-static void track_free_ptr(tracking_alloc_t *t, void *ptr) {
-    uintptr_t h = wah_test_perturb_ptr(ptr);
+static void track_free_hash(tracking_alloc_t *t, uintptr_t h) {
     t->frees++;
     t->outstanding--;
     t->sum -= h;
     t->xorv ^= h;
+}
+
+static void track_free_ptr(tracking_alloc_t *t, void *ptr) {
+    track_free_hash(t, wah_test_perturb_ptr(ptr));
 }
 
 static void *tracking_malloc(size_t size, void *userdata) {
@@ -39,14 +42,15 @@ static void *tracking_realloc(void *ptr, size_t size, void *userdata) {
     if (!ptr) {
         return tracking_malloc(size, userdata);
     }
+    uintptr_t old_hash = wah_test_perturb_ptr(ptr);
     if (size == 0) {
+        track_free_hash(t, old_hash);
         free(ptr);
-        track_free_ptr(t, ptr);
         return NULL;
     }
     void *new_ptr = realloc(ptr, size);
     if (new_ptr) {
-        track_free_ptr(t, ptr);
+        track_free_hash(t, old_hash);
         track_alloc_ptr(t, new_ptr);
     }
     return new_ptr;
@@ -55,8 +59,8 @@ static void *tracking_realloc(void *ptr, size_t size, void *userdata) {
 static void tracking_free(void *ptr, void *userdata) {
     tracking_alloc_t *t = (tracking_alloc_t *)userdata;
     if (ptr) {
-        free(ptr);
         track_free_ptr(t, ptr);
+        free(ptr);
     }
 }
 

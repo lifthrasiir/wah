@@ -26,12 +26,15 @@ static void track_alloc(oom_alloc_t *state, void *ptr) {
     state->xorv ^= h;
 }
 
-static void track_free(oom_alloc_t *state, void *ptr) {
-    uintptr_t h = wah_test_perturb_ptr(ptr);
+static void track_free_hash(oom_alloc_t *state, uintptr_t h) {
     state->frees++;
     state->outstanding--;
     state->sum -= h;
     state->xorv ^= h;
+}
+
+static void track_free(oom_alloc_t *state, void *ptr) {
+    track_free_hash(state, wah_test_perturb_ptr(ptr));
 }
 
 static int should_fail(oom_alloc_t *state) {
@@ -59,9 +62,10 @@ static void *oom_malloc(size_t size, void *userdata) {
 static void *oom_realloc(void *ptr, size_t size, void *userdata) {
     oom_alloc_t *state = (oom_alloc_t *)userdata;
     if (!ptr) return oom_malloc(size, userdata);
+    uintptr_t old_hash = wah_test_perturb_ptr(ptr);
     if (size == 0) {
+        track_free_hash(state, old_hash);
         free(ptr);
-        track_free(state, ptr);
         return NULL;
     }
     if (should_fail(state)) {
@@ -71,7 +75,7 @@ static void *oom_realloc(void *ptr, size_t size, void *userdata) {
     }
     void *new_ptr = realloc(ptr, size);
     if (new_ptr) {
-        track_free(state, ptr);
+        track_free_hash(state, old_hash);
         track_alloc(state, new_ptr);
     }
     return new_ptr;
@@ -80,8 +84,8 @@ static void *oom_realloc(void *ptr, size_t size, void *userdata) {
 static void oom_free(void *ptr, void *userdata) {
     oom_alloc_t *state = (oom_alloc_t *)userdata;
     if (!ptr) return;
-    free(ptr);
     track_free(state, ptr);
+    free(ptr);
 }
 
 static wah_alloc_t make_oom_alloc(oom_alloc_t *state) {

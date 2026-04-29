@@ -53,21 +53,21 @@ wah_error_t wah_debug_module_export_table(wah_module_t *mod, const char *name,
     wah_type_t elem_type,
     wah_type_t addr_type, uint64_t min_elements, uint64_t max_elements)
 {
-    wah_table_type_t *new_tables = (wah_table_type_t *)realloc(
-        mod->tables, (mod->table_count + 1) * sizeof(*mod->tables));
-    if (!new_tables) return WAH_ERROR_OUT_OF_MEMORY;
-    mod->tables = new_tables;
+    wah_alloc_t alloc_storage = wah_resolve_alloc(&mod->alloc);
+    const wah_alloc_t *alloc = &alloc_storage;
+    void *new_ptr = mod->tables;
+    WAH_CHECK(wah_realloc(alloc, mod->table_count + 1, sizeof(*mod->tables), &new_ptr));
+    mod->tables = (wah_table_type_t *)new_ptr;
     mod->tables[mod->table_count] = (wah_table_type_t){0};
     mod->tables[mod->table_count].elem_type = elem_type;
     mod->tables[mod->table_count].addr_type = addr_type;
     mod->tables[mod->table_count].min_elements = min_elements;
     mod->tables[mod->table_count].max_elements = max_elements;
 
-    wah_export_t *new_exports = (wah_export_t *)realloc(
-        mod->exports, (mod->export_count + 1) * sizeof(*mod->exports));
-    if (!new_exports) return WAH_ERROR_OUT_OF_MEMORY;
-    mod->exports = new_exports;
-    char *name_copy = strdup(name);
+    new_ptr = mod->exports;
+    WAH_CHECK(wah_realloc(alloc, mod->export_count + 1, sizeof(*mod->exports), &new_ptr));
+    mod->exports = (wah_export_t *)new_ptr;
+    char *name_copy = wah_strdup(name, alloc);
     if (!name_copy) return WAH_ERROR_OUT_OF_MEMORY;
     mod->exports[mod->export_count].name = name_copy;
     mod->exports[mod->export_count].name_len = strlen(name);
