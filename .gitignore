@@ -13,6 +13,7 @@ fuzz/*
 crash-*
 oom-*
 slow-unit-*
+leak-*
 *.gcda
 *.gcno
 cov

@@ -61,7 +61,7 @@ int main(void) {
     };
     err = wah_parse_module_ex(wasm_binary, current_size, &parse_options, &module);
     if (err != WAH_OK) {
-        goto cleanup_binary; // Return non-zero for afl-fuzz to detect a crash/bug
+        goto cleanup_module;
     }
 
     // 2. Create execution context

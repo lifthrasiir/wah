@@ -22,6 +22,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
 
     wah_error_t err = wah_parse_module_ex(data, size, &parse_options, &module);
     if (err != WAH_OK) {
+        wah_free_module(&module);
         return 0;
     }
 
