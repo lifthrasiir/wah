@@ -116,13 +116,19 @@ bench/bench_coremark: bench/bench_coremark.c wah.h
 
 FUZZ_HARNESS_SRC := fuzz/fuzz_afl.c
 FUZZ_HARNESS_BIN := fuzz/fuzz_afl
+LIBFUZZER_HARNESS_SRC := fuzz/fuzz_libfuzzer.c
+LIBFUZZER_HARNESS_BIN := fuzz/fuzz_libfuzzer
+LIBFUZZER_CORPUS_DIR ?= fuzz/in_dir
 IN_DIR ?= fuzz/in_dir
 OUT_DIR ?= fuzz/out_dir
 AFL_CC ?= afl-clang
+LIBFUZZER_CC ?= clang
 FUZZ_OPT ?= -O0
 
 FUZZ_CFLAGS := $(filter-out -O%,$(CFLAGS)) $(FUZZ_OPT) $(SANITIZER_FLAGS)
 FUZZ_LDFLAGS := $(LDFLAGS) $(SANITIZER_FLAGS)
+LIBFUZZER_CFLAGS := $(filter-out -O%,$(CFLAGS)) $(FUZZ_OPT) -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer -DWAH_SANITIZE_UNDEFINED
+LIBFUZZER_LDFLAGS := $(LDFLAGS) -fsanitize=fuzzer,address,undefined
 
 .PHONY: fuzz-afl
 fuzz-afl: $(FUZZ_HARNESS_BIN)
@@ -130,6 +136,13 @@ fuzz-afl: $(FUZZ_HARNESS_BIN)
 
 $(FUZZ_HARNESS_BIN): $(FUZZ_HARNESS_SRC)
 	AFL_DONT_OPTIMIZE=1 $(AFL_CC) $(FUZZ_CFLAGS) $< -o $@ $(FUZZ_LDFLAGS)
+
+.PHONY: fuzz-libfuzzer
+fuzz-libfuzzer: $(LIBFUZZER_HARNESS_BIN)
+	./$(LIBFUZZER_HARNESS_BIN) $(LIBFUZZER_CORPUS_DIR)
+
+$(LIBFUZZER_HARNESS_BIN): $(LIBFUZZER_HARNESS_SRC) wah.h
+	$(LIBFUZZER_CC) $(LIBFUZZER_CFLAGS) $< -o $@ $(LIBFUZZER_LDFLAGS)
 
 # --- Coverage ---
 
@@ -185,6 +198,7 @@ clean:
 	@rm -f $(patsubst %.c, %, $(ALL_TEST_SRCS)) $(patsubst %.c, %_cov, $(ALL_TEST_SRCS))
 	@rm -f tests/*.o
 	@rm -f $(FUZZ_HARNESS_BIN)
+	@rm -f $(LIBFUZZER_HARNESS_BIN)
 	@rm -f bench/bench_coremark
 	@rm -f *.gcda *.gcno tests/*.gcda tests/*.gcno fuzz/*.gcda fuzz/*.gcno coverage.info
 	@rm -rf cov/ coverage_report/

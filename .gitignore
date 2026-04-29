@@ -8,7 +8,9 @@ tests/test_*
 !tests/test_*.c
 bench/bench_coremark
 wah_fuzz_afl
-fuzz
+fuzz/*
+!fuzz/*.c
+crash-*
 *.gcda
 *.gcno
 cov
