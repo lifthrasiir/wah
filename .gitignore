@@ -8,6 +8,7 @@ tests/test_basic
 tests/test_call_context
 tests/test_const_expr
 tests/test_control_flow
+tests/test_custom_alloc
 tests/test_deadline_no_threads
 tests/test_determinism
 tests/test_dispatch_switch

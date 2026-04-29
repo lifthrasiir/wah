@@ -72,6 +72,13 @@ typedef enum {
     WAH_EXEC_TRAPPED,
 } wah_exec_state_t;
 
+typedef struct {
+    void *(*malloc)(size_t size, void *userdata);
+    void *(*realloc)(void *ptr, size_t size, void *userdata);
+    void (*free)(void *ptr, void *userdata);
+    void *userdata;
+} wah_alloc_t;
+
 // 128-bit vector type
 typedef union {
     uint8_t u8[16]; uint16_t u16[8]; uint32_t u32[4]; uint64_t u64[2];
@@ -353,6 +360,7 @@ typedef struct wah_module_s {
     // Built at code-section parse time from exports, element segments, and global init exprs.
     uint8_t *declared_funcs;
 
+    wah_alloc_t alloc;
     wah_features_t enabled_features;
     wah_features_t required_features;
     bool fuel_metering;
@@ -466,6 +474,7 @@ typedef struct wah_exec_context_s {
 
     wah_type_check_cache_entry_t type_check_cache[WAH_TYPE_CHECK_CACHE_SIZE];
 
+    wah_alloc_t alloc;
     wah_features_t enabled_features;
 } wah_exec_context_t;
 
@@ -475,6 +484,7 @@ const char *wah_strerror(wah_error_t err);
 typedef struct {
     wah_features_t features;
     bool enable_fuel_metering;
+    const wah_alloc_t *alloc;
 } wah_parse_options_t;
 
 wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah_module_t *module);
@@ -513,8 +523,16 @@ typedef struct wah_rlimits_s {
 
 wah_rlimits_t wah_default_rlimits(void);
 
+typedef struct {
+    wah_rlimits_t limits;
+    const wah_alloc_t *alloc;
+} wah_exec_options_t;
+
 // Creates and initializes an execution context.
 wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_module_t *module);
+wah_error_t wah_exec_context_create_ex(
+    wah_exec_context_t *exec_ctx, const wah_module_t *module,
+    const wah_exec_options_t *options);
 wah_error_t wah_exec_context_create_with_limits(
     wah_exec_context_t *exec_ctx, const wah_module_t *module,
     const wah_rlimits_t *limits);
@@ -555,6 +573,7 @@ void wah_free_module(wah_module_t *module);
 
 // --- Programmatically create modules ---
 wah_error_t wah_new_module(wah_module_t *mod);
+wah_error_t wah_new_module_ex(wah_module_t *mod, const wah_alloc_t *alloc);
 wah_error_t wah_module_define_type(wah_module_t *mod, wah_type_t *out_type, const char *spec, ...);
 wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, const char *spec, va_list *args);
 
@@ -1762,53 +1781,6 @@ static inline uint32_t wah_repr_info_typeidx(const wah_module_t *module, wah_rep
     return info ? info->typeidx : (uint32_t)-1;
 }
 
-static inline bool wah_repr_set_contains(const wah_repr_set_t *set, wah_repr_t repr_id) {
-    if (!set || repr_id < 0) return false;
-    uint32_t word = (uint32_t)repr_id / 64;
-    if (word >= set->word_count || !set->bits) return false;
-    return (set->bits[word] & (UINT64_C(1) << ((uint32_t)repr_id & 63))) != 0;
-}
-
-static inline wah_error_t wah_repr_set_init(wah_repr_set_t *set, uint32_t repr_count) {
-    *set = (wah_repr_set_t){0};
-    set->word_count = (repr_count + 63) / 64;
-    if (set->word_count == 0) return WAH_OK;
-    set->bits = (uint64_t *)calloc(set->word_count, sizeof(set->bits[0]));
-    if (!set->bits) return WAH_ERROR_OUT_OF_MEMORY;
-    return WAH_OK;
-}
-
-static inline wah_error_t wah_repr_set_resize(wah_repr_set_t *set, uint32_t repr_count) {
-    uint32_t new_word_count = (repr_count + 63) / 64;
-    if (new_word_count == set->word_count) return WAH_OK;
-    if (new_word_count == 0) {
-        free(set->bits);
-        set->bits = NULL;
-        set->word_count = 0;
-        return WAH_OK;
-    }
-    uint64_t *new_bits = (uint64_t *)realloc(set->bits, (size_t)new_word_count * sizeof(set->bits[0]));
-    if (!new_bits) return WAH_ERROR_OUT_OF_MEMORY;
-    if (new_word_count > set->word_count) {
-        memset(new_bits + set->word_count, 0, (size_t)(new_word_count - set->word_count) * sizeof(new_bits[0]));
-    }
-    set->bits = new_bits;
-    set->word_count = new_word_count;
-    return WAH_OK;
-}
-
-static inline void wah_repr_set_add(wah_repr_set_t *set, wah_repr_t repr_id) {
-    if (!set || repr_id < 0) return;
-    uint32_t word = (uint32_t)repr_id / 64;
-    WAH_ASSERT(word < set->word_count);
-    set->bits[word] |= UINT64_C(1) << ((uint32_t)repr_id & 63);
-}
-
-static inline bool wah_type_accepts_repr(const wah_module_t *module, uint32_t typeidx, wah_repr_t repr_id) {
-    if (!module->type_cast_sets || typeidx >= module->type_count) return false;
-    return wah_repr_set_contains(&module->type_cast_sets[typeidx], repr_id);
-}
-
 // --- Memory Structure ---
 #define WAH_WASM_PAGE_SIZE 65536 // 64 KB
 
@@ -1975,46 +1947,6 @@ typedef struct wah_exception_s {
     wah_value_t *values;
     wah_type_t *value_types;
 } wah_exception_t;
-
-static void wah_exception_destroy(wah_exception_t *exc) {
-    if (!exc) return;
-    free(exc->values);
-    free(exc->value_types);
-    free(exc);
-}
-
-static void wah_exception_track(wah_exec_context_t *ctx, wah_exception_t *exc) {
-    if (!ctx || !exc) return;
-    exc->next = ctx->exceptions;
-    ctx->exceptions = exc;
-}
-
-static void wah_exception_free(wah_exec_context_t *ctx, wah_exception_t *exc) {
-    if (!exc) return;
-    if (ctx) {
-        wah_exception_t **p = &ctx->exceptions;
-        while (*p) {
-            if (*p == exc) {
-                *p = exc->next;
-                break;
-            }
-            p = &(*p)->next;
-        }
-    }
-    wah_exception_destroy(exc);
-}
-
-static void wah_exception_free_all(wah_exec_context_t *ctx) {
-    if (!ctx) return;
-    wah_exception_t *exc = ctx->exceptions;
-    while (exc) {
-        wah_exception_t *next = exc->next;
-        wah_exception_destroy(exc);
-        exc = next;
-    }
-    ctx->exceptions = NULL;
-    ctx->pending_exception = NULL;
-}
 
 #define WAH_CATCH_KIND_CATCH     0
 #define WAH_CATCH_KIND_CATCH_REF 1
@@ -2213,10 +2145,10 @@ static inline uint32_t wah_tag_type_index(const wah_module_t *m, uint32_t idx) {
 }
 
 // Helper function to duplicate a string
-static inline char* wah_strdup(const char* s) {
+static inline char* wah_strdup(const char* s, const wah_alloc_t *alloc) {
     if (!s) return NULL;
     size_t len = strlen(s);
-    char* copy = (char*)malloc(len + 1);
+    char* copy = (char*)alloc->malloc(len + 1, alloc->userdata);
     if (copy) {
         memcpy(copy, s, len + 1);
     }
@@ -2257,29 +2189,37 @@ static inline char* wah_strdup(const char* s) {
     if (!(cond)) { err = (error); WAH_LOG("WAH_ENSURE_GOTO(%s, %s, %s) failed", #cond, #error, #label); goto label; } \
 } while(0)
 
-// --- Safe Memory Allocation ---
-static inline wah_error_t wah_malloc(size_t count, size_t elemsize, void** out_ptr) {
-    *out_ptr = NULL;
-    if (count == 0) {
-        return WAH_OK;
-    }
-    WAH_ENSURE(elemsize == 0 || count <= SIZE_MAX / elemsize, WAH_ERROR_OUT_OF_MEMORY);
-    size_t total_size = count * elemsize;
-    *out_ptr = malloc(total_size);
-    WAH_ENSURE(*out_ptr, WAH_ERROR_OUT_OF_MEMORY);
-    return WAH_OK;
+static void *wah_stdc_malloc(size_t size, void *userdata) { (void)userdata; return malloc(size); }
+static void *wah_stdc_realloc(void *ptr, size_t size, void *userdata) { (void)userdata; return realloc(ptr, size); }
+static void wah_stdc_free(void *ptr, void *userdata) { (void)userdata; free(ptr); }
+
+static inline wah_alloc_t wah_resolve_alloc(const wah_alloc_t *a) {
+    if (a) return *a;
+    return (wah_alloc_t){ wah_stdc_malloc, wah_stdc_realloc, wah_stdc_free, NULL };
 }
 
-static inline wah_error_t wah_realloc(size_t count, size_t elemsize, void** p_ptr) {
+static inline void wah_free(const wah_alloc_t *a, void *ptr) {
+    if (!ptr) return;
+    a->free(ptr, a->userdata);
+}
+
+static inline wah_error_t wah_malloc(const wah_alloc_t *a, size_t count, size_t elemsize, void** out_ptr) {
+    *out_ptr = NULL;
+    if (count == 0) return WAH_OK;
+    if (elemsize != 0 && count > SIZE_MAX / elemsize) return WAH_ERROR_OUT_OF_MEMORY;
+    *out_ptr = a->malloc(count * elemsize, a->userdata);
+    return *out_ptr ? WAH_OK : WAH_ERROR_OUT_OF_MEMORY;
+}
+
+static inline wah_error_t wah_realloc(const wah_alloc_t *a, size_t count, size_t elemsize, void** p_ptr) {
     if (count == 0) {
-        free(*p_ptr);
+        wah_free(a, *p_ptr);
         *p_ptr = NULL;
         return WAH_OK;
     }
-    WAH_ENSURE(elemsize == 0 || count <= SIZE_MAX / elemsize, WAH_ERROR_OUT_OF_MEMORY);
-    size_t total_size = count * elemsize;
-    void* new_ptr = realloc(*p_ptr, total_size);
-    WAH_ENSURE(new_ptr, WAH_ERROR_OUT_OF_MEMORY);
+    if (elemsize != 0 && count > SIZE_MAX / elemsize) return WAH_ERROR_OUT_OF_MEMORY;
+    void* new_ptr = a->realloc(*p_ptr, count * elemsize, a->userdata);
+    if (!new_ptr) return WAH_ERROR_OUT_OF_MEMORY;
     *p_ptr = new_ptr;
     return WAH_OK;
 }
@@ -2289,7 +2229,7 @@ static inline wah_error_t wah_realloc(size_t count, size_t elemsize, void** p_pt
 
 #define WAH_MALLOC_ARRAY(ptr, count) do { \
         void *_alloc_ptr; \
-        wah_error_t _alloc_err = wah_malloc((count), sizeof(*(ptr)), &_alloc_ptr); \
+        wah_error_t _alloc_err = wah_malloc(alloc, (count), sizeof(*(ptr)), &_alloc_ptr); \
         if (_alloc_err != WAH_OK) { \
             WAH_LOG("WAH_MALLOC_ARRAY(%s, %s) failed due to OOM", #ptr, #count); \
             return _alloc_err; \
@@ -2299,7 +2239,7 @@ static inline wah_error_t wah_realloc(size_t count, size_t elemsize, void** p_pt
 
 #define WAH_REALLOC_ARRAY(ptr, count) do { \
         void *_alloc_ptr = (ptr); \
-        wah_error_t _alloc_err = wah_realloc((count), sizeof(*(ptr)), &_alloc_ptr); \
+        wah_error_t _alloc_err = wah_realloc(alloc, (count), sizeof(*(ptr)), &_alloc_ptr); \
         if (_alloc_err != WAH_OK) { \
             WAH_LOG("WAH_REALLOC_ARRAY(%s, %s) failed due to OOM", #ptr, #count); \
             return _alloc_err; \
@@ -2309,7 +2249,7 @@ static inline wah_error_t wah_realloc(size_t count, size_t elemsize, void** p_pt
 
 #define WAH_MALLOC_ARRAY_GOTO(ptr, count, label) do { \
         void* _alloc_ptr; \
-        err = wah_malloc((count), sizeof(*(ptr)), &_alloc_ptr); \
+        err = wah_malloc(alloc, (count), sizeof(*(ptr)), &_alloc_ptr); \
         if (err != WAH_OK) { \
             WAH_LOG("WAH_MALLOC_ARRAY_GOTO(%s, %s, %s) failed due to OOM", #ptr, #count, #label); \
             goto label; \
@@ -2319,7 +2259,7 @@ static inline wah_error_t wah_realloc(size_t count, size_t elemsize, void** p_pt
 
 #define WAH_REALLOC_ARRAY_GOTO(ptr, count, label) do { \
         void* _alloc_ptr = ptr; \
-        err = wah_realloc((count), sizeof(*(ptr)), &_alloc_ptr); \
+        err = wah_realloc(alloc, (count), sizeof(*(ptr)), &_alloc_ptr); \
         if (err != WAH_OK) { \
             WAH_LOG("WAH_REALLOC_ARRAY_GOTO(%s, %s, %s) failed due to OOM", #ptr, #count, #label); \
             goto label; \
@@ -3739,6 +3679,55 @@ static void wah_budget_release(wah_exec_context_t *ctx, uint64_t bytes) {
 // Subtyping ///////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+static inline wah_error_t wah_repr_set_init(wah_repr_set_t *set, uint32_t repr_count, const wah_alloc_t *alloc) {
+    *set = (wah_repr_set_t){0};
+    set->word_count = (repr_count + 63) / 64;
+    if (set->word_count == 0) return WAH_OK;
+    wah_error_t err = wah_malloc(alloc, set->word_count, sizeof(set->bits[0]), (void **)&set->bits);
+    if (err != WAH_OK) return err;
+    memset(set->bits, 0, (size_t)set->word_count * sizeof(set->bits[0]));
+    return WAH_OK;
+}
+
+static inline wah_error_t wah_repr_set_resize(wah_repr_set_t *set, uint32_t repr_count, const wah_alloc_t *alloc) {
+    uint32_t new_word_count = (repr_count + 63) / 64;
+    if (new_word_count == set->word_count) return WAH_OK;
+    if (new_word_count == 0) {
+        wah_free(alloc, set->bits);
+        set->bits = NULL;
+        set->word_count = 0;
+        return WAH_OK;
+    }
+    uint64_t *new_bits = set->bits;
+    wah_error_t err = wah_realloc(alloc, new_word_count, sizeof(set->bits[0]), (void **)&new_bits);
+    if (err != WAH_OK) return err;
+    if (new_word_count > set->word_count) {
+        memset(new_bits + set->word_count, 0, (size_t)(new_word_count - set->word_count) * sizeof(new_bits[0]));
+    }
+    set->bits = new_bits;
+    set->word_count = new_word_count;
+    return WAH_OK;
+}
+
+static inline void wah_repr_set_add(wah_repr_set_t *set, wah_repr_t repr_id) {
+    if (!set || repr_id < 0) return;
+    uint32_t word = (uint32_t)repr_id / 64;
+    WAH_ASSERT(word < set->word_count);
+    set->bits[word] |= UINT64_C(1) << ((uint32_t)repr_id & 63);
+}
+
+static inline bool wah_repr_set_contains(const wah_repr_set_t *set, wah_repr_t repr_id) {
+    if (!set || repr_id < 0) return false;
+    uint32_t word = (uint32_t)repr_id / 64;
+    if (word >= set->word_count || !set->bits) return false;
+    return (set->bits[word] & (UINT64_C(1) << ((uint32_t)repr_id & 63))) != 0;
+}
+
+static inline bool wah_type_accepts_repr(const wah_module_t *module, uint32_t typeidx, wah_repr_t repr_id) {
+    if (!module->type_cast_sets || typeidx >= module->type_count) return false;
+    return wah_repr_set_contains(&module->type_cast_sets[typeidx], repr_id);
+}
+
 // Helper function to validate if an actual type matches an expected type, considering WAH_TYPE_BOT
 static inline wah_comp_type_kind_t wah_type_def_kind(const wah_module_t *m, wah_type_t t) {
     if (!m || !m->type_defs || t < 0 || WAH_TYIDX(t) >= m->type_count) return (wah_comp_type_kind_t)0;
@@ -4069,7 +4058,7 @@ static inline uint32_t wah_layout_slot_index(uint32_t size) {
     }
 }
 
-static wah_error_t wah_layout_slot_push(wah_layout_slot_list_t slots[4], uint32_t size, uint32_t offset) {
+static wah_error_t wah_layout_slot_push(wah_layout_slot_list_t slots[4], uint32_t size, uint32_t offset, const wah_alloc_t *alloc) {
     WAH_ASSERT(size == 1 || size == 2 || size == 4 || size == 8);
     WAH_ASSERT((offset & (size - 1)) == 0);
     wah_layout_slot_list_t *list = &slots[wah_layout_slot_index(size)];
@@ -4078,7 +4067,7 @@ static wah_error_t wah_layout_slot_push(wah_layout_slot_list_t slots[4], uint32_
         uint32_t new_cap = list->cap ? list->cap * 2 : 8;
         if (new_cap < list->count + 1) return WAH_ERROR_TOO_LARGE;
         void *new_offsets = list->offsets;
-        WAH_CHECK(wah_realloc(new_cap, sizeof(list->offsets[0]), &new_offsets));
+        WAH_CHECK(wah_realloc(alloc, new_cap, sizeof(list->offsets[0]), &new_offsets));
         list->offsets = (uint32_t *)new_offsets;
         list->cap = new_cap;
     }
@@ -4101,29 +4090,31 @@ static bool wah_layout_slot_pop(wah_layout_slot_list_t slots[4], uint32_t size, 
     return true;
 }
 
-static wah_error_t wah_layout_split_slot(wah_layout_slot_list_t slots[4], uint32_t offset, uint32_t from_size, uint32_t used_size) {
+static wah_error_t wah_layout_split_slot(wah_layout_slot_list_t slots[4], uint32_t offset,
+                                         uint32_t from_size, uint32_t used_size, const wah_alloc_t *alloc) {
     while (from_size / 2 >= used_size) {
         from_size /= 2;
-        WAH_CHECK(wah_layout_slot_push(slots, from_size, offset + from_size));
+        WAH_CHECK(wah_layout_slot_push(slots, from_size, offset + from_size, alloc));
     }
     return WAH_OK;
 }
 
-static wah_error_t wah_layout_record_tail_slots(wah_layout_slot_list_t slots[4], uint32_t base, uint32_t used_size) {
+static wah_error_t wah_layout_record_tail_slots(wah_layout_slot_list_t slots[4], uint32_t base,
+                                                uint32_t used_size, const wah_alloc_t *alloc) {
     WAH_ASSERT(used_size == 1 || used_size == 2 || used_size == 4 || used_size == 8 || used_size == 16);
     for (uint32_t size = 8; size >= used_size && size > 0; size /= 2) {
-        WAH_CHECK(wah_layout_slot_push(slots, size, base + size));
+        WAH_CHECK(wah_layout_slot_push(slots, size, base + size, alloc));
         if (size == 1) break;
     }
     return WAH_OK;
 }
 
-static void wah_layout_free_slots(wah_layout_slot_list_t slots[4]) {
-    for (uint32_t i = 0; i < 4; ++i) free(slots[i].offsets);
+static void wah_layout_free_slots(wah_layout_slot_list_t slots[4], const wah_alloc_t *alloc) {
+    for (uint32_t i = 0; i < 4; ++i) wah_free(alloc, slots[i].offsets);
 }
 
 #ifdef WAH_DEBUG
-static wah_error_t wah_validate_struct_repr_info(const wah_type_def_t *td, const wah_repr_info_t *info) {
+static wah_error_t wah_validate_struct_repr_info(const wah_type_def_t *td, const wah_repr_info_t *info, const wah_alloc_t *alloc) {
     uint64_t field_bytes = 0;
     uint8_t *used = NULL;
     WAH_ENSURE(td && info && info->type == WAH_REPR_STRUCT, WAH_ERROR_MISUSE);
@@ -4148,17 +4139,18 @@ static wah_error_t wah_validate_struct_repr_info(const wah_type_def_t *td, const
         }
     }
     WAH_ENSURE((uint64_t)info->size >= field_bytes && (uint64_t)info->size - field_bytes <= 15, WAH_ERROR_VALIDATION_FAILED);
-    free(used);
+    wah_free(alloc, used);
     return WAH_OK;
 }
 #else
-static wah_error_t wah_validate_struct_repr_info(const wah_type_def_t *td, const wah_repr_info_t *info) {
-    (void)td; (void)info;
+static wah_error_t wah_validate_struct_repr_info(const wah_type_def_t *td, const wah_repr_info_t *info, const wah_alloc_t *alloc) {
+    (void)td; (void)info; (void)alloc;
     return WAH_OK;
 }
 #endif
 
-static wah_error_t wah_build_struct_repr_info(uint32_t typeidx, const wah_type_def_t *td, wah_repr_info_t **out_info) {
+static wah_error_t wah_build_struct_repr_info(uint32_t typeidx, const wah_type_def_t *td,
+                                              wah_repr_info_t **out_info, const wah_alloc_t *alloc) {
     wah_error_t err = WAH_OK;
     wah_layout_slot_list_t slots[4] = {{0}};
     wah_repr_field_t *fields = NULL;
@@ -4186,12 +4178,12 @@ static wah_error_t wah_build_struct_repr_info(uint32_t typeidx, const wah_type_d
             uint32_t slot_size = field_size * 2;
             while (slot_size <= 8 && !wah_layout_slot_pop(slots, slot_size, &offset)) slot_size *= 2;
             if (slot_size <= 8) {
-                WAH_CHECK_GOTO(wah_layout_split_slot(slots, offset, slot_size, field_size), cleanup);
+                WAH_CHECK_GOTO(wah_layout_split_slot(slots, offset, slot_size, field_size, alloc), cleanup);
             } else {
                 offset = frontier;
                 WAH_ENSURE_GOTO(frontier <= UINT32_MAX - 16, WAH_ERROR_TOO_LARGE, cleanup);
                 frontier += 16;
-                WAH_CHECK_GOTO(wah_layout_record_tail_slots(slots, offset, field_size), cleanup);
+                WAH_CHECK_GOTO(wah_layout_record_tail_slots(slots, offset, field_size, alloc), cleanup);
             }
         }
 
@@ -4205,25 +4197,25 @@ static wah_error_t wah_build_struct_repr_info(uint32_t typeidx, const wah_type_d
         goto cleanup;
     }
     size_t info_size = sizeof(wah_repr_info_t) + td->field_count * sizeof(wah_repr_field_t);
-    info = (wah_repr_info_t *)malloc(info_size);
-    if (!info) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
+    WAH_CHECK_GOTO(wah_malloc(alloc, 1, info_size, (void **)&info), cleanup);
     info->type = WAH_REPR_STRUCT;
     info->typeidx = typeidx;
     info->size = live_end;
     info->count = td->field_count;
     if (td->field_count > 0) memcpy(info->fields, fields, td->field_count * sizeof(wah_repr_field_t));
-    WAH_CHECK_GOTO(wah_validate_struct_repr_info(td, info), cleanup);
+    WAH_CHECK_GOTO(wah_validate_struct_repr_info(td, info, alloc), cleanup);
     *out_info = info;
     info = NULL;
 
 cleanup:
-    free(info);
-    free(fields);
-    wah_layout_free_slots(slots);
+    wah_free(alloc, info);
+    wah_free(alloc, fields);
+    wah_layout_free_slots(slots, alloc);
     return err;
 }
 
 static wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx, const wah_repr_info_t *info, wah_repr_t *out_repr_id) {
+    const wah_alloc_t *alloc = &module->alloc;
     WAH_ENSURE(module && info && out_repr_id, WAH_ERROR_MISUSE);
     WAH_ENSURE(typeidx < module->type_count, WAH_ERROR_MISUSE);
     WAH_ENSURE(module->typeidx_to_repr[typeidx] == WAH_REPR_NONE, WAH_ERROR_MISUSE);
@@ -4231,7 +4223,7 @@ static wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx,
     uint32_t new_id = module->repr_count;
     uint32_t new_count = new_id + 1;
 
-    WAH_CHECK(wah_realloc(new_count, sizeof(wah_repr_info_t *), (void **)&module->repr_infos));
+    WAH_CHECK(wah_realloc(alloc, new_count, sizeof(wah_repr_info_t *), (void **)&module->repr_infos));
 
     size_t info_size = sizeof(wah_repr_info_t) + info->count * sizeof(wah_repr_field_t);
     uint8_t *_alloc_bytes;
@@ -4249,25 +4241,27 @@ static wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx,
 #endif // WAH_FEATURE_GC
 
 static void wah_module_clear_type_metadata(wah_module_t *module) {
-    free(module->canonical_map);
+    const wah_alloc_t *alloc = &module->alloc;
+    wah_free(alloc, module->canonical_map);
     module->canonical_map = NULL;
-    free(module->typeidx_to_repr);
+    wah_free(alloc, module->typeidx_to_repr);
     module->typeidx_to_repr = NULL;
     if (module->repr_infos) {
-        for (uint32_t i = 0; i < module->repr_count; ++i) free(module->repr_infos[i]);
-        free(module->repr_infos);
+        for (uint32_t i = 0; i < module->repr_count; ++i) wah_free(alloc, module->repr_infos[i]);
+        wah_free(alloc, module->repr_infos);
     }
     module->repr_infos = NULL;
     module->repr_count = 0;
     if (module->type_cast_sets) {
-        for (uint32_t i = 0; i < module->type_count; ++i) free(module->type_cast_sets[i].bits);
-        free(module->type_cast_sets);
+        for (uint32_t i = 0; i < module->type_count; ++i) wah_free(alloc, module->type_cast_sets[i].bits);
+        wah_free(alloc, module->type_cast_sets);
     }
     module->type_cast_sets = NULL;
 }
 
 static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
     wah_error_t err;
+    const wah_alloc_t *alloc = &module->alloc;
     uint32_t *canonical_map = NULL;
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     wah_repr_info_t *info = NULL;
@@ -4355,17 +4349,16 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
     for (uint32_t i = 0; i < module->type_count; ++i) {
         wah_type_def_t *td = &module->type_defs[i];
         if (td->kind == WAH_COMP_STRUCT) {
-            WAH_CHECK_GOTO(wah_build_struct_repr_info(i, td, &info), cleanup);
+            WAH_CHECK_GOTO(wah_build_struct_repr_info(i, td, &info, alloc), cleanup);
             wah_repr_t repr_id;
             WAH_CHECK_GOTO(wah_module_alloc_repr(module, i, info, &repr_id), cleanup);
-            free(info); info = NULL;
+            wah_free(alloc, info); info = NULL;
         } else if (td->kind == WAH_COMP_ARRAY) {
             uint32_t elem_size;
             wah_repr_t elem_repr;
             WAH_CHECK_GOTO(wah_field_type_layout(td->field_types[0], &elem_size, &elem_repr), cleanup);
             size_t info_size = sizeof(wah_repr_info_t) + sizeof(wah_repr_field_t);
-            info = (wah_repr_info_t *)malloc(info_size);
-            if (!info) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
+            WAH_CHECK_GOTO(wah_malloc(alloc, 1, info_size, (void **)&info), cleanup);
             info->type = WAH_REPR_ARRAY;
             info->typeidx = i;
             info->size = elem_size;
@@ -4373,14 +4366,14 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
             info->fields[0] = (wah_repr_field_t){ .offset = 0, .repr_id = elem_repr };
             wah_repr_t repr_id;
             WAH_CHECK_GOTO(wah_module_alloc_repr(module, i, info, &repr_id), cleanup);
-            free(info); info = NULL;
+            wah_free(alloc, info); info = NULL;
         }
     }
 
     WAH_MALLOC_ARRAY_GOTO(module->type_cast_sets, module->type_count, cleanup);
     memset(module->type_cast_sets, 0, (size_t)module->type_count * sizeof(module->type_cast_sets[0]));
     for (uint32_t i = 0; i < module->type_count; ++i) {
-        WAH_CHECK_GOTO(wah_repr_set_init(&module->type_cast_sets[i], module->repr_count), cleanup);
+        WAH_CHECK_GOTO(wah_repr_set_init(&module->type_cast_sets[i], module->repr_count, alloc), cleanup);
     }
     for (uint32_t i = 0; i < module->type_count; ++i) {
         wah_repr_t repr_id = module->typeidx_to_repr[i];
@@ -4407,22 +4400,23 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
 
 cleanup:
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-    free(info);
+    wah_free(alloc, info);
 #endif
-    free(canonical_map);
+    wah_free(alloc, canonical_map);
     wah_module_clear_type_metadata(module);
     return err;
 }
 
 static void wah_module_rollback_last_type_metadata(wah_module_t *module, uint32_t idx) {
+    const wah_alloc_t *alloc = &module->alloc;
     if (module->type_cast_sets && idx < module->type_count) {
-        free(module->type_cast_sets[idx].bits);
+        wah_free(alloc, module->type_cast_sets[idx].bits);
         module->type_cast_sets[idx] = (wah_repr_set_t){0};
     }
     if (module->typeidx_to_repr && idx < module->type_count && module->typeidx_to_repr[idx] >= 0) {
         uint32_t repr_id = (uint32_t)module->typeidx_to_repr[idx];
         if (repr_id + 1 == module->repr_count && module->repr_infos) {
-            free(module->repr_infos[repr_id]);
+            wah_free(alloc, module->repr_infos[repr_id]);
             module->repr_infos[repr_id] = NULL;
             module->repr_count--;
         }
@@ -4432,6 +4426,7 @@ static void wah_module_rollback_last_type_metadata(wah_module_t *module, uint32_
 
 static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
     wah_error_t err;
+    const wah_alloc_t *alloc = &module->alloc;
     uint32_t idx;
     void *new_ptr;
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
@@ -4443,12 +4438,12 @@ static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
     idx = module->type_count - 1;
 
     new_ptr = module->canonical_map;
-    WAH_CHECK(wah_realloc(module->type_count, sizeof(module->canonical_map[0]), &new_ptr));
+    WAH_CHECK(wah_realloc(alloc, module->type_count, sizeof(module->canonical_map[0]), &new_ptr));
     module->canonical_map = (uint32_t *)new_ptr;
     module->canonical_map[idx] = idx;
 
     new_ptr = module->typeidx_to_repr;
-    WAH_CHECK(wah_realloc(module->type_count, sizeof(module->typeidx_to_repr[0]), &new_ptr));
+    WAH_CHECK(wah_realloc(alloc, module->type_count, sizeof(module->typeidx_to_repr[0]), &new_ptr));
     module->typeidx_to_repr = (int32_t *)new_ptr;
     module->typeidx_to_repr[idx] = WAH_REPR_NONE;
 
@@ -4457,15 +4452,14 @@ static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
     wah_type_def_t *td = &module->type_defs[idx];
 
     if (td->kind == WAH_COMP_STRUCT) {
-        WAH_CHECK_GOTO(wah_build_struct_repr_info(idx, td, &info), cleanup);
+        WAH_CHECK_GOTO(wah_build_struct_repr_info(idx, td, &info, alloc), cleanup);
         target_repr_count++;
     } else if (td->kind == WAH_COMP_ARRAY) {
         uint32_t elem_size;
         wah_repr_t elem_repr;
         WAH_CHECK_GOTO(wah_field_type_layout(td->field_types[0], &elem_size, &elem_repr), cleanup);
         size_t info_size = sizeof(wah_repr_info_t) + sizeof(wah_repr_field_t);
-        info = (wah_repr_info_t *)malloc(info_size);
-        if (!info) { err = WAH_ERROR_OUT_OF_MEMORY; goto cleanup; }
+        WAH_CHECK_GOTO(wah_malloc(alloc, 1, info_size, (void **)&info), cleanup);
         info->type = WAH_REPR_ARRAY;
         info->typeidx = idx;
         info->size = elem_size;
@@ -4475,13 +4469,13 @@ static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
     }
 
     new_ptr = module->type_cast_sets;
-    WAH_CHECK_GOTO(wah_realloc(module->type_count, sizeof(module->type_cast_sets[0]), &new_ptr), cleanup);
+    WAH_CHECK_GOTO(wah_realloc(alloc, module->type_count, sizeof(module->type_cast_sets[0]), &new_ptr), cleanup);
     module->type_cast_sets = (wah_repr_set_t *)new_ptr;
     module->type_cast_sets[idx] = (wah_repr_set_t){0};
     for (uint32_t i = 0; i + 1 < module->type_count; ++i) {
-        WAH_CHECK_GOTO(wah_repr_set_resize(&module->type_cast_sets[i], target_repr_count), cleanup);
+        WAH_CHECK_GOTO(wah_repr_set_resize(&module->type_cast_sets[i], target_repr_count, alloc), cleanup);
     }
-    WAH_CHECK_GOTO(wah_repr_set_init(&module->type_cast_sets[idx], target_repr_count), cleanup);
+    WAH_CHECK_GOTO(wah_repr_set_init(&module->type_cast_sets[idx], target_repr_count, alloc), cleanup);
 
     if (info) {
         WAH_CHECK_GOTO(wah_module_alloc_repr(module, idx, info, &repr_id), cleanup);
@@ -4498,7 +4492,7 @@ cleanup:
 #endif
 done:
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-    free(info);
+    wah_free(alloc, info);
 #endif
     return err;
 }
@@ -4962,6 +4956,7 @@ static inline void wah_validation_mark_unreachable(wah_validation_context_t *vct
 
 static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, const uint8_t *code_end,
                                                      wah_validation_context_t *vctx, wah_func_type_t *bt) {
+    const wah_alloc_t *alloc = &vctx->module->alloc;
     WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t block_type_peek = **code_ptr;
     *bt = (wah_func_type_t){0};
@@ -4998,7 +4993,7 @@ static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, co
     return WAH_OK;
 }
 
-static wah_error_t wah_analyzed_append_end(wah_analyzed_code_t *ac) {
+static wah_error_t wah_analyzed_append_end(wah_analyzed_code_t *ac, const wah_alloc_t *alloc) {
     WAH_ENSURE_CAP(ac->instrs, ac->instr_count + 1);
     ac->instrs[ac->instr_count] = (wah_decoded_instr_t){ .opcode = WAH_OP_END };
     ac->instr_count++;
@@ -5029,11 +5024,12 @@ static void wah_validation_resolve_br_target(const wah_validation_context_t *vct
 
 static wah_error_t wah_declare_func(wah_module_t *m, uint32_t func_idx) {
     if (!m->declared_funcs) {
+        const wah_alloc_t *alloc = &m->alloc;
         uint32_t total = wah_func_index_limit(m);
         if (total == 0) return WAH_OK;
         uint32_t bytes = (total + 7) / 8;
-        m->declared_funcs = (uint8_t *)calloc(bytes, 1);
-        if (!m->declared_funcs) return WAH_ERROR_OUT_OF_MEMORY;
+        WAH_MALLOC_ARRAY(m->declared_funcs, bytes);
+        memset(m->declared_funcs, 0, bytes);
     }
     m->declared_funcs[func_idx / 8] |= (uint8_t)(1u << (func_idx % 8));
     return WAH_OK;
@@ -5052,7 +5048,8 @@ static inline const wah_func_type_t *wah_resolve_func_type(const wah_module_t *m
 }
 
 // Validation helper function that handles a single opcode
-static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code_ptr, const uint8_t *code_end, wah_validation_context_t *vctx, wah_code_body_t* code_body, wah_analyzed_code_t *ac) {
+static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code_ptr, const uint8_t *code_end,
+                                       wah_validation_context_t *vctx, wah_code_body_t* code_body, wah_analyzed_code_t *ac) {
 #define WAH_TYPE__(T) T // So that POP(_(T)) and PUSH(_(T)) work
 #define POP(T) WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_##T))
 #define POP_INTO(x) WAH_CHECK(wah_validation_pop_type(vctx, x))
@@ -5069,6 +5066,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 } while (0)
 
 #define EMIT_SIMPLE() EMIT_INSTR_EX(opcode_val, (void)0)
+
+    const wah_alloc_t *alloc = &vctx->module->alloc;
 
     WAH_ENSURE(wah_opclasses[opcode_val] != WAH_OPCLASS_MISSING, WAH_ERROR_MALFORMED);
 
@@ -5708,8 +5707,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             }
 
             // Free memory allocated for the block type in the control frame
-            free(frame->block_type.param_types);
-            free(frame->block_type.result_types);
+            wah_free(alloc, frame->block_type.param_types);
+            wah_free(alloc, frame->block_type.result_types);
             EMIT_SIMPLE();
             return WAH_OK;
         }
@@ -5825,7 +5824,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             }
             err = WAH_OK;
         cleanup_br_table_popped:
-            free(popped_types);
+            wah_free(alloc, popped_types);
             if (err != WAH_OK) goto cleanup_br_table;
 
             wah_validation_mark_unreachable(vctx);
@@ -5843,8 +5842,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             });
             err = WAH_OK;
         cleanup_br_table:
-            free(bt_drops);
-            free(label_indices);
+            wah_free(alloc, bt_drops);
+            wah_free(alloc, label_indices);
             return err;
         }
 
@@ -6291,16 +6290,16 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
                 bool has_exnref = (catch_entries[ci].kind == 1 || catch_entries[ci].kind == 3);
                 uint32_t expected_count = tag_param_count + (has_exnref ? 1 : 0);
-                if (br_result_count != expected_count) { free(catch_entries); return WAH_ERROR_VALIDATION_FAILED; }
+                if (br_result_count != expected_count) { wah_free(alloc, catch_entries); return WAH_ERROR_VALIDATION_FAILED; }
                 for (uint32_t j = 0; j < tag_param_count; j++) {
                     wah_error_t match_err = wah_validate_type_match(
                         tag_param_types[j], br_result_types[j], vctx->module);
-                    if (match_err != WAH_OK) { free(catch_entries); return match_err; }
+                    if (match_err != WAH_OK) { wah_free(alloc, catch_entries); return match_err; }
                 }
                 if (has_exnref) {
                     wah_error_t match_err = wah_validate_type_match(
                         WAH_TYPE_EXN, br_result_types[br_result_count - 1], vctx->module);
-                    if (match_err != WAH_OK) { free(catch_entries); return match_err; }
+                    if (match_err != WAH_OK) { wah_free(alloc, catch_entries); return match_err; }
                 }
             }
 
@@ -6332,7 +6331,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                     }
                 }
             });
-            free(catch_entries);
+            wah_free(alloc, catch_entries);
             return WAH_OK;
         }
 
@@ -6352,6 +6351,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
 // Lowering function that consumes analyzed IR instead of raw Wasm bytes
 static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah_analyzed_code_t *ac, wah_parsed_code_t *parsed_code) {
+    const wah_alloc_t *alloc = &module->alloc;
     bool emit_poll = (ac->mode == WAH_ANALYZE_FUNC_BODY);
     wah_error_t err = WAH_OK;
     uint8_t *saved_ref_map = parsed_code->operand_ref_map;
@@ -6488,7 +6488,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
         if (_cf->opcode == WAH_OP_IF) { \
             WAH_LOWER_PATCH_U32(_cf->if_false_patch, _end_pos); \
         } \
-        free(_cf->patch_offsets); \
+        wah_free(alloc, _cf->patch_offsets); \
         *_cf = (wah_lower_cf_t){0}; \
     } while (0)
 
@@ -6965,15 +6965,15 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
     buf = NULL;
 
 cleanup:
-    free(buf);
-    free(func_end_patches);
-    free(meter_chunks);
-    free(meter_instr_records);
+    wah_free(alloc, buf);
+    wah_free(alloc, func_end_patches);
+    wah_free(alloc, meter_chunks);
+    wah_free(alloc, meter_instr_records);
     for (uint32_t i = 0; i < control_sp; i++) {
-        free(control_stack[i].patch_offsets);
+        wah_free(alloc, control_stack[i].patch_offsets);
     }
     if (err != WAH_OK && parsed_code->bytecode) {
-        free(parsed_code->bytecode);
+        wah_free(alloc, parsed_code->bytecode);
         parsed_code->bytecode = NULL;
         parsed_code->bytecode_size = 0;
     }
@@ -6992,6 +6992,7 @@ static wah_error_t wah_analyze_stream(
     wah_analyzed_code_t *ac
 ) {
     wah_error_t err = WAH_OK;
+    const wah_alloc_t *alloc = &vctx->module->alloc;
     uint8_t *ref_map = NULL;
     uint32_t ref_map_size = 0, ref_map_cap = 0;
     bool is_func_body = (code_body != NULL);
@@ -7043,7 +7044,7 @@ static wah_error_t wah_analyze_stream(
                     }
                     WAH_ENSURE_GOTO(vctx->current_stack_depth == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
                     WAH_ENSURE_GOTO(*code_ptr == code_end, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                    WAH_CHECK_GOTO(wah_analyzed_append_end(ac), cleanup);
+                    WAH_CHECK_GOTO(wah_analyzed_append_end(ac, &vctx->module->alloc), cleanup);
                     goto done;
                 }
             } else {
@@ -7051,7 +7052,7 @@ static wah_error_t wah_analyze_stream(
                 wah_type_t actual = vctx->type_stack.data[0];
                 WAH_ENSURE_GOTO(actual == WAH_TYPE_BOT || wah_type_is_subtype(actual, expected_type, vctx->module),
                     WAH_ERROR_VALIDATION_FAILED, cleanup);
-                WAH_CHECK_GOTO(wah_analyzed_append_end(ac), cleanup);
+                WAH_CHECK_GOTO(wah_analyzed_append_end(ac, &vctx->module->alloc), cleanup);
                 goto done;
             }
         }
@@ -7098,30 +7099,30 @@ done:
 
 cleanup:
     #undef WAH_CAPTURE_REF_MAP
-    free(ref_map);
+    wah_free(alloc, ref_map);
     return err;
 }
 
-static void wah_free_analyzed_code(wah_analyzed_code_t *ac) {
+static void wah_free_analyzed_code(wah_analyzed_code_t *ac, const wah_alloc_t *alloc) {
     if (!ac) return;
     if (ac->instrs) {
         for (uint32_t i = 0; i < ac->instr_count; i++) {
             wah_decoded_instr_t *instr = &ac->instrs[i];
             switch (instr->opcode) {
                 case WAH_OP_BR_TABLE:
-                    free(instr->imm.br_table.target_symbols);
-                    free(instr->imm.br_table.drops);
+                    wah_free(alloc, instr->imm.br_table.target_symbols);
+                    wah_free(alloc, instr->imm.br_table.drops);
                     break;
                 case WAH_OP_TRY_TABLE:
-                    free(instr->imm.try_table.catches);
+                    wah_free(alloc, instr->imm.try_table.catches);
                     break;
                 default:
                     break;
             }
         }
-        free(ac->instrs);
+        wah_free(alloc, ac->instrs);
     }
-    if (ac->operand_ref_map) free(ac->operand_ref_map);
+    wah_free(alloc, ac->operand_ref_map);
     *ac = (wah_analyzed_code_t){0};
 }
 
@@ -7145,27 +7146,28 @@ static wah_error_t wah_compile_const_expr(
     }
 
 cleanup:
-    wah_free_analyzed_code(&ac);
+    wah_free_analyzed_code(&ac, &module->alloc);
     return err;
 }
 
-static void wah_free_parsed_code(wah_parsed_code_t *parsed_code) {
+static void wah_free_parsed_code(wah_parsed_code_t *parsed_code, const wah_alloc_t *alloc) {
     if (!parsed_code) return;
-    free(parsed_code->bytecode);
+    wah_free(alloc, parsed_code->bytecode);
     parsed_code->bytecode = NULL;
     parsed_code->bytecode_size = 0;
-    free(parsed_code->operand_ref_map);
+    wah_free(alloc, parsed_code->operand_ref_map);
     parsed_code->operand_ref_map = NULL;
     parsed_code->operand_ref_map_size = 0;
 }
 
 static void wah_free_code_bodies(wah_module_t *module) {
+    const wah_alloc_t *alloc = &module->alloc;
     if (!module->code_bodies) return;
     for (uint32_t i = 0; i < module->code_count; ++i) {
-        free(module->code_bodies[i].local_types);
-        wah_free_parsed_code(&module->code_bodies[i].parsed_code);
+        wah_free(alloc, module->code_bodies[i].local_types);
+        wah_free_parsed_code(&module->code_bodies[i].parsed_code, alloc);
     }
-    free(module->code_bodies);
+    wah_free(alloc, module->code_bodies);
     module->code_bodies = NULL;
 }
 
@@ -7173,7 +7175,8 @@ static void wah_free_code_bodies(wah_module_t *module) {
 // Parsing /////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-static wah_error_t wah_parse_name(const uint8_t **ptr, const uint8_t *section_end, char **out_name, size_t *out_len) {
+static wah_error_t wah_parse_name(const uint8_t **ptr, const uint8_t *section_end,
+                                  char **out_name, size_t *out_len, const wah_alloc_t *alloc) {
     uint32_t name_len = 0;
     char *name_copy = NULL;
 
@@ -7227,6 +7230,7 @@ static wah_error_t wah_read_section_header(const uint8_t **ptr, const uint8_t *e
 // --- Internal Section Parsing Functions ---
 
 static wah_error_t wah_type_section_ensure_capacity(wah_module_t *module, uint32_t needed) {
+    const wah_alloc_t *alloc = &module->alloc;
     if (needed <= module->types_cap) return WAH_OK;
     WAH_ENSURE_CAP(module->types, needed);
     WAH_REALLOC_ARRAY(module->type_defs, module->types_cap);
@@ -7238,7 +7242,7 @@ static void wah_type_section_init_slot(wah_module_t *module, uint32_t idx) {
     module->type_defs[idx] = (wah_type_def_t){ .kind = WAH_COMP_FUNC, .is_final = true, .supertype = WAH_NO_SUPERTYPE };
 }
 
-static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end, wah_func_type_t *ft) {
+static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end, wah_func_type_t *ft, const wah_alloc_t *alloc) {
     uint32_t param_count;
     WAH_CHECK(wah_decode_uleb128(ptr, end, &param_count));
     ft->param_count = param_count;
@@ -7258,7 +7262,7 @@ static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end, 
 }
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-static wah_error_t wah_parse_struct_type(const uint8_t **ptr, const uint8_t *end, wah_type_def_t *td) {
+static wah_error_t wah_parse_struct_type(const uint8_t **ptr, const uint8_t *end, wah_type_def_t *td, const wah_alloc_t *alloc) {
     uint32_t field_count;
     WAH_CHECK(wah_decode_uleb128(ptr, end, &field_count));
     td->field_count = field_count;
@@ -7277,7 +7281,7 @@ static wah_error_t wah_parse_struct_type(const uint8_t **ptr, const uint8_t *end
     return WAH_OK;
 }
 
-static wah_error_t wah_parse_array_type(const uint8_t **ptr, const uint8_t *end, wah_type_def_t *td) {
+static wah_error_t wah_parse_array_type(const uint8_t **ptr, const uint8_t *end, wah_type_def_t *td, const wah_alloc_t *alloc) {
     td->field_count = 1;
     WAH_MALLOC_ARRAY(td->field_types, 1);
     WAH_MALLOC_ARRAY(td->field_mutables, 1);
@@ -7291,20 +7295,21 @@ static wah_error_t wah_parse_array_type(const uint8_t **ptr, const uint8_t *end,
 
 #endif // WAH_FEATURE_GC
 
-static wah_error_t wah_parse_composite_type(const uint8_t **ptr, const uint8_t *end, wah_func_type_t *ft, wah_type_def_t *td) {
+static wah_error_t wah_parse_composite_type(const uint8_t **ptr, const uint8_t *end,
+                                            wah_func_type_t *ft, wah_type_def_t *td, const wah_alloc_t *alloc) {
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t tag = *(*ptr)++;
     switch (tag) {
         case 0x60:
             td->kind = WAH_COMP_FUNC;
-            return wah_parse_func_type(ptr, end, ft);
+            return wah_parse_func_type(ptr, end, ft, alloc);
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
         case 0x5F:
             td->kind = WAH_COMP_STRUCT;
-            return wah_parse_struct_type(ptr, end, td);
+            return wah_parse_struct_type(ptr, end, td, alloc);
         case 0x5E:
             td->kind = WAH_COMP_ARRAY;
-            return wah_parse_array_type(ptr, end, td);
+            return wah_parse_array_type(ptr, end, td, alloc);
 #else
         case 0x5F: case 0x5E:
             return WAH_ERROR_DISABLED_FEATURE;
@@ -7315,7 +7320,7 @@ static wah_error_t wah_parse_composite_type(const uint8_t **ptr, const uint8_t *
 }
 
 static wah_error_t wah_parse_sub_type(const uint8_t **ptr, const uint8_t *end, uint32_t current_typeidx,
-                                      wah_func_type_t *ft, wah_type_def_t *td) {
+                                      wah_func_type_t *ft, wah_type_def_t *td, const wah_alloc_t *alloc) {
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t tag = **ptr;
 
@@ -7332,15 +7337,16 @@ static wah_error_t wah_parse_sub_type(const uint8_t **ptr, const uint8_t *end, u
             WAH_ENSURE(super_idx < current_typeidx, WAH_ERROR_VALIDATION_FAILED);
             td->supertype = super_idx;
         }
-        return wah_parse_composite_type(ptr, end, ft, td);
+        return wah_parse_composite_type(ptr, end, ft, td, alloc);
     }
 
     td->is_final = true;
     td->supertype = WAH_NO_SUPERTYPE;
-    return wah_parse_composite_type(ptr, end, ft, td);
+    return wah_parse_composite_type(ptr, end, ft, td, alloc);
 }
 
 static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    const wah_alloc_t *alloc = &module->alloc;
     uint32_t rec_count;
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &rec_count, 1));
 
@@ -7365,7 +7371,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
                 wah_type_section_init_slot(module, idx);
                 ++module->type_count;
                 WAH_CHECK(wah_parse_sub_type(ptr, section_end, idx,
-                                             &module->types[idx], &module->type_defs[idx]));
+                                             &module->types[idx], &module->type_defs[idx], alloc));
                 if (module->type_defs[idx].kind == WAH_COMP_STRUCT || module->type_defs[idx].kind == WAH_COMP_ARRAY
                         || module->type_defs[idx].supertype != WAH_NO_SUPERTYPE || !module->type_defs[idx].is_final) {
                     WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_GC));
@@ -7381,7 +7387,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
             wah_type_section_init_slot(module, idx);
             ++module->type_count;
             WAH_CHECK(wah_parse_sub_type(ptr, section_end, idx,
-                                         &module->types[idx], &module->type_defs[idx]));
+                                         &module->types[idx], &module->type_defs[idx], alloc));
             if (module->type_defs[idx].kind == WAH_COMP_STRUCT || module->type_defs[idx].kind == WAH_COMP_ARRAY
                     || module->type_defs[idx].supertype != WAH_NO_SUPERTYPE || !module->type_defs[idx].is_final) {
                 WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_GC));
@@ -7417,6 +7423,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
 }
 
 static wah_error_t wah_parse_function_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    const wah_alloc_t *alloc = &module->alloc;
     uint32_t count;
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 1));
 
@@ -7470,7 +7477,7 @@ static const wah_export_t *wah_find_export(const wah_module_t *module, uint8_t k
 }
 
 static wah_error_t wah_parse_local_decls(const uint8_t **ptr, const uint8_t *body_end,
-                                         wah_code_body_t *body, uint32_t type_count) {
+                                         wah_code_body_t *body, uint32_t type_count, const wah_alloc_t *alloc) {
     uint32_t num_entries;
     WAH_CHECK(wah_decode_and_validate_count(ptr, body_end, &num_entries, 2));
 
@@ -7503,6 +7510,7 @@ static wah_error_t wah_parse_local_decls(const uint8_t **ptr, const uint8_t *bod
 
 static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     wah_error_t err = WAH_OK;
+    const wah_alloc_t *alloc = &module->alloc;
     wah_validation_context_t vctx = {0};
     wah_analyzed_code_t ac = {0};
 
@@ -7523,7 +7531,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         WAH_ENSURE_GOTO(body_size <= (size_t)(section_end - *ptr), WAH_ERROR_MALFORMED, cleanup);
         const uint8_t *code_body_end = *ptr + body_size;
 
-        WAH_CHECK_GOTO(wah_parse_local_decls(ptr, code_body_end, &module->code_bodies[i], module->type_count), cleanup);
+        WAH_CHECK_GOTO(wah_parse_local_decls(ptr, code_body_end, &module->code_bodies[i], module->type_count, alloc), cleanup);
 
         module->code_bodies[i].code_size = (uint32_t)(code_body_end - *ptr);
         module->code_bodies[i].code = *ptr;
@@ -7536,8 +7544,8 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         };
 
         // Set up local initialization tracking for non-defaultable locals
-        free(vctx.local_inits); vctx.local_inits = NULL;
-        free(vctx.local_init_stack); vctx.local_init_stack = NULL;
+        wah_free(alloc, vctx.local_inits); vctx.local_inits = NULL;
+        wah_free(alloc, vctx.local_init_stack); vctx.local_init_stack = NULL;
         vctx.local_init_stack_used = 0;
         vctx.num_non_defaultable = 0;
 
@@ -7559,7 +7567,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
             WAH_MALLOC_ARRAY_GOTO(vctx.local_init_stack, (size_t)tl * WAH_MAX_CONTROL_DEPTH, cleanup);
         }
 
-        wah_free_analyzed_code(&ac);
+        wah_free_analyzed_code(&ac, alloc);
         ac = (wah_analyzed_code_t){0};
 
         const uint8_t *code_ptr = module->code_bodies[i].code;
@@ -7573,9 +7581,9 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         module->code_bodies[i].max_frame_slots = module->code_bodies[i].local_count + ac.max_stack_depth;
 
         WAH_CHECK_GOTO(wah_lower_analyzed_code(module, &ac, &module->code_bodies[i].parsed_code), cleanup);
-        wah_free_analyzed_code(&ac);
-        free(vctx.local_inits);
-        free(vctx.local_init_stack);
+        wah_free_analyzed_code(&ac, alloc);
+        wah_free(alloc, vctx.local_inits);
+        wah_free(alloc, vctx.local_init_stack);
         vctx.local_inits = NULL;
         vctx.local_init_stack = NULL;
 
@@ -7584,14 +7592,14 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
     err = WAH_OK;
 
 cleanup:
-    wah_free_analyzed_code(&ac);
-    free(vctx.local_inits);
-    free(vctx.local_init_stack);
+    wah_free_analyzed_code(&ac, alloc);
+    wah_free(alloc, vctx.local_inits);
+    wah_free(alloc, vctx.local_init_stack);
     if (err != WAH_OK) {
         for (int32_t j = vctx.control_sp - 1; j >= 0; --j) {
             wah_validation_control_frame_t* frame = &vctx.control_stack[j];
-            free(frame->block_type.param_types);
-            free(frame->block_type.result_types);
+            wah_free(alloc, frame->block_type.param_types);
+            wah_free(alloc, frame->block_type.result_types);
         }
         wah_free_code_bodies(module);
     }
@@ -7599,6 +7607,7 @@ cleanup:
 }
 
 static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    const wah_alloc_t *alloc = &module->alloc;
     uint32_t count;
     // A global entry requires at least 3 bytes (type, is_mutable, init_expr end).
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 3));
@@ -7620,12 +7629,14 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
         WAH_ENSURE(mut_byte <= 1, WAH_ERROR_MALFORMED);
         module->globals[i].is_mutable = (mut_byte == 1);
 
-        WAH_CHECK(wah_compile_const_expr(ptr, section_end, global_declared_type, module, module->import_global_count + i, &module->globals[i].init_expr));
+        WAH_CHECK(wah_compile_const_expr(ptr, section_end, global_declared_type, module,
+                                         module->import_global_count + i, &module->globals[i].init_expr));
     }
     return WAH_OK;
 }
 
 static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    const wah_alloc_t *alloc = &module->alloc;
     uint32_t count;
     // A memory entry requires at least 2 bytes (flags, min_pages_uleb128).
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 2));
@@ -7677,6 +7688,7 @@ static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *
 }
 
 static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    const wah_alloc_t *alloc = &module->alloc;
     uint32_t count;
     // A table entry requires at least 3 bytes (elem_type, flags, min_elements_uleb128).
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 3));
@@ -7749,6 +7761,7 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
 static wah_error_t wah_parse_tag_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_EXCEPTION));
     wah_error_t err = WAH_OK;
+    const wah_alloc_t *alloc = &module->alloc;
     uint32_t count = 0;
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 2));
     WAH_MALLOC_ARRAY_GOTO(module->tags, count, cleanup);
@@ -7763,7 +7776,7 @@ static wah_error_t wah_parse_tag_section(const uint8_t **ptr, const uint8_t *sec
     }
     return WAH_OK;
 cleanup:
-    free(module->tags);
+    wah_free(alloc, module->tags);
     module->tags = NULL;
     module->tag_count = 0;
     return err;
@@ -7781,6 +7794,7 @@ static wah_error_t wah_parse_custom_section(const uint8_t **ptr, const uint8_t *
 
 static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     wah_error_t err = WAH_OK;
+    const wah_alloc_t *alloc = &module->alloc;
     uint32_t count = 0;
     uint32_t import_func_count = 0;
     uint32_t import_table_count = 0;
@@ -7803,10 +7817,10 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
     for (uint32_t i = 0; i < count; ++i) {
         // Parse import name (module_name + field_name)
         wah_import_name_t imp_name = {0};
-        WAH_CHECK_GOTO(wah_parse_name(ptr, section_end, &imp_name.module, &imp_name.module_len), cleanup);
-        err = wah_parse_name(ptr, section_end, &imp_name.field, &imp_name.field_len);
+        WAH_CHECK_GOTO(wah_parse_name(ptr, section_end, &imp_name.module, &imp_name.module_len, alloc), cleanup);
+        err = wah_parse_name(ptr, section_end, &imp_name.field, &imp_name.field_len, alloc);
         if (err != WAH_OK) {
-            free(imp_name.module);
+            wah_free(alloc, imp_name.module);
             WAH_LOG("wah_parse_name(ptr, section_end, &imp_name.field, &imp_name.field_len) failed due to: %s", wah_strerror(err));
             goto cleanup;
         }
@@ -7928,8 +7942,8 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             WAH_ENSURE_GOTO(tgi->type_index < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
             WAH_ENSURE_GOTO(module->types[tgi->type_index].result_count == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
         } else {
-            free(imp_name.module);
-            free(imp_name.field);
+            wah_free(alloc, imp_name.module);
+            wah_free(alloc, imp_name.field);
             err = WAH_ERROR_MALFORMED;
             goto cleanup;
         }
@@ -7946,10 +7960,10 @@ cleanup:
 #define WAH_FREE_IMPORTS(arr, count) do { \
     if (arr) { \
         for (uint32_t i_ = 0; i_ < (count); i_++) { \
-            free((arr)[i_].name.module); \
-            free((arr)[i_].name.field); \
+            wah_free(alloc, (arr)[i_].name.module); \
+            wah_free(alloc, (arr)[i_].name.field); \
         } \
-        free(arr); \
+        wah_free(alloc, arr); \
         (arr) = NULL; \
     } \
 } while(0)
@@ -7959,7 +7973,7 @@ cleanup:
     WAH_FREE_IMPORTS(module->global_imports, import_global_count);
     WAH_FREE_IMPORTS(module->tag_imports, import_tag_count);
 #undef WAH_FREE_IMPORTS
-    free(module->imports);
+    wah_free(alloc, module->imports);
     module->imports = NULL;
     module->import_count = 0;
     module->import_function_count = 0;
@@ -7972,6 +7986,7 @@ cleanup:
 
 static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     wah_error_t err = WAH_OK;
+    const wah_alloc_t *alloc = &module->alloc;
     uint32_t count = 0;
     // An export entry requires at least 3 bytes (name_len, kind, index).
     WAH_CHECK_GOTO(wah_decode_and_validate_count(ptr, section_end, &count, 3), cleanup);
@@ -7985,7 +8000,7 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
         *export_entry = (wah_export_t){0};
         ++module->export_count;
 
-        WAH_CHECK_GOTO(wah_parse_name(ptr, section_end, (char **)&export_entry->name, &export_entry->name_len), cleanup);
+        WAH_CHECK_GOTO(wah_parse_name(ptr, section_end, (char **)&export_entry->name, &export_entry->name_len, alloc), cleanup);
 
         // Check for duplicate export names
         for (uint32_t j = 0; j < i; ++j) {
@@ -8033,10 +8048,10 @@ cleanup:
             // Free names that were already allocated
             for (uint32_t k = 0; k < module->export_count; ++k) {
                 if (module->exports[k].name) {
-                    free((void*)module->exports[k].name);
+                    wah_free(alloc, (void*)module->exports[k].name);
                 }
             }
-            free(module->exports);
+            wah_free(alloc, module->exports);
             module->exports = NULL;
             module->export_count = 0;
         }
@@ -8063,6 +8078,7 @@ static wah_error_t wah_parse_start_section(const uint8_t **ptr, const uint8_t *s
 }
 
 static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    const wah_alloc_t *alloc = &module->alloc;
     uint32_t count;
     // An element segment requires at least 1 byte (flags)
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 1));
@@ -8141,7 +8157,8 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
             if (segment->is_dropped) {
                 for (uint32_t j = 0; j < num_elems; ++j) {
                     if (is_expr_elem) {
-                        WAH_CHECK(wah_compile_const_expr(ptr, section_end, segment->elem_type, module, wah_global_index_limit(module), NULL));
+                        WAH_CHECK(wah_compile_const_expr(ptr, section_end, segment->elem_type, module,
+                                                         wah_global_index_limit(module), NULL));
                     } else {
                         uint32_t funcidx;
                         WAH_CHECK(wah_decode_uleb128(ptr, section_end, &funcidx));
@@ -8186,6 +8203,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
 }
 
 static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    const wah_alloc_t *alloc = &module->alloc;
     uint32_t count;
     // A data segment requires at least 2 bytes (flags, data_len_uleb128).
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 2));
@@ -8221,7 +8239,8 @@ static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *se
                 WAH_ENSURE(segment->memory_idx < wah_memory_index_limit(module), WAH_ERROR_VALIDATION_FAILED);
                 wah_type_t mem_addr_type = wah_memory_type(module, segment->memory_idx)->addr_type;
 
-                WAH_CHECK(wah_compile_const_expr(ptr, section_end, mem_addr_type, module, wah_global_index_limit(module), &segment->offset_expr));
+                WAH_CHECK(wah_compile_const_expr(ptr, section_end, mem_addr_type, module,
+                                                 wah_global_index_limit(module), &segment->offset_expr));
             }
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->data_len));
@@ -8275,6 +8294,8 @@ wah_error_t wah_parse_module_ex(const uint8_t *wasm_binary, size_t binary_size, 
     WAH_ENSURE(wasm_binary && module && binary_size >= 8, WAH_ERROR_UNEXPECTED_EOF);
 
     *module = (wah_module_t){0}; // Initialize module struct
+    module->alloc = wah_resolve_alloc(options ? options->alloc : NULL);
+    const wah_alloc_t *alloc = &module->alloc;
 
     wah_features_t requested = options ? options->features : (WAH_DEFAULT_FEATURES);
     module->enabled_features = wah_feature_closure(requested) & (WAH_COMPILED_FEATURES);
@@ -8390,41 +8411,86 @@ cleanup_parse:
 }
 
 // Helper to free element segment data
-static void wah_free_element_segment_data(wah_element_segment_t *segment) {
+static void wah_free_element_segment_data(wah_element_segment_t *segment, const wah_alloc_t *alloc) {
     if (!segment->is_expr_elem) {
-        free(segment->u.func_indices);
+        wah_free(alloc, segment->u.func_indices);
         segment->u.func_indices = NULL;
     } else {
         if (segment->u.expr.bytecodes) {
             for (uint32_t i = 0; i < segment->num_elems; ++i) {
-                free((void*)segment->u.expr.bytecodes[i]);
+                wah_free(alloc, (void*)segment->u.expr.bytecodes[i]);
             }
-            free(segment->u.expr.bytecodes);
+            wah_free(alloc, segment->u.expr.bytecodes);
             segment->u.expr.bytecodes = NULL;
         }
         if (segment->u.expr.bytecode_sizes) {
-            free(segment->u.expr.bytecode_sizes);
+            wah_free(alloc, segment->u.expr.bytecode_sizes);
             segment->u.expr.bytecode_sizes = NULL;
         }
     }
-    wah_free_parsed_code(&segment->offset_expr);
+    wah_free_parsed_code(&segment->offset_expr, alloc);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Garbage collection //////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+static inline void wah_recompute_poll_flag(wah_exec_context_t *ctx);
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
+static void wah_exception_destroy(wah_exec_context_t *ctx, wah_exception_t *exc) {
+    if (!exc) return;
+    WAH_ASSERT(ctx);
+    const wah_alloc_t *alloc = &ctx->alloc;
+    wah_free(alloc, exc->values);
+    wah_free(alloc, exc->value_types);
+    wah_free(alloc, exc);
+}
+
+static void wah_exception_track(wah_exec_context_t *ctx, wah_exception_t *exc) {
+    if (!ctx || !exc) return;
+    exc->next = ctx->exceptions;
+    ctx->exceptions = exc;
+}
+
+static void wah_exception_free(wah_exec_context_t *ctx, wah_exception_t *exc) {
+    if (!exc) return;
+    if (ctx) {
+        wah_exception_t **p = &ctx->exceptions;
+        while (*p) {
+            if (*p == exc) {
+                *p = exc->next;
+                break;
+            }
+            p = &(*p)->next;
+        }
+    }
+    wah_exception_destroy(ctx, exc);
+}
+
+static void wah_exception_free_all(wah_exec_context_t *ctx) {
+    if (!ctx) return;
+    wah_exception_t *exc = ctx->exceptions;
+    while (exc) {
+        wah_exception_t *next = exc->next;
+        wah_exception_destroy(ctx, exc);
+        exc = next;
+    }
+    ctx->exceptions = NULL;
+    ctx->pending_exception = NULL;
+}
+#endif // WAH_FEATURE_EXCEPTION
+
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 
 #define WAH_GC_DEFAULT_THRESHOLD (256 * 1024)
 
-static inline void wah_recompute_poll_flag(wah_exec_context_t *ctx);
-
-static void wah_gc_free_all_objects(wah_gc_state_t *gc) {
+static void wah_gc_free_all_objects(wah_exec_context_t *ctx, wah_gc_state_t *gc) {
+    const wah_alloc_t *alloc = &ctx->alloc;
     wah_gc_object_t *obj = gc->all_objects;
     while (obj) {
         wah_gc_object_t *next = wah_gc_next(obj);
-        free(obj);
+        wah_free(alloc, obj);
         obj = next;
     }
     gc->all_objects = NULL;
@@ -8435,6 +8501,7 @@ static void wah_gc_free_all_objects(wah_gc_state_t *gc) {
 
 wah_error_t wah_gc_start(wah_exec_context_t *ctx) {
     if (ctx->gc) return WAH_OK;
+    const wah_alloc_t *alloc = &ctx->alloc;
     WAH_MALLOC(ctx->gc);
     *ctx->gc = (wah_gc_state_t){ .allocation_threshold = WAH_GC_DEFAULT_THRESHOLD };
     return WAH_OK;
@@ -8443,7 +8510,7 @@ wah_error_t wah_gc_start(wah_exec_context_t *ctx) {
 void wah_gc_reset(wah_exec_context_t *ctx) {
     if (!ctx->gc) return;
     wah_budget_release(ctx, ctx->gc->allocated_bytes);
-    wah_gc_free_all_objects(ctx->gc);
+    wah_gc_free_all_objects(ctx, ctx->gc);
     ctx->gc->phase = WAH_GC_PHASE_IDLE;
     ctx->gc->gc_pending = false;
     wah_recompute_poll_flag(ctx);
@@ -8452,8 +8519,8 @@ void wah_gc_reset(wah_exec_context_t *ctx) {
 void wah_gc_destroy(wah_exec_context_t *ctx) {
     if (!ctx->gc) return;
     wah_budget_release(ctx, ctx->gc->allocated_bytes);
-    wah_gc_free_all_objects(ctx->gc);
-    free(ctx->gc);
+    wah_gc_free_all_objects(ctx, ctx->gc);
+    wah_free(&ctx->alloc, ctx->gc);
     ctx->gc = NULL;
 }
 
@@ -8465,8 +8532,8 @@ static void *wah_gc_alloc(wah_exec_context_t *ctx, wah_repr_t repr_id, uint32_t 
 
     uint32_t total = (uint32_t)(sizeof(wah_gc_object_t) + payload_size);
     if (!wah_budget_check(ctx, total)) return NULL;
-    wah_gc_object_t *obj = (wah_gc_object_t *)malloc(total);
-    if (!obj) return NULL;
+    wah_gc_object_t *obj = NULL;
+    if (wah_malloc(&ctx->alloc, total, 1, (void **)&obj) != WAH_OK) return NULL;
     WAH_ASSERT(((uintptr_t)obj & WAH_I31_TAG) == 0 && "malloc returned unaligned pointer");
     memset(obj, 0, total);
 
@@ -8755,7 +8822,7 @@ static void wah_gc_step_sweep(wah_exec_context_t *ctx) {
 #ifdef WAH_DEBUG
             gc->total_frees++;
 #endif
-            free(obj);
+            wah_free(&ctx->alloc, obj);
         } else {
             prev_obj = obj;
         }
@@ -8993,10 +9060,10 @@ static void *wah_deadline_timer_main(void *arg) {
 
 static wah_error_t wah_deadline_timer_create(wah_exec_context_t *ctx) {
     if (ctx->deadline_timer) return WAH_OK;
-    wah_deadline_timer_t *timer = (wah_deadline_timer_t *)calloc(1, sizeof(*timer));
-    if (!timer) return WAH_ERROR_OUT_OF_MEMORY;
-    timer->ctx = ctx;
-    timer->deadline_us = ctx->deadline_us;
+    const wah_alloc_t *alloc = &ctx->alloc;
+    wah_deadline_timer_t *timer = NULL;
+    WAH_CHECK(wah_malloc(alloc, 1, sizeof(*timer), (void **)&timer));
+    *timer = (wah_deadline_timer_t){ .ctx = ctx, .deadline_us = ctx->deadline_us };
 #if defined(_WIN32)
     timer->event = CreateEventA(NULL, TRUE, FALSE, NULL);
     if (!timer->event) goto cleanup;
@@ -9011,7 +9078,7 @@ cleanup_timer:
 cleanup_event:
     CloseHandle(timer->event);
 cleanup:
-    free(timer);
+    wah_free(alloc, timer);
     return WAH_ERROR_OUT_OF_MEMORY;
 #else
     pthread_condattr_t attr;
@@ -9033,7 +9100,7 @@ cleanup_attr:
 cleanup_mutex:
     pthread_mutex_destroy(&timer->mutex);
 cleanup:
-    free(timer);
+    wah_free(alloc, timer);
     return WAH_ERROR_OUT_OF_MEMORY;
 #endif
 }
@@ -9075,7 +9142,7 @@ static void wah_deadline_timer_destroy(wah_exec_context_t *ctx) {
     pthread_cond_destroy(&timer->cond);
     pthread_mutex_destroy(&timer->mutex);
 #endif
-    free(timer);
+    wah_free(&ctx->alloc, timer);
     ctx->deadline_timer = NULL;
 }
 #else
@@ -9093,11 +9160,11 @@ wah_rlimits_t wah_default_rlimits(void) {
 }
 
 static wah_error_t wah_alloc_unified_stack(wah_exec_context_t *exec_ctx, uint64_t stack_bytes) {
+    const wah_alloc_t *alloc = &exec_ctx->alloc;
     if (stack_bytes == 0) stack_bytes = WAH_DEFAULT_STACK_BYTES;
     if (stack_bytes > SIZE_MAX) return WAH_ERROR_TOO_LARGE;
     exec_ctx->stack_buffer_size = stack_bytes;
-    exec_ctx->stack_buffer = (uint8_t *)malloc((size_t)stack_bytes);
-    if (!exec_ctx->stack_buffer) return WAH_ERROR_OUT_OF_MEMORY;
+    WAH_CHECK(wah_malloc(alloc, (size_t)stack_bytes, 1, (void **)&exec_ctx->stack_buffer));
     exec_ctx->value_stack = (wah_value_t *)exec_ctx->stack_buffer;
     exec_ctx->sp = exec_ctx->value_stack;
     exec_ctx->call_depth = 0;
@@ -9108,9 +9175,12 @@ static wah_error_t wah_alloc_unified_stack(wah_exec_context_t *exec_ctx, uint64_
     return WAH_OK;
 }
 
-wah_error_t wah_exec_context_create_with_limits(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_rlimits_t *limits) {
-    *exec_ctx = (wah_exec_context_t){ .is_instantiated = false };
+wah_error_t wah_exec_context_create_ex(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_exec_options_t *options) {
+    wah_rlimits_t default_limits = wah_default_rlimits();
+    const wah_rlimits_t *limits = options ? &options->limits : &default_limits;
+    *exec_ctx = (wah_exec_context_t){ .is_instantiated = false, .alloc = wah_resolve_alloc(options ? options->alloc : NULL) };
     wah_error_t err = WAH_OK;
+    const wah_alloc_t *alloc = &exec_ctx->alloc;
 
     WAH_ENSURE(!(limits->no_memory_bytes && limits->max_memory_bytes > 0), WAH_ERROR_MISUSE);
     if (limits->no_memory_bytes) {
@@ -9243,22 +9313,28 @@ cleanup:
     return err;
 }
 
+wah_error_t wah_exec_context_create_with_limits(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_rlimits_t *limits) {
+    wah_exec_options_t options = {0};
+    if (limits) options.limits = *limits;
+    return wah_exec_context_create_ex(exec_ctx, module, &options);
+}
+
 wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_module_t *module) {
-    wah_rlimits_t limits = wah_default_rlimits();
-    return wah_exec_context_create_with_limits(exec_ctx, module, &limits);
+    return wah_exec_context_create_ex(exec_ctx, module, NULL);
 }
 
 wah_error_t wah_exec_context_set_limits(wah_exec_context_t *exec_ctx, const wah_rlimits_t *limits) {
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
+    const wah_alloc_t *alloc = &exec_ctx->alloc;
     WAH_ENSURE(exec_ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
     WAH_ENSURE(exec_ctx->call_depth == 0 && exec_ctx->sp == exec_ctx->value_stack, WAH_ERROR_MISUSE);
 
     if (limits->max_stack_bytes != 0 && limits->max_stack_bytes != exec_ctx->stack_buffer_size) {
         uint64_t new_size = limits->max_stack_bytes;
         if (new_size > SIZE_MAX) return WAH_ERROR_TOO_LARGE;
-        uint8_t *new_buf = (uint8_t *)malloc((size_t)new_size);
-        if (!new_buf) return WAH_ERROR_OUT_OF_MEMORY;
-        free(exec_ctx->stack_buffer);
+        uint8_t *new_buf = NULL;
+        WAH_CHECK(wah_malloc(alloc, (size_t)new_size, 1, (void **)&new_buf));
+        wah_free(alloc, exec_ctx->stack_buffer);
         exec_ctx->stack_buffer = new_buf;
         exec_ctx->stack_buffer_size = new_size;
         exec_ctx->value_stack = (wah_value_t *)new_buf;
@@ -9302,41 +9378,45 @@ void wah_exec_context_get_limits(const wah_exec_context_t *exec_ctx, wah_rlimits
 
 void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
     if (!exec_ctx) return;
+    wah_alloc_t alloc_storage = wah_resolve_alloc(&exec_ctx->alloc);
+    const wah_alloc_t *alloc = &alloc_storage;
     wah_deadline_timer_destroy(exec_ctx);
     exec_ctx->lifecycle = (wah_exec_lifecycle_t){0};
-    free(exec_ctx->stack_buffer);
-    free(exec_ctx->globals);
+    wah_free(alloc, exec_ctx->stack_buffer);
+    wah_free(alloc, exec_ctx->globals);
     if (exec_ctx->memories) {
         for (uint32_t i = 0; i < exec_ctx->memory_count; ++i) {
             if (!exec_ctx->memories[i].is_imported) {
-                free(exec_ctx->memories[i].data);
+                wah_free(alloc, exec_ctx->memories[i].data);
             }
         }
-        free(exec_ctx->memories);
+        wah_free(alloc, exec_ctx->memories);
     }
-    free(exec_ctx->function_table);
+    wah_free(alloc, exec_ctx->function_table);
     if (exec_ctx->tables) {
         for (uint32_t i = 0; i < exec_ctx->table_count; ++i) {
             if (!exec_ctx->tables[i].is_imported) {
-                free(exec_ctx->tables[i].entries);
+                wah_free(alloc, exec_ctx->tables[i].entries);
             }
         }
-        free(exec_ctx->tables);
+        wah_free(alloc, exec_ctx->tables);
     }
 
-    free(exec_ctx->tag_instances);
+    wah_free(alloc, exec_ctx->tag_instances);
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
     wah_exception_free_all(exec_ctx);
+#endif
 
     // Free linked modules
     if (exec_ctx->linked_modules) {
         for (uint32_t i = 0; i < exec_ctx->linked_module_count; ++i) {
-            free((void*)exec_ctx->linked_modules[i].name);
+            wah_free(alloc, (void*)exec_ctx->linked_modules[i].name);
             if (exec_ctx->linked_modules[i].owns_ctx) {
-                free(exec_ctx->linked_modules[i].ctx->tag_instances);
-                free(exec_ctx->linked_modules[i].ctx);
+                wah_free(alloc, exec_ctx->linked_modules[i].ctx->tag_instances);
+                wah_free(alloc, exec_ctx->linked_modules[i].ctx);
             }
         }
-        free(exec_ctx->linked_modules);
+        wah_free(alloc, exec_ctx->linked_modules);
     }
 
     wah_gc_destroy(exec_ctx);
@@ -9753,8 +9833,11 @@ static wah_error_t wah_table_grow_internal(
         }
     }
 
+    wah_exec_context_t *owner = (ctx->tables[table_idx].is_imported && ctx->tables[table_idx].import_ctx)
+        ? ctx->tables[table_idx].import_ctx : ctx;
+    const wah_alloc_t *grow_alloc = &owner->alloc;
     wah_value_t *new_table = NULL;
-    wah_error_t err = wah_malloc((size_t)new_size, sizeof(wah_value_t), (void **)&new_table);
+    wah_error_t err = wah_malloc(grow_alloc, (size_t)new_size, sizeof(wah_value_t), (void **)&new_table);
     if (err != WAH_OK) return err;
 
     if (*old_size > 0) {
@@ -9779,7 +9862,7 @@ static wah_error_t wah_table_grow_internal(
         src->tables[src_idx].entries = new_table;
         src->tables[src_idx].size = new_size;
     }
-    free(old_entries);
+    wah_free(grow_alloc, old_entries);
     if (ctx->tables) ctx->tables[table_idx].is_imported = false;
 
     *grew = true;
@@ -9808,8 +9891,10 @@ static bool wah_memory_grow_internal(
         }
     }
 
+    wah_exec_context_t *owner = (fctx->memories[mem_idx].is_imported && fctx->memories[mem_idx].import_ctx)
+        ? fctx->memories[mem_idx].import_ctx : fctx;
     void *memory_data = fctx->memories[mem_idx].data;
-    if (wah_realloc(new_memory_size, sizeof(*fctx->memories[mem_idx].data), &memory_data) != WAH_OK) {
+    if (wah_realloc(&owner->alloc, new_memory_size, sizeof(*fctx->memories[mem_idx].data), &memory_data) != WAH_OK) {
         return false;
     }
     fctx->memories[mem_idx].data = (uint8_t *)memory_data;
@@ -10117,6 +10202,7 @@ WAH_RUN(END_TRY_TABLE) {
 }
 
 WAH_RUN(THROW) {
+    const wah_alloc_t *alloc = &ctx->alloc;
     uint32_t tag_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     WAH_ASSERT(tag_idx < fctx->tag_instance_count);
@@ -10159,6 +10245,7 @@ cleanup_exc:
 }
 
 WAH_RUN(THROW_REF) {
+    const wah_alloc_t *alloc = &ctx->alloc;
     wah_value_t exnref_val = *--sp;
     WAH_ENSURE_GOTO(exnref_val.ref != NULL, WAH_ERROR_TRAP, cleanup);
 
@@ -11138,7 +11225,7 @@ WAH_RUN(ELEM_DROP) {
     wah_element_segment_t *segment = &ctx->module->element_segments[elem_idx];
 
     // Free element data
-    wah_free_element_segment_data(segment);
+    wah_free_element_segment_data(segment, &ctx->module->alloc);
 
     // Mark as dropped
     segment->is_dropped = true;
@@ -11860,7 +11947,7 @@ WAH_RUN(DATA_DROP) {
     WAH_ASSERT(data_idx < ctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index");
 
     wah_data_segment_t *segment = &ctx->module->data_segments[data_idx];
-    free((void *)segment->data);
+    wah_free(&ctx->module->alloc, (void *)segment->data);
     segment->data = NULL;
     segment->data_len = 0;
     WAH_NEXT();
@@ -13686,7 +13773,7 @@ static bool wah_type_spec_parse_type(wah_type_spec_parser_t *p, bool allow_packe
     return false;
 }
 
-static wah_error_t wah_type_spec_push_type(wah_type_t **arr, uint32_t *count, wah_type_t type) {
+static wah_error_t wah_type_spec_push_type(wah_type_t **arr, uint32_t *count, wah_type_t type, const wah_alloc_t *alloc) {
     wah_error_t err;
     uint32_t new_count = *count + 1;
     WAH_REALLOC_ARRAY_GOTO(*arr, new_count, cleanup);
@@ -13699,7 +13786,7 @@ cleanup:
 
 static wah_error_t wah_type_spec_parse_types_until(wah_type_spec_parser_t *p, char end,
                                                    bool allow_packed, wah_type_t **out_types,
-                                                   uint32_t *out_count) {
+                                                   uint32_t *out_count, const wah_alloc_t *alloc) {
     wah_error_t err;
     *out_types = NULL;
     *out_count = 0;
@@ -13708,7 +13795,7 @@ static wah_error_t wah_type_spec_parse_types_until(wah_type_spec_parser_t *p, ch
     for (;;) {
         wah_type_t t;
         if (!wah_type_spec_parse_type(p, allow_packed, &t)) { err = WAH_ERROR_BAD_SPEC; goto cleanup; }
-        WAH_CHECK_GOTO(wah_type_spec_push_type(out_types, out_count, t), cleanup);
+        WAH_CHECK_GOTO(wah_type_spec_push_type(out_types, out_count, t, alloc), cleanup);
         wah_type_spec_skip_ws(p);
         if (*p->cur != ',') return WAH_OK;
         p->cur++;
@@ -13716,38 +13803,38 @@ static wah_error_t wah_type_spec_parse_types_until(wah_type_spec_parser_t *p, ch
         if (*p->cur == end) return WAH_OK;
     }
 cleanup:
-    free(*out_types);
+    wah_free(alloc, *out_types);
     *out_types = NULL;
     *out_count = 0;
     return err;
 }
 
-static wah_error_t wah_type_spec_parse_func(wah_type_spec_parser_t *p, wah_func_type_t *ft, bool implicit_fn) {
+static wah_error_t wah_type_spec_parse_func(wah_type_spec_parser_t *p, wah_func_type_t *ft, bool implicit_fn, const wah_alloc_t *alloc) {
     wah_error_t err;
     if (!implicit_fn && !wah_type_spec_take_kw(p, "fn")) return WAH_ERROR_BAD_SPEC;
     if (!wah_type_spec_take_lit(p, "(")) return WAH_ERROR_BAD_SPEC;
-    WAH_CHECK_GOTO(wah_type_spec_parse_types_until(p, ')', false, &ft->param_types, &ft->param_count), cleanup);
+    WAH_CHECK_GOTO(wah_type_spec_parse_types_until(p, ')', false, &ft->param_types, &ft->param_count, alloc), cleanup);
     if (!wah_type_spec_take_lit(p, ")")) { err = WAH_ERROR_BAD_SPEC; goto cleanup; }
     if (wah_type_spec_take_lit(p, "->")) {
         if (wah_type_spec_take_lit(p, "(")) {
-            WAH_CHECK_GOTO(wah_type_spec_parse_types_until(p, ')', false, &ft->result_types, &ft->result_count), cleanup);
+            WAH_CHECK_GOTO(wah_type_spec_parse_types_until(p, ')', false, &ft->result_types, &ft->result_count, alloc), cleanup);
             if (!wah_type_spec_take_lit(p, ")")) { err = WAH_ERROR_BAD_SPEC; goto cleanup; }
         } else {
             wah_type_t result_type;
             if (!wah_type_spec_parse_type(p, false, &result_type)) { err = WAH_ERROR_BAD_SPEC; goto cleanup; }
-            WAH_CHECK_GOTO(wah_type_spec_push_type(&ft->result_types, &ft->result_count, result_type), cleanup);
+            WAH_CHECK_GOTO(wah_type_spec_push_type(&ft->result_types, &ft->result_count, result_type, alloc), cleanup);
         }
     }
     return WAH_OK;
 cleanup:
-    free(ft->param_types);
-    free(ft->result_types);
+    wah_free(alloc, ft->param_types);
+    wah_free(alloc, ft->result_types);
     *ft = (wah_func_type_t){0};
     return err;
 }
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-static wah_error_t wah_type_spec_push_field(wah_type_def_t *td, wah_type_t type, bool is_mutable) {
+static wah_error_t wah_type_spec_push_field(wah_type_def_t *td, wah_type_t type, bool is_mutable, const wah_alloc_t *alloc) {
     wah_error_t err;
     uint32_t new_count = td->field_count + 1;
     WAH_REALLOC_ARRAY_GOTO(td->field_types, new_count, cleanup);
@@ -13760,7 +13847,7 @@ cleanup:
     return err;
 }
 
-static wah_error_t wah_type_spec_parse_struct(wah_type_spec_parser_t *p, wah_type_def_t *td) {
+static wah_error_t wah_type_spec_parse_struct(wah_type_spec_parser_t *p, wah_type_def_t *td, const wah_alloc_t *alloc) {
     wah_error_t err;
     if (!wah_type_spec_take_kw(p, "struct")) return WAH_ERROR_BAD_SPEC;
     if (!wah_type_spec_take_lit(p, "{")) return WAH_ERROR_BAD_SPEC;
@@ -13769,7 +13856,7 @@ static wah_error_t wah_type_spec_parse_struct(wah_type_spec_parser_t *p, wah_typ
         bool is_mutable = wah_type_spec_take_kw(p, "mut");
         wah_type_t field_type;
         if (!wah_type_spec_parse_type(p, true, &field_type)) { err = WAH_ERROR_BAD_SPEC; goto cleanup; }
-        WAH_CHECK_GOTO(wah_type_spec_push_field(td, field_type, is_mutable), cleanup);
+        WAH_CHECK_GOTO(wah_type_spec_push_field(td, field_type, is_mutable, alloc), cleanup);
         wah_type_spec_skip_ws(p);
         if (*p->cur != ',') break;
         p->cur++;
@@ -13778,22 +13865,22 @@ static wah_error_t wah_type_spec_parse_struct(wah_type_spec_parser_t *p, wah_typ
     if (!wah_type_spec_take_lit(p, "}")) { err = WAH_ERROR_BAD_SPEC; goto cleanup; }
     return WAH_OK;
 cleanup:
-    free(td->field_types);
-    free(td->field_mutables);
+    wah_free(alloc, td->field_types);
+    wah_free(alloc, td->field_mutables);
     td->field_types = NULL;
     td->field_mutables = NULL;
     td->field_count = 0;
     return err;
 }
 
-static wah_error_t wah_type_spec_parse_array(wah_type_spec_parser_t *p, wah_type_def_t *td) {
+static wah_error_t wah_type_spec_parse_array(wah_type_spec_parser_t *p, wah_type_def_t *td, const wah_alloc_t *alloc) {
     wah_error_t err;
     bool is_mutable;
     wah_type_t elem_type;
     if (!wah_type_spec_take_kw(p, "array")) return WAH_ERROR_BAD_SPEC;
     is_mutable = wah_type_spec_take_kw(p, "mut");
     if (!wah_type_spec_parse_type(p, true, &elem_type)) return WAH_ERROR_BAD_SPEC;
-    WAH_CHECK_GOTO(wah_type_spec_push_field(td, elem_type, is_mutable), cleanup);
+    WAH_CHECK_GOTO(wah_type_spec_push_field(td, elem_type, is_mutable, alloc), cleanup);
     return WAH_OK;
 cleanup:
     return err;
@@ -13813,10 +13900,12 @@ static void wah_cancel_internal(wah_exec_context_t *ctx) {
     ctx->call_depth = ctx->lifecycle.base_call_depth;
     ctx->frame_ptr = ctx->lifecycle.base_frame_ptr;
     ctx->exception_handler_depth = ctx->lifecycle.base_handler_depth;
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
     if (ctx->pending_exception) {
         wah_exception_free(ctx, ctx->pending_exception);
         ctx->pending_exception = NULL;
     }
+#endif
     ctx->lifecycle = (wah_exec_lifecycle_t){0};
 }
 
@@ -13980,7 +14069,8 @@ static wah_error_t wah_call_module_multi(
     return err;
 }
 
-static wah_error_t wah_call_module(wah_exec_context_t *exec_ctx, uint32_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
+static wah_error_t wah_call_module(wah_exec_context_t *exec_ctx, uint32_t func_idx,
+                                   const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
     if (!result) {
         // Case where even a single return is not needed (void function)
         uint32_t dummy;
@@ -14031,30 +14121,32 @@ void wah_free_module(wah_module_t *module) {
     if (!module) {
         return;
     }
+    wah_alloc_t alloc_storage = wah_resolve_alloc(&module->alloc);
+    const wah_alloc_t *alloc = &alloc_storage;
 
     if (module->types) {
         for (uint32_t i = 0; i < module->type_count; ++i) {
-            free(module->types[i].param_types);
-            free(module->types[i].result_types);
+            wah_free(alloc, module->types[i].param_types);
+            wah_free(alloc, module->types[i].result_types);
         }
-        free(module->types);
+        wah_free(alloc, module->types);
     }
     if (module->type_defs) {
         for (uint32_t i = 0; i < module->type_count; ++i) {
-            free(module->type_defs[i].field_types);
-            free(module->type_defs[i].field_mutables);
+            wah_free(alloc, module->type_defs[i].field_types);
+            wah_free(alloc, module->type_defs[i].field_mutables);
         }
-        free(module->type_defs);
+        wah_free(alloc, module->type_defs);
     }
-    free(module->function_type_indices);
+    wah_free(alloc, module->function_type_indices);
 
     #define WAH_FREE_IMPORTS(arr, count) do { \
         if (arr) { \
             for (uint32_t i_ = 0; i_ < (count); i_++) { \
-                free((arr)[i_].name.module); \
-                free((arr)[i_].name.field); \
+                wah_free(alloc, (arr)[i_].name.module); \
+                wah_free(alloc, (arr)[i_].name.field); \
             } \
-            free(arr); \
+            wah_free(alloc, arr); \
         } \
     } while(0)
     WAH_FREE_IMPORTS(module->func_imports, module->import_function_count);
@@ -14063,39 +14155,39 @@ void wah_free_module(wah_module_t *module) {
     WAH_FREE_IMPORTS(module->global_imports, module->import_global_count);
     WAH_FREE_IMPORTS(module->tag_imports, module->import_tag_count);
     #undef WAH_FREE_IMPORTS
-    free(module->imports);
+    wah_free(alloc, module->imports);
 
-    free(module->tags);
+    wah_free(alloc, module->tags);
 
     wah_free_code_bodies(module);
 
     if (module->globals) {
         for (uint32_t i = 0; i < module->global_count; ++i) {
-            wah_free_parsed_code(&module->globals[i].init_expr);
+            wah_free_parsed_code(&module->globals[i].init_expr, alloc);
         }
-        free(module->globals);
+        wah_free(alloc, module->globals);
     }
-    free(module->memories);
+    wah_free(alloc, module->memories);
     if (module->tables) {
         for (uint32_t i = 0; i < module->table_count; ++i) {
-            wah_free_parsed_code(&module->tables[i].init_expr);
+            wah_free_parsed_code(&module->tables[i].init_expr, alloc);
         }
-        free(module->tables);
+        wah_free(alloc, module->tables);
     }
 
     if (module->element_segments) {
         for (uint32_t i = 0; i < module->element_segment_count; ++i) {
-            wah_free_element_segment_data(&module->element_segments[i]);
+            wah_free_element_segment_data(&module->element_segments[i], alloc);
         }
-        free(module->element_segments);
+        wah_free(alloc, module->element_segments);
     }
 
     if (module->data_segments) {
         for (uint32_t i = 0; i < module->data_segment_count; ++i) {
-            free((void *)module->data_segments[i].data);
-            wah_free_parsed_code(&module->data_segments[i].offset_expr);
+            wah_free(alloc, (void *)module->data_segments[i].data);
+            wah_free_parsed_code(&module->data_segments[i].offset_expr, alloc);
         }
-        free(module->data_segments);
+        wah_free(alloc, module->data_segments);
     }
 
     // Free exports. For host function exports the name is owned by functions[], freed below.
@@ -14110,10 +14202,10 @@ void wah_free_module(wah_module_t *module) {
             // the name is owned by the export entry itself, not by another structure.
             // For WASM function exports (kind 0, not host), the name is also owned by the export entry.
             if (!is_host_export) {
-                free((void*)module->exports[i].name);
+                wah_free(alloc, (void*)module->exports[i].name);
             }
         }
-        free(module->exports);
+        wah_free(alloc, module->exports);
     }
 
     // Free host function resources stored in the unified functions[] array.
@@ -14124,39 +14216,41 @@ void wah_free_module(wah_module_t *module) {
                 if (fn->finalize && fn->userdata) {
                     fn->finalize(fn->userdata);
                 }
-                free(fn->name);
-                free(fn->param_types);
-                free(fn->result_types);
+                wah_free(alloc, fn->name);
+                wah_free(alloc, fn->param_types);
+                wah_free(alloc, fn->result_types);
             }
         }
-        free(module->functions);
+        wah_free(alloc, module->functions);
     }
 
     if (module->repr_infos) {
         for (uint32_t i = 0; i < module->repr_count; ++i) {
-            free(module->repr_infos[i]);
+            wah_free(alloc, module->repr_infos[i]);
         }
-        free(module->repr_infos);
+        wah_free(alloc, module->repr_infos);
     }
-    free(module->typeidx_to_repr);
-    free(module->canonical_map);
+    wah_free(alloc, module->typeidx_to_repr);
+    wah_free(alloc, module->canonical_map);
     if (module->type_cast_sets) {
         for (uint32_t i = 0; i < module->type_count; ++i) {
-            free(module->type_cast_sets[i].bits);
+            wah_free(alloc, module->type_cast_sets[i].bits);
         }
-        free(module->type_cast_sets);
+        wah_free(alloc, module->type_cast_sets);
     }
-    free(module->declared_funcs);
+    wah_free(alloc, module->declared_funcs);
 
     *module = (wah_module_t){0};
 }
 
 // --- Programmatically created module API ---
 
-wah_error_t wah_new_module(wah_module_t *mod) {
+wah_error_t wah_new_module_ex(wah_module_t *mod, const wah_alloc_t *alloc_arg) {
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
 
-    *mod = (wah_module_t){ .functions_cap = 16, .local_function_count = 0, .exports_cap = 16 };
+    *mod = (wah_module_t){ .functions_cap = 16, .local_function_count = 0, .exports_cap = 16,
+                           .alloc = wah_resolve_alloc(alloc_arg) };
+    const wah_alloc_t *alloc = &mod->alloc;
 
     // Allocate initial unified functions[] array (all host functions for a new module)
     WAH_MALLOC_ARRAY(mod->functions, mod->functions_cap);
@@ -14167,8 +14261,11 @@ wah_error_t wah_new_module(wah_module_t *mod) {
     return WAH_OK;
 }
 
-static bool wah_define_type_matches(const wah_module_t *mod, uint32_t i,
-                                    const wah_func_type_t *ft, const wah_type_def_t *td) {
+wah_error_t wah_new_module(wah_module_t *mod) {
+    return wah_new_module_ex(mod, NULL);
+}
+
+static bool wah_define_type_matches(const wah_module_t *mod, uint32_t i, const wah_func_type_t *ft, const wah_type_def_t *td) {
     const wah_type_def_t *ei = &mod->type_defs[i];
     if (ei->kind != td->kind) return false;
     if (ei->is_final != td->is_final) return false;
@@ -14198,10 +14295,12 @@ wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, con
     wah_type_def_t td = { .kind = WAH_COMP_FUNC, .is_final = true, .supertype = WAH_NO_SUPERTYPE };
     uint32_t idx;
     bool fresh;
+    const wah_alloc_t *alloc;
 
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
     WAH_ENSURE(out_type, WAH_ERROR_MISUSE);
     WAH_ENSURE(spec, WAH_ERROR_MISUSE);
+    alloc = &mod->alloc;
 
     p = (wah_type_spec_parser_t){ .cur = spec, .module = mod, .args = args, .allow_placeholders = true };
     fresh = wah_type_spec_take_kw(&p, "fresh");
@@ -14209,12 +14308,12 @@ wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, con
     if (wah_type_spec_take_kw(&p, "fn")) {
         p.cur = after_fresh;
         td.kind = WAH_COMP_FUNC;
-        WAH_CHECK_GOTO(wah_type_spec_parse_func(&p, &ft, false), cleanup);
+        WAH_CHECK_GOTO(wah_type_spec_parse_func(&p, &ft, false, alloc), cleanup);
     } else if (wah_type_spec_take_kw(&p, "struct")) {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
         p.cur = after_fresh;
         td.kind = WAH_COMP_STRUCT;
-        WAH_CHECK_GOTO(wah_type_spec_parse_struct(&p, &td), cleanup);
+        WAH_CHECK_GOTO(wah_type_spec_parse_struct(&p, &td, alloc), cleanup);
 #else
         err = WAH_ERROR_DISABLED_FEATURE; goto cleanup;
 #endif
@@ -14222,7 +14321,7 @@ wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, con
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
         p.cur = after_fresh;
         td.kind = WAH_COMP_ARRAY;
-        WAH_CHECK_GOTO(wah_type_spec_parse_array(&p, &td), cleanup);
+        WAH_CHECK_GOTO(wah_type_spec_parse_array(&p, &td, alloc), cleanup);
 #else
         err = WAH_ERROR_DISABLED_FEATURE; goto cleanup;
 #endif
@@ -14237,10 +14336,10 @@ wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, con
     if (!fresh) {
         for (uint32_t i = 0; i < mod->type_count; ++i) {
             if (wah_define_type_matches(mod, i, &ft, &td)) {
-                free(ft.param_types);
-                free(ft.result_types);
-                free(td.field_types);
-                free(td.field_mutables);
+                wah_free(alloc, ft.param_types);
+                wah_free(alloc, ft.result_types);
+                wah_free(alloc, td.field_types);
+                wah_free(alloc, td.field_mutables);
                 *out_type = WAH_TYPE_FROM_IDX(i, false);
                 return WAH_OK;
             }
@@ -14261,10 +14360,10 @@ wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, con
     if (err != WAH_OK) {
         wah_module_rollback_last_type_metadata(mod, idx);
         mod->type_count--;
-        free(mod->types[idx].param_types);
-        free(mod->types[idx].result_types);
-        free(mod->type_defs[idx].field_types);
-        free(mod->type_defs[idx].field_mutables);
+        wah_free(alloc, mod->types[idx].param_types);
+        wah_free(alloc, mod->types[idx].result_types);
+        wah_free(alloc, mod->type_defs[idx].field_types);
+        wah_free(alloc, mod->type_defs[idx].field_mutables);
         mod->types[idx] = (wah_func_type_t){0};
         mod->type_defs[idx] = (wah_type_def_t){0};
         return err;
@@ -14274,10 +14373,10 @@ wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, con
     return WAH_OK;
 
 cleanup:
-    free(ft.param_types);
-    free(ft.result_types);
-    free(td.field_types);
-    free(td.field_mutables);
+    wah_free(alloc, ft.param_types);
+    wah_free(alloc, ft.result_types);
+    wah_free(alloc, td.field_types);
+    wah_free(alloc, td.field_mutables);
     return err == WAH_OK ? WAH_ERROR_BAD_SPEC : err;
 }
 
@@ -14291,6 +14390,7 @@ wah_error_t wah_module_define_type(wah_module_t *mod, wah_type_t *out_type, cons
 }
 
 static wah_error_t wah_module_ensure_export(wah_module_t *mod, const char *name) {
+    const wah_alloc_t *alloc = &mod->alloc;
     for (uint32_t i = 0; i < mod->export_count; ++i) {
         if (mod->exports[i].name && strcmp(mod->exports[i].name, name) == 0) {
             return WAH_ERROR_VALIDATION_FAILED;
@@ -14305,6 +14405,7 @@ static wah_error_t wah_module_register_host_func(
     wah_func_t func, void *userdata, wah_finalize_t finalize
 ) {
     wah_error_t err;
+    const wah_alloc_t *alloc = &mod->alloc;
     char *name_copy = NULL;
     wah_type_t *param_types_copy = NULL;
     wah_type_t *result_types_copy = NULL;
@@ -14312,7 +14413,7 @@ static wah_error_t wah_module_register_host_func(
     WAH_CHECK_GOTO(wah_module_ensure_export(mod, name), cleanup);
     WAH_ENSURE_CAP_GOTO(mod->functions, mod->local_function_count + 1, cleanup);
 
-    name_copy = wah_strdup(name);
+    name_copy = wah_strdup(name, alloc);
     WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
 
     if (ft->param_count > 0) {
@@ -14340,38 +14441,42 @@ static wah_error_t wah_module_register_host_func(
     result_types_copy = NULL;
     err = WAH_OK;
 cleanup:
-    free(param_types_copy);
-    free(result_types_copy);
-    free(name_copy);
+    wah_free(alloc, param_types_copy);
+    wah_free(alloc, result_types_copy);
+    wah_free(alloc, name_copy);
     return err;
 }
 
-wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const char *types, wah_func_t func, void *userdata, wah_finalize_t finalize) {
+wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const char *types,
+                                   wah_func_t func, void *userdata, wah_finalize_t finalize) {
     wah_error_t err;
     wah_type_spec_parser_t p;
     wah_func_type_t ft = {0};
+    const wah_alloc_t *alloc;
 
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(types, WAH_ERROR_MISUSE);
     WAH_ENSURE(func, WAH_ERROR_MISUSE);
+    alloc = &mod->alloc;
 
     p = (wah_type_spec_parser_t){ .cur = types, .module = mod, .allow_placeholders = false };
     bool has_fn = wah_type_spec_take_kw(&p, "fn");
     p.cur = types;
-    WAH_CHECK_GOTO(wah_type_spec_parse_func(&p, &ft, !has_fn), cleanup);
+    WAH_CHECK_GOTO(wah_type_spec_parse_func(&p, &ft, !has_fn, alloc), cleanup);
     wah_type_spec_skip_ws(&p);
     WAH_ENSURE_GOTO(*p.cur == '\0', WAH_ERROR_BAD_SPEC, cleanup);
 
     err = wah_module_register_host_func(mod, name, &ft, func, userdata, finalize);
 cleanup:
-    free(ft.param_types);
-    free(ft.result_types);
+    wah_free(alloc, ft.param_types);
+    wah_free(alloc, ft.result_types);
 
     return err;
 }
 
-wah_error_t wah_module_export_typed_func(wah_module_t *mod, const char *name, wah_type_t type, wah_func_t func, void *userdata, wah_finalize_t finalize) {
+wah_error_t wah_module_export_typed_func(wah_module_t *mod, const char *name, wah_type_t type,
+                                         wah_func_t func, void *userdata, wah_finalize_t finalize) {
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(func, WAH_ERROR_MISUSE);
@@ -14383,7 +14488,7 @@ wah_error_t wah_module_export_typed_func(wah_module_t *mod, const char *name, wa
 }
 
 // Helper to create a preparsed const expression from a simple constant value
-static wah_error_t wah_create_const_expr(wah_type_t type, const wah_value_t *value, wah_parsed_code_t *parsed_code) {
+static wah_error_t wah_create_const_expr(wah_type_t type, const wah_value_t *value, wah_parsed_code_t *parsed_code, const wah_alloc_t *alloc) {
     uint16_t opcode;
     const void *payload;
     uint32_t payload_size;
@@ -14412,34 +14517,37 @@ static wah_error_t wah_create_const_expr(wah_type_t type, const wah_value_t *val
 }
 
 // Internal helper for exporting globals
-static wah_error_t wah_module_export_global_internal(wah_module_t *mod, const char *name, wah_type_t type, bool is_mutable, const wah_value_t *init_value) {
+static wah_error_t wah_module_export_global_internal(wah_module_t *mod, const char *name, wah_type_t type,
+                                                     bool is_mutable, const wah_value_t *init_value) {
     wah_error_t err;
     char *name_copy = NULL;
 
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
+    const wah_alloc_t *alloc = &mod->alloc;
 
     WAH_CHECK_GOTO(wah_module_ensure_export(mod, name), cleanup);
 
     WAH_REALLOC_ARRAY_GOTO(mod->globals, mod->global_count + 1, cleanup);
 
-    name_copy = wah_strdup(name);
+    name_copy = wah_strdup(name, alloc);
     WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
 
     mod->globals[mod->global_count] = (wah_global_t){ .type = type, .is_mutable = is_mutable };
-    WAH_CHECK_GOTO(wah_create_const_expr(type, init_value, &mod->globals[mod->global_count].init_expr), cleanup);
+    WAH_CHECK_GOTO(wah_create_const_expr(type, init_value, &mod->globals[mod->global_count].init_expr, alloc), cleanup);
     mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
                                                         .kind = WAH_KIND_GLOBAL, .index = mod->global_count };
     mod->global_count++;
     return WAH_OK;
 
 cleanup:
-    free(name_copy);
+    wah_free(alloc, name_copy);
     return err;
 }
 
 wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages) {
     wah_error_t err;
+    const wah_alloc_t *alloc = &mod->alloc;
     char *name_copy = NULL;
 
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
@@ -14451,7 +14559,7 @@ wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64
 
     WAH_REALLOC_ARRAY_GOTO(mod->memories, mod->memory_count + 1, cleanup);
 
-    name_copy = wah_strdup(name);
+    name_copy = wah_strdup(name, alloc);
     WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
 
     mod->memories[mod->memory_count] = (wah_memory_type_t){ .addr_type = WAH_TYPE_I32, .min_pages = min_pages, .max_pages = max_pages };
@@ -14461,7 +14569,7 @@ wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64
     return WAH_OK;
 
 cleanup:
-    free(name_copy);
+    wah_free(alloc, name_copy);
     return err;
 }
 
@@ -14502,6 +14610,7 @@ void wah_trap(wah_call_context_t *ctx, wah_error_t reason) {
 // --- Linkage Implementation ---
 
 wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah_module_t *mod) {
+    const wah_alloc_t *alloc = &ctx->alloc;
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
@@ -14519,7 +14628,7 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
 
     WAH_ENSURE_CAP(ctx->linked_modules, ctx->linked_module_count + 1);
 
-    char *name_copy = wah_strdup(name);
+    char *name_copy = wah_strdup(name, alloc);
     WAH_ENSURE(name_copy, WAH_ERROR_OUT_OF_MEMORY);
 
     ctx->linked_modules[ctx->linked_module_count++] =
@@ -14528,6 +14637,7 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
 }
 
 wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec_context_t *linked_ctx) {
+    const wah_alloc_t *alloc = &ctx->alloc;
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(linked_ctx, WAH_ERROR_MISUSE);
@@ -14545,7 +14655,7 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
 
     WAH_ENSURE_CAP(ctx->linked_modules, ctx->linked_module_count + 1);
 
-    char *name_copy = wah_strdup(name);
+    char *name_copy = wah_strdup(name, alloc);
     WAH_ENSURE(name_copy, WAH_ERROR_OUT_OF_MEMORY);
 
     ctx->linked_modules[ctx->linked_module_count++] =
@@ -14562,9 +14672,8 @@ static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, const uint8_t *b
                                      .result_count = 1, .frame_globals = ctx->globals, .module = ctx->module };
     wah_exec_context_t cctx = { .module = ctx->module, .globals = ctx->globals, .global_count = ctx->global_count,
                                 .value_stack = local_stack, .sp = local_stack, .frame_ptr = &local_frame,
-                                .call_depth = 1, .gc = ctx->gc,
-                                .max_memory_bytes = ctx->max_memory_bytes,
-                                .memory_bytes_committed = ctx->memory_bytes_committed };
+                                .call_depth = 1, .gc = ctx->gc, .max_memory_bytes = ctx->max_memory_bytes,
+                                .memory_bytes_committed = ctx->memory_bytes_committed, .alloc = ctx->alloc };
     local_frame.frame_ctx = &cctx;
 
     wah_error_t err = wah_run_interpreter(&cctx);
@@ -14580,6 +14689,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(!ctx->is_instantiated, WAH_ERROR_MISUSE);
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
+    const wah_alloc_t *alloc = &ctx->alloc;
     WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0);
     wah_recompute_poll_flag(ctx);
 
@@ -14635,7 +14745,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         ctx->globals = saved_globals;
         ctx->global_count = saved_global_count;
 
-        free(ctx->globals);
+        wah_free(alloc, ctx->globals);
         ctx->globals = new_globals;
     }
 
@@ -14747,20 +14857,16 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         if (ctx->linked_modules[j].ctx == NULL) {
             uint32_t ltotal_tags = lmod->import_tag_count + lmod->tag_count;
             if (ltotal_tags > 0) {
-                wah_exec_context_t *ictx = (wah_exec_context_t *)calloc(1, sizeof(wah_exec_context_t));
-                WAH_ENSURE_GOTO(ictx != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
-                ictx->module = lmod;
-                ictx->memories = ctx->memories;
-                ictx->memory_count = ctx->memory_count;
-                ictx->tables = ctx->tables;
-                ictx->table_count = ctx->table_count;
-                ictx->globals = g_offset ? ctx->globals + g_offset : ctx->globals;
-                ictx->global_count = lmod->global_count;
-                ictx->function_table = ctx->function_table;
-                ictx->function_table_count = ctx->function_table_count;
-                ictx->gc = ctx->gc;
+                wah_exec_context_t *ictx = NULL;
+                WAH_CHECK_GOTO(wah_malloc(alloc, 1, sizeof(wah_exec_context_t), (void **)&ictx), cleanup);
+                *ictx = (wah_exec_context_t){
+                    .alloc = ctx->alloc, .module = lmod, .memories = ctx->memories, .memory_count = ctx->memory_count,
+                    .tables = ctx->tables, .table_count = ctx->table_count,
+                    .globals = g_offset ? ctx->globals + g_offset : ctx->globals, .global_count = lmod->global_count,
+                    .function_table = ctx->function_table, .function_table_count = ctx->function_table_count,
+                    .gc = ctx->gc, .tag_instance_count = 0,
+                };
                 WAH_MALLOC_ARRAY_GOTO(ictx->tag_instances, ltotal_tags, cleanup);
-                ictx->tag_instance_count = 0;
                 for (uint32_t t = 0; t < lmod->import_tag_count; t++) {
                     ictx->tag_instances[ictx->tag_instance_count++] =
                         (wah_tag_instance_t){ .type_index = lmod->tag_imports[t].type_index };
