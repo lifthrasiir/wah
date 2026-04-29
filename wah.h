@@ -4967,9 +4967,9 @@ static inline void wah_validation_mark_unreachable(wah_validation_context_t *vct
 static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, const uint8_t *code_end,
                                                      wah_validation_context_t *vctx, wah_func_type_t *bt) {
     const wah_alloc_t *alloc = &vctx->module->alloc;
+    *bt = (wah_func_type_t){0};
     WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t block_type_peek = **code_ptr;
-    *bt = (wah_func_type_t){0};
 
     if (block_type_peek == 0x40) {
         (*code_ptr)++;
@@ -5719,6 +5719,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             // Free memory allocated for the block type in the control frame
             wah_free(alloc, frame->block_type.param_types);
             wah_free(alloc, frame->block_type.result_types);
+            frame->block_type.param_types = NULL;
+            frame->block_type.result_types = NULL;
             EMIT_SIMPLE();
             return WAH_OK;
         }
