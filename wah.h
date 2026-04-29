@@ -8613,7 +8613,8 @@ static void *wah_gc_alloc(wah_exec_context_t *ctx, wah_repr_t repr_id, uint32_t 
     wah_gc_state_t *gc = ctx->gc;
     if (!gc) return NULL;
 
-    uint32_t total = (uint32_t)(sizeof(wah_gc_object_t) + payload_size);
+    if (payload_size > UINT32_MAX - sizeof(wah_gc_object_t)) return NULL;
+    uint32_t total = (uint32_t)sizeof(wah_gc_object_t) + payload_size;
     if (!wah_budget_check(ctx, total)) return NULL;
     wah_gc_object_t *obj = NULL;
     if (wah_malloc(&ctx->alloc, total, 1, (void **)&obj) != WAH_OK) return NULL;

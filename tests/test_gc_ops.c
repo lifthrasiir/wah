@@ -912,6 +912,31 @@ static void test_array_init_data() {
     wah_free_module(&module);
 }
 
+static void test_array_new_huge_i8_length_oom() {
+    printf("Testing array.new huge i8 length reports OOM...\n");
+
+    const char *spec = "wasm \
+        types {[ array i8 mut, fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] \
+            i32.const 7 i32.const -12 array.new 0 \
+            i32.const 1 array.get 0 \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_OUT_OF_MEMORY);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 static void test_struct_packed_fields() {
     printf("Testing struct with packed i8/i16 fields...\n");
 
@@ -1111,6 +1136,7 @@ int main() {
     test_array_copy();
     test_array_new_data();
     test_array_init_data();
+    test_array_new_huge_i8_length_oom();
     test_struct_packed_fields();
     test_struct_i64_f64_fields();
     test_struct_v128_field();
