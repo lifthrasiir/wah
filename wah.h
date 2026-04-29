@@ -5238,6 +5238,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         /* Vector Lane Operations */
         case WAH_OP_I8X16_SHUFFLE: {
             POP(V128); POP(V128); PUSH(V128);
+            WAH_ENSURE(code_end - *code_ptr >= 16, WAH_ERROR_UNEXPECTED_EOF);
             for (int i = 0; i < 16; i++) WAH_ENSURE((*code_ptr)[i] < 32, WAH_ERROR_VALIDATION_FAILED);
             EMIT_INSTR_EX(opcode_val, memcpy(_di->imm.v128, *code_ptr, 16));
             *code_ptr += 16;
