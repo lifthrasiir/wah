@@ -12,6 +12,7 @@ fuzz/*
 !fuzz/*.c
 crash-*
 oom-*
+slow-unit-*
 *.gcda
 *.gcno
 cov

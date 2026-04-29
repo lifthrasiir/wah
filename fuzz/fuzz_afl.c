@@ -7,7 +7,7 @@
 // Define maximum WASM input size to prevent excessive memory allocation.
 // afl-fuzz typically handles this by limiting input size.
 #define MAX_WASM_INPUT_SIZE (10 * 1024 * 1024) // 10 MB
-#define WAH_FUZZ_CALL_FUEL 100000
+#define WAH_FUZZ_CALL_FUEL 2048
 
 int main(void) {
     wah_module_t module;

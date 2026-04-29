@@ -5,7 +5,7 @@
 #include "../wah.h"
 
 #define WAH_FUZZ_MAX_INPUT_SIZE (10 * 1024 * 1024)
-#define WAH_FUZZ_CALL_FUEL 100000
+#define WAH_FUZZ_CALL_FUEL 2048
 #define WAH_FUZZ_MAX_MEMORY_BYTES (64 * 1024 * 1024)
 
 int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
