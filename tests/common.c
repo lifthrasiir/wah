@@ -48,6 +48,24 @@
 #endif
 #endif
 
+uintptr_t wah_test_perturb_ptr(const void *ptr) {
+    uintptr_t x = (uintptr_t)ptr;
+#if UINTPTR_MAX > 0xffffffffu
+    x ^= x >> 33;
+    x *= (uintptr_t)0xff51afd7ed558ccdULL;
+    x ^= x >> 33;
+    x *= (uintptr_t)0xc4ceb9fe1a85ec53ULL;
+    x ^= x >> 33;
+#else
+    x ^= x >> 16;
+    x *= (uintptr_t)0x7feb352dU;
+    x ^= x >> 15;
+    x *= (uintptr_t)0x846ca68bU;
+    x ^= x >> 16;
+#endif
+    return x ? x : 1;
+}
+
 // Token entry for the keyword mapping table
 typedef struct {
     const char *name;

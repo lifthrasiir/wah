@@ -4407,9 +4407,9 @@ cleanup:
     return err;
 }
 
-static void wah_module_rollback_last_type_metadata(wah_module_t *module, uint32_t idx) {
+static void wah_module_rollback_last_type_metadata(wah_module_t *module, uint32_t idx, bool cast_slot_ready) {
     const wah_alloc_t *alloc = &module->alloc;
-    if (module->type_cast_sets && idx < module->type_count) {
+    if (cast_slot_ready && module->type_cast_sets && idx < module->type_count) {
         wah_free(alloc, module->type_cast_sets[idx].bits);
         module->type_cast_sets[idx] = (wah_repr_set_t){0};
     }
@@ -4432,20 +4432,21 @@ static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     wah_repr_info_t *info = NULL;
     wah_repr_t repr_id = WAH_REPR_NONE;
+    bool cast_slot_ready = false;
 #endif
 
     WAH_ASSERT(module->type_count > 0);
     idx = module->type_count - 1;
 
-    new_ptr = module->canonical_map;
-    WAH_CHECK(wah_realloc(alloc, module->type_count, sizeof(module->canonical_map[0]), &new_ptr));
-    module->canonical_map = (uint32_t *)new_ptr;
-    module->canonical_map[idx] = idx;
-
     new_ptr = module->typeidx_to_repr;
     WAH_CHECK(wah_realloc(alloc, module->type_count, sizeof(module->typeidx_to_repr[0]), &new_ptr));
     module->typeidx_to_repr = (int32_t *)new_ptr;
     module->typeidx_to_repr[idx] = WAH_REPR_NONE;
+
+    new_ptr = module->canonical_map;
+    WAH_CHECK(wah_realloc(alloc, module->type_count, sizeof(module->canonical_map[0]), &new_ptr));
+    module->canonical_map = (uint32_t *)new_ptr;
+    module->canonical_map[idx] = idx;
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     uint32_t target_repr_count = module->repr_count;
@@ -4468,19 +4469,21 @@ static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
         target_repr_count++;
     }
 
+    if (info) {
+        WAH_CHECK_GOTO(wah_module_alloc_repr(module, idx, info, &repr_id), cleanup);
+    }
+
     new_ptr = module->type_cast_sets;
     WAH_CHECK_GOTO(wah_realloc(alloc, module->type_count, sizeof(module->type_cast_sets[0]), &new_ptr), cleanup);
     module->type_cast_sets = (wah_repr_set_t *)new_ptr;
     module->type_cast_sets[idx] = (wah_repr_set_t){0};
+    cast_slot_ready = true;
     for (uint32_t i = 0; i + 1 < module->type_count; ++i) {
         WAH_CHECK_GOTO(wah_repr_set_resize(&module->type_cast_sets[i], target_repr_count, alloc), cleanup);
     }
     WAH_CHECK_GOTO(wah_repr_set_init(&module->type_cast_sets[idx], target_repr_count, alloc), cleanup);
 
-    if (info) {
-        WAH_CHECK_GOTO(wah_module_alloc_repr(module, idx, info, &repr_id), cleanup);
-        wah_repr_set_add(&module->type_cast_sets[idx], repr_id);
-    }
+    if (repr_id != WAH_REPR_NONE) wah_repr_set_add(&module->type_cast_sets[idx], repr_id);
 #endif
 
     err = WAH_OK;
@@ -4488,7 +4491,7 @@ static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 cleanup:
-    wah_module_rollback_last_type_metadata(module, idx);
+    wah_module_rollback_last_type_metadata(module, idx, cast_slot_ready);
 #endif
 done:
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
@@ -10251,7 +10254,7 @@ WAH_RUN(THROW_REF) {
 
     wah_exception_t *exc = (wah_exception_t *)exnref_val.ref;
     wah_exception_t *copy;
-    WAH_MALLOC_GOTO(copy, cleanup);
+    WAH_MALLOC_GOTO(copy, cleanup_ref);
     *copy = *exc;
     copy->next = NULL;
     wah_exception_track(ctx, copy);
@@ -10277,6 +10280,8 @@ WAH_RUN(THROW_REF) {
 
 cleanup_copy:
     wah_exception_free(ctx, copy);
+cleanup_ref:
+    wah_exception_free(ctx, exc);
     WAH_CLEANUP();
 }
 
@@ -10476,7 +10481,7 @@ WAH_RUN(STRUCT_NEW) {
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_struct(ctx, repr_id, info);
-    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
     uint8_t *payload = (uint8_t *)obj;
     const wah_type_def_t *td = &fctx->module->type_defs[typeidx];
     for (uint32_t i = td->field_count; i > 0; --i) {
@@ -10493,7 +10498,7 @@ WAH_RUN(STRUCT_NEW_DEFAULT) {
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_struct(ctx, repr_id, info);
-    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
     (*sp++).ref = obj;
     WAH_NEXT();
     WAH_CLEANUP();
@@ -10565,7 +10570,7 @@ WAH_RUN(ARRAY_NEW) {
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_array(ctx, repr_id, info, length);
-    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
     uint8_t *elems = (uint8_t *)obj + sizeof(wah_gc_array_body_t);
     wah_type_t et = fctx->module->type_defs[typeidx].field_types[0];
     for (uint32_t i = 0; i < length; i++)
@@ -10581,7 +10586,7 @@ WAH_RUN(ARRAY_NEW_DEFAULT) {
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_array(ctx, repr_id, info, length);
-    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
     (*sp++).ref = obj;
     WAH_NEXT();
     WAH_CLEANUP();
@@ -10593,7 +10598,7 @@ WAH_RUN(ARRAY_NEW_FIXED) {
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_array(ctx, repr_id, info, length);
-    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
     uint8_t *elems = (uint8_t *)obj + sizeof(wah_gc_array_body_t);
     wah_type_t et = fctx->module->type_defs[typeidx].field_types[0];
     for (uint32_t i = length; i > 0; --i) {
@@ -10693,7 +10698,7 @@ WAH_RUN(ARRAY_NEW_DATA) {
     uint32_t esz = info->size;
     WAH_ENSURE_GOTO((uint64_t)offset + (uint64_t)size * esz <= seg->data_len, WAH_ERROR_TRAP, cleanup);
     void *obj = wah_gc_alloc_array(ctx, repr_id, info, size);
-    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
     uint8_t *elems = (uint8_t *)obj + sizeof(wah_gc_array_body_t);
     memcpy(elems, seg->data + offset, (size_t)size * esz);
     (*sp++).ref = obj;
@@ -10713,7 +10718,7 @@ WAH_RUN(ARRAY_NEW_ELEM) {
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_array(ctx, repr_id, info, size);
-    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
     uint8_t *elems = (uint8_t *)obj + sizeof(wah_gc_array_body_t);
     for (uint32_t i = 0; i < size; i++) {
         if (!seg->is_expr_elem) {
@@ -14358,7 +14363,6 @@ wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, con
 
     err = wah_module_add_latest_type_metadata(mod);
     if (err != WAH_OK) {
-        wah_module_rollback_last_type_metadata(mod, idx);
         mod->type_count--;
         wah_free(alloc, mod->types[idx].param_types);
         wah_free(alloc, mod->types[idx].result_types);
@@ -14736,6 +14740,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     if (err != WAH_OK) {
                         ctx->globals = saved_globals;
                         ctx->global_count = saved_global_count;
+                        wah_free(alloc, new_globals);
                         goto cleanup;
                     }
                 }
@@ -14866,6 +14871,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     .function_table = ctx->function_table, .function_table_count = ctx->function_table_count,
                     .gc = ctx->gc, .tag_instance_count = 0,
                 };
+                ctx->linked_modules[j].ctx = ictx;
+                ctx->linked_modules[j].owns_ctx = true;
                 WAH_MALLOC_ARRAY_GOTO(ictx->tag_instances, ltotal_tags, cleanup);
                 for (uint32_t t = 0; t < lmod->import_tag_count; t++) {
                     ictx->tag_instances[ictx->tag_instance_count++] =
@@ -14877,8 +14884,6 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                         (wah_tag_instance_t){ .type_index = lmod->tags[t].type_index, .identity = &ictx->tag_instances[slot] };
                 }
                 ictx->is_instantiated = true;
-                ctx->linked_modules[j].ctx = ictx;
-                ctx->linked_modules[j].owns_ctx = true;
             }
         }
         g_offset += lmod->global_count;

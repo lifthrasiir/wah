@@ -12,6 +12,7 @@
 
 int wah_build_spec_binaryv(uint8_t **out_data, size_t *out_size, const char *fmt, va_list args);
 int wah_build_spec_binary(uint8_t **out_data, size_t *out_size, const char *fmt, ...);
+uintptr_t wah_test_perturb_ptr(const void *ptr);
 
 static inline wah_error_t wah_parse_module_from_specv(wah_module_t *module, const char *fmt, va_list args) {
     uint8_t *data; size_t size;

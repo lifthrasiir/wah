@@ -1,5 +1,4 @@
 #include <stdio.h>
-#include <stdint.h>
 #include <stdlib.h>
 #include "../wah.h"
 #include "common.h"
@@ -12,26 +11,8 @@ typedef struct {
     uintptr_t xorv;
 } tracking_alloc_t;
 
-static uintptr_t perturb_ptr(const void *ptr) {
-    uintptr_t x = (uintptr_t)ptr;
-#if UINTPTR_MAX > 0xffffffffu
-    x ^= x >> 33;
-    x *= (uintptr_t)0xff51afd7ed558ccdULL;
-    x ^= x >> 33;
-    x *= (uintptr_t)0xc4ceb9fe1a85ec53ULL;
-    x ^= x >> 33;
-#else
-    x ^= x >> 16;
-    x *= (uintptr_t)0x7feb352dU;
-    x ^= x >> 15;
-    x *= (uintptr_t)0x846ca68bU;
-    x ^= x >> 16;
-#endif
-    return x ? x : 1;
-}
-
 static void track_alloc_ptr(tracking_alloc_t *t, void *ptr) {
-    uintptr_t h = perturb_ptr(ptr);
+    uintptr_t h = wah_test_perturb_ptr(ptr);
     t->allocs++;
     t->outstanding++;
     t->sum += h;
@@ -39,7 +20,7 @@ static void track_alloc_ptr(tracking_alloc_t *t, void *ptr) {
 }
 
 static void track_free_ptr(tracking_alloc_t *t, void *ptr) {
-    uintptr_t h = perturb_ptr(ptr);
+    uintptr_t h = wah_test_perturb_ptr(ptr);
     t->frees++;
     t->outstanding--;
     t->sum -= h;
