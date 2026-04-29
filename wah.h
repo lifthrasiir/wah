@@ -147,6 +147,7 @@ typedef int32_t wah_type_t;
 #define WAH_TYPE_AS_NON_NULL(t)    ((t) & ~(wah_type_t)1)
 #define WAH_TYIDX(t)               ((uint32_t)(t) >> 1)
 #define WAH_TYPE_FROM_IDX(i, null) ((wah_type_t)((i) * 2 + !!(null)))
+#define WAH_MAX_TYPE_INDEX         ((uint32_t)INT32_MAX >> 1)
 
 #define WAH_TYPE_IS_FUNCTION(t) ((t) / 100 == -1)
 #define WAH_TYPE_IS_MEMORY(t)   ((t) == -200)
@@ -4765,6 +4766,7 @@ static wah_error_t wah_decode_heap_type(const uint8_t **ptr, const uint8_t *end,
     int32_t idx;
     WAH_CHECK(wah_decode_sleb128_32(ptr, end, &idx));
     WAH_ENSURE(idx >= 0, WAH_ERROR_MALFORMED);
+    WAH_ENSURE((uint32_t)idx <= WAH_MAX_TYPE_INDEX, WAH_ERROR_TOO_LARGE);
     *out_type = WAH_TYPE_FROM_IDX(idx, 0);
     return WAH_OK;
 }
@@ -5869,6 +5871,9 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_REF_NULL: {
             wah_type_t ref_type;
             WAH_CHECK(wah_decode_heap_type(code_ptr, code_end, &ref_type));
+            if (ref_type >= 0) {
+                WAH_ENSURE(WAH_TYIDX(ref_type) < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            }
 
             PUSH(_(WAH_TYPE_AS_NULLABLE(ref_type)));
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = (uint32_t)(int32_t)ref_type);
@@ -6127,6 +6132,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 WAH_ENSURE(WAH_TYIDX(heap_type) < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
             }
             wah_type_t ref_type; POP_INTO(&ref_type);
+            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
             if (opcode_val == WAH_OP_REF_TEST_NULL || opcode_val == WAH_OP_REF_TEST) {
                 PUSH(I32);
             } else {
@@ -6196,11 +6202,13 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
         case WAH_OP_ANY_CONVERT_EXTERN: {
             wah_type_t ref_type; POP_INTO(&ref_type);
+            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
             PUSH(_(WAH_TYPE_IS_NULLABLE(ref_type) ? WAH_TYPE_ANYREF : WAH_TYPE_ANY));
             break; // No opcode emitted
         }
         case WAH_OP_EXTERN_CONVERT_ANY: {
             wah_type_t ref_type; POP_INTO(&ref_type);
+            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
             PUSH(_(WAH_TYPE_IS_NULLABLE(ref_type) ? WAH_TYPE_EXTERNREF : WAH_TYPE_EXTERN));
             break; // No opcode emitted
         }
@@ -6211,7 +6219,9 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         }
         case WAH_OP_I31_GET_S:
         case WAH_OP_I31_GET_U: {
-            wah_type_t ref_type; POP_INTO(&ref_type); PUSH(I32);
+            wah_type_t ref_type; POP_INTO(&ref_type);
+            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
+            PUSH(I32);
             EMIT_SIMPLE();
             break;
         }
@@ -7226,6 +7236,10 @@ static inline wah_error_t wah_check_effective_addr(uint64_t addr, uint64_t offse
 #endif
 
     return WAH_OK;
+}
+
+static inline bool wah_u64_range_in_bounds(uint64_t offset, uint64_t size, uint64_t limit) {
+    return offset <= limit && size <= limit - offset;
 }
 
 // Helper to read a section header
@@ -11151,7 +11165,7 @@ WAH_RUN(TABLE_FILL_i64) {
     wah_value_t val = *--sp;
     uint64_t offset = (uint64_t)(*--sp).i64;
     WAH_ASSERT(table_idx < ctx->table_count);
-    WAH_ENSURE_GOTO(offset + size <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(offset, size, ctx->tables[table_idx].size), WAH_ERROR_TRAP, cleanup);
     uint64_t done = wah_bulk_table_fill(ctx, table_idx, offset, val, size);
     if (done < size) {
         (*sp++).i64 = (int64_t)(offset + done);
@@ -11174,8 +11188,8 @@ WAH_RUN(TABLE_COPY_i64) {
     uint64_t dst_offset = (uint64_t)(*--sp).i64;
     WAH_ASSERT(src_table_idx < ctx->table_count);
     WAH_ASSERT(dst_table_idx < ctx->table_count);
-    WAH_ENSURE_GOTO(src_offset + size <= ctx->tables[src_table_idx].size, WAH_ERROR_TRAP, cleanup);
-    WAH_ENSURE_GOTO(dst_offset + size <= ctx->tables[dst_table_idx].size, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(src_offset, size, ctx->tables[src_table_idx].size), WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dst_offset, size, ctx->tables[dst_table_idx].size), WAH_ERROR_TRAP, cleanup);
     uint64_t done = wah_bulk_table_copy(ctx, dst_table_idx, dst_offset, src_table_idx, src_offset, size);
     if (done < size) {
         bool backward = (src_table_idx == dst_table_idx && dst_offset > src_offset && dst_offset < src_offset + size);
@@ -11211,7 +11225,7 @@ WAH_RUN(TABLE_INIT_i64) {
         WAH_NEXT();
     }
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->num_elems, WAH_ERROR_TRAP, cleanup);
-    WAH_ENSURE_GOTO(dst_offset + size <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dst_offset, size, ctx->tables[table_idx].size), WAH_ERROR_TRAP, cleanup);
     wah_error_t init_err;
     uint32_t done = wah_bulk_table_init(ctx, table_idx, dst_offset, elem_idx, src_offset, size, &init_err);
     if (init_err != WAH_OK) { err = init_err; goto cleanup; }
@@ -12054,7 +12068,7 @@ WAH_RUN(MEMORY_FILL_i64) {
     uint8_t val = (uint8_t)(*--sp).i32;
     uint64_t dst = (uint64_t)(*--sp).i64;
 
-    WAH_ENSURE_GOTO(dst + size <= fctx->memories[mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dst, size, fctx->memories[mem_idx].size), WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
     for (uint32_t done = 0; done < size; ) {
         uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
         memset(fctx->memories[mem_idx].data + dst + done, val, chunk);
@@ -12086,7 +12100,7 @@ WAH_RUN(MEMORY_INIT_i64) {
 
     const wah_data_segment_t *segment = &ctx->module->data_segments[data_idx];
 
-    WAH_ENSURE_GOTO(dest_offset + size <= fctx->memories[mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dest_offset, size, fctx->memories[mem_idx].size), WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->data_len, WAH_ERROR_TRAP, cleanup);
     WAH_ENSURE_GOTO(size <= segment->data_len, WAH_ERROR_TRAP, cleanup);
 
@@ -12121,8 +12135,8 @@ WAH_RUN(MEMORY_COPY_i64) {
     uint64_t src = src_i64 ? (uint64_t)(*--sp).i64 : (uint32_t)(*--sp).i32;
     uint64_t dest = dest_i64 ? (uint64_t)(*--sp).i64 : (uint32_t)(*--sp).i32;
 
-    WAH_ENSURE_GOTO(dest + size <= fctx->memories[dest_mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
-    WAH_ENSURE_GOTO(src + size <= fctx->memories[src_mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dest, size, fctx->memories[dest_mem_idx].size), WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(src, size, fctx->memories[src_mem_idx].size), WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
 
     if (dest_mem_idx == src_mem_idx && dest > src && dest < src + size) {
         for (uint32_t done = 0; done < size; ) {
@@ -15170,7 +15184,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             offset = (uint32_t)offset_val.i32;
         }
 
-        WAH_ENSURE_GOTO(offset + segment->num_elems <= ctx->tables[segment->table_idx].size, WAH_ERROR_TRAP, cleanup);
+        WAH_ENSURE_GOTO(wah_u64_range_in_bounds(offset, segment->num_elems,
+                                                ctx->tables[segment->table_idx].size), WAH_ERROR_TRAP, cleanup);
 
         for (uint32_t j = 0; j < segment->num_elems; ++j) {
             if (!segment->is_expr_elem) {
@@ -15214,7 +15229,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             } else {
                 offset = (uint32_t)offset_val.i32;
             }
-            WAH_ENSURE_GOTO(offset + segment->data_len <= ctx->memories[segment->memory_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
+            WAH_ENSURE_GOTO(wah_u64_range_in_bounds(offset, segment->data_len,
+                                                    ctx->memories[segment->memory_idx].size), WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
             if (segment->data_len > 0) {
                 memcpy(ctx->memories[segment->memory_idx].data + offset, segment->data, segment->data_len);
             }

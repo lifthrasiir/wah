@@ -389,6 +389,26 @@ static void test_memory64_data_segment() {
     wah_free_module(&module);
 }
 
+static void test_memory64_data_segment_negative_offset() {
+    printf("Testing memory64 active data segment negative offset bounds...\n");
+
+    const char *spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i64/1 1 ]} \
+        code {[ {[] end} ]} \
+        data {[ data.active.table#0 i64.const -1 end {%'01'} ]}";
+
+    wah_module_t module = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 static void test_memory64_validation() {
     wah_module_t module;
 
@@ -626,6 +646,7 @@ int main() {
     test_memory64_nonzero_memory_scalar_load_store();
     test_memory64_size_grow();
     test_memory64_data_segment();
+    test_memory64_data_segment_negative_offset();
     test_memory64_validation();
     test_memory64_large_limits();
     test_memory64_grow_negative_pages();
