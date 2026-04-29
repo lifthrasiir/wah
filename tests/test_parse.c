@@ -837,6 +837,23 @@ static void test_reject_huge_memory_min_with_exec_limit() {
     wah_free_module(&module);
 }
 
+static void test_unreachable_array_new_fixed_huge_length() {
+    printf("Running test_unreachable_array_new_fixed_huge_length...\n");
+
+    const uint8_t wasm[] = {
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        0x01, 0x08, 0x02, 0x5e, 0x78, 0x01, 0x60, 0x00,
+        0x01, 0x7f, 0x03, 0x02, 0x01, 0x01, 0x0c, 0x01,
+        0x01, 0x0a, 0x14, 0x01, 0x12, 0x00, 0x00, 0x00,
+        0x41, 0x04, 0xfb, 0x08, 0x00, 0xb0, 0xff, 0xfa,
+        0xfd, 0x00, 0x01, 0x00, 0x04, 0x1e, 0x28
+    };
+
+    wah_module_t module = {0};
+    assert_err(wah_parse_module(wasm, sizeof(wasm), &module), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&module);
+}
+
 // 22d534b: Reject (very slightly) overlong signed LEB128 i64 encodings.
 static void test_overlong_sleb128_i64() {
     printf("Testing overlong signed LEB128 i64 rejection (22d534b)...\n");
@@ -1054,6 +1071,7 @@ int main(void) {
     test_truncated_i8x16_shuffle_immediate();
     test_reject_huge_element_count_before_allocation();
     test_reject_huge_memory_min_with_exec_limit();
+    test_unreachable_array_new_fixed_huge_length();
 
     test_overlong_sleb128_i64();
     test_start_function_type();
