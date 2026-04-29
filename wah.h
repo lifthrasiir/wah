@@ -5769,7 +5769,9 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_BR_TABLE: {
             wah_error_t err = WAH_OK;
             uint32_t num_targets;
-            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &num_targets));
+            WAH_CHECK(wah_decode_and_validate_count(code_ptr, code_end, &num_targets, 1));
+            WAH_ENSURE(num_targets < UINT32_MAX, WAH_ERROR_TOO_LARGE);
+            WAH_ENSURE((uint64_t)num_targets + 1 <= (uint64_t)(code_end - *code_ptr), WAH_ERROR_MALFORMED);
 
             uint32_t* label_indices = NULL;
             uint32_t *bt_drops = NULL;
@@ -6269,7 +6271,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_validation_decode_block_type(code_ptr, code_end, vctx, bt));
 
             uint32_t catch_count;
-            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &catch_count));
+            WAH_CHECK(wah_decode_and_validate_count(code_ptr, code_end, &catch_count, 2));
 
             typedef struct { uint8_t kind; uint32_t tag_idx; uint32_t label_idx; } wah_catch_entry_t;
             wah_catch_entry_t *catch_entries = NULL;
