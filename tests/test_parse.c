@@ -682,6 +682,30 @@ static void test_all_hang_wasm_parsing_errors() {
     }
 }
 
+static void test_deep_const_expr_stack_instantiation() {
+    printf("Running test_deep_const_expr_stack_instantiation...\n");
+
+    const uint8_t wasm[] = {
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x06, 0x36,
+        0x01, 0x7f, 0x01, 0x41, 0x00, 0x41, 0x00, 0x41,
+        0x00, 0x41, 0x00, 0x41, 0x00, 0x41, 0x00, 0x41,
+        0x00, 0x41, 0x00, 0x41, 0x00, 0x41, 0x00, 0x41,
+        0x00, 0x41, 0x00, 0x41, 0x00, 0x41, 0x00, 0x41,
+        0x00, 0x41, 0x00, 0x41, 0x00, 0x6a, 0x6a, 0x6a,
+        0x6a, 0x6a, 0x6a, 0x6a, 0x6a, 0x6a, 0x6a, 0x6a,
+        0x6a, 0x6a, 0x6a, 0x6a, 0x6a, 0x0b
+    };
+
+    wah_module_t module = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_parse_module(wasm, sizeof(wasm), &module));
+    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_instantiate(&ctx));
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 // 22d534b: Reject (very slightly) overlong signed LEB128 i64 encodings.
 static void test_overlong_sleb128_i64() {
     printf("Testing overlong signed LEB128 i64 rejection (22d534b)...\n");
@@ -891,6 +915,7 @@ int main(void) {
     test_memory_copy_out_of_bounds_src_mem_idx();
 
     test_all_hang_wasm_parsing_errors();
+    test_deep_const_expr_stack_instantiation();
 
     test_overlong_sleb128_i64();
     test_start_function_type();

@@ -14694,7 +14694,7 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
 // Evaluates a preparsed const expression via the main interpreter.
 static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, const uint8_t *bytecode, uint32_t bytecode_size, wah_value_t *result) {
     wah_code_body_t dummy_code = { .parsed_code = { .bytecode = (uint8_t *)bytecode, .bytecode_size = bytecode_size } };
-    wah_value_t local_stack[16];
+    wah_value_t local_stack[WAH_MAX_TYPE_STACK_SIZE];
     wah_call_frame_t local_frame = { .code = &dummy_code, .bytecode_ip = bytecode, .locals = local_stack,
                                      .result_count = 1, .frame_globals = ctx->globals, .module = ctx->module };
     wah_exec_context_t cctx = { .module = ctx->module, .globals = ctx->globals, .global_count = ctx->global_count,
