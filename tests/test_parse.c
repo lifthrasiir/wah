@@ -737,6 +737,25 @@ static void test_reject_huge_local_count_before_allocation() {
     wah_free_module(&module);
 }
 
+static void test_reject_huge_function_type_counts_before_allocation() {
+    printf("Running test_reject_huge_function_type_counts_before_allocation...\n");
+
+    const uint8_t wasm[] = {
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        0x01, 0x0c, 0x02, 0x60, 0x01, 0x7f, 0xfe, 0xff,
+        0xff, 0xff, 0x02, 0x7f, 0x7f, 0x60, 0x00, 0xff,
+        0xff, 0xff, 0xff, 0x02, 0x01, 0x00, 0x01, 0x00,
+        0x60, 0x40, 0x00, 0x17, 0x9c, 0x1b, 0x0a, 0x12,
+        0x01, 0x10, 0x00, 0x20, 0x00, 0x04, 0x01, 0x02,
+        0x05, 0x41, 0x02, 0x05, 0x41, 0x03, 0x41, 0x04,
+        0x0b, 0x0b
+    };
+
+    wah_module_t module = {0};
+    assert_err(wah_parse_module(wasm, sizeof(wasm), &module), WAH_ERROR_MALFORMED);
+    wah_free_module(&module);
+}
+
 // 22d534b: Reject (very slightly) overlong signed LEB128 i64 encodings.
 static void test_overlong_sleb128_i64() {
     printf("Testing overlong signed LEB128 i64 rejection (22d534b)...\n");
@@ -949,6 +968,7 @@ int main(void) {
     test_deep_const_expr_stack_instantiation();
     test_control_frame_cleanup_after_block_type_eof();
     test_reject_huge_local_count_before_allocation();
+    test_reject_huge_function_type_counts_before_allocation();
 
     test_overlong_sleb128_i64();
     test_start_function_type();

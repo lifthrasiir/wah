@@ -7273,7 +7273,7 @@ static void wah_type_section_init_slot(wah_module_t *module, uint32_t idx) {
 
 static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end, wah_func_type_t *ft, const wah_alloc_t *alloc) {
     uint32_t param_count;
-    WAH_CHECK(wah_decode_uleb128(ptr, end, &param_count));
+    WAH_CHECK(wah_decode_and_validate_count(ptr, end, &param_count, 1));
     ft->param_count = param_count;
     WAH_MALLOC_ARRAY(ft->param_types, param_count);
     for (uint32_t j = 0; j < param_count; ++j) {
@@ -7281,7 +7281,7 @@ static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end, 
     }
 
     uint32_t result_count;
-    WAH_CHECK(wah_decode_uleb128(ptr, end, &result_count));
+    WAH_CHECK(wah_decode_and_validate_count(ptr, end, &result_count, 1));
     ft->result_count = result_count;
     WAH_MALLOC_ARRAY(ft->result_types, result_count);
     for (uint32_t j = 0; j < result_count; ++j) {
@@ -7293,7 +7293,7 @@ static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end, 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 static wah_error_t wah_parse_struct_type(const uint8_t **ptr, const uint8_t *end, wah_type_def_t *td, const wah_alloc_t *alloc) {
     uint32_t field_count;
-    WAH_CHECK(wah_decode_uleb128(ptr, end, &field_count));
+    WAH_CHECK(wah_decode_and_validate_count(ptr, end, &field_count, 2));
     td->field_count = field_count;
     WAH_MALLOC_ARRAY(td->field_types, field_count);
     WAH_MALLOC_ARRAY(td->field_mutables, field_count);
