@@ -6002,7 +6002,11 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             break;
         }
         case WAH_OP_ARRAY_LEN: {
-            wah_type_t rt; POP_INTO(&rt); PUSH(I32);
+            wah_type_t rt; POP_INTO(&rt);
+            WAH_ENSURE(rt == WAH_TYPE_BOT ||
+                       wah_type_is_subtype(rt, WAH_TYPE_ARRAYREF, vctx->module),
+                       WAH_ERROR_VALIDATION_FAILED);
+            PUSH(I32);
             EMIT_SIMPLE();
             break;
         }

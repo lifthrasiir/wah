@@ -758,7 +758,7 @@ int main() {
             exports {[ {'f'} fn# 0 ]} \
             code {[ {[1 anyref] \
                 i32.const 0 i32.const 3 array.new 0 local.set 0 \
-                local.get 0 array.len \
+                local.get 0 ref.cast arrayref array.len \
                 end } ]}";
         wah_module_t module;
         assert_ok(wah_parse_module_from_spec(&module, spec));
@@ -770,6 +770,33 @@ int main() {
         assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
         assert_eq_i32(result.i32, 3);
         wah_exec_context_destroy(&ctx);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_array_len_rejects_non_ref_operand...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] i32.const 0 array.len end } ]}";
+        wah_module_t module = {0};
+        assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&module);
+    }
+
+    printf("Running test_array_len_rejects_non_array_ref_operand...\n");
+    {
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32] ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[1 anyref] \
+                struct.new_default 0 local.set 0 \
+                local.get 0 array.len \
+                end } ]}";
+        wah_module_t module = {0};
+        assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
         wah_free_module(&module);
     }
 
