@@ -2403,15 +2403,17 @@ static inline __m128d wah_canonicalize_f64x2_sse2(__m128d v) {
 #ifdef WAH_AARCH64 // NEON
 
 static WAH_ALWAYS_INLINE uint8x16_t wah_canonicalize_f32x4_neon(uint8x16_t v) {
-    float32x4_t fv = vreinterpretq_f32_u8(v);
-    uint32x4_t not_nan = vceqq_f32(fv, fv);
-    return vreinterpretq_u8_f32(vbslq_f32(not_nan, fv, vdupq_n_f32(WAH_CANONICAL_NAN32.f)));
+    uint32x4_t bits = vreinterpretq_u32_u8(v);
+    uint32x4_t abs_bits = vandq_u32(bits, vdupq_n_u32(UINT32_C(0x7fffffff)));
+    uint32x4_t nan_mask = vcgtq_u32(abs_bits, vdupq_n_u32(UINT32_C(0x7f800000)));
+    return vreinterpretq_u8_u32(vbslq_u32(nan_mask, vdupq_n_u32(WAH_CANONICAL_NAN32.i), bits));
 }
 
 static WAH_ALWAYS_INLINE uint8x16_t wah_canonicalize_f64x2_neon(uint8x16_t v) {
-    float64x2_t fv = vreinterpretq_f64_u8(v);
-    uint64x2_t not_nan = vceqq_f64(fv, fv);
-    return vreinterpretq_u8_f64(vbslq_f64(not_nan, fv, vdupq_n_f64(WAH_CANONICAL_NAN64.f)));
+    uint64x2_t bits = vreinterpretq_u64_u8(v);
+    uint64x2_t abs_bits = vandq_u64(bits, vdupq_n_u64(UINT64_C(0x7fffffffffffffff)));
+    uint64x2_t nan_mask = vcgtq_u64(abs_bits, vdupq_n_u64(UINT64_C(0x7ff0000000000000)));
+    return vreinterpretq_u8_u64(vbslq_u64(nan_mask, vdupq_n_u64(WAH_CANONICAL_NAN64.i), bits));
 }
 
 #endif
