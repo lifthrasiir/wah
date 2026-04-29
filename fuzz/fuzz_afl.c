@@ -8,6 +8,7 @@
 // afl-fuzz typically handles this by limiting input size.
 #define MAX_WASM_INPUT_SIZE (10 * 1024 * 1024) // 10 MB
 #define WAH_FUZZ_CALL_FUEL 2048
+#define WAH_FUZZ_MAX_MEMORY_BYTES (64 * 1024 * 1024)
 
 int main(void) {
     wah_module_t module;
@@ -66,12 +67,20 @@ int main(void) {
 
     // 2. Create execution context
     memset(&exec_ctx, 0, sizeof(wah_exec_context_t)); // Initialize context struct
-    err = wah_exec_context_create(&exec_ctx, &module);
+    wah_rlimits_t limits = {
+        .max_memory_bytes = WAH_FUZZ_MAX_MEMORY_BYTES,
+        .fuel = WAH_FUZZ_CALL_FUEL,
+    };
+    err = wah_exec_context_create_with_limits(&exec_ctx, &module, &limits);
     if (err != WAH_OK) {
         goto cleanup_module;
     }
 
     err = wah_instantiate(&exec_ctx);
+    if (err == WAH_STATUS_FUEL_EXHAUSTED) {
+        err = WAH_OK;
+        goto cleanup_exec_ctx;
+    }
     if (err != WAH_OK) {
         goto cleanup_exec_ctx;
     }
