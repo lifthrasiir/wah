@@ -1881,6 +1881,7 @@ typedef struct wah_call_frame_s {
 // The main context for the entire WebAssembly interpretation.
 #define WAH_DEFAULT_MAX_CALL_DEPTH 1024
 #define WAH_DEFAULT_VALUE_STACK_SIZE (64 * 1024)
+#define WAH_MAX_LOCAL_COUNT WAH_DEFAULT_VALUE_STACK_SIZE
 // Default unified stack: space for WAH_DEFAULT_VALUE_STACK_SIZE values + WAH_DEFAULT_MAX_CALL_DEPTH frames
 #define WAH_DEFAULT_STACK_BYTES \
     ((uint64_t)WAH_DEFAULT_VALUE_STACK_SIZE * sizeof(wah_value_t) + \
@@ -7517,6 +7518,7 @@ static wah_error_t wah_parse_local_decls(const uint8_t **ptr, const uint8_t *bod
         WAH_CHECK(wah_decode_val_type(&scan, body_end, &t));
         WAH_ENSURE(UINT32_MAX - total >= n, WAH_ERROR_TOO_LARGE);
         total += n;
+        WAH_ENSURE(total <= WAH_MAX_LOCAL_COUNT, WAH_ERROR_TOO_LARGE);
     }
 
     body->local_count = total;
@@ -7565,6 +7567,10 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         module->code_bodies[i].code = *ptr;
 
         const wah_func_type_t *func_type = &module->types[module->function_type_indices[i]];
+        WAH_ENSURE_GOTO(UINT32_MAX - func_type->param_count >= module->code_bodies[i].local_count,
+                        WAH_ERROR_TOO_LARGE, cleanup);
+        WAH_ENSURE_GOTO(func_type->param_count + module->code_bodies[i].local_count <= WAH_MAX_LOCAL_COUNT,
+                        WAH_ERROR_TOO_LARGE, cleanup);
         vctx = (wah_validation_context_t){
             .module = module,
             .func_type = func_type,
