@@ -741,6 +741,30 @@ void wah_test_table_init_nonnull_elem_to_nullable_table_accepted() {
     wah_free_module(&module);
 }
 
+void wah_test_table_init_src_range_overflow_traps() {
+    printf("Running wah_test_table_init_src_range_overflow_traps...\n");
+
+    wah_module_t module;
+    const char *spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 10 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        elements {[ elem.passive elem.funcref [0] ]} \
+        code {[ {[] i32.const 0 i32.const -1 i32.const 2 table.init 0 0 end} ]}";
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx;
+    assert_ok(wah_exec_context_create(&ctx, &module));
+
+    wah_export_desc_t entry;
+    assert_ok(wah_module_export_by_name(&module, "f", &entry));
+    assert_err(wah_call(&ctx, (uint32_t)entry.index, NULL, 0, NULL), WAH_ERROR_TRAP);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
 void wah_test_active_elem_nullable_into_nonnull_table_rejected() {
     printf("Running wah_test_active_elem_nullable_into_nonnull_table_rejected...\n");
 
@@ -933,6 +957,7 @@ int main() {
     wah_test_table_copy_nonnull_to_nullable_accepted();
     wah_test_table_init_nullable_elem_to_nonnull_table_rejected();
     wah_test_table_init_nonnull_elem_to_nullable_table_accepted();
+    wah_test_table_init_src_range_overflow_traps();
     wah_test_active_elem_nullable_into_nonnull_table_rejected();
     wah_test_active_elem_nonnull_into_nonnull_table_accepted();
     wah_test_nonnull_table_no_init();

@@ -11247,8 +11247,8 @@ WAH_RUN(GLOBAL_SET) {
         WAH_ENSURE_GOTO(dst_offset <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
         WAH_NEXT(); \
     } \
-    WAH_ENSURE_GOTO(src_offset + size <= segment->num_elems, WAH_ERROR_TRAP, cleanup); \
-    WAH_ENSURE_GOTO(dst_offset + size <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
+    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(src_offset, size, segment->num_elems), WAH_ERROR_TRAP, cleanup); \
+    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dst_offset, size, ctx->tables[table_idx].size), WAH_ERROR_TRAP, cleanup); \
     wah_error_t init_err; \
     uint32_t done = wah_bulk_table_init(ctx, table_idx, dst_offset, elem_idx, src_offset, size, &init_err); \
     if (init_err != WAH_OK) { err = init_err; goto cleanup; } \
