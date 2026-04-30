@@ -812,7 +812,7 @@ static void test_memory64_fill_fuel_resume(void) {
 }
 
 // ============================================================
-// memory64 memory.copy backward mixed-addressing fuel resume
+// memory64 memory.copy backward fuel resume
 // ============================================================
 static void test_memory64_copy_backward_fuel_resume(void) {
     printf("Testing memory64 memory.copy backward fuel resume...\n");
