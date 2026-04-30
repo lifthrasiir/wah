@@ -636,6 +636,508 @@ static void test_memory_invalid_flags() {
     wah_free_module(&module);
 }
 
+// ============================================================
+// memory.copy: i32 -> i64 (mixed addressing, runtime)
+// ============================================================
+static void test_memory_copy_i32_to_i64(void) {
+    printf("Testing memory.copy i32->i64 mixed addressing...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // mem 0: i32, mem 1: i64
+    // func 0: store(i32 addr, i32 val) to mem 0
+    // func 1: load(i64 addr) from mem 1
+    // func 2: memory.copy dst=1(i64) src=0(i32) size(i32)
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [i32, i32] [], fn [i64] [i32], fn [i64, i32, i32] []]} \
+        funcs {[0, 1, 2]} \
+        memories {[limits.i32/1 1, limits.i64/1 1]} \
+        code {[ \
+            {[] local.get 0 local.get 1 i32.store align=4.mem# 0 offset=0 end}, \
+            {[] local.get 0 i32.load align=4.mem# 1 offset=0 end}, \
+            {[] local.get 0 local.get 1 local.get 2 memory.copy 1 0 end} \
+        ]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    // Write 0xCAFEBABE to mem 0 at offset 100
+    wah_value_t p_store[] = { {.i32 = 100}, {.i32 = (int32_t)0xCAFEBABE} };
+    assert_ok(wah_call(&ctx, 0, p_store, 2, NULL));
+
+    // Copy 4 bytes from mem 0 offset 100 to mem 1 offset 200
+    wah_value_t p_copy[] = { {.i64 = 200}, {.i32 = 100}, {.i32 = 4} };
+    assert_ok(wah_call(&ctx, 2, p_copy, 3, NULL));
+
+    // Read from mem 1 at offset 200
+    wah_value_t p_load[] = { {.i64 = 200} };
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, p_load, 1, &result));
+    assert_eq_i32(result.i32, (int32_t)0xCAFEBABE);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
+// memory.copy: i64 -> i32 (mixed addressing, runtime)
+// ============================================================
+static void test_memory_copy_i64_to_i32(void) {
+    printf("Testing memory.copy i64->i32 mixed addressing...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // mem 0: i64, mem 1: i32
+    // func 0: store to mem 0 (i64 addr)
+    // func 1: load from mem 1 (i32 addr)
+    // func 2: memory.copy dst=1(i32) src=0(i64) size(i32)
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [i64, i32] [], fn [i32] [i32], fn [i32, i64, i32] []]} \
+        funcs {[0, 1, 2]} \
+        memories {[limits.i64/1 1, limits.i32/1 1]} \
+        code {[ \
+            {[] local.get 0 local.get 1 i32.store align=4.mem# 0 offset=0 end}, \
+            {[] local.get 0 i32.load align=4.mem# 1 offset=0 end}, \
+            {[] local.get 0 local.get 1 local.get 2 memory.copy 1 0 end} \
+        ]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    // Write 0xDEADBEEF to mem 0 at offset 300
+    wah_value_t p_store[] = { {.i64 = 300}, {.i32 = (int32_t)0xDEADBEEF} };
+    assert_ok(wah_call(&ctx, 0, p_store, 2, NULL));
+
+    // Copy 4 bytes from mem 0 offset 300 to mem 1 offset 400
+    wah_value_t p_copy[] = { {.i32 = 400}, {.i64 = 300}, {.i32 = 4} };
+    assert_ok(wah_call(&ctx, 2, p_copy, 3, NULL));
+
+    // Read from mem 1 at offset 400
+    wah_value_t p_load[] = { {.i32 = 400} };
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, p_load, 1, &result));
+    assert_eq_i32(result.i32, (int32_t)0xDEADBEEF);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
+// memory.copy: i64 -> i64 (both memories i64)
+// ============================================================
+static void test_memory_copy_i64_to_i64(void) {
+    printf("Testing memory.copy i64->i64...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // Two i64 memories
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [i64, i32] [], fn [i64] [i32], fn [i64, i64, i64] []]} \
+        funcs {[0, 1, 2]} \
+        memories {[limits.i64/1 1, limits.i64/1 1]} \
+        code {[ \
+            {[] local.get 0 local.get 1 i32.store align=4.mem# 0 offset=0 end}, \
+            {[] local.get 0 i32.load align=4.mem# 1 offset=0 end}, \
+            {[] local.get 0 local.get 1 local.get 2 memory.copy 1 0 end} \
+        ]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t p_store[] = { {.i64 = 500}, {.i32 = 0x12345678} };
+    assert_ok(wah_call(&ctx, 0, p_store, 2, NULL));
+
+    wah_value_t p_copy[] = { {.i64 = 600}, {.i64 = 500}, {.i64 = 4} };
+    assert_ok(wah_call(&ctx, 2, p_copy, 3, NULL));
+
+    wah_value_t p_load[] = { {.i64 = 600} };
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, p_load, 1, &result));
+    assert_eq_i32(result.i32, 0x12345678);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
+// table.copy: i32 -> i64 (mixed addressing, runtime)
+// ============================================================
+static void test_table_copy_i32_to_i64(void) {
+    printf("Testing table.copy i32->i64 mixed addressing...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // table 0: i32, table 1: i64
+    // func 0: returns 42 (target for refs)
+    // func 1: table.copy dst=1(i64) src=0(i32) size(i32), then call_indirect from table 1
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32]]} \
+        funcs {[0, 0]} \
+        tables {[funcref limits.i32/1 4, funcref limits.i64/1 4]} \
+        elements {[elem.active.table#0 i32.const 0 end [0]]} \
+        code {[ \
+            {[] i32.const 42 end}, \
+            {[] \
+                i64.const 1 i32.const 0 i32.const 1 table.copy 1 0 \
+                i64.const 1 call_indirect 0 1 \
+            end} \
+        ]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
+// table.copy: i64 -> i32 (mixed addressing, runtime)
+// ============================================================
+static void test_table_copy_i64_to_i32(void) {
+    printf("Testing table.copy i64->i32 mixed addressing...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // table 0: i64, table 1: i32
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32]]} \
+        funcs {[0, 0]} \
+        tables {[funcref limits.i64/1 4, funcref limits.i32/1 4]} \
+        elements {[elem.active.table#0 i64.const 0 end [0]]} \
+        code {[ \
+            {[] i32.const 77 end}, \
+            {[] \
+                i32.const 2 i64.const 0 i32.const 1 table.copy 1 0 \
+                i32.const 2 call_indirect 0 1 \
+            end} \
+        ]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 77);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
+// table.copy: i64 -> i64
+// ============================================================
+static void test_table_copy_i64_to_i64(void) {
+    printf("Testing table.copy i64->i64...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32]]} \
+        funcs {[0, 0]} \
+        tables {[funcref limits.i64/1 4, funcref limits.i64/1 4]} \
+        elements {[elem.active.table#0 i64.const 0 end [0]]} \
+        code {[ \
+            {[] i32.const 99 end}, \
+            {[] \
+                i64.const 3 i64.const 0 i64.const 1 table.copy 1 0 \
+                i64.const 3 call_indirect 0 1 \
+            end} \
+        ]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 99);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
+// Bounds overflow: memory.copy with huge offset+size (must trap, not crash)
+// ============================================================
+static void test_memory_copy_bounds_overflow(void) {
+    printf("Testing memory.copy bounds overflow trap...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // Single i64 memory, 1 page
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [i64, i64, i64] []]} \
+        funcs {[0]} \
+        memories {[limits.i64/1 1]} \
+        code {[{[] local.get 0 local.get 1 local.get 2 memory.copy 0 0 end}]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    // dest=1, src=0, size=UINT64_MAX → dest+size overflows u64
+    wah_value_t p[] = { {.i64 = 1}, {.i64 = 0}, {.i64 = (int64_t)UINT64_MAX} };
+    assert_err(wah_call(&ctx, 0, p, 3, NULL), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
+
+    // dest=UINT64_MAX, src=0, size=1 → dest+size overflows
+    wah_value_t p2[] = { {.i64 = (int64_t)UINT64_MAX}, {.i64 = 0}, {.i64 = 1} };
+    assert_err(wah_call(&ctx, 0, p2, 3, NULL), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
+
+    // size=0 with large offset should be OK (spec: zero-length is bounds-checked)
+    wah_value_t p3[] = { {.i64 = 65537}, {.i64 = 0}, {.i64 = 0} };
+    assert_err(wah_call(&ctx, 0, p3, 3, NULL), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
+
+    // size=0 within bounds should succeed
+    wah_value_t p4[] = { {.i64 = 0}, {.i64 = 0}, {.i64 = 0} };
+    assert_ok(wah_call(&ctx, 0, p4, 3, NULL));
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
+// Bounds overflow: memory.fill with huge offset+size
+// ============================================================
+static void test_memory_fill_bounds_overflow(void) {
+    printf("Testing memory.fill bounds overflow trap...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [i64, i32, i64] []]} \
+        funcs {[0]} \
+        memories {[limits.i64/1 1]} \
+        code {[{[] local.get 0 local.get 1 local.get 2 memory.fill 0 end}]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t p[] = { {.i64 = 1}, {.i32 = 0}, {.i64 = (int64_t)UINT64_MAX} };
+    assert_err(wah_call(&ctx, 0, p, 3, NULL), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
+
+    wah_value_t p2[] = { {.i64 = (int64_t)UINT64_MAX}, {.i32 = 0}, {.i64 = 1} };
+    assert_err(wah_call(&ctx, 0, p2, 3, NULL), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
+// Bounds overflow: table.copy with huge offset+size
+// ============================================================
+static void test_table_copy_bounds_overflow(void) {
+    printf("Testing table.copy bounds overflow trap...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [i64, i64, i64] []]} \
+        funcs {[0]} \
+        tables {[funcref limits.i64/1 4]} \
+        code {[{[] local.get 0 local.get 1 local.get 2 table.copy 0 0 end}]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t p[] = { {.i64 = 1}, {.i64 = 0}, {.i64 = (int64_t)UINT64_MAX} };
+    assert_err(wah_call(&ctx, 0, p, 3, NULL), WAH_ERROR_TRAP);
+
+    wah_value_t p2[] = { {.i64 = (int64_t)UINT64_MAX}, {.i64 = 0}, {.i64 = 1} };
+    assert_err(wah_call(&ctx, 0, p2, 3, NULL), WAH_ERROR_TRAP);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
+// Bounds overflow: table.fill with huge offset+size
+// ============================================================
+static void test_table_fill_bounds_overflow(void) {
+    printf("Testing table.fill bounds overflow trap...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [i64, i64] []]} \
+        funcs {[0]} \
+        tables {[funcref limits.i64/1 4]} \
+        code {[{[] local.get 0 ref.null funcref local.get 1 table.fill 0 end}]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t p[] = { {.i64 = 1}, {.i64 = (int64_t)UINT64_MAX} };
+    assert_err(wah_call(&ctx, 0, p, 2, NULL), WAH_ERROR_TRAP);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
+// table.set with i64 index: verify pop order (val on top, idx below)
+// ============================================================
+static void test_table64_set_get(void) {
+    printf("Testing table64 set/get pop order...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // func 0: returns 55 (target)
+    // func 1: table.set table[2] = ref.func 0, then table.get table[2], call_indirect
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32]]} \
+        funcs {[0, 0]} \
+        tables {[funcref limits.i64/1 4]} \
+        exports {[{'f0'} fn# 0]} \
+        code {[ \
+            {[] i32.const 55 end}, \
+            {[] \
+                i64.const 2 ref.func 0 table.set 0 \
+                i64.const 2 table.get 0 \
+                ref.is_null \
+                if i32 \
+                    i32.const -1 \
+                else \
+                    i64.const 2 call_indirect 0 0 \
+                end \
+            end} \
+        ]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 55);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
+// memory64 memory.fill: large fill with i64 addressing
+// ============================================================
+static void test_memory64_fill_runtime(void) {
+    printf("Testing memory64 memory.fill runtime...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // func(i64 dst, i32 val, i64 size)
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [i64, i32, i64] [], fn [i64] [i32]]} \
+        funcs {[0, 1]} \
+        memories {[limits.i64/1 1]} \
+        code {[ \
+            {[] local.get 0 local.get 1 local.get 2 memory.fill 0 end}, \
+            {[] local.get 0 i32.load8_u align=1 offset=0 end} \
+        ]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    // Fill 1000 bytes at offset 100 with 0xBB
+    wah_value_t p[] = { {.i64 = 100}, {.i32 = 0xBB}, {.i64 = 1000} };
+    assert_ok(wah_call(&ctx, 0, p, 3, NULL));
+
+    // Verify first and last byte
+    wah_value_t r;
+    wah_value_t ld[] = { {.i64 = 100} };
+    assert_ok(wah_call(&ctx, 1, ld, 1, &r));
+    assert_eq_i32(r.i32, 0xBB);
+
+    ld[0].i64 = 1099;
+    assert_ok(wah_call(&ctx, 1, ld, 1, &r));
+    assert_eq_i32(r.i32, 0xBB);
+
+    // Byte before and after should be 0
+    ld[0].i64 = 99;
+    assert_ok(wah_call(&ctx, 1, ld, 1, &r));
+    assert_eq_i32(r.i32, 0);
+
+    ld[0].i64 = 1100;
+    assert_ok(wah_call(&ctx, 1, ld, 1, &r));
+    assert_eq_i32(r.i32, 0);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
+// memory64 memory.init: verify dest is i64, src/size are i32
+// ============================================================
+static void test_memory64_init_runtime(void) {
+    printf("Testing memory64 memory.init runtime...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // func(i64 dest, i32 src_offset, i32 size) = memory.init
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [i64, i32, i32] [], fn [i64] [i32]]} \
+        funcs {[0, 1]} \
+        memories {[limits.i64/1 1]} \
+        datacount {1} \
+        code {[ \
+            {[] local.get 0 local.get 1 local.get 2 memory.init 0 0 end}, \
+            {[] local.get 0 i32.load8_u align=1 offset=0 end} \
+        ]} \
+        data {[data.passive {%'AABBCCDD'}]}"));
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    // Init 4 bytes from data segment to memory at offset 200
+    wah_value_t p[] = { {.i64 = 200}, {.i32 = 0}, {.i32 = 4} };
+    assert_ok(wah_call(&ctx, 0, p, 3, NULL));
+
+    wah_value_t r;
+    wah_value_t ld[] = { {.i64 = 200} };
+    assert_ok(wah_call(&ctx, 1, ld, 1, &r));
+    assert_eq_i32(r.i32, 0xAA);
+
+    ld[0].i64 = 203;
+    assert_ok(wah_call(&ctx, 1, ld, 1, &r));
+    assert_eq_i32(r.i32, 0xDD);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
+// memory.copy mixed: validation type checks
+// ============================================================
+static void test_memory_copy_mixed_validation(void) {
+    printf("Testing memory.copy mixed addressing validation...\n");
+
+    // i32 dst, i64 src: size should be min(i32,i64)=i32.
+    // Using i64 for size must fail.
+    wah_module_t bad = {0};
+    assert_err(wah_parse_module_from_spec(&bad, "wasm \
+        types {[fn [] []]} funcs {[0]} \
+        memories {[limits.i32/1 1, limits.i64/1 1]} \
+        code {[{[] \
+            i32.const 0 i64.const 0 i64.const 1 memory.copy 0 1 \
+        end}]}"), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad);
+
+    // Same but with i32 for size should pass
+    wah_module_t good = {0};
+    assert_ok(wah_parse_module_from_spec(&good, "wasm \
+        types {[fn [] []]} funcs {[0]} \
+        memories {[limits.i32/1 1, limits.i64/1 1]} \
+        code {[{[] \
+            i32.const 0 i64.const 0 i32.const 1 memory.copy 0 1 \
+        end}]}"));
+    wah_free_module(&good);
+
+    // i64 dst, i32 src: size=i32, dst=i64, src=i32
+    wah_module_t good2 = {0};
+    assert_ok(wah_parse_module_from_spec(&good2, "wasm \
+        types {[fn [] []]} funcs {[0]} \
+        memories {[limits.i64/1 1, limits.i32/1 1]} \
+        code {[{[] \
+            i64.const 0 i32.const 0 i32.const 1 memory.copy 0 1 \
+        end}]}"));
+    wah_free_module(&good2);
+
+    // Both i64: size=i64
+    wah_module_t good3 = {0};
+    assert_ok(wah_parse_module_from_spec(&good3, "wasm \
+        types {[fn [] []]} funcs {[0]} \
+        memories {[limits.i64/1 1, limits.i64/1 1]} \
+        code {[{[] \
+            i64.const 0 i64.const 0 i64.const 1 memory.copy 0 1 \
+        end}]}"));
+    wah_free_module(&good3);
+}
+
 int main() {
     test_memory_grow_clamp();
     test_memory64_large_limits_parsing();
@@ -654,6 +1156,20 @@ int main() {
     test_table64_grow_negative_delta();
     test_table64_grow_propagation();
     test_memory_invalid_flags();
+    test_memory_copy_i32_to_i64();
+    test_memory_copy_i64_to_i32();
+    test_memory_copy_i64_to_i64();
+    test_table_copy_i32_to_i64();
+    test_table_copy_i64_to_i32();
+    test_table_copy_i64_to_i64();
+    test_memory_copy_bounds_overflow();
+    test_memory_fill_bounds_overflow();
+    test_table_copy_bounds_overflow();
+    test_table_fill_bounds_overflow();
+    test_table64_set_get();
+    test_memory64_fill_runtime();
+    test_memory64_init_runtime();
+    test_memory_copy_mixed_validation();
     printf("All memory64/table64 tests passed!\n");
     return 0;
 }
