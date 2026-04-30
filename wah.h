@@ -9540,26 +9540,53 @@ static wah_error_t wah_poll_handler(wah_exec_context_t *ctx) {
     return WAH_OK;
 }
 
+#ifndef WAH_BULK_CHECK_INTERVAL
 #define WAH_BULK_CHECK_INTERVAL (1u << 24)
+#endif
+#ifndef WAH_BULK_ITEMS_PER_FUEL
+#define WAH_BULK_ITEMS_PER_FUEL 4096
+#endif
 
 static inline bool wah_bulk_should_interrupt(const wah_exec_context_t *ctx) {
     return WAH_POLL_FLAG_LOAD(ctx->interrupt_flag) != 0;
 }
 
-// Yield from a bulk op: clear interrupt, rewind IP to instruction start, return YIELDED.
+static inline uint64_t wah_bulk_fuel_limit(const wah_exec_context_t *ctx, uint64_t chunk) {
+    if (!ctx->module->fuel_metering) return chunk;
+    if (ctx->fuel < 0) return 0;
+    uint64_t affordable = ((uint64_t)ctx->fuel + 1) * WAH_BULK_ITEMS_PER_FUEL;
+    return chunk < affordable ? chunk : affordable;
+}
+
+static inline void wah_bulk_fuel_charge(wah_exec_context_t *ctx, uint64_t chunk) {
+    if (ctx->module->fuel_metering && chunk > 0)
+        ctx->fuel -= (int64_t)((chunk + WAH_BULK_ITEMS_PER_FUEL - 1) / WAH_BULK_ITEMS_PER_FUEL);
+}
+
+static inline bool wah_bulk_should_stop(const wah_exec_context_t *ctx) {
+    return WAH_POLL_FLAG_LOAD(ctx->interrupt_flag) != 0 ||
+           (ctx->module->fuel_metering && ctx->fuel < 0);
+}
+
+// Yield from a bulk op: rewind IP to instruction start, return appropriate status.
 // Caller must have already pushed remaining args onto sp before this.
 #define WAH_BULK_YIELD(instr_start) do { \
-    WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0); \
-    wah_recompute_poll_flag(ctx); \
-    err = WAH_STATUS_YIELDED; \
+    if (ctx->module->fuel_metering && ctx->fuel < 0) { \
+        err = WAH_STATUS_FUEL_EXHAUSTED; \
+    } else { \
+        WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0); \
+        wah_recompute_poll_flag(ctx); \
+        err = WAH_STATUS_YIELDED; \
+    } \
     bytecode_ip = (instr_start); \
     goto cleanup; \
 } while (0)
 
-// Check for interrupt at the end of a bulk-op chunk. 'done' is elements/bytes
-// completed so far, 'total' is the total. Only checks every WAH_BULK_CHECK_INTERVAL.
+// Check for interrupt or fuel exhaustion at the end of a bulk-op chunk.
 #define WAH_BULK_CHECK(done, total) \
-    ((done) < (total) && ((done) & (WAH_BULK_CHECK_INTERVAL - 1)) == 0 && wah_bulk_should_interrupt(ctx))
+    ((done) < (total) && \
+     ((((done) & (WAH_BULK_CHECK_INTERVAL - 1)) == 0 && wah_bulk_should_interrupt(ctx)) || \
+      (ctx->module->fuel_metering && ctx->fuel < 0)))
 
 // Pushes a new call frame. This is an internal helper.
 // local_idx: index into fn_module->code_bodies[] for the function body.
@@ -9780,10 +9807,12 @@ static uint64_t wah_bulk_table_fill(wah_exec_context_t *ctx, uint32_t table_idx,
                                      uint64_t offset, wah_value_t val, uint64_t size) {
     for (uint64_t done = 0; done < size; ) {
         uint64_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        chunk = wah_bulk_fuel_limit(ctx, chunk);
         for (uint64_t i = 0; i < chunk; ++i)
             wah_ref_store_table(ctx, table_idx, offset + done + i, val);
         done += chunk;
-        if (done < size && wah_bulk_should_interrupt(ctx)) return done;
+        wah_bulk_fuel_charge(ctx, chunk);
+        if (done < size && wah_bulk_should_stop(ctx)) return done;
     }
     return size;
 }
@@ -9795,6 +9824,7 @@ static uint64_t wah_bulk_table_copy(wah_exec_context_t *ctx,
     bool backward = (src_table_idx == dst_table_idx && dst_offset > src_offset && dst_offset < src_offset + size);
     for (uint64_t done = 0; done < size; ) {
         uint64_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        chunk = wah_bulk_fuel_limit(ctx, chunk);
         if (backward) {
             uint64_t tail = size - done;
             for (uint64_t j = 0; j < chunk; ++j)
@@ -9806,18 +9836,20 @@ static uint64_t wah_bulk_table_copy(wah_exec_context_t *ctx,
                                     ctx->tables[src_table_idx].entries[src_offset + done + j]);
         }
         done += chunk;
-        if (done < size && wah_bulk_should_interrupt(ctx)) return done;
+        wah_bulk_fuel_charge(ctx, chunk);
+        if (done < size && wah_bulk_should_stop(ctx)) return done;
     }
     return size;
 }
 
-// Returns elements processed. Sets *out_err on trap (negative). If WAH_OK and returned < size, interrupted.
+// Returns elements processed. Sets *out_err on trap (negative). If WAH_OK and returned < size, stopped.
 static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, uint32_t table_idx, uint64_t dst_offset,
                                      uint32_t elem_idx, uint32_t src_offset, uint32_t size, wah_error_t *out_err) {
     const wah_element_segment_t *segment = &ctx->module->element_segments[elem_idx];
     *out_err = WAH_OK;
     for (uint32_t done = 0; done < size; ) {
         uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        chunk = (uint32_t)wah_bulk_fuel_limit(ctx, chunk);
         for (uint32_t j = 0; j < chunk; ++j) {
             uint32_t i = done + j;
             wah_value_t store_val;
@@ -9846,7 +9878,8 @@ static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, uint32_t table_idx,
             wah_ref_store_table(ctx, table_idx, dst_offset + i, store_val);
         }
         done += chunk;
-        if (done < size && wah_bulk_should_interrupt(ctx)) return done;
+        wah_bulk_fuel_charge(ctx, chunk);
+        if (done < size && wah_bulk_should_stop(ctx)) return done;
     }
     return size;
 }
@@ -9854,13 +9887,14 @@ static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, uint32_t table_idx,
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 static uint32_t wah_bulk_array_fill(wah_exec_context_t *ctx, wah_type_t et, uint8_t *elems,
                                      uint32_t offset, uint32_t size, uint32_t elem_size, const wah_value_t *fill_val) {
-    (void)ctx;
     for (uint32_t done = 0; done < size; ) {
         uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        chunk = (uint32_t)wah_bulk_fuel_limit(ctx, chunk);
         for (uint32_t i = 0; i < chunk; i++)
             wah_gc_store_field(et, elems + (offset + done + i) * elem_size, fill_val);
         done += chunk;
-        if (done < size && wah_bulk_should_interrupt(ctx)) return done;
+        wah_bulk_fuel_charge(ctx, chunk);
+        if (done < size && wah_bulk_should_stop(ctx)) return done;
     }
     return size;
 }
@@ -9871,6 +9905,7 @@ static uint32_t wah_bulk_array_init_elem(wah_exec_context_t *ctx, uint8_t *elems
     *out_err = WAH_OK;
     for (uint32_t done = 0; done < size; ) {
         uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        chunk = (uint32_t)wah_bulk_fuel_limit(ctx, chunk);
         for (uint32_t j = 0; j < chunk; j++) {
             uint32_t i = done + j;
             if (!seg->is_expr_elem) {
@@ -9886,7 +9921,8 @@ static uint32_t wah_bulk_array_init_elem(wah_exec_context_t *ctx, uint8_t *elems
             }
         }
         done += chunk;
-        if (done < size && wah_bulk_should_interrupt(ctx)) return done;
+        wah_bulk_fuel_charge(ctx, chunk);
+        if (done < size && wah_bulk_should_stop(ctx)) return done;
     }
     return size;
 }
@@ -10868,6 +10904,7 @@ WAH_RUN(ARRAY_COPY) {
         bool backward = (dst_obj == src_obj && dst_offset > src_offset && dst_offset < src_offset + size);
         for (size_t done = 0; done < byte_size; ) {
             size_t chunk = byte_size - done < WAH_BULK_CHECK_INTERVAL ? byte_size - done : WAH_BULK_CHECK_INTERVAL;
+            chunk = (size_t)wah_bulk_fuel_limit(ctx, (uint64_t)chunk);
             if (backward) {
                 size_t tail = byte_size - done;
                 memmove(dst_elems + (size_t)dst_offset * esz + tail - chunk,
@@ -10877,7 +10914,8 @@ WAH_RUN(ARRAY_COPY) {
                         src_elems + (size_t)src_offset * esz + done, chunk);
             }
             done += chunk;
-            if (done < byte_size && wah_bulk_should_interrupt(ctx)) {
+            wah_bulk_fuel_charge(ctx, (uint64_t)chunk);
+            if (done < byte_size && wah_bulk_should_stop(ctx)) {
                 uint32_t elem_done = (uint32_t)(done / esz);
                 if (backward) {
                     (*sp++).ref = dst_obj;
@@ -10920,9 +10958,11 @@ WAH_RUN(ARRAY_INIT_DATA) {
     size_t byte_size = (size_t)size * esz;
     for (size_t done = 0; done < byte_size; ) {
         size_t chunk = byte_size - done < WAH_BULK_CHECK_INTERVAL ? byte_size - done : WAH_BULK_CHECK_INTERVAL;
+        chunk = (size_t)wah_bulk_fuel_limit(ctx, (uint64_t)chunk);
         memcpy(elems + (size_t)dst_offset * esz + done, seg->data + src_offset + done, chunk);
         done += chunk;
-        if (done < byte_size && wah_bulk_should_interrupt(ctx)) {
+        wah_bulk_fuel_charge(ctx, (uint64_t)chunk);
+        if (done < byte_size && wah_bulk_should_stop(ctx)) {
             uint32_t elem_done = (uint32_t)(done / esz);
             (*sp++).ref = obj;
             (*sp++).i32 = (int32_t)(dst_offset + elem_done);
@@ -11976,8 +12016,10 @@ WAH_RUN(MEMORY_FILL) {
     WAH_ENSURE_GOTO((uint64_t)dst + size <= fctx->memories[mem_idx].size, WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
     for (uint32_t done = 0; done < size; ) {
         uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        chunk = (uint32_t)wah_bulk_fuel_limit(ctx, chunk);
         memset(fctx->memories[mem_idx].data + dst + done, val, chunk);
         done += chunk;
+        wah_bulk_fuel_charge(ctx, chunk);
         if (WAH_BULK_CHECK(done, size)) {
             (*sp++).i32 = (int32_t)(dst + done);
             (*sp++).i32 = (int32_t)val;
@@ -12011,8 +12053,10 @@ WAH_RUN(MEMORY_INIT) {
 
     for (uint32_t done = 0; done < size; ) {
         uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        chunk = (uint32_t)wah_bulk_fuel_limit(ctx, chunk);
         memcpy(fctx->memories[mem_idx].data + dest_offset + done, segment->data + src_offset + done, chunk);
         done += chunk;
+        wah_bulk_fuel_charge(ctx, chunk);
         if (WAH_BULK_CHECK(done, size)) {
             (*sp++).i32 = (int32_t)(dest_offset + done);
             (*sp++).i32 = (int32_t)(src_offset + done);
@@ -12056,10 +12100,12 @@ WAH_RUN(MEMORY_COPY) {
     if (dest_mem_idx == src_mem_idx && dest > src && dest < src + size) {
         for (uint32_t done = 0; done < size; ) {
             uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+            chunk = (uint32_t)wah_bulk_fuel_limit(ctx, chunk);
             uint32_t tail = size - done;
             memmove(fctx->memories[dest_mem_idx].data + dest + tail - chunk,
                     fctx->memories[src_mem_idx].data + src + tail - chunk, chunk);
             done += chunk;
+            wah_bulk_fuel_charge(ctx, chunk);
             if (WAH_BULK_CHECK(done, size)) {
                 (*sp++).i32 = (int32_t)dest;
                 (*sp++).i32 = (int32_t)src;
@@ -12070,9 +12116,11 @@ WAH_RUN(MEMORY_COPY) {
     } else {
         for (uint32_t done = 0; done < size; ) {
             uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+            chunk = (uint32_t)wah_bulk_fuel_limit(ctx, chunk);
             memmove(fctx->memories[dest_mem_idx].data + dest + done,
                     fctx->memories[src_mem_idx].data + src + done, chunk);
             done += chunk;
+            wah_bulk_fuel_charge(ctx, chunk);
             if (WAH_BULK_CHECK(done, size)) {
                 (*sp++).i32 = (int32_t)(dest + done);
                 (*sp++).i32 = (int32_t)(src + done);
@@ -12130,8 +12178,10 @@ WAH_RUN(MEMORY_FILL_i64) {
     WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dst, size, fctx->memories[mem_idx].size), WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
     for (uint32_t done = 0; done < size; ) {
         uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        chunk = (uint32_t)wah_bulk_fuel_limit(ctx, chunk);
         memset(fctx->memories[mem_idx].data + dst + done, val, chunk);
         done += chunk;
+        wah_bulk_fuel_charge(ctx, chunk);
         if (WAH_BULK_CHECK(done, size)) {
             (*sp++).i64 = (int64_t)(dst + done);
             (*sp++).i32 = (int32_t)val;
@@ -12165,8 +12215,10 @@ WAH_RUN(MEMORY_INIT_i64) {
 
     for (uint32_t done = 0; done < size; ) {
         uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        chunk = (uint32_t)wah_bulk_fuel_limit(ctx, chunk);
         memcpy(fctx->memories[mem_idx].data + dest_offset + done, segment->data + src_offset + done, chunk);
         done += chunk;
+        wah_bulk_fuel_charge(ctx, chunk);
         if (WAH_BULK_CHECK(done, size)) {
             (*sp++).i64 = (int64_t)(dest_offset + done);
             (*sp++).i32 = (int32_t)(src_offset + done);
@@ -12188,9 +12240,10 @@ WAH_RUN(MEMORY_COPY_i64) {
     WAH_ASSERT(dest_mem_idx < ctx->memory_count);
     WAH_ASSERT(src_mem_idx < ctx->memory_count);
 
-    uint32_t size = (uint32_t)(*--sp).i32;
     bool src_i64 = wah_memory_type(ctx->module, src_mem_idx)->addr_type == WAH_TYPE_I64;
     bool dest_i64 = wah_memory_type(ctx->module, dest_mem_idx)->addr_type == WAH_TYPE_I64;
+    bool n_i64 = dest_i64 && src_i64;
+    uint64_t size = n_i64 ? (uint64_t)(*--sp).i64 : (uint32_t)(*--sp).i32;
     uint64_t src = src_i64 ? (uint64_t)(*--sp).i64 : (uint32_t)(*--sp).i32;
     uint64_t dest = dest_i64 ? (uint64_t)(*--sp).i64 : (uint32_t)(*--sp).i32;
 
@@ -12198,29 +12251,33 @@ WAH_RUN(MEMORY_COPY_i64) {
     WAH_ENSURE_GOTO(wah_u64_range_in_bounds(src, size, fctx->memories[src_mem_idx].size), WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup);
 
     if (dest_mem_idx == src_mem_idx && dest > src && dest < src + size) {
-        for (uint32_t done = 0; done < size; ) {
-            uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
-            uint32_t tail = size - done;
+        for (uint64_t done = 0; done < size; ) {
+            uint64_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+            chunk = wah_bulk_fuel_limit(ctx, chunk);
+            uint64_t tail = size - done;
             memmove(fctx->memories[dest_mem_idx].data + dest + tail - chunk,
-                    fctx->memories[src_mem_idx].data + src + tail - chunk, chunk);
+                    fctx->memories[src_mem_idx].data + src + tail - chunk, (size_t)chunk);
             done += chunk;
+            wah_bulk_fuel_charge(ctx, chunk);
             if (WAH_BULK_CHECK(done, size)) {
                 if (dest_i64) (*sp++).i64 = (int64_t)dest; else (*sp++).i32 = (int32_t)dest;
                 if (src_i64) (*sp++).i64 = (int64_t)src; else (*sp++).i32 = (int32_t)src;
-                (*sp++).i32 = (int32_t)(size - done);
+                if (n_i64) (*sp++).i64 = (int64_t)(size - done); else (*sp++).i32 = (int32_t)(size - done);
                 WAH_BULK_YIELD(instr_start);
             }
         }
     } else {
-        for (uint32_t done = 0; done < size; ) {
-            uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+        for (uint64_t done = 0; done < size; ) {
+            uint64_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
+            chunk = wah_bulk_fuel_limit(ctx, chunk);
             memmove(fctx->memories[dest_mem_idx].data + dest + done,
-                    fctx->memories[src_mem_idx].data + src + done, chunk);
+                    fctx->memories[src_mem_idx].data + src + done, (size_t)chunk);
             done += chunk;
+            wah_bulk_fuel_charge(ctx, chunk);
             if (WAH_BULK_CHECK(done, size)) {
                 if (dest_i64) (*sp++).i64 = (int64_t)(dest + done); else (*sp++).i32 = (int32_t)(dest + done);
                 if (src_i64) (*sp++).i64 = (int64_t)(src + done); else (*sp++).i32 = (int32_t)(src + done);
-                (*sp++).i32 = (int32_t)(size - done);
+                if (n_i64) (*sp++).i64 = (int64_t)(size - done); else (*sp++).i32 = (int32_t)(size - done);
                 WAH_BULK_YIELD(instr_start);
             }
         }
