@@ -184,7 +184,8 @@ endef
 $(foreach t,$(ALL_TEST_NAMES),$(eval $(call MAKE_COV_RUN_RULE,$(t))))
 
 .PHONY: coverage
-coverage: clean $(COV_RUN_TARGETS)
+coverage: clean
+	@$(MAKE) $(COV_RUN_TARGETS)
 	@echo "## Generating coverage report..."
 	lcov --capture --directory . --output-file coverage.info
 	lcov --remove coverage.info '/usr/*' '*/tests/test_*.c' --output-file coverage.info

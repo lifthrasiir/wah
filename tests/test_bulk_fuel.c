@@ -650,6 +650,101 @@ static void test_table64_copy_fuel_resume(void) {
     wah_free_module(&mod);
 }
 
+static void test_table64_copy_backward_fuel_resume(void) {
+    printf("Testing table64 table.copy backward fuel resume...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i64, i64, i64] []]} funcs {[0]} \
+        tables {[funcref limits.i64/2 200 200]} \
+        code {[{[] local.get 0 local.get 1 local.get 2 table.copy 0 0 end}]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t p[] = { {.i64 = 16}, {.i64 = 0}, {.i64 = 100} };
+    run_resume(&ctx, 0, p, 3, 3);
+
+    wah_value_t dummy;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &dummy, 0, &actual));
+
+    printf("  table64.copy backward fuel resume verified\n");
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_table_copy_i32_to_i64_fuel_resume(void) {
+    printf("Testing mixed-address table.copy i32_to_i64 fuel resume...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] [], fn [i64, i32, i32] [i32]]} \
+        funcs {[0, 1]} \
+        tables {[funcref limits.i64/2 200 200, funcref limits.i32/2 200 200]} \
+        elements {[ elem.passive elem.funcref [" REP64(FUNC0_REF) "] ]} \
+        code {[ \
+            {[] end}, \
+            {[] \
+                i32.const 0 i32.const 0 i32.const 64 table.init 0 1 \
+                local.get 0 local.get 1 local.get 2 table.copy 0 1 \
+                local.get 0 table.get 0 ref.is_null \
+            end} \
+        ]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t p[] = { {.i64 = 20}, {.i32 = 0}, {.i32 = 64} };
+    run_resume(&ctx, 1, p, 3, 3);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 0);
+
+    printf("  mixed-address table.copy i32_to_i64 fuel resume verified\n");
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_table_copy_i64_to_i32_fuel_resume(void) {
+    printf("Testing mixed-address table.copy i64_to_i32 fuel resume...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] [], fn [i32, i64, i32] [i32]]} \
+        funcs {[0, 1]} \
+        tables {[funcref limits.i32/2 200 200, funcref limits.i64/2 200 200]} \
+        elements {[ elem.passive elem.funcref [" REP64(FUNC0_REF) "] ]} \
+        code {[ \
+            {[] end}, \
+            {[] \
+                i64.const 0 i32.const 0 i32.const 64 table.init 0 1 \
+                local.get 0 local.get 1 local.get 2 table.copy 0 1 \
+                local.get 0 table.get 0 ref.is_null \
+            end} \
+        ]}");
+    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t p[] = { {.i32 = 20}, {.i64 = 0}, {.i32 = 64} };
+    run_resume(&ctx, 1, p, 3, 3);
+
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 0);
+
+    printf("  mixed-address table.copy i64_to_i32 fuel resume verified\n");
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
 // ============================================================
 // table64 table.init fuel resume
 // ============================================================
@@ -768,6 +863,9 @@ int main(void) {
     test_bulk_no_metering();
     test_table64_fill_fuel_resume();
     test_table64_copy_fuel_resume();
+    test_table64_copy_backward_fuel_resume();
+    test_table_copy_i32_to_i64_fuel_resume();
+    test_table_copy_i64_to_i32_fuel_resume();
     test_table64_init_fuel_resume();
     test_memory64_fill_fuel_resume();
     test_memory64_copy_backward_fuel_resume();

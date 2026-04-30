@@ -285,7 +285,7 @@ static void test_return_call_ref_nullability() {
     wah_free_module(&bad);
 }
 
-// Callee does return_call_indirect while caller has an active try_table handler.
+// return_call_indirect runs while its own frame has an active try_table handler.
 // The handler must be unwound before the tail call reuses the frame.
 static void test_return_call_indirect_exception_cleanup(void) {
     printf("Test: return_call_indirect exception handler cleanup\n");
@@ -294,16 +294,15 @@ static void test_return_call_indirect_exception_cleanup(void) {
 
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32]]} \
-        funcs {[0, 0, 0]} \
+        funcs {[0, 0]} \
         tables {[funcref limits.i32/1 1]} \
         elements {[elem.active.table#0 i32.const 0 end [0]]} \
         code {[ \
             {[] i32.const 77 end}, \
-            {[] i32.const 0 return_call_indirect 0 0 end}, \
             {[] \
                 block void \
                     try_table i32 [catch_all 0] \
-                        call 1 \
+                        i32.const 0 return_call_indirect 0 0 \
                     end \
                     return \
                 end \
@@ -313,7 +312,7 @@ static void test_return_call_indirect_exception_cleanup(void) {
     assert_ok(wah_exec_context_create(&ctx, &mod));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
-    assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 77);
     wah_exec_context_destroy(&ctx);
     wah_free_module(&mod);
@@ -326,15 +325,14 @@ static void test_return_call_ref_exception_cleanup(void) {
 
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32]]} \
-        funcs {[0, 0, 0]} \
+        funcs {[0, 0]} \
         exports {[{'f0'} fn# 0]} \
         code {[ \
             {[] i32.const 88 end}, \
-            {[] ref.func 0 return_call_ref 0 end}, \
             {[] \
                 block void \
                     try_table i32 [catch_all 0] \
-                        call 1 \
+                        ref.func 0 return_call_ref 0 \
                     end \
                     return \
                 end \
@@ -344,7 +342,7 @@ static void test_return_call_ref_exception_cleanup(void) {
     assert_ok(wah_exec_context_create(&ctx, &mod));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
-    assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 88);
     wah_exec_context_destroy(&ctx);
     wah_free_module(&mod);
@@ -357,16 +355,15 @@ static void test_return_call_indirect_i64_exception_cleanup(void) {
 
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32]]} \
-        funcs {[0, 0, 0]} \
+        funcs {[0, 0]} \
         tables {[funcref limits.i64/1 1]} \
         elements {[elem.active.table#0 i64.const 0 end [0]]} \
         code {[ \
             {[] i32.const 99 end}, \
-            {[] i64.const 0 return_call_indirect 0 0 end}, \
             {[] \
                 block void \
                     try_table i32 [catch_all 0] \
-                        call 1 \
+                        i64.const 0 return_call_indirect 0 0 \
                     end \
                     return \
                 end \
@@ -376,7 +373,7 @@ static void test_return_call_indirect_i64_exception_cleanup(void) {
     assert_ok(wah_exec_context_create(&ctx, &mod));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
-    assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 99);
     wah_exec_context_destroy(&ctx);
     wah_free_module(&mod);
