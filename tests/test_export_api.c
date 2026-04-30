@@ -237,7 +237,7 @@ int main(void) {
         assert_not_null(wah_strerror(WAH_ERROR_MISUSE));
         assert_not_null(wah_strerror(WAH_ERROR_IMPORT_NOT_FOUND));
         assert_not_null(wah_strerror(WAH_ERROR_EXCEPTION));
-        assert_not_null(wah_strerror(WAH_OK_BUT_MULTI_RETURN));
+        assert_not_null(wah_strerror(WAH_ERROR_MULTI_RETURN));
         assert_not_null(wah_strerror((wah_error_t)9999));
         assert_eq_str(wah_strerror(WAH_OK), "Success");
         assert_eq_str(wah_strerror(WAH_ERROR_MISUSE), "API misused: invalid arguments");

@@ -28,13 +28,10 @@ int main(int argc, char *argv[]) {
     wah_exec_context_create(&ctx, &mod, NULL);
     free(buf);
 
-    // Look up an exported function and call it
-    wah_export_desc_t desc;
-    wah_module_export_by_name(&mod, "add", &desc);
-
+    // Call an exported function by name
     wah_value_t params[2] = {{.i32 = 3}, {.i32 = 4}};
     wah_value_t result;
-    wah_error_t err = wah_call(&ctx, desc.index, params, 2, &result);
+    wah_error_t err = wah_call_by_name(&ctx, "add", params, 2, &result);
     if (err) {
         fprintf(stderr, "error: %s\n", wah_strerror(err));
         return 1;

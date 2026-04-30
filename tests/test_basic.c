@@ -35,6 +35,36 @@ int main() {
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
 
+    printf("Testing wah_call_by_name...\n");
+    {
+        const char *spec = "wasm \
+            types {[ fn [i32, i32] [i32] ]} \
+            funcs {[ 0 ]} \
+            memories {[limits.i32/1 1]} \
+            exports {[ {'add'} fn# 0, {'mem'} mem# 0 ]} \
+            code {[ {[] local.get 0 local.get 1 i32.add end } ]}";
+
+        wah_module_t mod;
+        assert_ok(wah_parse_module_from_spec(&mod, spec));
+
+        wah_exec_context_t ectx;
+        assert_ok(wah_exec_context_create(&ectx, &mod, NULL));
+
+        wah_value_t p[2] = {{.i32 = 3}, {.i32 = 4}};
+        wah_value_t r;
+        assert_ok(wah_call_by_name(&ectx, "add", p, 2, &r));
+        assert_eq_i32(r.i32, 7);
+
+        // non-existent name
+        assert_err(wah_call_by_name(&ectx, "nonexistent", p, 2, &r), WAH_ERROR_NOT_FOUND);
+
+        // non-function export
+        assert_err(wah_call_by_name(&ectx, "mem", p, 2, &r), WAH_ERROR_NOT_FOUND);
+
+        wah_exec_context_destroy(&ectx);
+        wah_free_module(&mod);
+    }
+
     printf("Testing Invalid Module (invalid_local_get_wasm)...\n");
     const char *invalid_local_get_wasm = "wasm \
         types {[ fn [i32, i32] [i32] ]} \

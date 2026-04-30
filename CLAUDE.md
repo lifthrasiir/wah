@@ -34,7 +34,7 @@ The WAH interpreter employs a multi-phase approach for efficient WebAssembly mod
 
 WAH supports two calling patterns:
 
-1. **Synchronous:** `wah_call()` / `wah_call_multi()` run to completion in a single call.
+1. **Synchronous:** `wah_call()` / `wah_call_multi()` / `wah_call_by_name()` run to completion in a single call. `wah_call()` returns `WAH_ERROR_MULTI_RETURN` without executing if the target function has multiple return values.
 
 2. **Resumable:** Three-phase model for cooperative multitasking:
    - `wah_start()` sets up a call frame without executing.

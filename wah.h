@@ -59,7 +59,7 @@ typedef enum {
     WAH_ERROR_IMPORT_NOT_FOUND = -14,
     WAH_ERROR_EXCEPTION = -15,
     WAH_ERROR_DISABLED_FEATURE = -16,
-    WAH_OK_BUT_MULTI_RETURN = 1,
+    WAH_ERROR_MULTI_RETURN = -17,
     WAH_STATUS_FUEL_EXHAUSTED = 2,
     WAH_STATUS_YIELDED = 3,
 } wah_error_t;
@@ -539,13 +539,15 @@ void wah_exec_context_get_limits(
 // Destroys and frees resources of an execution context.
 void wah_exec_context_destroy(wah_exec_context_t *exec_ctx);
 
-// The main entry point to call a WebAssembly function.
-// func_idx is a function index in the module's global function index space.
+// Call a WebAssembly function by index.
+// Returns WAH_ERROR_MULTI_RETURN if the function has multiple return values.
 wah_error_t wah_call(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
 
-// Entry point to call a WebAssembly function with multiple return values.
-// func_idx is a function index in the module's global function index space.
+// Call a WebAssembly function by index with multiple return values.
 wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *results, uint32_t max_results, uint32_t *actual_results);
+
+// Call an exported WebAssembly function by name.
+wah_error_t wah_call_by_name(wah_exec_context_t *exec_ctx, const char *name, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
 
 // Fuel metering control. Default fuel is INT64_MAX (effectively unlimited).
 void wah_set_fuel(wah_exec_context_t *ctx, int64_t fuel);
@@ -2308,7 +2310,7 @@ const char *wah_strerror(wah_error_t err) {
         case WAH_ERROR_IMPORT_NOT_FOUND: return "Import not found (or incompatible)";
         case WAH_ERROR_EXCEPTION: return "Uncaught exception";
         case WAH_ERROR_DISABLED_FEATURE: return "Feature not enabled";
-        case WAH_OK_BUT_MULTI_RETURN: return "Function succeeded but returned multiple values (only first value available)";
+        case WAH_ERROR_MULTI_RETURN: return "Function would return multiple values (use wah_call_multi)";
         case WAH_STATUS_FUEL_EXHAUSTED: return "Fuel exhausted";
         case WAH_STATUS_YIELDED: return "Execution yielded";
         default: return "Unknown error";
@@ -13960,21 +13962,19 @@ static wah_error_t wah_call_module_multi(
 
 static wah_error_t wah_call_module(wah_exec_context_t *exec_ctx, uint32_t func_idx,
                                    const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
-    if (!result) {
-        // Case where even a single return is not needed (void function)
-        uint32_t dummy;
-        return wah_call_module_multi(exec_ctx, func_idx, params, param_count, NULL, 0, &dummy);
+    WAH_ENSURE(func_idx < exec_ctx->function_table_count, WAH_ERROR_NOT_FOUND);
+    const wah_function_t *fn = &exec_ctx->function_table[func_idx];
+    uint32_t nresults;
+    if (fn->is_host) {
+        nresults = (uint32_t)fn->nresults;
+    } else {
+        const wah_module_t *fmod = fn->fn_module ? fn->fn_module : exec_ctx->module;
+        nresults = fmod->types[fmod->function_type_indices[fn->local_idx]].result_count;
     }
+    WAH_ENSURE(nresults <= 1, WAH_ERROR_MULTI_RETURN);
 
     uint32_t actual_results;
-    wah_error_t err = wah_call_module_multi(exec_ctx, func_idx, params, param_count, result, 1, &actual_results);
-
-    // Return WAH_OK_BUT_MULTI_RETURN for result_count > 1 (compatibility)
-    if (err == WAH_OK && actual_results > 1) {
-        err = WAH_OK_BUT_MULTI_RETURN;
-    }
-
-    return err;
+    return wah_call_module_multi(exec_ctx, func_idx, params, param_count, result, result ? 1 : 0, &actual_results);
 }
 
 wah_error_t wah_call(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
@@ -14003,6 +14003,15 @@ wah_error_t wah_call_multi(
 
     // func_idx is always uint32_t for functions.
     return wah_call_module_multi(exec_ctx, (uint32_t)func_idx, params, param_count, results, max_results, actual_results);
+}
+
+wah_error_t wah_call_by_name(wah_exec_context_t *exec_ctx, const char *name, const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
+    WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(exec_ctx->module, WAH_ERROR_MISUSE);
+    wah_export_desc_t desc;
+    WAH_CHECK(wah_module_export_by_name(exec_ctx->module, name, &desc));
+    WAH_ENSURE(desc.kind == WAH_KIND_FUNCTION, WAH_ERROR_NOT_FOUND);
+    return wah_call(exec_ctx, desc.index, params, param_count, result);
 }
 
 // --- Module Cleanup Implementation ---

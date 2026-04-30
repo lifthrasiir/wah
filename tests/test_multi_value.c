@@ -254,9 +254,9 @@ static void test_multi_return_four_values() {
     wah_free_module(&module);
 }
 
-// --- Test 9: wah_call returns WAH_OK_BUT_MULTI_RETURN for multi-result functions ---
+// --- Test 9: wah_call returns WAH_ERROR_MULTI_RETURN for multi-result functions ---
 static void test_wah_call_multi_return_error() {
-    printf("Testing wah_call returns multi-return warning...\n");
+    printf("Testing wah_call returns multi-return error...\n");
 
     const char *spec = "wasm \
         types {[ fn [] [i32, i32] ]} \
@@ -273,10 +273,40 @@ static void test_wah_call_multi_return_error() {
     assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     wah_value_t result;
-    wah_error_t err = wah_call(&ctx, 0, NULL, 0, &result);
-    assert_eq_i32(err, WAH_OK_BUT_MULTI_RETURN);
-    // First result should still be available
-    assert_eq_i32(result.i32, 10);
+    assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_MULTI_RETURN);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&module);
+}
+
+// --- Test 9b: wah_call does not execute multi-result functions ---
+static void test_wah_call_multi_return_no_execution() {
+    printf("Testing wah_call does not execute multi-return function...\n");
+
+    // Function writes to a mutable global then returns two values.
+    // If the global stays 0, the function body was never entered.
+    const char *spec = "wasm \
+        types {[ fn [] [i32, i32] ]} \
+        funcs {[ 0 ]} \
+        globals {[ i32 mut i32.const 0 end ]} \
+        code {[ {[] \
+            i32.const 42 global.set 0 \
+            i32.const 10 \
+            i32.const 20 \
+        end } ]}";
+
+    wah_module_t module;
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx;
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_MULTI_RETURN);
+
+    // Global must still be 0 -- the function was never executed
+    assert_eq_i32(ctx.globals[0].i32, 0);
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
@@ -330,6 +360,7 @@ int main() {
     test_if_else_with_multi_return_function();
     test_multi_return_four_values();
     test_wah_call_multi_return_error();
+    test_wah_call_multi_return_no_execution();
     test_multi_return_with_locals();
 
     printf("\n=== All Multi-Value Return Tests Passed ===\n");
