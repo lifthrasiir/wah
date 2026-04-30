@@ -6559,6 +6559,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
     bool meter_need_new_chunk = emit_meter;
     uint16_t meter_current_cost = 0;
 
+    // If this changes, update test_meter_chunk_reset_before_polled_loop().
     #define WAH_METER_MAX_CHUNK_COST 100
 
     #define WAH_METER_START_CHUNK() do { \
@@ -6596,6 +6597,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
             meter_chunks[meter_chunk_count].instr_record_count = (uint16_t)(meter_instr_record_count - meter_chunks[meter_chunk_count].instr_record_start); \
             meter_chunks[meter_chunk_count].next_fast_offset = buf_size; \
             meter_chunk_count++; \
+            meter_current_cost = 0; \
             meter_need_new_chunk = true; \
         } \
     } while (0)

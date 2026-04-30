@@ -935,6 +935,29 @@ static void test_multi_value_resume(void) {
     wah_free_module(&mod);
 }
 
+static void test_meter_chunk_reset_before_polled_loop(void) {
+    printf("Testing meter chunk reset before polled loop...\n");
+
+    wah_module_t mod = {0};
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] []]} funcs {[0]} \
+        code {[{[] \
+            nop nop nop nop nop nop nop nop nop nop \
+            nop nop nop nop nop nop nop nop nop nop \
+            nop nop nop nop nop nop nop nop nop nop \
+            nop nop nop nop nop nop nop nop nop nop \
+            nop nop nop nop nop nop nop nop nop nop \
+            nop nop nop nop nop nop nop nop nop nop \
+            nop nop nop nop nop nop nop nop nop nop \
+            nop nop nop nop nop nop nop nop nop nop \
+            nop nop nop nop nop nop nop nop nop nop \
+            nop nop nop nop nop nop nop nop nop \
+            return \
+            loop void end \
+        end}]}");
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_straight_line_exact_fuel();
     test_zero_fuel();
@@ -958,6 +981,7 @@ int main(void) {
     test_exception_across_call_resume();
     test_multi_value_fuel();
     test_multi_value_resume();
+    test_meter_chunk_reset_before_polled_loop();
 
     printf("\n=== All fuel tests passed ===\n");
     return 0;
