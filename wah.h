@@ -11963,8 +11963,8 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->data_len, WAH_ERROR_TRAP, cleanup); \
     WAH_ENSURE_GOTO(size <= segment->data_len, WAH_ERROR_TRAP, cleanup); \
     \
-    uint32_t done = wah_memory_init_internal(ctx, fctx->memories[mem_idx].data, dest_offset, \
-                                              segment->data, src_offset, size); \
+    uint32_t done = (uint32_t)wah_memory_init_internal(ctx, fctx->memories[mem_idx].data, dest_offset, \
+                                                       segment->data, src_offset, size); \
     if (done < size) { \
         (*sp++).i##N = (int##N##_t)(dest_offset + done); \
         (*sp++).i32 = (int32_t)(src_offset + done); \

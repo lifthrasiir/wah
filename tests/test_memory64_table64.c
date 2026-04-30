@@ -870,11 +870,11 @@ static void test_memory_copy_bounds_overflow(void) {
     assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
-    // dest=1, src=0, size=UINT64_MAX → dest+size overflows u64
+    // dest=1, src=0, size=UINT64_MAX -> dest+size overflows u64
     wah_value_t p[] = { {.i64 = 1}, {.i64 = 0}, {.i64 = (int64_t)UINT64_MAX} };
     assert_err(wah_call(&ctx, 0, p, 3, NULL), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
 
-    // dest=UINT64_MAX, src=0, size=1 → dest+size overflows
+    // dest=UINT64_MAX, src=0, size=1 -> dest+size overflows
     wah_value_t p2[] = { {.i64 = (int64_t)UINT64_MAX}, {.i64 = 0}, {.i64 = 1} };
     assert_err(wah_call(&ctx, 0, p2, 3, NULL), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
 

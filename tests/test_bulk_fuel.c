@@ -176,7 +176,7 @@ static void test_memory_copy_backward_fuel_resume(void) {
     // Pattern: bytes 0..127 = 0xA0..0xFF-ish
     for (int i = 0; i < 128; i++) ctx.memory_base[i] = (uint8_t)(0xA0 + i);
 
-    // Overlapping copy: dst=32, src=0, size=128 (forward overlap → backward copy)
+    // Overlapping copy: dst=32, src=0, size=128 (forward overlap -> backward copy)
     wah_value_t p[] = { {.i32 = 32}, {.i32 = 0}, {.i32 = 128} };
     run_resume(&ctx, 0, p, 3, 3);
 
@@ -306,7 +306,7 @@ static void test_table_copy_backward_fuel_resume(void) {
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
 
-    // func 0: table.copy(dst, src, size) — same table, overlapping triggers backward
+    // func 0: table.copy(dst, src, size) -- same table, overlapping triggers backward
     PARSE_FUEL(&mod, "wasm \
         types {[fn [i32, i32, i32] []]} \
         funcs {[0]} \
@@ -359,7 +359,7 @@ static void test_table_init_fuel_resume(void) {
     wah_value_t result;
     uint32_t actual;
     assert_ok(wah_finish(&ctx, &result, 1, &actual));
-    assert_eq_i32(result.i32, 0); // not null — filled with func refs
+    assert_eq_i32(result.i32, 0); // not null -- filled with func refs
 
     printf("  table.init(80) fuel resume verified\n");
 
@@ -554,9 +554,9 @@ static void test_bulk_fuel_proportional(void) {
            WAH_BULK_ITEMS_PER_FUEL, (long long)cost16,
            WAH_BULK_ITEMS_PER_FUEL * 10, (long long)cost160);
 
-    assert_eq_i64(cost1, cost0 + 1);  // 1 byte → ceil(1/16) = 1
-    assert_eq_i64(cost16, cost0 + 1); // exactly 16 bytes → 1
-    assert_eq_i64(cost160, cost0 + 10); // exactly 160 bytes → 10
+    assert_eq_i64(cost1, cost0 + 1);  // 1 byte -> ceil(1/16) = 1
+    assert_eq_i64(cost16, cost0 + 1); // exactly 16 bytes -> 1
+    assert_eq_i64(cost160, cost0 + 10); // exactly 160 bytes -> 10
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&mod);
@@ -826,7 +826,7 @@ static void test_memory64_copy_backward_fuel_resume(void) {
 
     for (int i = 0; i < 128; i++) ctx.memory_base[i] = (uint8_t)(0xA0 + i);
 
-    // Overlapping: dst=32, src=0, size=128 → backward
+    // Overlapping: dst=32, src=0, size=128 -> backward
     wah_value_t p[] = { {.i64 = 32}, {.i64 = 0}, {.i64 = 128} };
     run_resume(&ctx, 0, p, 3, 3);
 
