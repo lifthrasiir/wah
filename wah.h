@@ -13938,13 +13938,21 @@ static wah_error_t wah_call_module_multi(
     const wah_function_t *fn = &exec_ctx->function_table[func_idx];
 
     if (fn->is_host) {
-        size_t nresults = fn->nresults;
-        WAH_ENSURE(max_results >= nresults, WAH_ERROR_VALIDATION_FAILED);
+        uint32_t nresults = (uint32_t)fn->nresults;
+        uint32_t copy_count = nresults < max_results ? nresults : max_results;
+        wah_value_t *host_results = results;
+        if (nresults > max_results) {
+            WAH_ENSURE((uint8_t *)(exec_ctx->sp + nresults) <= (uint8_t *)exec_ctx->frame_ptr, WAH_ERROR_STACK_OVERFLOW);
+            host_results = exec_ctx->sp;
+        }
         wah_deadline_timer_set_armed(exec_ctx, true);
-        wah_error_t host_err = wah_call_host_function_internal(exec_ctx, fn, params, param_count, results);
+        wah_error_t host_err = wah_call_host_function_internal(exec_ctx, fn, params, param_count, host_results);
         wah_deadline_timer_set_armed(exec_ctx, false);
+        if (host_results != results && host_err == WAH_OK && results) {
+            for (uint32_t i = 0; i < copy_count; ++i) results[i] = host_results[i];
+        }
         WAH_CHECK(host_err);
-        *actual_results = (uint32_t)nresults;
+        *actual_results = nresults;
         return WAH_OK;
     }
 

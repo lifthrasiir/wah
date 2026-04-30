@@ -308,6 +308,13 @@ static void test_wah_call_multi_return_no_execution() {
     // Global must still be 0 -- the function was never executed
     assert_eq_i32(ctx.globals[0].i32, 0);
 
+    // wah_call_multi with max_results=1 truncates and does execute
+    uint32_t actual;
+    assert_ok(wah_call_multi(&ctx, 0, NULL, 0, &result, 1, &actual));
+    assert_eq_u32(actual, 2);
+    assert_eq_i32(result.i32, 10);
+    assert_eq_i32(ctx.globals[0].i32, 42);
+
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
 }
@@ -348,6 +355,51 @@ static void test_multi_return_with_locals() {
     wah_free_module(&module);
 }
 
+// --- Test 11: Host function multi-return truncation via wah_call_multi ---
+static void host_return_three(wah_call_context_t *ctx, void *userdata) {
+    (void)userdata;
+    wah_result_i32(ctx, 0, 100);
+    wah_result_i32(ctx, 1, 200);
+    wah_result_i32(ctx, 2, 300);
+}
+
+static void test_host_multi_return_truncation() {
+    printf("Testing host function multi-return truncation...\n");
+
+    wah_module_t mod;
+    assert_ok(wah_new_module(&mod, NULL));
+    assert_ok(wah_module_export_func(&mod, "f", "() -> (i32, i32, i32)", host_return_three, NULL, NULL));
+
+    wah_exec_context_t ctx;
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+
+    // wah_call rejects multi-return host function without executing
+    wah_value_t r;
+    assert_err(wah_call(&ctx, 0, NULL, 0, &r), WAH_ERROR_MULTI_RETURN);
+
+    // wah_call_multi with full buffer
+    wah_value_t results[3];
+    uint32_t actual;
+    assert_ok(wah_call_multi(&ctx, 0, NULL, 0, results, 3, &actual));
+    assert_eq_u32(actual, 3);
+    assert_eq_i32(results[0].i32, 100);
+    assert_eq_i32(results[1].i32, 200);
+    assert_eq_i32(results[2].i32, 300);
+
+    // wah_call_multi with truncation (max_results=1)
+    memset(results, 0, sizeof(results));
+    assert_ok(wah_call_multi(&ctx, 0, NULL, 0, results, 1, &actual));
+    assert_eq_u32(actual, 3);
+    assert_eq_i32(results[0].i32, 100);
+
+    // wah_call_multi with truncation (max_results=0)
+    assert_ok(wah_call_multi(&ctx, 0, NULL, 0, NULL, 0, &actual));
+    assert_eq_u32(actual, 3);
+
+    wah_exec_context_destroy(&ctx);
+    wah_free_module(&mod);
+}
+
 int main() {
     printf("=== Multi-Value Return Tests ===\n\n");
 
@@ -362,6 +414,7 @@ int main() {
     test_wah_call_multi_return_error();
     test_wah_call_multi_return_no_execution();
     test_multi_return_with_locals();
+    test_host_multi_return_truncation();
 
     printf("\n=== All Multi-Value Return Tests Passed ===\n");
     return 0;
