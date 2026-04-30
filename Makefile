@@ -7,6 +7,8 @@ ifneq ($(OS),Windows_NT)
     LDFLAGS += -pthread
 endif
 
+UNAME_S := $(shell uname -s 2>/dev/null)
+
 ifdef DEBUG
     CFLAGS += -DWAH_DEBUG -g -O0
 else
@@ -101,6 +103,14 @@ $(foreach t,$(ALL_TEST_NAMES),$(eval $(call MAKE_SINGLE_TEST,$(t))))
 
 # --- Benchmark ---
 
+BENCH_CFLAGS :=
+BENCH_LDFLAGS :=
+
+ifeq ($(UNAME_S),Darwin)
+    BENCH_CFLAGS += -DWAH_BENCH_KPC_CLOCK
+    BENCH_LDFLAGS += -F/System/Library/PrivateFrameworks -framework kperf
+endif
+
 .PHONY: bench
 bench: bench/bench_coremark
 	@echo "## Running CoreMark benchmark..."
@@ -108,8 +118,8 @@ bench: bench/bench_coremark
 
 bench/bench_coremark: bench/bench_coremark.c wah.h
 	@echo "## Compiling bench_coremark..."
-	@$(CC) -W -Wall -Wextra -DWAH_ASSERT=assert -O3 -c $< -o bench/bench_coremark.o
-	@$(CC) bench/bench_coremark.o -o $@ $(LDFLAGS)
+	@$(CC) -W -Wall -Wextra -DWAH_ASSERT=assert $(BENCH_CFLAGS) -O3 -c $< -o bench/bench_coremark.o
+	@$(CC) bench/bench_coremark.o -o $@ $(LDFLAGS) $(BENCH_LDFLAGS)
 	@rm -f bench/bench_coremark.o
 
 # --- Fuzzing ---

@@ -7,6 +7,7 @@
 tests/test_*
 !tests/test_*.c
 bench/bench_coremark
+bench/bench_coremark.kpc-rate
 wah_fuzz_afl
 fuzz/*
 !fuzz/*.c
