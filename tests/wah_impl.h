@@ -91,4 +91,7 @@ wah_error_t wah_debug_parse_define_type_spec(wah_module_t *mod, wah_debug_type_s
 wah_error_t wah_debug_parse_export_func_type_spec(wah_module_t *mod, wah_debug_type_spec_t *out, const char *spec);
 void wah_debug_free_type_spec(wah_debug_type_spec_t *spec);
 
+// --- GC ---
+void wah_debug_gc_step(wah_exec_context_t *ctx);
+
 #endif

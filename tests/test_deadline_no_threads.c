@@ -9,7 +9,7 @@ int main(void) {
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
     wah_rlimits_t limits = {0};
-    limits.deadline = 1;
+    limits.deadline_us = 1;
     wah_exec_options_t options = { .limits = limits };
 
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \

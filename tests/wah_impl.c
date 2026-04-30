@@ -351,3 +351,7 @@ cleanup:
     wah_debug_free_type_spec(out);
     return err == WAH_OK ? WAH_ERROR_BAD_SPEC : err;
 }
+
+void wah_debug_gc_step(wah_exec_context_t *ctx) {
+    wah_gc_step(ctx);
+}

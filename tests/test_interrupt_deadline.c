@@ -119,7 +119,7 @@ static void test_short_deadline_yields_and_rearms(void) {
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
     wah_exec_options_t options = {0};
-    options.limits.deadline = 10000;
+    options.limits.deadline_us = 10000;
 
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] []]} funcs {[0]} \
@@ -141,7 +141,7 @@ static void test_fast_call_disarms_deadline(void) {
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
     wah_exec_options_t options = {0};
-    options.limits.deadline = 50000;
+    options.limits.deadline_us = 50000;
 
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32]]} funcs {[0]} \
@@ -167,7 +167,7 @@ static void test_destroy_while_deadline_armed(void) {
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
     wah_exec_options_t options = {0};
-    options.limits.deadline = 5000000;
+    options.limits.deadline_us = 5000000;
 
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] []]} funcs {[0]} \

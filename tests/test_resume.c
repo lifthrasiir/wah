@@ -4,6 +4,7 @@
 #include <string.h>
 #include "../wah.h"
 #include "common.h"
+#include "wah_impl.h"
 
 static const wah_parse_options_t fuel_opts = { .features = WAH_FEATURE_ALL, .enable_fuel_metering = true };
 
@@ -655,7 +656,7 @@ static void test_resume_gc_funcref_on_stack(void) {
     wah_error_t err;
     while ((err = wah_resume(&ctx)) > 0) {
         suspensions++;
-        wah_gc_step(&ctx);
+        wah_debug_gc_step(&ctx);
         assert_true(wah_gc_verify_heap(&ctx));
         wah_set_fuel(&ctx, 1);
     }
@@ -702,7 +703,7 @@ static void test_resume_gc_ref_across_calls(void) {
     wah_error_t err;
     while ((err = wah_resume(&ctx)) > 0) {
         suspensions++;
-        wah_gc_step(&ctx);
+        wah_debug_gc_step(&ctx);
         assert_true(wah_gc_verify_heap(&ctx));
         wah_set_fuel(&ctx, 2);
     }
@@ -746,7 +747,7 @@ static void test_cancel_with_live_refs(void) {
     assert_eq_i32((int32_t)wah_exec_state(&ctx), WAH_EXEC_READY);
 
     // GC and verify heap after cancel
-    wah_gc_step(&ctx);
+    wah_debug_gc_step(&ctx);
     assert_true(wah_gc_verify_heap(&ctx));
 
     // Context should be reusable
@@ -866,7 +867,7 @@ static void test_resume_gc_ref_global(void) {
     wah_error_t err;
     while ((err = wah_resume(&ctx)) > 0) {
         suspensions++;
-        wah_gc_step(&ctx);
+        wah_debug_gc_step(&ctx);
         assert_true(wah_gc_verify_heap(&ctx));
         wah_set_fuel(&ctx, 1);
     }

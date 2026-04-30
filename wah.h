@@ -35,10 +35,30 @@
 #endif
 #endif
 
+// Macro: WAH_ALIGNAS(N) [user-definable]
+//   C99-compatible alias of `_Alignas` or `alignas` keyword. Can be overriden.
+#ifndef WAH_ALIGNAS
+#if defined(__cplusplus) && __cplusplus >= 201103L
+#define WAH_ALIGNAS(N) alignas(N)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define WAH_ALIGNAS(N) _Alignas(N)
+#elif defined(_MSC_VER)
+#define WAH_ALIGNAS(N) __declspec(align(N))
+#elif defined(__GNUC__) || defined(__clang__)
+#define WAH_ALIGNAS(N) __attribute__((aligned(N)))
+#else
+#define WAH_ALIGNAS(N)
+#endif
+#endif
+
+// Macro: WAH_ALIGNOF(T) [user-definable]
+//   C99-compatible alias of `_Alignof` or `alignof` operator. Can be overriden.
+#ifndef WAH_ALIGNOF
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 #define WAH_ALIGNOF(T) _Alignof(T)
 #else
 #define WAH_ALIGNOF(T) offsetof(struct { char c; T t; }, t)
+#endif
 #endif
 
 typedef enum {
@@ -79,13 +99,19 @@ typedef struct {
     void *userdata;
 } wah_alloc_t;
 
-// 128-bit vector type
+// Union: wah_v128_t
+//   128-bit vector type.
 typedef union {
+    WAH_ALIGNAS(16)
     uint8_t u8[16]; uint16_t u16[8]; uint32_t u32[4]; uint64_t u64[2];
     int8_t i8[16]; int16_t i16[8]; int32_t i32[4]; int64_t i64[2];
     float f32[4]; double f64[2];
 } wah_v128_t;
 
+typedef char wah_v128_align_check_[WAH_ALIGNOF(wah_v128_t) >= 16 ? 1 : -1];
+
+// Union: wah_value_t
+//   Value type for WebAssembly values and references. The type is described elsewhere.
 typedef union {
     int32_t i32;
     int64_t i64;
@@ -149,10 +175,6 @@ typedef int32_t wah_type_t;
 #define WAH_TYPE_FROM_IDX(i, null) ((wah_type_t)((i) * 2 + !!(null)))
 #define WAH_MAX_TYPE_INDEX         ((uint32_t)INT32_MAX >> 1)
 
-#define WAH_TYPE_IS_FUNCTION(t) ((t) / 100 == -1)
-#define WAH_TYPE_IS_MEMORY(t)   ((t) == -200)
-#define WAH_TYPE_IS_TABLE(t)    ((t) == -300)
-#define WAH_TYPE_IS_GLOBAL(t)   ((t) >= WAH_TYPE_V128)
 #define WAH_TYPE_IS_PACKED(t)   ((t) == WAH_TYPE_PACKED_I8 || (t) == WAH_TYPE_PACKED_I16)
 #define WAH_TYPE_IS_FUNCREF(t)  ((t) == WAH_TYPE_FUNCREF || (t) == WAH_TYPE_FUNC)
 #define WAH_TYPE_IS_EXTERNREF(t) ((t) == WAH_TYPE_EXTERNREF || (t) == WAH_TYPE_EXTERN)
@@ -513,12 +535,27 @@ wah_error_t wah_module_export_by_name_len(const wah_module_t *module, const char
 // --- Resource Limits ---
 #define WAH_RLIMIT_UNLIMITED UINT64_MAX
 
+// Struct: wah_rlimits_t
+//   Resource limits for execution. All limits are optional (0 means default or unchanged).
 typedef struct wah_rlimits_s {
-    uint64_t max_stack_bytes;    // unified value+call frame stack; 0=default
-    uint64_t max_memory_bytes;   // linear mem + table + GC heap total; 0=default (no limit), >0=that limit
-    uint64_t fuel;               // execution fuel; 0=default (no fuel limit)
-    uint64_t deadline;           // cooperative time limit in microseconds; 0=default (none)
-    bool no_memory_bytes;        // true=enforce 0-byte limit; incompatible with max_memory_bytes>0
+    // Field: max_stack_bytes
+    //   Maximum total bytes for the unified value-call frame stack.
+    uint64_t max_stack_bytes;
+    // Field: max_memory_bytes
+    //   Maximum total bytes for linear memory, tables, and GC heap combined.
+    //   Zero means the default, unlimited. Use `no_memory_bytes` to enforce a 0-byte limit.
+    uint64_t max_memory_bytes;
+    // Field: fuel
+    //   Execution fuel. The interpreter will stop with WAH_STATUS_FUEL_EXHAUSTED when fuel runs out.
+    //   Any WebAssembly opcode or ~WAH_BULK_ITEMS_PER_FUEL items handled consume a single fuel.
+    //   Only applicable when `wah_exec_context_t.fuel_metering` is true.
+    uint64_t fuel;
+    // Field: deadline_us
+    //   Cooperative time limit in microseconds. Be aware that this is not precise nor deterministic.
+    uint64_t deadline_us;
+    // Field: no_memory_bytes
+    //   If true, enforces a 0-byte limit on all memory. Incompatible with any `max_memory_bytes` > 0.
+    bool no_memory_bytes;
 } wah_rlimits_t;
 
 typedef struct {
@@ -646,12 +683,6 @@ typedef struct wah_gc_heap_stats_s {
 
 // Enables GC on the execution context. Idempotent.
 wah_error_t wah_gc_start(wah_exec_context_t *ctx);
-// Resets the GC heap: frees all managed objects and resets counters.
-void wah_gc_reset(wah_exec_context_t *ctx);
-// Destroys GC state and frees all managed objects.
-void wah_gc_destroy(wah_exec_context_t *ctx);
-// Runs one GC cycle (mark + sweep). Currently stop-the-world.
-void wah_gc_step(wah_exec_context_t *ctx);
 // Returns current GC heap statistics.
 void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats);
 // Verifies GC heap consistency. Returns true if valid. Logs errors via WAH_LOG in debug builds.
@@ -832,24 +863,11 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 #error "WAH_FEATURE_TYPED_FUNCREF requires WAH_FEATURE_REF_TYPES"
 #endif
 
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-#define WAH_IF_GC(...) __VA_ARGS__
-#else
-#define WAH_IF_GC(...)
-#endif
-
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
 #define WAH_IF_SIMD(...) __VA_ARGS__
 #else
 #define WAH_IF_SIMD(...)
 #endif
-
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_RELAXED_SIMD)
-#define WAH_IF_RELAXED_SIMD(...) __VA_ARGS__
-#else
-#define WAH_IF_RELAXED_SIMD(...)
-#endif
-
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
 #define WAH_IF_MEMORY64(...) __VA_ARGS__
 #else
@@ -4113,8 +4131,8 @@ static void wah_layout_free_slots(wah_layout_slot_list_t slots[4], const wah_all
     for (uint32_t i = 0; i < 4; ++i) wah_free(alloc, slots[i].offsets);
 }
 
-#ifdef WAH_DEBUG
 static wah_error_t wah_validate_struct_repr_info(const wah_type_def_t *td, const wah_repr_info_t *info, const wah_alloc_t *alloc) {
+#ifdef WAH_DEBUG
     uint64_t field_bytes = 0;
     uint8_t *used = NULL;
     WAH_ENSURE(td && info && info->type == WAH_REPR_STRUCT, WAH_ERROR_MISUSE);
@@ -4140,14 +4158,11 @@ static wah_error_t wah_validate_struct_repr_info(const wah_type_def_t *td, const
     }
     WAH_ENSURE((uint64_t)info->size >= field_bytes && (uint64_t)info->size - field_bytes <= 15, WAH_ERROR_VALIDATION_FAILED);
     wah_free(alloc, used);
-    return WAH_OK;
-}
 #else
-static wah_error_t wah_validate_struct_repr_info(const wah_type_def_t *td, const wah_repr_info_t *info, const wah_alloc_t *alloc) {
     (void)td; (void)info; (void)alloc;
+#endif
     return WAH_OK;
 }
-#endif
 
 static wah_error_t wah_build_struct_repr_info(uint32_t typeidx, const wah_type_def_t *td,
                                               wah_repr_info_t **out_info, const wah_alloc_t *alloc) {
@@ -5061,15 +5076,12 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 #define POP(T) WAH_CHECK(wah_validation_pop_and_match_type(vctx, WAH_TYPE_##T))
 #define POP_INTO(x) WAH_CHECK(wah_validation_pop_type(vctx, x))
 #define PUSH(T) WAH_CHECK(wah_validation_push_type(vctx, WAH_TYPE_##T))
-#define RECORD_BRANCH_ADJ(keep, drop) ((void)(keep), (void)(drop))
 
 #define EMIT_INSTR_EX(op, ...) do { \
-    if (ac) { \
-        WAH_ENSURE_CAP(ac->instrs, ac->instr_count + 1); \
-        wah_decoded_instr_t *_di = &ac->instrs[ac->instr_count++]; \
-        *_di = (wah_decoded_instr_t){ .opcode = (op), .flags = vctx->is_unreachable ? WAH_INSTR_FLAG_UNREACHABLE : 0 }; \
-        __VA_ARGS__; \
-    } \
+    WAH_ENSURE_CAP(ac->instrs, ac->instr_count + 1); \
+    wah_decoded_instr_t *_di = &ac->instrs[ac->instr_count++]; \
+    *_di = (wah_decoded_instr_t){ .opcode = (op), .flags = vctx->is_unreachable ? WAH_INSTR_FLAG_UNREACHABLE : 0 }; \
+    __VA_ARGS__; \
 } while (0)
 
 #define EMIT_SIMPLE() EMIT_INSTR_EX(opcode_val, (void)0)
@@ -5770,7 +5782,6 @@ cleanup_block:
                 adj_keep = br_result_count;
                 adj_drop = vctx->current_stack_depth - br_stack_height - br_result_count;
             }
-            RECORD_BRANCH_ADJ(adj_keep, adj_drop);
 
             for (int32_t i = br_result_count - 1; i >= 0; --i) POP(_(br_result_types[i]));
             if (is_br_if) {
@@ -5826,16 +5837,11 @@ cleanup_block:
                     wah_validation_resolve_br_target(vctx, label_indices[i], &dummy_count, NULL, &target_stack_height);
                     uint32_t d = vctx->current_stack_depth - target_stack_height - default_result_count;
                     bt_drops[i] = d;
-                    RECORD_BRANCH_ADJ(default_result_count, d);
                 }
                 uint32_t dd = vctx->current_stack_depth - default_stack_height - default_result_count;
                 bt_drops[num_targets] = dd;
-                RECORD_BRANCH_ADJ(default_result_count, dd);
             } else {
-                for (uint32_t i = 0; i <= num_targets; ++i) {
-                    bt_drops[i] = 0;
-                    RECORD_BRANCH_ADJ(0, 0);
-                }
+                for (uint32_t i = 0; i <= num_targets; ++i) bt_drops[i] = 0;
             }
 
             wah_type_t *popped_types = NULL;
@@ -6140,7 +6146,6 @@ cleanup_block:
             }
 
             for (int32_t i = (int32_t)prefix_result_count - 1; i >= 0; --i) POP(_(br_result_types[i]));
-            RECORD_BRANCH_ADJ(0, 0);
             for (uint32_t i = 0; i < prefix_result_count; ++i) PUSH(_(br_result_types[i]));
             if (opcode_val == WAH_OP_BR_ON_NULL) {
                 PUSH(_(ref_type == WAH_TYPE_BOT ? WAH_TYPE_BOT : WAH_TYPE_AS_NON_NULL(ref_type)));
@@ -6212,7 +6217,6 @@ cleanup_block:
                 }
             }
 
-            RECORD_BRANCH_ADJ(0, 0);
             if (opcode_val == WAH_OP_BR_ON_CAST) {
                 PUSH(_(dst_nullable ? WAH_TYPE_AS_NON_NULL(src_type) : src_type));
             } else {
@@ -6392,7 +6396,6 @@ cleanup_try_table:
 #undef PUSH
 #undef POP
 #undef POP_INTO
-#undef RECORD_BRANCH_ADJ
 #undef EMIT_INSTR_EX
 #undef EMIT_SIMPLE
 
@@ -9283,7 +9286,7 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
     exec_ctx->module = module;
     exec_ctx->enabled_features = module->enabled_features;
     exec_ctx->fuel = (limits->fuel != 0) ? (int64_t)limits->fuel : INT64_MAX;
-    exec_ctx->deadline_us = limits->deadline;
+    exec_ctx->deadline_us = limits->deadline_us;
     if (exec_ctx->deadline_us > 0) {
         WAH_CHECK_GOTO(wah_deadline_timer_create(exec_ctx), cleanup);
     }
@@ -9426,8 +9429,8 @@ wah_error_t wah_exec_context_set_limits(wah_exec_context_t *exec_ctx, const wah_
         exec_ctx->fuel = (int64_t)limits->fuel;
     }
 
-    if (limits->deadline != 0) {
-        exec_ctx->deadline_us = limits->deadline;
+    if (limits->deadline_us != 0) {
+        exec_ctx->deadline_us = limits->deadline_us;
         WAH_CHECK(wah_deadline_timer_create(exec_ctx));
     }
 
@@ -9441,7 +9444,7 @@ void wah_exec_context_get_limits(const wah_exec_context_t *exec_ctx, wah_rlimits
         .max_memory_bytes = (mm == WAH_RLIMIT_UNLIMITED) ? 0 : mm,
         .no_memory_bytes = (mm == 0),
         .fuel = (exec_ctx->fuel >= 0 && exec_ctx->fuel < INT64_MAX) ? (uint64_t)exec_ctx->fuel : 0,
-        .deadline = exec_ctx->deadline_us,
+        .deadline_us = exec_ctx->deadline_us,
     };
 }
 

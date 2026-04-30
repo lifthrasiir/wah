@@ -193,7 +193,7 @@ static void cleanup_context_case(void *userdata) {
 static wah_error_t op_context_create_deadline(oom_alloc_t *state, void *userdata) {
     context_case_t *c = (context_case_t *)userdata;
     wah_alloc_t alloc = make_oom_alloc(state);
-    wah_exec_options_t opts = { .alloc = &alloc, .limits = { .deadline = 1000000 } };
+    wah_exec_options_t opts = { .alloc = &alloc, .limits = { .deadline_us = 1000000 } };
     return wah_exec_context_create(&c->ctx, &c->module, &opts);
 }
 
