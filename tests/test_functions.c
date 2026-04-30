@@ -21,7 +21,7 @@ void test_start_section() {
     printf("Testing Start Section...\n");
     assert_ok(wah_parse_module_from_spec(&module, start_section_wasm_spec));
 
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     // Start function runs during instantiation (after globals/imports/elements are ready).
     assert_ok(wah_instantiate(&ctx));
 
@@ -48,7 +48,7 @@ void test_zero_return_functions() {
     wah_exec_context_t ctx;
 
     assert_ok(wah_parse_module_from_spec(&module, wasm_binary_spec));
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     // Test wah_call with zero return function
     wah_value_t result;
@@ -85,7 +85,7 @@ void test_single_return_functions() {
     wah_exec_context_t ctx;
 
     assert_ok(wah_parse_module_from_spec(&module, wasm_binary_spec));
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     // Test wah_call with single return function
     wah_value_t result;
@@ -130,7 +130,7 @@ void test_multiple_return_with_existing_functions() {
     wah_exec_context_t ctx;
 
     assert_ok(wah_parse_module_from_spec(&module, wasm_binary_spec));
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     // Test function 0: get_i64 with wah_call_multi (should return WAH_OK)
     wah_value_t results[1];
@@ -176,7 +176,7 @@ void test_multi_return_buffer_validation() {
     wah_exec_context_t ctx;
 
     assert_ok(wah_parse_module_from_spec(&module, wasm_binary_spec));
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     // Test with max_results=0: function executes, actual_results reports true count
     wah_value_t results[1];

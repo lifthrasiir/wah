@@ -19,7 +19,7 @@ static void test_straight_line_exact_fuel(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [i32, i32] [i32]]} funcs {[0]} \
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 10}, {.i32 = 20} };
     wah_value_t result;
@@ -52,7 +52,7 @@ static void test_zero_fuel(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [] []]} funcs {[0]} \
         code {[{[] end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_set_fuel(&ctx, 0);
     assert_err(wah_call(&ctx, 0, NULL, 0, NULL), WAH_STATUS_FUEL_EXHAUSTED);
@@ -73,7 +73,7 @@ static void test_no_metering_when_disabled(void) {
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [i32, i32] [i32]]} funcs {[0]} \
         code {[{[] local.get 0 local.get 1 i32.add end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 5}, {.i32 = 7} };
     wah_value_t result;
@@ -103,7 +103,7 @@ static void test_loop_fuel(void) {
             end \
             local.get 1 \
         end }]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[1] = { {.i32 = 3} };
     wah_value_t result;
@@ -131,7 +131,7 @@ static void test_branch_fuel(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [i32] [i32]]} funcs {[0]} \
         code {[{[] local.get 0 if i32 i32.const 42 else i32.const 99 end end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[1];
     wah_value_t result;
@@ -168,7 +168,7 @@ static void test_call_fuel(void) {
             {[] local.get 0 local.get 1 i32.add end}, \
             {[] local.get 0 local.get 1 call 0 end}, \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 3}, {.i32 = 7} };
     wah_value_t result;
@@ -199,7 +199,7 @@ static void test_max_fuel(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [i32, i32] [i32]]} funcs {[0]} \
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 1}, {.i32 = 2} };
     wah_value_t result;
@@ -221,7 +221,7 @@ static void test_deterministic_fuel(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [i32, i32] [i32]]} funcs {[0]} \
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 10}, {.i32 = 20} };
     wah_value_t result;
@@ -260,7 +260,7 @@ static void test_slow_path_partial_execution(void) {
             local.get 0 local.get 1 i32.add \
             i32.const 1 i32.add \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 10}, {.i32 = 20} };
     wah_value_t result;
@@ -326,7 +326,7 @@ static void test_slow_path_side_effects(void) {
             {[] global.get 0 end}, \
             {[] i32.const 0 global.set 0 end}, \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -414,7 +414,7 @@ static void test_br_table_fuel(void) {
             end \
             i32.const 40 \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[1], result = {0};
     int32_t expected[] = {10, 20, 30, 40};
@@ -462,7 +462,7 @@ static void test_br_table_resume(void) {
             end}, \
             {[] i32.const 0 global.set 0 end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params[1];
@@ -522,7 +522,7 @@ static void test_call_indirect_fuel(void) {
             {[] local.get 0 local.get 1 i32.sub end}, \
             {[] local.get 0 local.get 1 local.get 2 call_indirect 0 0 end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params[3], result;
@@ -570,7 +570,7 @@ static void test_call_indirect_resume(void) {
             {[] local.get 0 local.get 1 i32.sub end}, \
             {[] local.get 0 local.get 1 local.get 2 call_indirect 0 0 end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params[3] = { {.i32 = 30}, {.i32 = 12}, {.i32 = 1} };
@@ -610,7 +610,7 @@ static void test_return_call_fuel(void) {
             {[] return_call 1 end}, \
             {[] i32.const 42 end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t result;
     wah_set_fuel(&ctx, 10000);
@@ -627,7 +627,7 @@ static void test_return_call_fuel(void) {
             {[] call 1 end}, \
             {[] i32.const 42 end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx2, &mod2));
+    assert_ok(wah_exec_context_create(&ctx2, &mod2, NULL));
     wah_set_fuel(&ctx2, 10000);
     assert_ok(wah_call(&ctx2, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
@@ -658,7 +658,7 @@ static void test_return_call_resume(void) {
                 local.get 0 i32.const 1 i32.sub return_call 0 \
             end \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params = { .i32 = 20 };
 
@@ -705,7 +705,7 @@ static void test_return_call_indirect_resume(void) {
             {[] i32.const 0 return_call_indirect 0 0 end}, \
             {[] i32.const 99 end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_set_fuel(&ctx, 1);
@@ -749,7 +749,7 @@ static void test_exception_fuel(void) {
                 i32.const 0 \
             end \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params = { .i32 = 55 };
@@ -792,7 +792,7 @@ static void test_exception_resume(void) {
             end \
             i32.const 100 i32.add \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params = { .i32 = 7 };
@@ -841,7 +841,7 @@ static void test_exception_across_call_resume(void) {
                 end \
             end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params = { .i32 = 42 };
@@ -875,7 +875,7 @@ static void test_multi_value_fuel(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [] [i32, i32]]} funcs {[0]} \
         code {[{[] i32.const 11 i32.const 22 end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_set_fuel(&ctx, 10000);
     wah_value_t results[2];
@@ -906,7 +906,7 @@ static void test_multi_value_resume(void) {
             local.get 0 i32.const 1 i32.add \
             local.get 0 i32.const 2 i32.add \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params = { .i32 = 10 };
 

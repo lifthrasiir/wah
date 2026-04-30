@@ -21,7 +21,7 @@ static inline wah_error_t wah_parse_module_from_specv(wah_module_t *module, cons
     int ok = wah_build_spec_binaryv(&data, &size, fmt, args_copy);
     va_end(args_copy);
     if (!ok) return WAH_ERROR_BAD_SPEC;
-    wah_error_t err = wah_parse_module(data, size, module);
+    wah_error_t err = wah_parse_module(module, data, size, NULL);
     free(data);
     return err;
 }
@@ -43,7 +43,7 @@ static inline wah_error_t wah_parse_module_from_spec_exv(wah_module_t *module, c
     int ok = wah_build_spec_binaryv(&data, &size, fmt, args_copy);
     va_end(args_copy);
     if (!ok) return WAH_ERROR_BAD_SPEC;
-    wah_error_t err = wah_parse_module_ex(data, size, options, module);
+    wah_error_t err = wah_parse_module(module, data, size, options);
     free(data);
     return err;
 }

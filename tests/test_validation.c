@@ -25,7 +25,7 @@ static void test_block_type_not_skipped() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -75,7 +75,7 @@ static void test_if_complex_block_type() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -107,7 +107,7 @@ static void test_if_no_else_complex_block_type() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -166,7 +166,7 @@ static void test_loop_complex_block_type() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params[1] = {{.i32 = 5}};
@@ -194,7 +194,7 @@ static void test_loop_complex_block_type() {
     assert_ok(wah_parse_module_from_spec(&module2, spec2));
 
     wah_exec_context_t ctx2 = {0};
-    assert_ok(wah_exec_context_create(&ctx2, &module2));
+    assert_ok(wah_exec_context_create(&ctx2, &module2, NULL));
     assert_ok(wah_instantiate(&ctx2));
 
     wah_value_t result2;
@@ -223,7 +223,7 @@ static void test_block_value_types() {
     wah_module_t m1 = {0};
     assert_ok(wah_parse_module_from_spec(&m1, spec_funcref));
     wah_exec_context_t c1 = {0};
-    assert_ok(wah_exec_context_create(&c1, &m1));
+    assert_ok(wah_exec_context_create(&c1, &m1, NULL));
     assert_ok(wah_instantiate(&c1));
     wah_value_t r1;
     assert_ok(wah_call(&c1, 0, NULL, 0, &r1));
@@ -244,7 +244,7 @@ static void test_block_value_types() {
     wah_module_t m2 = {0};
     assert_ok(wah_parse_module_from_spec(&m2, spec_externref));
     wah_exec_context_t c2 = {0};
-    assert_ok(wah_exec_context_create(&c2, &m2));
+    assert_ok(wah_exec_context_create(&c2, &m2, NULL));
     assert_ok(wah_instantiate(&c2));
     wah_value_t r2;
     assert_ok(wah_call(&c2, 0, NULL, 0, &r2));
@@ -447,7 +447,7 @@ static void test_br_block_floor() {
     assert_ok(wah_parse_module_from_spec(&good, good_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &good));
+    assert_ok(wah_exec_context_create(&ctx, &good, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -508,7 +508,7 @@ static void test_function_end_with_results() {
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
@@ -549,7 +549,7 @@ static void test_ref_test_concrete_heap_type() {
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
@@ -572,7 +572,7 @@ static void test_nullref_subtype_check() {
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));

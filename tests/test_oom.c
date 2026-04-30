@@ -169,7 +169,7 @@ static wah_error_t op_parse_complex_module(oom_alloc_t *state, void *userdata) {
 static wah_error_t op_define_type(oom_alloc_t *state, void *userdata) {
     module_case_t *c = (module_case_t *)userdata;
     wah_alloc_t alloc = make_oom_alloc(state);
-    wah_error_t err = wah_new_module_ex(&c->module, &alloc);
+    wah_error_t err = wah_new_module(&c->module, &alloc);
     wah_type_t first, second;
     if (err != WAH_OK) return err;
     err = wah_module_define_type(&c->module, &first,
@@ -194,7 +194,7 @@ static wah_error_t op_context_create_deadline(oom_alloc_t *state, void *userdata
     context_case_t *c = (context_case_t *)userdata;
     wah_alloc_t alloc = make_oom_alloc(state);
     wah_exec_options_t opts = { .alloc = &alloc, .limits = { .deadline = 1000000 } };
-    return wah_exec_context_create_ex(&c->ctx, &c->module, &opts);
+    return wah_exec_context_create(&c->ctx, &c->module, &opts);
 }
 
 typedef struct {
@@ -213,7 +213,7 @@ static wah_error_t op_instantiate_linked(oom_alloc_t *state, void *userdata) {
     instantiate_case_t *c = (instantiate_case_t *)userdata;
     wah_alloc_t alloc = make_oom_alloc(state);
     wah_exec_options_t opts = { .alloc = &alloc };
-    wah_error_t err = wah_exec_context_create_ex(&c->ctx, &c->consumer, &opts);
+    wah_error_t err = wah_exec_context_create(&c->ctx, &c->consumer, &opts);
     if (err != WAH_OK) return err;
     err = wah_link_module(&c->ctx, "provider", &c->provider);
     if (err != WAH_OK) return err;
@@ -225,7 +225,7 @@ static wah_error_t op_instantiate_linked(oom_alloc_t *state, void *userdata) {
 static wah_error_t op_host_builder(oom_alloc_t *state, void *userdata) {
     module_case_t *c = (module_case_t *)userdata;
     wah_alloc_t alloc = make_oom_alloc(state);
-    wah_error_t err = wah_new_module_ex(&c->module, &alloc);
+    wah_error_t err = wah_new_module(&c->module, &alloc);
     wah_v128_t v = {{0}};
     if (err != WAH_OK) return err;
     err = wah_module_export_func(&c->module, "id",
@@ -335,7 +335,7 @@ static void prepare_runtime_case(runtime_case_t *c) {
             end \
         end } ]}";
     assert_ok(wah_parse_module_from_spec(&c->module, spec));
-    assert_ok(wah_exec_context_create(&c->ctx, &c->module));
+    assert_ok(wah_exec_context_create(&c->ctx, &c->module, NULL));
     assert_ok(wah_instantiate(&c->ctx));
     c->saved_alloc = c->ctx.alloc;
 }
@@ -363,7 +363,7 @@ static void prepare_runtime_throw_ref_case(runtime_case_t *c) {
             end \
         end } ]}";
     assert_ok(wah_parse_module_from_spec(&c->module, spec));
-    assert_ok(wah_exec_context_create(&c->ctx, &c->module));
+    assert_ok(wah_exec_context_create(&c->ctx, &c->module, NULL));
     assert_ok(wah_instantiate(&c->ctx));
     c->saved_alloc = c->ctx.alloc;
 }

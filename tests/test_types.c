@@ -92,7 +92,7 @@ void run_test(const char* test_name, const char* wasm_spec, void (*test_func)(wa
     wah_module_t module;
     wah_exec_context_t ctx; // Declare context
     assert_ok(wah_parse_module_from_spec(&module, wasm_spec));
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     test_func(&ctx); // Pass context to test_func
     wah_exec_context_destroy(&ctx); // Destroy context
     wah_free_module(&module);

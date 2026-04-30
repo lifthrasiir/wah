@@ -94,7 +94,7 @@ int main(void) {
 
     wah_exec_context_t ctx;
     wah_exec_options_t exec_opts = { .alloc = &context_alloc };
-    assert_ok(wah_exec_context_create_ex(&ctx, &module, &exec_opts));
+    assert_ok(wah_exec_context_create(&ctx, &module, &exec_opts));
     if (context_counts.allocs == 0) return 1;
 
     wah_value_t arg = { .i32 = 42 };
@@ -111,7 +111,7 @@ int main(void) {
     tracking_alloc_t builder_counts = {0};
     wah_alloc_t builder_alloc = { tracking_malloc, tracking_realloc, tracking_free, &builder_counts };
     wah_module_t host_module;
-    assert_ok(wah_new_module_ex(&host_module, &builder_alloc));
+    assert_ok(wah_new_module(&host_module, &builder_alloc));
     assert_ok(wah_module_export_func(&host_module, "id", "(i32) -> i32", host_id, NULL, NULL));
     if (builder_counts.allocs == 0) return 1;
     wah_free_module(&host_module);

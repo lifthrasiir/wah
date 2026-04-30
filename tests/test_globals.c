@@ -83,7 +83,7 @@ int main(void) {
     assert_ok(wah_parse_module_from_spec(&module, globals_wasm));
 
     // Create execution context
-    assert_ok(wah_exec_context_create(&exec_ctx, &module));
+    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
 
     test_i64_global(&exec_ctx);
     test_f32_global(&exec_ctx);

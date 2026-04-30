@@ -156,15 +156,15 @@ static uint8_t *read_file(const char *path, size_t *out_size) {
 
 static wah_error_t run_coremark(uint8_t *wasm, size_t wasm_size, wah_value_t *result) {
     wah_module_t mod = {0};
-    wah_error_t err = wah_parse_module(wasm, wasm_size, &mod);
+    wah_error_t err = wah_parse_module(&mod, wasm, wasm_size, NULL);
     if (err) { fprintf(stderr, "Parse error: %s\n", wah_strerror(err)); return err; }
 
     wah_module_t env = {0};
-    wah_new_module(&env);
+    wah_new_module(&env, NULL);
     wah_module_export_func(&env, "clock_ms", "() -> i32", clock_ms_host, NULL, NULL);
 
     wah_exec_context_t ctx = {0};
-    wah_exec_context_create(&ctx, &mod);
+    wah_exec_context_create(&ctx, &mod, NULL);
     wah_link_module(&ctx, "env", &env);
 
     err = wah_instantiate(&ctx);

@@ -27,7 +27,7 @@ static void test_try_table_catch_label_types() {
     assert_ok(wah_parse_module_from_spec(&good, good_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &good));
+    assert_ok(wah_exec_context_create(&ctx, &good, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -85,7 +85,7 @@ static void test_catch_all() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -135,11 +135,11 @@ static void test_cross_module_throw_tag_context() {
     // Tag imports require a linked context (not just module), because tag instances
     // are created at instantiation time.
     wah_exec_context_t provider_ctx = {0};
-    assert_ok(wah_exec_context_create(&provider_ctx, &provider));
+    assert_ok(wah_exec_context_create(&provider_ctx, &provider, NULL));
     assert_ok(wah_instantiate(&provider_ctx));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_context(&ctx, "provider", &provider_ctx));
     assert_ok(wah_instantiate(&ctx));
 
@@ -183,7 +183,7 @@ static void test_catch_ref_and_throw_ref() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -221,7 +221,7 @@ static void test_nested_try_table() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -255,7 +255,7 @@ static void test_try_table_no_catch_propagates() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -297,11 +297,11 @@ static void test_cross_module_exception_tag_identity() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
     wah_exec_context_t provider_ctx = {0};
-    assert_ok(wah_exec_context_create(&provider_ctx, &provider));
+    assert_ok(wah_exec_context_create(&provider_ctx, &provider, NULL));
     assert_ok(wah_instantiate(&provider_ctx));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_context(&ctx, "provider", &provider_ctx));
     assert_ok(wah_instantiate(&ctx));
 
@@ -347,11 +347,11 @@ static void test_exception_tag_mismatch_no_catch() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
     wah_exec_context_t provider_ctx = {0};
-    assert_ok(wah_exec_context_create(&provider_ctx, &provider));
+    assert_ok(wah_exec_context_create(&provider_ctx, &provider, NULL));
     assert_ok(wah_instantiate(&provider_ctx));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_context(&ctx, "provider", &provider_ctx));
     assert_ok(wah_instantiate(&ctx));
 
@@ -400,7 +400,7 @@ static void test_link_module_tag_identity() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_module(&ctx, "provider", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -447,7 +447,7 @@ static void test_link_module_tag_mismatch() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_module(&ctx, "provider", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -482,7 +482,7 @@ static void test_return_inside_try_table() {
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
@@ -523,7 +523,7 @@ static void test_end_inside_try_table() {
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));

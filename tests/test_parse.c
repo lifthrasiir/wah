@@ -669,7 +669,7 @@ static void test_all_hang_wasm_parsing_errors() {
         wah_module_t module;
         memset(&module, 0, sizeof(wah_module_t));
 
-        wah_error_t err = wah_parse_module(hang_tests[i].binary, hang_tests[i].len, &module);
+        wah_error_t err = wah_parse_module(&module, hang_tests[i].binary, hang_tests[i].len, NULL);
 
         if (err == WAH_ERROR_VALIDATION_FAILED || err == WAH_ERROR_TOO_LARGE ||
             err == WAH_ERROR_UNEXPECTED_EOF || err == WAH_ERROR_MALFORMED) {
@@ -699,8 +699,8 @@ static void test_deep_const_expr_stack_instantiation() {
 
     wah_module_t module = {0};
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_parse_module(wasm, sizeof(wasm), &module));
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_parse_module(&module, wasm, sizeof(wasm), NULL));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
@@ -718,7 +718,7 @@ static void test_control_frame_cleanup_after_block_type_eof() {
     };
 
     wah_module_t module = {0};
-    assert_err(wah_parse_module(wasm, sizeof(wasm), &module), WAH_ERROR_UNEXPECTED_EOF);
+    assert_err(wah_parse_module(&module, wasm, sizeof(wasm), NULL), WAH_ERROR_UNEXPECTED_EOF);
     wah_free_module(&module);
 }
 
@@ -733,7 +733,7 @@ static void test_reject_huge_local_count_before_allocation() {
     };
 
     wah_module_t module = {0};
-    assert_err(wah_parse_module(wasm, sizeof(wasm), &module), WAH_ERROR_TOO_LARGE);
+    assert_err(wah_parse_module(&module, wasm, sizeof(wasm), NULL), WAH_ERROR_TOO_LARGE);
     wah_free_module(&module);
 }
 
@@ -752,7 +752,7 @@ static void test_reject_huge_function_type_counts_before_allocation() {
     };
 
     wah_module_t module = {0};
-    assert_err(wah_parse_module(wasm, sizeof(wasm), &module), WAH_ERROR_MALFORMED);
+    assert_err(wah_parse_module(&module, wasm, sizeof(wasm), NULL), WAH_ERROR_MALFORMED);
     wah_free_module(&module);
 }
 
@@ -772,7 +772,7 @@ static void test_reject_huge_br_table_count_before_allocation() {
     };
 
     wah_module_t module = {0};
-    assert_err(wah_parse_module(wasm, sizeof(wasm), &module), WAH_ERROR_MALFORMED);
+    assert_err(wah_parse_module(&module, wasm, sizeof(wasm), NULL), WAH_ERROR_MALFORMED);
     wah_free_module(&module);
 }
 
@@ -790,7 +790,7 @@ static void test_truncated_i8x16_shuffle_immediate() {
     };
 
     wah_module_t module = {0};
-    assert_err(wah_parse_module(wasm, sizeof(wasm), &module), WAH_ERROR_UNEXPECTED_EOF);
+    assert_err(wah_parse_module(&module, wasm, sizeof(wasm), NULL), WAH_ERROR_UNEXPECTED_EOF);
     wah_free_module(&module);
 }
 
@@ -814,7 +814,7 @@ static void test_reject_huge_element_count_before_allocation() {
     };
 
     wah_module_t module = {0};
-    assert_err(wah_parse_module(wasm, sizeof(wasm), &module), WAH_ERROR_MALFORMED);
+    assert_err(wah_parse_module(&module, wasm, sizeof(wasm), NULL), WAH_ERROR_MALFORMED);
     wah_free_module(&module);
 }
 
@@ -829,11 +829,13 @@ static void test_reject_huge_memory_min_with_exec_limit() {
 
     wah_module_t module = {0};
     wah_exec_context_t ctx = {0};
-    wah_rlimits_t limits = {
-        .max_memory_bytes = 64 * 1024 * 1024,
+    wah_exec_options_t options = {
+        .limits = {
+            .max_memory_bytes = 64 * 1024 * 1024,
+        }
     };
-    assert_ok(wah_parse_module(wasm, sizeof(wasm), &module));
-    assert_err(wah_exec_context_create_with_limits(&ctx, &module, &limits), WAH_ERROR_TOO_LARGE);
+    assert_ok(wah_parse_module(&module, wasm, sizeof(wasm), NULL));
+    assert_err(wah_exec_context_create(&ctx, &module, &options), WAH_ERROR_TOO_LARGE);
     wah_free_module(&module);
 }
 
@@ -850,7 +852,7 @@ static void test_unreachable_array_new_fixed_huge_length() {
     };
 
     wah_module_t module = {0};
-    assert_err(wah_parse_module(wasm, sizeof(wasm), &module), WAH_ERROR_VALIDATION_FAILED);
+    assert_err(wah_parse_module(&module, wasm, sizeof(wasm), NULL), WAH_ERROR_VALIDATION_FAILED);
     wah_free_module(&module);
 }
 
@@ -1002,7 +1004,7 @@ static void test_fuzz_ref_validation_regressions() {
             0xfb, 0x17, 0x00, 0xfb, 0x02, 0x00, 0x00, 0x0b
         };
         wah_module_t module = {0};
-        assert_err(wah_parse_module(bad_ref_cast_operand, sizeof(bad_ref_cast_operand), &module),
+        assert_err(wah_parse_module(&module, bad_ref_cast_operand, sizeof(bad_ref_cast_operand), NULL),
                    WAH_ERROR_VALIDATION_FAILED);
         wah_free_module(&module);
     }
@@ -1020,7 +1022,7 @@ static void test_fuzz_ref_validation_regressions() {
             0x00, 0x41, 0x00, 0x41, 0x03, 0xfb, 0x06, 0x20
         };
         wah_module_t module = {0};
-        assert_err(wah_parse_module(too_large_heap_type, sizeof(too_large_heap_type), &module),
+        assert_err(wah_parse_module(&module, too_large_heap_type, sizeof(too_large_heap_type), NULL),
                    WAH_ERROR_TOO_LARGE);
         wah_free_module(&module);
     }

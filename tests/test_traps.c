@@ -17,7 +17,7 @@ int main() {
         funcs {[ 0 ]} \
         code {[ {[] local.get 0 local.get 1 i32.div_s end } ]}";
     assert_ok(wah_parse_module_from_spec(&module, div_by_zero_spec));
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     params[0].i32 = 42;
     params[1].i32 = 0; // Division by zero
     assert_err(wah_call(&ctx, 0, params, 2, &result), WAH_ERROR_TRAP);
@@ -31,7 +31,7 @@ int main() {
         funcs {[ 0 ]} \
         code {[ {[] local.get 0 local.get 1 i32.div_s end } ]}";
     assert_ok(wah_parse_module_from_spec(&module, signed_overflow_spec));
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     params[0].i32 = INT32_MIN;
     params[1].i32 = -1; // This causes overflow: INT_MIN / -1 = +2^31 (unrepresentable)
     assert_err(wah_call(&ctx, 0, params, 2, &result), WAH_ERROR_TRAP);
@@ -45,7 +45,7 @@ int main() {
         funcs {[ 0 ]} \
         code {[ {[] local.get 0 local.get 1 i32.div_u end } ]}";
     assert_ok(wah_parse_module_from_spec(&module, div_u_by_zero_spec));
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     params[0].i32 = 100;
     params[1].i32 = 0; // Division by zero
     assert_err(wah_call(&ctx, 0, params, 2, &result), WAH_ERROR_TRAP);
@@ -59,7 +59,7 @@ int main() {
         funcs {[ 0 ]} \
         code {[ {[] local.get 0 local.get 1 i32.rem_s end } ]}";
     assert_ok(wah_parse_module_from_spec(&module, rem_by_zero_spec));
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     params[0].i32 = 7;
     params[1].i32 = 0; // Division by zero
     assert_err(wah_call(&ctx, 0, params, 2, &result), WAH_ERROR_TRAP);
@@ -73,7 +73,7 @@ int main() {
         funcs {[ 0 ]} \
         code {[ {[] local.get 0 local.get 1 i32.div_s end } ]}";
     assert_ok(wah_parse_module_from_spec(&module, valid_div_spec));
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     params[0].i32 = 20;
     params[1].i32 = 4; // Valid division: 20 / 4 = 5
     assert_ok(wah_call(&ctx, 0, params, 2, &result));
@@ -87,7 +87,7 @@ int main() {
         funcs {[ 0 ]} \
         code {[ {[] local.get 0 local.get 1 i32.rem_s end } ]}";
     assert_ok(wah_parse_module_from_spec(&module, int_min_rem_spec));
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     params[0].i32 = INT32_MIN;
     params[1].i32 = -1; // This should return 0, not trap
     assert_ok(wah_call(&ctx, 0, params, 2, &result));
@@ -108,7 +108,7 @@ int main() {
             code {[ {[] i32.const 42 end } ]}";
 
         assert_ok(wah_parse_module_from_spec(&module, trap_spec));
-        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
         // First call traps
         assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_TRAP);
@@ -118,7 +118,7 @@ int main() {
 
         // Second call on fresh context must succeed without stale stack
         assert_ok(wah_parse_module_from_spec(&module, ok_spec));
-        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
         assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
         assert_eq_i32(result.i32, 42);
@@ -140,7 +140,7 @@ int main() {
             ]}";
 
         assert_ok(wah_parse_module_from_spec(&module, spec));
-        assert_ok(wah_exec_context_create(&ctx, &module));
+        assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
         // Func 0 traps
         assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_TRAP);

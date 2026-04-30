@@ -24,8 +24,8 @@ int main(int argc, char *argv[]) {
     // Parse and create an execution context
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
-    wah_parse_module(buf, size, &mod);
-    wah_exec_context_create(&ctx, &mod);
+    wah_parse_module(&mod, buf, size, NULL);
+    wah_exec_context_create(&ctx, &mod, NULL);
     free(buf);
 
     // Look up an exported function and call it

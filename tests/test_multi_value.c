@@ -20,7 +20,7 @@ static void test_multi_return_i32_pair() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     wah_value_t results[2];
     uint32_t actual_count;
@@ -50,7 +50,7 @@ static void test_multi_return_three_values() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     wah_value_t params[3];
     params[0].i32 = 10;
@@ -85,7 +85,7 @@ static void test_multi_return_mixed_types() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     wah_value_t params[2];
     params[0].i32 = 42;
@@ -119,7 +119,7 @@ static void test_multi_return_with_explicit_return() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     wah_value_t results[2];
     uint32_t actual_count;
@@ -159,7 +159,7 @@ static void test_call_function_with_multi_return() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     // Test function 0 directly via wah_call_multi
     wah_value_t results[2];
@@ -239,7 +239,7 @@ static void test_multi_return_four_values() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     wah_value_t results[4];
     uint32_t actual_count;
@@ -270,7 +270,7 @@ static void test_wah_call_multi_return_error() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     wah_value_t result;
     wah_error_t err = wah_call(&ctx, 0, NULL, 0, &result);
@@ -302,7 +302,7 @@ static void test_multi_return_with_locals() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     wah_value_t param;
     param.i32 = 21;

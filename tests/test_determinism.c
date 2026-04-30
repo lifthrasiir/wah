@@ -83,7 +83,7 @@ static void test_f32_store_canonicalization() {
     wah_value_t result;
 
     assert_ok(create_test_module(&module));
-    assert_ok(wah_exec_context_create(&exec_ctx, &module));
+    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
 
     wah_value_t param;
     param.f32 = NON_CANONICAL_F32_NAN;
@@ -108,7 +108,7 @@ static void test_f32_const_canonicalization() {
     wah_value_t result;
 
     assert_ok(create_test_module(&module));
-    assert_ok(wah_exec_context_create(&exec_ctx, &module));
+    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
 
     assert_ok(wah_call(&exec_ctx, 1, NULL, 0, &result)); // Call "test_const" (func_idx 1)
 
@@ -131,7 +131,7 @@ static void test_f32_reinterpret_nan_canonicalization() {
     wah_value_t result;
 
     assert_ok(create_test_module(&module));
-    assert_ok(wah_exec_context_create(&exec_ctx, &module));
+    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
 
     wah_value_t param;
     param.i32 = NON_CANONICAL_F32_NAN_BITS; // Pass non-canonical NaN bit pattern as i32
@@ -156,7 +156,7 @@ static void test_f64_add_nan_canonicalization() {
     wah_value_t result;
 
     assert_ok(create_test_module(&module));
-    assert_ok(wah_exec_context_create(&exec_ctx, &module));
+    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
 
     wah_value_t params_f64[2];
     params_f64[0].i64 = (int64_t)NON_CANONICAL_F64_NAN_BITS_1;
@@ -182,7 +182,7 @@ static void test_f32_add_nan_canonicalization() {
     wah_value_t result;
 
     assert_ok(create_test_module(&module));
-    assert_ok(wah_exec_context_create(&exec_ctx, &module));
+    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
 
     wah_value_t params_f32[2];
     params_f32[0].f32 = NON_CANONICAL_F32_NAN;
@@ -208,7 +208,7 @@ static void test_f32_sqrt_nan_canonicalization() {
     wah_value_t result;
 
     assert_ok(create_test_module(&module));
-    assert_ok(wah_exec_context_create(&exec_ctx, &module));
+    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
 
     wah_value_t param;
     param.f32 = NON_CANONICAL_F32_NAN;
@@ -232,7 +232,7 @@ static void test_f64_min_nan_canonicalization() {
     wah_exec_context_t exec_ctx;
 
     assert_ok(create_test_module(&module));
-    assert_ok(wah_exec_context_create(&exec_ctx, &module));
+    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
 
     wah_value_t params_f64_min[2];
     params_f64_min[0].i64 = (int64_t)NON_CANONICAL_F64_NAN_BITS_1;
@@ -261,7 +261,7 @@ static void test_f64_promote_f32_nan_canonicalization() {
     wah_exec_context_t exec_ctx;
 
     assert_ok(create_test_module(&module));
-    assert_ok(wah_exec_context_create(&exec_ctx, &module));
+    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
 
     wah_value_t param;
     param.i32 = (int32_t)0x7f800001; // Signaling NaN with payload 1
@@ -288,7 +288,7 @@ static void test_f32_demote_f64_nan_canonicalization() {
     wah_exec_context_t exec_ctx;
 
     assert_ok(create_test_module(&module));
-    assert_ok(wah_exec_context_create(&exec_ctx, &module));
+    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
 
     wah_value_t param;
     param.i64 = (int64_t)0x7ff0000000000001ULL; // Signaling NaN with payload 1

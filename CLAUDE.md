@@ -15,7 +15,7 @@ This project implements a WebAssembly (WASM) interpreter entirely within a singl
 
 The WAH interpreter employs a multi-phase approach for efficient WebAssembly module execution:
 
-1. **Parsing:** `wah_parse_module()` decodes the WASM binary into `wah_module_t`, parsing all sections (type, import, function, table, memory, global, export, element, data, code, tag). Use `wah_parse_module_ex()` to pass `wah_parse_options_t` with feature flags and fuel metering opt-in.
+1. **Parsing:** `wah_parse_module()` decodes the WASM binary into `wah_module_t`, parsing all sections (type, import, function, table, memory, global, export, element, data, code, tag). Pass `wah_parse_options_t` for feature flags and fuel metering opt-in; pass `NULL` for defaults.
 
 2. **Validation:** After parsing, each function's bytecode undergoes validation (`wah_validate_opcode`) to ensure type safety, stack discipline, and instruction validity. Validation simultaneously produces a `wah_analyzed_code_t` IR (decoded instructions with resolved symbols).
 
@@ -72,7 +72,7 @@ Opclasses (`wah_opclass_t`) classify opcodes by their stack signature (e.g., `_I
 
 ### Feature Flags
 
-`wah_features_t` is a bitmask controlling which proposals are enabled. Features are opt-in via `wah_parse_module_ex()`. Instructions requiring disabled features return `WAH_ERROR_DISABLED_FEATURE`. Presets: `WAH_FEATURE_WASM_V2`, `WAH_FEATURE_WASM_V3`, `WAH_FEATURE_ALL`. Features can be also selectively disabled in compile time with `WAH_COMPILED_FEATURES`.
+`wah_features_t` is a bitmask controlling which proposals are enabled. Features are opt-in via `wah_parse_module()` with a `wah_parse_options_t`. Instructions requiring disabled features return `WAH_ERROR_DISABLED_FEATURE`. Presets: `WAH_FEATURE_WASM_V2`, `WAH_FEATURE_WASM_V3`, `WAH_FEATURE_ALL`. Features can be also selectively disabled in compile time with `WAH_COMPILED_FEATURES`.
 
 ### GC Implementation
 
@@ -105,7 +105,7 @@ wah_module_t linked = {0};
 // ... parse or create modules ...
 
 wah_exec_context_t ctx = {0};
-wah_exec_context_create(&ctx, &primary);
+wah_exec_context_create(&ctx, &primary, NULL);
 wah_link_module(&ctx, "linkedModuleName", &linked);
 wah_instantiate(&ctx);  // Resolves imports from linked modules
 // ... call functions ...

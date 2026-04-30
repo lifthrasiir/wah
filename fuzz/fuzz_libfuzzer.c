@@ -20,17 +20,19 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
         .enable_fuel_metering = true,
     };
 
-    wah_error_t err = wah_parse_module_ex(data, size, &parse_options, &module);
+    wah_error_t err = wah_parse_module(&module, data, size, &parse_options);
     if (err != WAH_OK) {
         wah_free_module(&module);
         return 0;
     }
 
-    wah_rlimits_t limits = {
-        .max_memory_bytes = WAH_FUZZ_MAX_MEMORY_BYTES,
-        .fuel = WAH_FUZZ_CALL_FUEL,
+    wah_exec_options_t options = {
+        .limits = {
+            .max_memory_bytes = WAH_FUZZ_MAX_MEMORY_BYTES,
+            .fuel = WAH_FUZZ_CALL_FUEL,
+        }
     };
-    err = wah_exec_context_create_with_limits(&exec_ctx, &module, &limits);
+    err = wah_exec_context_create(&exec_ctx, &module, &options);
     if (err != WAH_OK) {
         wah_free_module(&module);
         return 0;

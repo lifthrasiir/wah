@@ -26,7 +26,7 @@ static void compare_and_print_v128_result(const char* test_name, const wah_v128_
 static void wah_test_setup_contextv(const char* test_name, const char *spec, wah_module_t* out_module, wah_exec_context_t* out_ctx, va_list args) {
     printf("Testing %s...\n", test_name);
     assert_ok(wah_parse_module_from_specv(out_module, spec, args));
-    assert_ok(wah_exec_context_create(out_ctx, out_module));
+    assert_ok(wah_exec_context_create(out_ctx, out_module, NULL));
 }
 
 static void wah_test_setup_context(const char* test_name, const char *spec, wah_module_t* out_module, wah_exec_context_t* out_ctx, ...) {
@@ -372,7 +372,7 @@ static void run_v128_lane_store_test(const char *name, const char *spec, uint32_
     (void)memidx;
     printf("Testing %s...\n", name);
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -1482,7 +1482,7 @@ void test_v128_multi_memory() {
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;

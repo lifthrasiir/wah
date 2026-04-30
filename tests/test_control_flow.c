@@ -18,7 +18,7 @@ static void test_simple_block() {
     assert_ok(wah_parse_module_from_spec(&module, simple_block_wasm_spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
@@ -45,7 +45,7 @@ static void test_simple_if_const() {
     assert_ok(wah_parse_module_from_spec(&module, simple_if_wasm_spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
@@ -72,7 +72,7 @@ static void test_if_else() {
     assert_ok(wah_parse_module_from_spec(&module, if_else_wasm_spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     // Test if branch (param == 42)
     wah_value_t params[1] = {{.i32 = 42}};
@@ -123,7 +123,7 @@ static void test_loop() {
     assert_ok(wah_parse_module_from_spec(&module, loop_wasm_spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     // Test loop: sum of 0..4 = 0+1+2+3 = 6
     wah_value_t params[1] = {{.i32 = 4}};
@@ -289,7 +289,7 @@ static void test_br_table() {
     assert_ok(wah_parse_module_from_spec(&module, br_table_wasm_spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     wah_value_t params[1];
     wah_value_t result;
@@ -378,7 +378,7 @@ static void test_block_type_with_params_pass() {
     wah_module_t module;
     assert_ok(wah_parse_module_from_spec(&module, block_type_with_params_pass_wasm_spec));
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     wah_value_t params[1] = {{.i32 = 10}};
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, params, 1, &result));
@@ -450,7 +450,7 @@ void test_block_multi_result() {
         end } ]}"));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     wah_value_t params[2] = {{.i32 = 7}, {.i32 = 13}};
     wah_value_t results[2];
@@ -485,7 +485,7 @@ void test_if_else_multi_result() {
         end } ]}"));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     wah_value_t param;
     wah_value_t results[2];
@@ -614,7 +614,7 @@ static void test_br_if_else_target() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -644,7 +644,7 @@ static void test_br_if_else_target() {
     assert_ok(wah_parse_module_from_spec(&module2, spec2));
 
     wah_exec_context_t ctx2 = {0};
-    assert_ok(wah_exec_context_create(&ctx2, &module2));
+    assert_ok(wah_exec_context_create(&ctx2, &module2, NULL));
     assert_ok(wah_instantiate(&ctx2));
 
     wah_value_t result2;
@@ -677,7 +677,7 @@ static void test_br_multi_value_keep_drop() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -705,7 +705,7 @@ static void test_br_multi_value_keep_drop() {
     assert_ok(wah_parse_module_from_spec(&module2, spec2));
 
     wah_exec_context_t ctx2 = {0};
-    assert_ok(wah_exec_context_create(&ctx2, &module2));
+    assert_ok(wah_exec_context_create(&ctx2, &module2, NULL));
     assert_ok(wah_instantiate(&ctx2));
 
     wah_value_t params[1], result2;

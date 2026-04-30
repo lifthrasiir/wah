@@ -16,7 +16,7 @@ static uint32_t run_f32_binop(const char *op, float a, float b) {
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params[2], result;
@@ -39,7 +39,7 @@ static uint64_t run_f64_binop(const char *op, double a, double b) {
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params[2], result;
@@ -98,7 +98,7 @@ static void test_fp_no_canonicalize_nan() {
     wah_module_t m1 = {0};
     assert_ok(wah_parse_module_from_spec(&m1, neg_spec));
     wah_exec_context_t c1 = {0};
-    assert_ok(wah_exec_context_create(&c1, &m1));
+    assert_ok(wah_exec_context_create(&c1, &m1, NULL));
     assert_ok(wah_instantiate(&c1));
     wah_value_t p1, r1;
     memcpy(&p1.i32, &nan_f32, 4);
@@ -114,7 +114,7 @@ static void test_fp_no_canonicalize_nan() {
     wah_module_t m2 = {0};
     assert_ok(wah_parse_module_from_spec(&m2, abs_spec));
     wah_exec_context_t c2 = {0};
-    assert_ok(wah_exec_context_create(&c2, &m2));
+    assert_ok(wah_exec_context_create(&c2, &m2, NULL));
     assert_ok(wah_instantiate(&c2));
     wah_value_t p2, r2;
     memcpy(&p2.i32, &neg_nan32, 4);
@@ -133,7 +133,7 @@ static void test_nearest_neg_zero() {
     wah_module_t m1 = {0};
     assert_ok(wah_parse_module_from_spec(&m1, f32_spec));
     wah_exec_context_t c1 = {0};
-    assert_ok(wah_exec_context_create(&c1, &m1));
+    assert_ok(wah_exec_context_create(&c1, &m1, NULL));
     assert_ok(wah_instantiate(&c1));
 
     float neg0 = -0.0f;
@@ -149,7 +149,7 @@ static void test_nearest_neg_zero() {
     wah_module_t m1b = {0};
     assert_ok(wah_parse_module_from_spec(&m1b, f32_spec));
     wah_exec_context_t c1b = {0};
-    assert_ok(wah_exec_context_create(&c1b, &m1b));
+    assert_ok(wah_exec_context_create(&c1b, &m1b, NULL));
     assert_ok(wah_instantiate(&c1b));
     wah_value_t p1b, r1b;
     memcpy(&p1b.i32, &neg_half, 4);
@@ -163,7 +163,7 @@ static void test_nearest_neg_zero() {
     wah_module_t m2 = {0};
     assert_ok(wah_parse_module_from_spec(&m2, f64_spec));
     wah_exec_context_t c2 = {0};
-    assert_ok(wah_exec_context_create(&c2, &m2));
+    assert_ok(wah_exec_context_create(&c2, &m2, NULL));
     assert_ok(wah_instantiate(&c2));
 
     double neg0d = -0.0;

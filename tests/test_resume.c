@@ -20,7 +20,7 @@ static void test_resume_straight_line(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [i32, i32] [i32]]} funcs {[0]} \
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 10}, {.i32 = 20} };
 
@@ -70,7 +70,7 @@ static void test_resume_loop(void) {
             end \
             local.get 1 \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     // First, compute with unlimited fuel for reference
     wah_value_t params = { .i32 = 5 };
@@ -113,7 +113,7 @@ static void test_resume_multiple_suspensions(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [i32, i32] [i32]]} funcs {[0]} \
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 3}, {.i32 = 7} };
 
@@ -154,7 +154,7 @@ static void test_resume_nested_calls(void) {
             {[] local.get 0 local.get 1 i32.add end}, \
             {[] local.get 0 local.get 1 call 0 end}, \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 11}, {.i32 = 22} };
 
@@ -201,7 +201,7 @@ static void test_resume_yield_via_interrupt(void) {
             end \
             local.get 1 \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params = { .i32 = 10 };
 
@@ -235,7 +235,7 @@ static void test_cancel_and_reuse(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [i32, i32] [i32]]} funcs {[0]} \
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 5}, {.i32 = 6} };
 
@@ -268,7 +268,7 @@ static void test_destroy_while_suspended(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [i32, i32] [i32]]} funcs {[0]} \
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 1}, {.i32 = 2} };
     wah_set_fuel(&ctx, 1);
@@ -288,7 +288,7 @@ static void test_misuse_start_while_suspended(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [i32, i32] [i32]]} funcs {[0]} \
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 1}, {.i32 = 2} };
     wah_set_fuel(&ctx, 1);
@@ -311,7 +311,7 @@ static void test_misuse_resume_while_ready(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [] []]} funcs {[0]} \
         code {[{[] end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     assert_err(wah_resume(&ctx), WAH_ERROR_MISUSE);
 
@@ -327,7 +327,7 @@ static void test_misuse_finish_while_suspended(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [i32, i32] [i32]]} funcs {[0]} \
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 1}, {.i32 = 2} };
     wah_set_fuel(&ctx, 1);
@@ -352,7 +352,7 @@ static void test_wah_call_backward_compat(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [i32, i32] [i32]]} funcs {[0]} \
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 3}, {.i32 = 7} };
     wah_value_t result;
@@ -379,7 +379,7 @@ static void test_finish_void_function(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [] []]} funcs {[0]} \
         code {[{[] end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_set_fuel(&ctx, 100);
     assert_ok(wah_start(&ctx, 0, NULL, 0));
@@ -402,7 +402,7 @@ static void test_cancel_ready_noop(void) {
     PARSE_FUEL(&mod, "wasm \
         types {[fn [] []]} funcs {[0]} \
         code {[{[] end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     // Should not crash
     wah_cancel(&ctx);
@@ -434,7 +434,7 @@ static void test_resume_br_table(void) {
             end \
             i32.const 300 \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     int32_t expected[] = {100, 200, 300, 300};
     for (int i = 0; i < 4; i++) {
@@ -474,7 +474,7 @@ static void test_resume_tail_call_deep(void) {
                 return_call 0 \
             end \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 100}, {.i32 = 0} };
 
@@ -524,7 +524,7 @@ static void test_resume_return_call_indirect(void) {
             {[] i32.const 111 end}, \
             {[] i32.const 222 end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     for (int target = 0; target < 2; target++) {
@@ -565,7 +565,7 @@ static void test_resume_exception_catch(void) {
             end \
             i32.const 1000 i32.add \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params = { .i32 = 77 };
@@ -603,7 +603,7 @@ static void test_resume_multi_value(void) {
             local.get 0 local.get 1 i32.sub \
             local.get 0 local.get 1 i32.mul \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 7}, {.i32 = 3} };
 
@@ -647,7 +647,7 @@ static void test_resume_gc_funcref_on_stack(void) {
             i32.const 3 i32.const 4 i32.add drop \
             local.get 0 ref.is_null \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_set_fuel(&ctx, 1);
     assert_ok(wah_start(&ctx, 0, NULL, 0));
@@ -694,7 +694,7 @@ static void test_resume_gc_ref_across_calls(void) {
                 i32.const 5 i32.const 6 i32.add drop \
             end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_set_fuel(&ctx, 2);
     assert_ok(wah_start(&ctx, 0, NULL, 0));
@@ -733,7 +733,7 @@ static void test_cancel_with_live_refs(void) {
             i32.const 3 i32.const 4 i32.add drop \
             local.get 0 ref.is_null \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_set_fuel(&ctx, 2);
     assert_ok(wah_start(&ctx, 0, NULL, 0));
@@ -772,7 +772,7 @@ static void test_destroy_with_live_refs(void) {
             i32.const 1 i32.const 2 i32.add drop \
             local.get 0 ref.is_null \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_set_fuel(&ctx, 2);
     assert_ok(wah_start(&ctx, 0, NULL, 0));
@@ -816,7 +816,7 @@ static void test_cancel_with_pending_exception(void) {
                 throw 0 \
             end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // Suspend inside func 1 before the throw executes
@@ -857,7 +857,7 @@ static void test_resume_gc_ref_global(void) {
             i32.const 3 i32.const 4 i32.add drop \
             global.get 0 ref.is_null \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_set_fuel(&ctx, 1);
@@ -903,7 +903,7 @@ static void test_poll_yield_without_fuel(void) {
             end \
             local.get 1 \
         end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params = { .i32 = 100 };

@@ -12,7 +12,7 @@ static void run_simd_test(const char *name, const char *spec_str, const wah_v128
     va_end(args);
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -40,7 +40,7 @@ static int32_t run_simd_i32_test(const char *name, const char *spec_str, ...) {
     va_end(args);
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;

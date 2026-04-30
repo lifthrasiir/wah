@@ -29,7 +29,7 @@ static void assert_layout(const char *spec, const uint32_t *sizes,
     wah_debug_repr_field_t fields[32] = {{0}};
 
     assert_true(field_count <= 32);
-    assert_ok(wah_new_module(&mod));
+    assert_ok(wah_new_module(&mod, NULL));
     assert_ok(wah_module_define_type(&mod, &type, spec));
     get_repr(&mod, type, &info, fields, field_count);
     assert_eq_u32(info.type, DEBUG_REPR_STRUCT);
@@ -103,7 +103,7 @@ static void test_ref_field_layout(void) {
     wah_debug_repr_field_t fields[3] = {{0}};
     uint32_t ref_size = (uint32_t)sizeof(void *);
 
-    assert_ok(wah_new_module(&mod));
+    assert_ok(wah_new_module(&mod, NULL));
     assert_ok(wah_module_define_type(&mod, &leaf, "struct { i32 }"));
     assert_ok(wah_module_define_type(&mod, &parent, "struct { i8, ref null %T, i8 }", leaf));
     get_repr(&mod, parent, &info, fields, 3);
@@ -124,7 +124,7 @@ static void test_array_stride_unchanged(void) {
     wah_debug_repr_info_t info;
     wah_debug_repr_field_t field = {0};
 
-    assert_ok(wah_new_module(&mod));
+    assert_ok(wah_new_module(&mod, NULL));
     assert_ok(wah_module_define_type(&mod, &array_type, "array i8"));
     get_repr(&mod, array_type, &info, &field, 1);
     assert_eq_u32(info.type, DEBUG_REPR_ARRAY);

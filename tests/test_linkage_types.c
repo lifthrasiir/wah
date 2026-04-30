@@ -44,7 +44,7 @@ static void test_cross_module_call_indirect() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_module(&ctx, "provider", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -83,7 +83,7 @@ static void test_elem_before_data_order() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // call_indirect on table[0] should call func 0 which returns 99
@@ -122,7 +122,7 @@ static void test_cross_module_memory_ops() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_module(&ctx, "provider", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -168,7 +168,7 @@ static void test_cross_module_funcref_global() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_module(&ctx, "provider", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -206,7 +206,7 @@ static void test_cross_module_type_canon() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_module(&ctx, "provider", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -247,7 +247,7 @@ static void test_cross_module_call_indirect_type_equiv() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_module(&ctx, "provider", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -279,7 +279,7 @@ static void test_call_indirect_subtype_dispatch() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // call_indirect with type 0 (supertype) on function of type 1 (subtype) - should work
@@ -297,7 +297,7 @@ static void test_call_indirect_subtype_dispatch() {
     assert_ok(wah_parse_module_from_spec(&caller, caller_spec));
 
     wah_exec_context_t ctx2 = {0};
-    assert_ok(wah_exec_context_create(&ctx2, &caller));
+    assert_ok(wah_exec_context_create(&ctx2, &caller, NULL));
     assert_ok(wah_instantiate(&ctx2));
 
     wah_value_t result;
@@ -341,7 +341,7 @@ static void test_rec_group_canonicalization() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_module(&ctx, "provider", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -393,7 +393,7 @@ static void test_rec_group_canon_subtype() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // func 0 (type 2, sub of 0) is in table[0].
@@ -429,7 +429,7 @@ static void test_call_indirect_non_identical_type() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -461,7 +461,7 @@ static void test_ref_test_concrete_func_subtype() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -500,7 +500,7 @@ static void test_cross_module_type_with_extra_types() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_module(&ctx, "provider", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -539,7 +539,7 @@ static void test_cross_module_subtype_func_ref_test() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_module(&ctx, "provider", &provider));
     assert_ok(wah_instantiate(&ctx));
 

@@ -19,7 +19,7 @@ static void test_function_specs(void) {
     printf("Testing function type specs...\n");
     wah_module_t mod = {0};
     wah_debug_type_spec_t spec = {0};
-    assert_ok(wah_new_module(&mod));
+    assert_ok(wah_new_module(&mod, NULL));
 
     assert_ok(wah_debug_parse_define_type_spec(&mod, &spec, "fn ()"));
     assert_func_counts(&spec, 0, 0);
@@ -57,7 +57,7 @@ static void test_struct_and_array_specs(void) {
     printf("Testing struct and array type specs...\n");
     wah_module_t mod = {0};
     wah_debug_type_spec_t spec = {0};
-    assert_ok(wah_new_module(&mod));
+    assert_ok(wah_new_module(&mod, NULL));
 
     assert_ok(wah_debug_parse_define_type_spec(&mod, &spec, "struct { i32, mut funcref, i8, mut i16 }"));
     assert_eq_u32(spec.kind, WAH_DEBUG_TYPE_SPEC_STRUCT);
@@ -90,7 +90,7 @@ static void test_edge_cases(void) {
     printf("Testing type spec edge cases...\n");
     wah_module_t mod = {0};
     wah_debug_type_spec_t spec = {0};
-    assert_ok(wah_new_module(&mod));
+    assert_ok(wah_new_module(&mod, NULL));
 
     assert_err(wah_debug_parse_define_type_spec(&mod, &spec, "fn (i8)"), WAH_ERROR_BAD_SPEC);
     assert_err(wah_debug_parse_define_type_spec(&mod, &spec, "fn () -> i16"), WAH_ERROR_BAD_SPEC);
@@ -123,7 +123,7 @@ static void test_placeholders(void) {
     wah_module_t mod = {0};
     wah_debug_type_spec_t spec = {0};
     wah_type_t struct_type;
-    assert_ok(wah_new_module(&mod));
+    assert_ok(wah_new_module(&mod, NULL));
 
     assert_ok(wah_debug_parse_define_type_spec(&mod, &spec, "fn (%T, %T)", WAH_TYPE_I32, WAH_TYPE_FUNCREF));
     assert_func_counts(&spec, 2, 0);
@@ -165,7 +165,7 @@ static void test_type_reuse(void) {
     printf("Testing type reuse and fresh...\n");
     wah_module_t mod = {0};
     wah_type_t t1, t2, t3, t4;
-    assert_ok(wah_new_module(&mod));
+    assert_ok(wah_new_module(&mod, NULL));
 
     // Same function type should reuse
     assert_ok(wah_module_define_type(&mod, &t1, "fn (i32, i32) -> (i32)"));

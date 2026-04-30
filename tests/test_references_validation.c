@@ -25,7 +25,7 @@ static void test_typed_select_funcref() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params[1], result;
@@ -61,7 +61,7 @@ static void test_typed_select_i32() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params[1], result;
@@ -115,7 +115,7 @@ static void test_untyped_select_rejects_refs() {
     assert_ok(wah_parse_module_from_spec(&good_module, good_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &good_module));
+    assert_ok(wah_exec_context_create(&ctx, &good_module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -214,7 +214,7 @@ static void test_br_on_null_label_types() {
     assert_ok(wah_parse_module_from_spec(&good, good_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &good));
+    assert_ok(wah_exec_context_create(&ctx, &good, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // null input -> branches, returns 1
@@ -265,7 +265,7 @@ static void test_call_ref() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -286,7 +286,7 @@ static void test_call_ref() {
     assert_ok(wah_parse_module_from_spec(&null_mod, null_spec));
 
     wah_exec_context_t ctx2 = {0};
-    assert_ok(wah_exec_context_create(&ctx2, &null_mod));
+    assert_ok(wah_exec_context_create(&ctx2, &null_mod, NULL));
     assert_ok(wah_instantiate(&ctx2));
 
     assert_err(wah_call(&ctx2, 0, NULL, 0, &result), WAH_ERROR_TRAP);

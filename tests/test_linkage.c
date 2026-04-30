@@ -31,13 +31,13 @@ int main() {
     {
         // Create host module
         wah_module_t host_mod = {0};
-        assert_ok(wah_new_module(&host_mod));
+        assert_ok(wah_new_module(&host_mod, NULL));
 
         assert_ok(wah_module_export_func(&host_mod, "testFunc", "() -> i32", simple_host_func, NULL, NULL));
 
         // Create execution context with host module as primary
         wah_exec_context_t ctx = {0};
-        assert_ok(wah_exec_context_create(&ctx, &host_mod));
+        assert_ok(wah_exec_context_create(&ctx, &host_mod, NULL));
 
         // Link the same module (should work as no-op)
         assert_ok(wah_link_module(&ctx, "host", &host_mod));
@@ -61,17 +61,17 @@ int main() {
     {
         // Create first host module
         wah_module_t mod1 = {0};
-        wah_new_module(&mod1);
+        wah_new_module(&mod1, NULL);
         assert_ok(wah_module_export_func(&mod1, "func1", "() -> i32", simple_host_func, NULL, NULL));
 
         // Create second host module
         wah_module_t mod2 = {0};
-        assert_ok(wah_new_module(&mod2));
+        assert_ok(wah_new_module(&mod2, NULL));
         assert_ok(wah_module_export_func(&mod2, "func2", "() -> i32", simple_host_func, NULL, NULL));
 
         // Create execution context
         wah_exec_context_t ctx = {0};
-        assert_ok(wah_exec_context_create(&ctx, &mod1));
+        assert_ok(wah_exec_context_create(&ctx, &mod1, NULL));
 
         // Link second module
         assert_ok(wah_link_module(&ctx, "mod2", &mod2));
@@ -95,7 +95,7 @@ int main() {
     printf("Test 3: Duplicate export names should fail\n");
     {
         wah_module_t mod = {0};
-        assert_ok(wah_new_module(&mod));
+        assert_ok(wah_new_module(&mod, NULL));
 
         assert_ok(wah_module_export_func(&mod, "dup", "() -> i32", simple_host_func, NULL, NULL));
         assert_err(wah_module_export_func(&mod, "dup", "() -> i32", simple_host_func, NULL, NULL), WAH_ERROR_VALIDATION_FAILED);
@@ -107,11 +107,11 @@ int main() {
     printf("Test 4: Instantiate without linking\n");
     {
         wah_module_t mod = {0};
-        assert_ok(wah_new_module(&mod));
+        assert_ok(wah_new_module(&mod, NULL));
         assert_ok(wah_module_export_func(&mod, "func", "() -> i32", simple_host_func, NULL, NULL));
 
         wah_exec_context_t ctx = {0};
-        assert_ok(wah_exec_context_create(&ctx, &mod));
+        assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
         // Instantiate directly without linking
         assert_ok(wah_instantiate(&ctx));
@@ -147,7 +147,7 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&module_a, module_a_wasm));
 
         // Create execution context with module_a as primary
-        assert_ok(wah_exec_context_create(&ctx, &module_a));
+        assert_ok(wah_exec_context_create(&ctx, &module_a, NULL));
 
         // Link module_b
         assert_ok(wah_link_module(&ctx, "moduleB", &module_b));
@@ -195,7 +195,7 @@ int main() {
 
         assert_ok(wah_parse_module_from_spec(&mod_a, spec_a));
         assert_ok(wah_parse_module_from_spec(&mod_b, spec_b));
-        assert_ok(wah_exec_context_create(&ctx, &mod_a));
+        assert_ok(wah_exec_context_create(&ctx, &mod_a, NULL));
         assert_ok(wah_link_module(&ctx, "moduleB", &mod_b));
         assert_ok(wah_instantiate(&ctx));
 
@@ -230,7 +230,7 @@ int main() {
 
         assert_ok(wah_parse_module_from_spec(&mod_b, spec_b));
         assert_ok(wah_parse_module_from_spec(&mod_a, spec_a));
-        assert_ok(wah_exec_context_create(&ctx, &mod_a));
+        assert_ok(wah_exec_context_create(&ctx, &mod_a, NULL));
         assert_ok(wah_link_module(&ctx, "moduleB", &mod_b));
         assert_ok(wah_instantiate(&ctx));
 
@@ -250,7 +250,7 @@ int main() {
     printf("Test 8: Imported start function\n");
     {
         wah_module_t host_mod = {0};
-        assert_ok(wah_new_module(&host_mod));
+        assert_ok(wah_new_module(&host_mod, NULL));
         assert_ok(wah_module_export_func(&host_mod, "initFunc", "()",
                                          imported_start_host_func, NULL, NULL));
 
@@ -265,7 +265,7 @@ int main() {
 
         imported_start_called = 0;
         assert_ok(wah_parse_module_from_spec(&mod_a, spec_a));
-        assert_ok(wah_exec_context_create(&ctx, &mod_a));
+        assert_ok(wah_exec_context_create(&ctx, &mod_a, NULL));
         assert_ok(wah_link_module(&ctx, "host", &host_mod));
         assert_ok(wah_instantiate(&ctx));
         assert_true(imported_start_called);
@@ -305,7 +305,7 @@ int main() {
 
         assert_ok(wah_parse_module_from_spec(&mod_b, spec_b));
         assert_ok(wah_parse_module_from_spec(&mod_a, spec_a));
-        assert_ok(wah_exec_context_create(&ctx, &mod_a));
+        assert_ok(wah_exec_context_create(&ctx, &mod_a, NULL));
         assert_ok(wah_link_module(&ctx, "moduleB", &mod_b));
         assert_ok(wah_instantiate(&ctx));
 
@@ -326,7 +326,7 @@ int main() {
     {
         // Module C (host): exports "getConst" () -> i32 returning 42.
         wah_module_t mod_c = {0};
-        assert_ok(wah_new_module(&mod_c));
+        assert_ok(wah_new_module(&mod_c, NULL));
         assert_ok(wah_module_export_func(&mod_c, "getConst", "() -> i32",
                                          simple_host_func, NULL, NULL));
 
@@ -355,7 +355,7 @@ int main() {
 
         assert_ok(wah_parse_module_from_spec(&mod_b, spec_b));
         assert_ok(wah_parse_module_from_spec(&mod_a, spec_a));
-        assert_ok(wah_exec_context_create(&ctx, &mod_a));
+        assert_ok(wah_exec_context_create(&ctx, &mod_a, NULL));
         assert_ok(wah_link_module(&ctx, "moduleB", &mod_b));
         assert_ok(wah_link_module(&ctx, "moduleC", &mod_c));
         assert_ok(wah_instantiate(&ctx));
@@ -397,7 +397,7 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
         wah_exec_context_t ctx = {0};
-        assert_ok(wah_exec_context_create(&ctx, &consumer));
+        assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
         assert_ok(wah_link_module(&ctx, "provider", &provider));
         assert_ok(wah_instantiate(&ctx));
 
@@ -439,7 +439,7 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
         wah_exec_context_t ctx = {0};
-        assert_ok(wah_exec_context_create(&ctx, &consumer));
+        assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
         assert_ok(wah_link_module(&ctx, "provider", &provider));
         assert_ok(wah_instantiate(&ctx));
 
@@ -488,7 +488,7 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
         wah_exec_context_t ctx = {0};
-        assert_ok(wah_exec_context_create(&ctx, &consumer));
+        assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
         assert_ok(wah_link_module(&ctx, "a", &provider_a));
         assert_ok(wah_link_module(&ctx, "b", &provider_b));
         assert_ok(wah_instantiate(&ctx));
@@ -537,7 +537,7 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
         wah_exec_context_t ctx = {0};
-        assert_ok(wah_exec_context_create(&ctx, &consumer));
+        assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
         assert_ok(wah_link_module(&ctx, "provider", &provider));
         assert_ok(wah_instantiate(&ctx));
 
@@ -581,7 +581,7 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
         wah_exec_context_t ctx = {0};
-        assert_ok(wah_exec_context_create(&ctx, &consumer));
+        assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
         assert_ok(wah_link_module(&ctx, "provider", &provider));
         assert_ok(wah_instantiate(&ctx));
 
@@ -597,10 +597,10 @@ int main() {
     printf("Testing duplicate module name...\n");
     {
         wah_module_t mod = {0};
-        assert_ok(wah_new_module(&mod));
+        assert_ok(wah_new_module(&mod, NULL));
 
         wah_exec_context_t ctx = {0};
-        assert_ok(wah_exec_context_create(&ctx, &mod));
+        assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
         assert_ok(wah_link_module(&ctx, "mymod", &mod));
         assert_err(wah_link_module(&ctx, "mymod", &mod), WAH_ERROR_VALIDATION_FAILED);
 
@@ -619,13 +619,13 @@ int main() {
         wah_module_t pmod = {0};
         assert_ok(wah_parse_module_from_spec(&pmod, spec));
         wah_exec_context_t pctx = {0};
-        assert_ok(wah_exec_context_create(&pctx, &pmod));
+        assert_ok(wah_exec_context_create(&pctx, &pmod, NULL));
         assert_ok(wah_instantiate(&pctx));
 
         wah_module_t cmod = {0};
-        assert_ok(wah_new_module(&cmod));
+        assert_ok(wah_new_module(&cmod, NULL));
         wah_exec_context_t cctx = {0};
-        assert_ok(wah_exec_context_create(&cctx, &cmod));
+        assert_ok(wah_exec_context_create(&cctx, &cmod, NULL));
 
         assert_ok(wah_link_context(&cctx, "provider", &pctx));
         assert_err(wah_link_context(&cctx, "provider", &pctx), WAH_ERROR_VALIDATION_FAILED);
@@ -654,7 +654,7 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
         wah_exec_context_t ctx = {0};
-        assert_ok(wah_exec_context_create(&ctx, &consumer));
+        assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
         assert_ok(wah_link_module(&ctx, "provider", &provider));
         assert_ok(wah_instantiate(&ctx));
 

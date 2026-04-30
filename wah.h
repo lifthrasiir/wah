@@ -488,8 +488,7 @@ typedef struct {
     const wah_alloc_t *alloc;
 } wah_parse_options_t;
 
-wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah_module_t *module);
-wah_error_t wah_parse_module_ex(const uint8_t *wasm_binary, size_t binary_size, const wah_parse_options_t *options, wah_module_t *module);
+wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *wasm_binary, size_t binary_size, const wah_parse_options_t *options);
 
 uint32_t wah_module_type_count(const wah_module_t *module);
 uint32_t wah_module_function_count(const wah_module_t *module);
@@ -522,21 +521,15 @@ typedef struct wah_rlimits_s {
     bool no_memory_bytes;        // true=enforce 0-byte limit; incompatible with max_memory_bytes>0
 } wah_rlimits_t;
 
-wah_rlimits_t wah_default_rlimits(void);
-
 typedef struct {
     wah_rlimits_t limits;
     const wah_alloc_t *alloc;
 } wah_exec_options_t;
 
 // Creates and initializes an execution context.
-wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_module_t *module);
-wah_error_t wah_exec_context_create_ex(
+wah_error_t wah_exec_context_create(
     wah_exec_context_t *exec_ctx, const wah_module_t *module,
     const wah_exec_options_t *options);
-wah_error_t wah_exec_context_create_with_limits(
-    wah_exec_context_t *exec_ctx, const wah_module_t *module,
-    const wah_rlimits_t *limits);
 
 wah_error_t wah_exec_context_set_limits(
     wah_exec_context_t *exec_ctx, const wah_rlimits_t *limits);
@@ -573,8 +566,7 @@ wah_exec_state_t wah_exec_state(const wah_exec_context_t *ctx);
 void wah_free_module(wah_module_t *module);
 
 // --- Programmatically create modules ---
-wah_error_t wah_new_module(wah_module_t *mod);
-wah_error_t wah_new_module_ex(wah_module_t *mod, const wah_alloc_t *alloc);
+wah_error_t wah_new_module(wah_module_t *mod, const wah_alloc_t *alloc);
 wah_error_t wah_module_define_type(wah_module_t *mod, wah_type_t *out_type, const char *spec, ...);
 wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, const char *spec, va_list *args);
 
@@ -8377,11 +8369,7 @@ static const struct wah_section_handler_s {
     [11] = { .order = 13, .parser_func = wah_parse_data_section },
 };
 
-wah_error_t wah_parse_module(const uint8_t *wasm_binary, size_t binary_size, wah_module_t *module) {
-    return wah_parse_module_ex(wasm_binary, binary_size, NULL, module);
-}
-
-wah_error_t wah_parse_module_ex(const uint8_t *wasm_binary, size_t binary_size, const wah_parse_options_t *options, wah_module_t *module) {
+wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *wasm_binary, size_t binary_size, const wah_parse_options_t *options) {
     wah_error_t err = WAH_OK;
     WAH_ENSURE(wasm_binary && module && binary_size >= 8, WAH_ERROR_UNEXPECTED_EOF);
 
@@ -9248,10 +9236,6 @@ static void wah_deadline_timer_destroy(wah_exec_context_t *ctx) { (void)ctx; }
 // Interpreter loop ////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-wah_rlimits_t wah_default_rlimits(void) {
-    return (wah_rlimits_t){0};
-}
-
 static wah_error_t wah_alloc_unified_stack(wah_exec_context_t *exec_ctx, uint64_t stack_bytes) {
     const wah_alloc_t *alloc = &exec_ctx->alloc;
     if (stack_bytes == 0) stack_bytes = WAH_DEFAULT_STACK_BYTES;
@@ -9268,8 +9252,8 @@ static wah_error_t wah_alloc_unified_stack(wah_exec_context_t *exec_ctx, uint64_
     return WAH_OK;
 }
 
-wah_error_t wah_exec_context_create_ex(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_exec_options_t *options) {
-    wah_rlimits_t default_limits = wah_default_rlimits();
+wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_exec_options_t *options) {
+    wah_rlimits_t default_limits = {0};
     const wah_rlimits_t *limits = options ? &options->limits : &default_limits;
     *exec_ctx = (wah_exec_context_t){ .is_instantiated = false, .alloc = wah_resolve_alloc(options ? options->alloc : NULL) };
     wah_error_t err = WAH_OK;
@@ -9404,16 +9388,6 @@ wah_error_t wah_exec_context_create_ex(wah_exec_context_t *exec_ctx, const wah_m
 cleanup:
     if (err != WAH_OK) wah_exec_context_destroy(exec_ctx);
     return err;
-}
-
-wah_error_t wah_exec_context_create_with_limits(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_rlimits_t *limits) {
-    wah_exec_options_t options = {0};
-    if (limits) options.limits = *limits;
-    return wah_exec_context_create_ex(exec_ctx, module, &options);
-}
-
-wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_module_t *module) {
-    return wah_exec_context_create_ex(exec_ctx, module, NULL);
 }
 
 wah_error_t wah_exec_context_set_limits(wah_exec_context_t *exec_ctx, const wah_rlimits_t *limits) {
@@ -14160,7 +14134,7 @@ void wah_free_module(wah_module_t *module) {
 
 // --- Programmatically created module API ---
 
-wah_error_t wah_new_module_ex(wah_module_t *mod, const wah_alloc_t *alloc_arg) {
+wah_error_t wah_new_module(wah_module_t *mod, const wah_alloc_t *alloc_arg) {
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
 
     *mod = (wah_module_t){ .functions_cap = 16, .local_function_count = 0, .exports_cap = 16,
@@ -14174,10 +14148,6 @@ wah_error_t wah_new_module_ex(wah_module_t *mod, const wah_alloc_t *alloc_arg) {
     WAH_MALLOC_ARRAY(mod->exports, mod->exports_cap);
 
     return WAH_OK;
-}
-
-wah_error_t wah_new_module(wah_module_t *mod) {
-    return wah_new_module_ex(mod, NULL);
 }
 
 static bool wah_define_type_matches(const wah_module_t *mod, uint32_t i, const wah_func_type_t *ft, const wah_type_def_t *td) {

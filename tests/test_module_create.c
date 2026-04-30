@@ -25,13 +25,13 @@ int main() {
     // Test 1: Create and destroy empty module
     printf("Test 1: Create and destroy empty module\n");
     wah_module_t mod1 = {0};
-    assert_ok(wah_new_module(&mod1));
+    assert_ok(wah_new_module(&mod1, NULL));
     wah_free_module(&mod1);
 
     // Test 2: Export a function
     printf("Test 2: Export a function\n");
     wah_module_t mod2 = {0};
-    assert_ok(wah_new_module(&mod2));
+    assert_ok(wah_new_module(&mod2, NULL));
 
     // Export function with no parameters and no results
     assert_ok(wah_module_export_func(&mod2, "test_func", "()", test_host_func, NULL, NULL));
@@ -51,7 +51,7 @@ int main() {
     // Test 3: Export with userdata and cleanup
     printf("Test 3: Export with userdata and cleanup\n");
     wah_module_t mod3 = {0};
-    assert_ok(wah_new_module(&mod3));
+    assert_ok(wah_new_module(&mod3, NULL));
 
     int test_data = 42;
     assert_ok(wah_module_export_func(&mod3, "test_func2", "()", test_host_func, &test_data, test_cleanup));
@@ -63,7 +63,7 @@ int main() {
     // Test 4: Multiple exports
     printf("Test 4: Multiple exports\n");
     wah_module_t mod4 = {0};
-    assert_ok(wah_new_module(&mod4));
+    assert_ok(wah_new_module(&mod4, NULL));
 
     assert_ok(wah_module_export_func(&mod4, "func1", "()", test_host_func, NULL, NULL));
     assert_ok(wah_module_export_func(&mod4, "func2", "()", test_host_func, NULL, NULL));

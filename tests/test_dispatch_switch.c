@@ -16,7 +16,7 @@ int main(void) {
         "code {[ {[] local.get 0 local.get 1 i32.add end} ]}"));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module));
+    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
 
     wah_value_t params[2] = { {.i32 = 17}, {.i32 = 25} };
     wah_value_t result;

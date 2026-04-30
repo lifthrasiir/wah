@@ -221,12 +221,12 @@ int main() {
         wah_module_t wasm_mod = {0}, env_mod = {0};
         wah_exec_context_t ctx = {0};
 
-        assert_ok(wah_new_module(&env_mod));
+        assert_ok(wah_new_module(&env_mod, NULL));
         assert_ok(wah_module_export_func(&env_mod, "f", "(i32) -> i32",
             host_write_result_then_read_param, NULL, NULL));
 
         assert_ok(wah_parse_module_from_spec(&wasm_mod, wasm_spec));
-        assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+        assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
         assert_ok(wah_link_module(&ctx, "env", &env_mod));
         assert_ok(wah_instantiate(&ctx));
 
@@ -257,12 +257,12 @@ int main() {
         wah_module_t wasm_mod = {0}, env_mod = {0};
         wah_exec_context_t ctx = {0};
 
-        assert_ok(wah_new_module(&env_mod));
+        assert_ok(wah_new_module(&env_mod, NULL));
         assert_ok(wah_module_export_func(&env_mod, "f", "(i32, i32) -> i32",
             host_write_result_then_read_two_params, NULL, NULL));
 
         assert_ok(wah_parse_module_from_spec(&wasm_mod, wasm_spec));
-        assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+        assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
         assert_ok(wah_link_module(&ctx, "env", &env_mod));
         assert_ok(wah_instantiate(&ctx));
 
@@ -293,12 +293,12 @@ int main() {
         wah_module_t wasm_mod = {0}, env_mod = {0};
         wah_exec_context_t ctx = {0};
 
-        assert_ok(wah_new_module(&env_mod));
+        assert_ok(wah_new_module(&env_mod, NULL));
         assert_ok(wah_module_export_func(&env_mod, "f", "(i32, i32, i32) -> i32",
             host_write_result_then_read_three_params, NULL, NULL));
 
         assert_ok(wah_parse_module_from_spec(&wasm_mod, wasm_spec));
-        assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+        assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
         assert_ok(wah_link_module(&ctx, "env", &env_mod));
         assert_ok(wah_instantiate(&ctx));
 

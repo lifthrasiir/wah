@@ -21,7 +21,7 @@ static const char *k_import_spec = "wasm \
     code {[ {[] local.get 0 local.get 1 call 0 end} ]}";
 
 static wah_error_t make_env_module(wah_module_t *mod) {
-    wah_error_t err = wah_new_module(mod);
+    wah_error_t err = wah_new_module(mod, NULL);
     if (err != WAH_OK) return err;
     return wah_module_export_func(mod, "add", "(i32, i32) -> i32", host_add, NULL, NULL);
 }
@@ -39,7 +39,7 @@ static void test_basic_import_resolution(void) {
     printf("  import_function_count=%u  wasm_function_count=%u\n",
            wasm_mod.import_function_count, wasm_mod.wasm_function_count);
 
-    assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+    assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &env_mod));
     assert_ok(wah_instantiate(&ctx));
 
@@ -67,7 +67,7 @@ static void test_import_not_found_bad_module(void) {
 
     assert_ok(make_env_module(&env_mod));
     assert_ok(wah_parse_module_from_spec(&wasm_mod, k_import_spec));
-    assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+    assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
 
     wah_link_module(&ctx, "wrong_name", &env_mod);  // intentionally wrong
 
@@ -83,12 +83,12 @@ static void test_import_not_found_bad_field(void) {
     wah_module_t wasm_mod = {0}, env_mod = {0};
     wah_exec_context_t ctx = {0};
 
-    assert_ok(wah_new_module(&env_mod));
+    assert_ok(wah_new_module(&env_mod, NULL));
 
     wah_module_export_func(&env_mod, "wrong_func", "(i32, i32) -> i32", host_add, NULL, NULL);
 
     assert_ok(wah_parse_module_from_spec(&wasm_mod, k_import_spec));
-    assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+    assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
 
     wah_link_module(&ctx, "env", &env_mod);
 
@@ -133,7 +133,7 @@ static void test_no_imports_unchanged(void) {
     ";
     assert_ok(wah_parse_module_from_spec(&mod, wasm_spec));
     assert_eq_u32(mod.import_function_count, 0);
-    assert_ok(wah_exec_context_create(&ctx, &mod));
+    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_export_desc_t entry;
     assert_ok(wah_module_export_by_name(&mod, "add", &entry));
@@ -154,7 +154,7 @@ static void test_global_import_i32(void) {
     printf("Test 6: Global import (i32)\n");
 
     wah_module_t provider = {0};
-    assert_ok(wah_new_module(&provider));
+    assert_ok(wah_new_module(&provider, NULL));
     assert_ok(wah_module_export_global_i32(&provider, "g", 1, 42));
 
     const char *spec = "wasm \
@@ -170,7 +170,7 @@ static void test_global_import_i32(void) {
     assert_eq_u32(wasm_mod.global_count, 0);
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+    assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -190,7 +190,7 @@ static void test_global_import_set(void) {
     printf("Test 7: Global import set (mutable i32)\n");
 
     wah_module_t provider = {0};
-    assert_ok(wah_new_module(&provider));
+    assert_ok(wah_new_module(&provider, NULL));
     assert_ok(wah_module_export_global_i32(&provider, "g", 1, 10));
 
     const char *spec = "wasm \
@@ -207,7 +207,7 @@ static void test_global_import_set(void) {
     assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+    assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -232,7 +232,7 @@ static void test_global_import_with_local_globals(void) {
     printf("Test 8: Global import + local globals\n");
 
     wah_module_t provider = {0};
-    assert_ok(wah_new_module(&provider));
+    assert_ok(wah_new_module(&provider, NULL));
     assert_ok(wah_module_export_global_i32(&provider, "g", 0, 100));
 
     const char *spec = "wasm \
@@ -249,7 +249,7 @@ static void test_global_import_with_local_globals(void) {
     assert_eq_u32(wasm_mod.global_count, 1);
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+    assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -269,7 +269,7 @@ static void test_global_import_not_found(void) {
     printf("Test 9: Global import not found\n");
 
     wah_module_t provider = {0};
-    assert_ok(wah_new_module(&provider));
+    assert_ok(wah_new_module(&provider, NULL));
     assert_ok(wah_module_export_global_i32(&provider, "other", 0, 0));
 
     const char *spec = "wasm \
@@ -283,7 +283,7 @@ static void test_global_import_not_found(void) {
     assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+    assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_err(wah_instantiate(&ctx), WAH_ERROR_IMPORT_NOT_FOUND);
 
@@ -298,7 +298,7 @@ static void test_memory_import(void) {
     printf("Test 10: Memory import\n");
 
     wah_module_t provider = {0};
-    assert_ok(wah_new_module(&provider));
+    assert_ok(wah_new_module(&provider, NULL));
     assert_ok(wah_module_export_memory(&provider, "mem", 1, 1));
 
     const char *spec = "wasm \
@@ -314,7 +314,7 @@ static void test_memory_import(void) {
     assert_eq_u32(wasm_mod.memory_count, 0);
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+    assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -340,7 +340,7 @@ static void test_memory_import_not_found(void) {
     printf("Test 11: Memory import not found\n");
 
     wah_module_t provider = {0};
-    assert_ok(wah_new_module(&provider));
+    assert_ok(wah_new_module(&provider, NULL));
 
     const char *spec = "wasm \
         types {[ fn [] [i32] ]} \
@@ -353,7 +353,7 @@ static void test_memory_import_not_found(void) {
     assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+    assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_err(wah_instantiate(&ctx), WAH_ERROR_IMPORT_NOT_FOUND);
 
@@ -368,7 +368,7 @@ static void test_table_import(void) {
     printf("Test 12: Table import\n");
 
     wah_module_t provider = {0};
-    assert_ok(wah_new_module(&provider));
+    assert_ok(wah_new_module(&provider, NULL));
     assert_ok(wah_debug_module_export_table(&provider, "tbl",
         WAH_TYPE_FUNCREF, WAH_TYPE_I32, 1, 10));
 
@@ -385,7 +385,7 @@ static void test_table_import(void) {
     assert_eq_u32(wasm_mod.table_count, 0);
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+    assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -405,7 +405,7 @@ static void test_table_import_not_found(void) {
     printf("Test 13: Table import not found\n");
 
     wah_module_t provider = {0};
-    assert_ok(wah_new_module(&provider));
+    assert_ok(wah_new_module(&provider, NULL));
 
     const char *spec = "wasm \
         types {[ fn [] [i32] ]} \
@@ -418,7 +418,7 @@ static void test_table_import_not_found(void) {
     assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+    assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_err(wah_instantiate(&ctx), WAH_ERROR_IMPORT_NOT_FOUND);
 
@@ -438,7 +438,7 @@ static void test_mixed_imports(void) {
     printf("Test 14: Mixed imports (func + global + memory)\n");
 
     wah_module_t provider = {0};
-    assert_ok(wah_new_module(&provider));
+    assert_ok(wah_new_module(&provider, NULL));
     assert_ok(wah_module_export_func(&provider, "get42", "() -> i32", host_get42, NULL, NULL));
     assert_ok(wah_module_export_global_i32(&provider, "g", 0, 100));
     assert_ok(wah_module_export_memory(&provider, "mem", 1, 1));
@@ -461,7 +461,7 @@ static void test_mixed_imports(void) {
     assert_eq_u32(wasm_mod.import_memory_count, 1);
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &wasm_mod));
+    assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -504,7 +504,7 @@ static void test_global_import_order() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_module(&ctx, "provider", &provider));
     assert_ok(wah_instantiate(&ctx));
 
@@ -540,7 +540,7 @@ static void test_import_type_mismatch() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_bad));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer));
+    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_module(&ctx, "provider", &provider));
     assert_err(wah_instantiate(&ctx), WAH_ERROR_IMPORT_NOT_FOUND);
 
@@ -564,7 +564,7 @@ static void test_import_type_mismatch() {
     assert_ok(wah_parse_module_from_spec(&cons2, consumer_bad2));
 
     wah_exec_context_t ctx2 = {0};
-    assert_ok(wah_exec_context_create(&ctx2, &cons2));
+    assert_ok(wah_exec_context_create(&ctx2, &cons2, NULL));
     assert_ok(wah_link_module(&ctx2, "provider", &prov2));
     assert_err(wah_instantiate(&ctx2), WAH_ERROR_IMPORT_NOT_FOUND);
 
@@ -593,7 +593,7 @@ static void test_global_import_nullability() {
     assert_ok(wah_parse_module_from_spec(&consumer_b, consumer_bad));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer_b));
+    assert_ok(wah_exec_context_create(&ctx, &consumer_b, NULL));
     assert_ok(wah_link_module(&ctx, "provider", &provider));
     assert_err(wah_instantiate(&ctx), WAH_ERROR_IMPORT_NOT_FOUND);
 
@@ -609,7 +609,7 @@ static void test_global_import_nullability() {
     assert_ok(wah_parse_module_from_spec(&consumer_g, consumer_good));
 
     wah_exec_context_t ctx2 = {0};
-    assert_ok(wah_exec_context_create(&ctx2, &consumer_g));
+    assert_ok(wah_exec_context_create(&ctx2, &consumer_g, NULL));
     assert_ok(wah_link_module(&ctx2, "provider", &provider));
     assert_ok(wah_instantiate(&ctx2));
 

@@ -60,18 +60,20 @@ int main(void) {
         .features = WAH_DEFAULT_FEATURES,
         .enable_fuel_metering = true,
     };
-    err = wah_parse_module_ex(wasm_binary, current_size, &parse_options, &module);
+    err = wah_parse_module(&module, wasm_binary, current_size, &parse_options);
     if (err != WAH_OK) {
         goto cleanup_module;
     }
 
     // 2. Create execution context
     memset(&exec_ctx, 0, sizeof(wah_exec_context_t)); // Initialize context struct
-    wah_rlimits_t limits = {
-        .max_memory_bytes = WAH_FUZZ_MAX_MEMORY_BYTES,
-        .fuel = WAH_FUZZ_CALL_FUEL,
+    wah_exec_options_t options = {
+        .limits = {
+            .max_memory_bytes = WAH_FUZZ_MAX_MEMORY_BYTES,
+            .fuel = WAH_FUZZ_CALL_FUEL,
+        }
     };
-    err = wah_exec_context_create_with_limits(&exec_ctx, &module, &limits);
+    err = wah_exec_context_create(&exec_ctx, &module, &options);
     if (err != WAH_OK) {
         goto cleanup_module;
     }
