@@ -61,27 +61,30 @@
 #endif
 #endif
 
+// Enum: wah_error_t
+//   Error codes returned by most WAH functions.
+//   Negative values indicate errors, non-negative values indicate status codes.
 typedef enum {
-    WAH_OK = 0,
-    WAH_ERROR_INVALID_MAGIC_NUMBER = -1,
-    WAH_ERROR_INVALID_VERSION = -2,
-    WAH_ERROR_UNEXPECTED_EOF = -3,
-    WAH_ERROR_MALFORMED = -4,
-    WAH_ERROR_TOO_LARGE = -5,
-    WAH_ERROR_OUT_OF_MEMORY = -6,
-    WAH_ERROR_VALIDATION_FAILED = -7,
-    WAH_ERROR_TRAP = -8,
-    WAH_ERROR_STACK_OVERFLOW = -9,
-    WAH_ERROR_MEMORY_OUT_OF_BOUNDS = -10,
-    WAH_ERROR_NOT_FOUND = -11,
-    WAH_ERROR_MISUSE = -12,
-    WAH_ERROR_BAD_SPEC = -13,
-    WAH_ERROR_IMPORT_NOT_FOUND = -14,
-    WAH_ERROR_EXCEPTION = -15,
-    WAH_ERROR_DISABLED_FEATURE = -16,
-    WAH_ERROR_MULTI_RETURN = -17,
-    WAH_STATUS_FUEL_EXHAUSTED = 2,
-    WAH_STATUS_YIELDED = 3,
+    WAH_OK = 0,                            // Success, nothing special
+    WAH_ERROR_INVALID_MAGIC_NUMBER = -1,   // Not a WebAssembly module at all
+    WAH_ERROR_INVALID_VERSION = -2,        // Unsupported WebAssembly version
+    WAH_ERROR_UNEXPECTED_EOF = -3,         // Unexpected end of input while parsing
+    WAH_ERROR_MALFORMED = -4,              // Malformed WebAssembly module
+    WAH_ERROR_TOO_LARGE = -5,              // Module is too large to process
+    WAH_ERROR_OUT_OF_MEMORY = -6,          // Memory allocation failed
+    WAH_ERROR_VALIDATION_FAILED = -7,      // Module failed validation (e.g. type errors)
+    WAH_ERROR_TRAP = -8,                   // Runtime trap (e.g. division by zero, invalid memory access)
+    WAH_ERROR_STACK_OVERFLOW = -9,         // Exceeded maximum call stack depth
+    WAH_ERROR_MEMORY_OUT_OF_BOUNDS = -10,  // Accessed memory out of bounds
+    WAH_ERROR_NOT_FOUND = -11,             // Import or export not found
+    WAH_ERROR_MISUSE = -12,                // API misuse detected
+    WAH_ERROR_BAD_SPEC = -13,              // Bad type specification in `wah_module_define_type` etc.
+    WAH_ERROR_LINK_FAILED = -14,           // Link failed due to missing or incompatible module etc.
+    WAH_ERROR_EXCEPTION = -15,             // Uncaught exception
+    WAH_ERROR_DISABLED_FEATURE = -16,      // Used a feature not in WAH_COMPILED_FEATURES
+    WAH_ERROR_MULTI_RETURN = -17,          // Would return multiple values if not disallowed
+    WAH_STATUS_FUEL_EXHAUSTED = 2,         // Execution fuel exhausted, can be resumed
+    WAH_STATUS_YIELDED = 3,                // Execution yielded by interrupt, can be resumed
 } wah_error_t;
 
 typedef enum {
@@ -2325,7 +2328,7 @@ const char *wah_strerror(wah_error_t err) {
         case WAH_ERROR_NOT_FOUND: return "Item not found";
         case WAH_ERROR_MISUSE: return "API misused: invalid arguments";
         case WAH_ERROR_BAD_SPEC: return "Invalid DSL spec (turn on WAH_DEBUG for more info)";
-        case WAH_ERROR_IMPORT_NOT_FOUND: return "Import not found (or incompatible)";
+        case WAH_ERROR_LINK_FAILED: return "Link failed (import not found or incompatible)";
         case WAH_ERROR_EXCEPTION: return "Uncaught exception";
         case WAH_ERROR_DISABLED_FEATURE: return "Feature not enabled";
         case WAH_ERROR_MULTI_RETURN: return "Function would return multiple values (use wah_call_multi)";
@@ -14659,41 +14662,41 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         wah_func_import_t *fi = &module->func_imports[i];
 
         const wah_module_t *linked = NULL;
-        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &fi->name, &linked, NULL, NULL), WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &fi->name, &linked, NULL, NULL), WAH_ERROR_LINK_FAILED, cleanup);
 
         const wah_export_t *exp = wah_find_export(linked, 0, &fi->name);
-        WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
 
         // exp->index is the global function index in the linked module.
         // For host-only modules (import_function_count=0), global == local (functions[] index).
         uint32_t linked_import_count = linked->import_function_count;
-        WAH_ENSURE_GOTO(exp->index >= linked_import_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(exp->index >= linked_import_count, WAH_ERROR_LINK_FAILED, cleanup);
         uint32_t linked_local_idx = exp->index - linked_import_count;
-        WAH_ENSURE_GOTO(linked_local_idx < linked->local_function_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(linked_local_idx < linked->local_function_count, WAH_ERROR_LINK_FAILED, cleanup);
 
         const wah_function_t *src = &linked->functions[linked_local_idx];
 
         // Verify function type compatibility
-        WAH_ENSURE_GOTO(fi->type_index < module->type_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(fi->type_index < module->type_count, WAH_ERROR_LINK_FAILED, cleanup);
         const wah_func_type_t *import_type = &module->types[fi->type_index];
         if (src->is_host) {
-            WAH_ENSURE_GOTO(import_type->param_count == src->nparams, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-            WAH_ENSURE_GOTO(import_type->result_count == src->nresults, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            WAH_ENSURE_GOTO(import_type->param_count == src->nparams, WAH_ERROR_LINK_FAILED, cleanup);
+            WAH_ENSURE_GOTO(import_type->result_count == src->nresults, WAH_ERROR_LINK_FAILED, cleanup);
             for (uint32_t p = 0; p < import_type->param_count; p++) {
-                WAH_ENSURE_GOTO(import_type->param_types[p] == src->param_types[p], WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                WAH_ENSURE_GOTO(import_type->param_types[p] == src->param_types[p], WAH_ERROR_LINK_FAILED, cleanup);
             }
             for (uint32_t r = 0; r < import_type->result_count; r++) {
-                WAH_ENSURE_GOTO(import_type->result_types[r] == src->result_types[r], WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                WAH_ENSURE_GOTO(import_type->result_types[r] == src->result_types[r], WAH_ERROR_LINK_FAILED, cleanup);
             }
         } else {
             uint32_t src_local_fn_idx = linked_local_idx;
             if (src_local_fn_idx < linked->wasm_function_count) {
                 uint32_t linked_type_idx = linked->function_type_indices[src_local_fn_idx];
-                WAH_ENSURE_GOTO(linked_type_idx < linked->type_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                WAH_ENSURE_GOTO(linked_type_idx < linked->type_count, WAH_ERROR_LINK_FAILED, cleanup);
                 WAH_ENSURE_GOTO(
                     wah_cross_module_subtype(linked, WAH_TYPE_FROM_IDX(linked_type_idx, 0),
                                              module, WAH_TYPE_FROM_IDX(fi->type_index, 0)),
-                    WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                    WAH_ERROR_LINK_FAILED, cleanup);
             }
         }
 
@@ -14712,10 +14715,10 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         const wah_module_t *linked = NULL;
         wah_exec_context_t *gi_linked_ctx = NULL;
         uint32_t gi_linked_idx = 0;
-        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &gi->name, &linked, &gi_linked_ctx, &gi_linked_idx), WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &gi->name, &linked, &gi_linked_ctx, &gi_linked_idx), WAH_ERROR_LINK_FAILED, cleanup);
 
         const wah_export_t *exp = wah_find_export(linked, 3, &gi->name);
-        WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
 
         // Find the linked module's globals offset in ctx->globals
         uint32_t linked_globals_offset = wah_global_index_limit(module);
@@ -14724,21 +14727,21 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         }
 
         uint32_t linked_global_idx = exp->index;
-        WAH_ENSURE_GOTO(linked_global_idx < linked->import_global_count + linked->global_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-        WAH_ENSURE_GOTO(linked_global_idx >= linked->import_global_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(linked_global_idx < linked->import_global_count + linked->global_count, WAH_ERROR_LINK_FAILED, cleanup);
+        WAH_ENSURE_GOTO(linked_global_idx >= linked->import_global_count, WAH_ERROR_LINK_FAILED, cleanup);
         uint32_t linked_local_global_idx = linked_global_idx - linked->import_global_count;
 
         // Verify global type compatibility
         const wah_global_t *exported_global = &linked->globals[linked_local_global_idx];
-        WAH_ENSURE_GOTO(gi->is_mutable == exported_global->is_mutable, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(gi->is_mutable == exported_global->is_mutable, WAH_ERROR_LINK_FAILED, cleanup);
         if (gi->is_mutable) {
-            WAH_ENSURE_GOTO(gi->type == exported_global->type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            WAH_ENSURE_GOTO(gi->type == exported_global->type, WAH_ERROR_LINK_FAILED, cleanup);
         } else {
             bool type_ok = wah_type_is_subtype(exported_global->type, gi->type, linked);
             if (!type_ok && exported_global->type == gi->type) {
                 type_ok = true;
             }
-            WAH_ENSURE_GOTO(type_ok, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            WAH_ENSURE_GOTO(type_ok, WAH_ERROR_LINK_FAILED, cleanup);
         }
 
         if (gi->is_mutable) {
@@ -14795,13 +14798,13 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
 
         const wah_module_t *linked = NULL;
         wah_exec_context_t *linked_ctx = NULL;
-        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &tgi->name, &linked, &linked_ctx, NULL), WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &tgi->name, &linked, &linked_ctx, NULL), WAH_ERROR_LINK_FAILED, cleanup);
 
         const wah_export_t *exp = wah_find_export(linked, 4, &tgi->name);
-        WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
 
         uint32_t linked_tag_idx = exp->index;
-        WAH_ENSURE_GOTO(linked_tag_idx < linked->import_tag_count + linked->tag_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(linked_tag_idx < linked->import_tag_count + linked->tag_count, WAH_ERROR_LINK_FAILED, cleanup);
 
         // Verify type compatibility (tags require exact type match)
         uint32_t linked_type_idx = linked_tag_idx < linked->import_tag_count
@@ -14810,10 +14813,10 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         WAH_ENSURE_GOTO(
             wah_cross_module_type_ref_eq(linked, WAH_TYPE_FROM_IDX(linked_type_idx, 0),
                                          module, WAH_TYPE_FROM_IDX(tgi->type_index, 0)),
-            WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            WAH_ERROR_LINK_FAILED, cleanup);
 
-        WAH_ENSURE_GOTO(linked_ctx != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-        WAH_ENSURE_GOTO(linked_tag_idx < linked_ctx->tag_instance_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(linked_ctx != NULL, WAH_ERROR_LINK_FAILED, cleanup);
+        WAH_ENSURE_GOTO(linked_tag_idx < linked_ctx->tag_instance_count, WAH_ERROR_LINK_FAILED, cleanup);
         ctx->tag_instances[i] = linked_ctx->tag_instances[linked_tag_idx];
     }
 
@@ -14844,30 +14847,30 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
 
         const wah_module_t *linked = NULL;
         wah_exec_context_t *linked_ctx = NULL;
-        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &ti->name, &linked, &linked_ctx, NULL), WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &ti->name, &linked, &linked_ctx, NULL), WAH_ERROR_LINK_FAILED, cleanup);
 
         const wah_export_t *exp = wah_find_export(linked, 1, &ti->name);
-        WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
 
         uint32_t linked_table_idx = exp->index;
-        WAH_ENSURE_GOTO(linked_table_idx < wah_table_index_limit(linked), WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(linked_table_idx < wah_table_index_limit(linked), WAH_ERROR_LINK_FAILED, cleanup);
         uint32_t local_table_idx;
         wah_table_type_t *exp_tt = NULL;
 
         if (linked_table_idx >= linked->import_table_count) {
             local_table_idx = linked_table_idx - linked->import_table_count;
             exp_tt = &linked->tables[local_table_idx];
-            WAH_ENSURE_GOTO(exp_tt->elem_type == ti->type.elem_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-            WAH_ENSURE_GOTO(exp_tt->addr_type == ti->type.addr_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            WAH_ENSURE_GOTO(exp_tt->elem_type == ti->type.elem_type, WAH_ERROR_LINK_FAILED, cleanup);
+            WAH_ENSURE_GOTO(exp_tt->addr_type == ti->type.addr_type, WAH_ERROR_LINK_FAILED, cleanup);
             if (ti->type.max_elements != UINT64_MAX) {
-                WAH_ENSURE_GOTO(exp_tt->max_elements != UINT64_MAX, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-                WAH_ENSURE_GOTO(exp_tt->max_elements <= ti->type.max_elements, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                WAH_ENSURE_GOTO(exp_tt->max_elements != UINT64_MAX, WAH_ERROR_LINK_FAILED, cleanup);
+                WAH_ENSURE_GOTO(exp_tt->max_elements <= ti->type.max_elements, WAH_ERROR_LINK_FAILED, cleanup);
             }
         }
 
         if (linked_ctx && linked_table_idx < linked_ctx->table_count) {
             if (linked_table_idx >= linked->import_table_count) {
-                WAH_ENSURE_GOTO(linked_ctx->tables[linked_table_idx].size >= ti->type.min_elements, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                WAH_ENSURE_GOTO(linked_ctx->tables[linked_table_idx].size >= ti->type.min_elements, WAH_ERROR_LINK_FAILED, cleanup);
             }
             uint64_t imp_bytes = (uint64_t)linked_ctx->tables[linked_table_idx].size * sizeof(wah_value_t);
             WAH_ENSURE_GOTO(wah_budget_check(ctx, imp_bytes), WAH_ERROR_TOO_LARGE, cleanup);
@@ -14879,7 +14882,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             ctx->tables[i].import_idx = linked_table_idx;
             wah_budget_charge(ctx, imp_bytes);
         } else if (linked_table_idx >= linked->import_table_count) {
-            WAH_ENSURE_GOTO(exp_tt->min_elements >= ti->type.min_elements, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            WAH_ENSURE_GOTO(exp_tt->min_elements >= ti->type.min_elements, WAH_ERROR_LINK_FAILED, cleanup);
             uint64_t min_elements = exp_tt->min_elements;
             uint64_t table_bytes = min_elements * sizeof(wah_value_t);
             WAH_ENSURE_GOTO(wah_budget_check(ctx, table_bytes), WAH_ERROR_TOO_LARGE, cleanup);
@@ -14898,30 +14901,30 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
 
         const wah_module_t *linked = NULL;
         wah_exec_context_t *linked_ctx = NULL;
-        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &mi->name, &linked, &linked_ctx, NULL), WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &mi->name, &linked, &linked_ctx, NULL), WAH_ERROR_LINK_FAILED, cleanup);
 
         const wah_export_t *exp = wah_find_export(linked, 2, &mi->name);
-        WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
 
         uint32_t linked_mem_idx = exp->index;
-        WAH_ENSURE_GOTO(linked_mem_idx < wah_memory_index_limit(linked), WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+        WAH_ENSURE_GOTO(linked_mem_idx < wah_memory_index_limit(linked), WAH_ERROR_LINK_FAILED, cleanup);
         uint32_t local_mem_idx = 0;
         wah_memory_type_t *exp_mt = NULL;
 
         if (linked_mem_idx >= linked->import_memory_count) {
             local_mem_idx = linked_mem_idx - linked->import_memory_count;
             exp_mt = &linked->memories[local_mem_idx];
-            WAH_ENSURE_GOTO(exp_mt->addr_type == mi->type.addr_type, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            WAH_ENSURE_GOTO(exp_mt->addr_type == mi->type.addr_type, WAH_ERROR_LINK_FAILED, cleanup);
             if (mi->type.max_pages != UINT64_MAX) {
-                WAH_ENSURE_GOTO(exp_mt->max_pages != UINT64_MAX, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
-                WAH_ENSURE_GOTO(exp_mt->max_pages <= mi->type.max_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                WAH_ENSURE_GOTO(exp_mt->max_pages != UINT64_MAX, WAH_ERROR_LINK_FAILED, cleanup);
+                WAH_ENSURE_GOTO(exp_mt->max_pages <= mi->type.max_pages, WAH_ERROR_LINK_FAILED, cleanup);
             }
         }
 
         if (linked_ctx && linked_mem_idx < linked_ctx->memory_count) {
             if (linked_mem_idx >= linked->import_memory_count) {
                 uint64_t cur_pages = linked_ctx->memories[linked_mem_idx].size / WAH_WASM_PAGE_SIZE;
-                WAH_ENSURE_GOTO(cur_pages >= mi->type.min_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                WAH_ENSURE_GOTO(cur_pages >= mi->type.min_pages, WAH_ERROR_LINK_FAILED, cleanup);
             }
             uint64_t imp_bytes = linked_ctx->memories[linked_mem_idx].size;
             WAH_ENSURE_GOTO(wah_budget_check(ctx, imp_bytes), WAH_ERROR_TOO_LARGE, cleanup);
@@ -14933,7 +14936,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             ctx->memories[i].import_idx = linked_mem_idx;
             wah_budget_charge(ctx, imp_bytes);
         } else if (linked_mem_idx >= linked->import_memory_count) {
-            WAH_ENSURE_GOTO(exp_mt->min_pages >= mi->type.min_pages, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+            WAH_ENSURE_GOTO(exp_mt->min_pages >= mi->type.min_pages, WAH_ERROR_LINK_FAILED, cleanup);
             ctx->memories[i].max_pages = exp_mt->max_pages;
             uint64_t min_pages = exp_mt->min_pages;
             uint64_t byte_size = min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
@@ -15001,7 +15004,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                             break;
                         }
                     }
-                    WAH_ENSURE_GOTO(provider != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                    WAH_ENSURE_GOTO(provider != NULL, WAH_ERROR_LINK_FAILED, cleanup);
                     const wah_export_t *exp = NULL;
                     for (uint32_t m = 0; m < provider->export_count; m++) {
                         if (provider->exports[m].kind == WAH_KIND_FUNCTION &&
@@ -15011,11 +15014,11 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                             break;
                         }
                     }
-                    WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                    WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
                     uint32_t provider_import_count = provider->import_function_count;
-                    WAH_ENSURE_GOTO(exp->index >= provider_import_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                    WAH_ENSURE_GOTO(exp->index >= provider_import_count, WAH_ERROR_LINK_FAILED, cleanup);
                     uint32_t provider_local_idx = exp->index - provider_import_count;
-                    WAH_ENSURE_GOTO(provider_local_idx < provider->local_function_count, WAH_ERROR_IMPORT_NOT_FOUND, cleanup);
+                    WAH_ENSURE_GOTO(provider_local_idx < provider->local_function_count, WAH_ERROR_LINK_FAILED, cleanup);
                     ctx->globals[lg_offset + k].ref = wah_func_to_ref(&provider->functions[provider_local_idx]);
                 }
             }

@@ -760,7 +760,7 @@ static int expect_malformed(wah_error_t err) {
 }
 
 static int expect_unlinkable(wah_error_t err) {
-    return err == WAH_ERROR_IMPORT_NOT_FOUND || err == WAH_ERROR_VALIDATION_FAILED;
+    return err == WAH_ERROR_LINK_FAILED || err == WAH_ERROR_VALIDATION_FAILED;
 }
 
 static int expect_trap_like(wah_error_t err) {

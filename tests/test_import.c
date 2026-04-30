@@ -60,8 +60,8 @@ static void test_basic_import_resolution(void) {
     wah_free_module(&env_mod);
 }
 
-static void test_import_not_found_bad_module(void) {
-    printf("Test 2: WAH_ERROR_IMPORT_NOT_FOUND -- wrong module name\n");
+static void test_link_failed_bad_module(void) {
+    printf("Test 2: WAH_ERROR_LINK_FAILED -- wrong module name\n");
     wah_module_t wasm_mod = {0}, env_mod = {0};
     wah_exec_context_t ctx = {0};
 
@@ -71,15 +71,15 @@ static void test_import_not_found_bad_module(void) {
 
     wah_link_module(&ctx, "wrong_name", &env_mod);  // intentionally wrong
 
-    assert_err(wah_instantiate(&ctx), WAH_ERROR_IMPORT_NOT_FOUND);
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&wasm_mod);
     wah_free_module(&env_mod);
 }
 
-static void test_import_not_found_bad_field(void) {
-    printf("Test 3: WAH_ERROR_IMPORT_NOT_FOUND -- wrong field name\n");
+static void test_link_failed_bad_field(void) {
+    printf("Test 3: WAH_ERROR_LINK_FAILED -- wrong field name\n");
     wah_module_t wasm_mod = {0}, env_mod = {0};
     wah_exec_context_t ctx = {0};
 
@@ -92,7 +92,7 @@ static void test_import_not_found_bad_field(void) {
 
     wah_link_module(&ctx, "env", &env_mod);
 
-    assert_err(wah_instantiate(&ctx), WAH_ERROR_IMPORT_NOT_FOUND);
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&wasm_mod);
@@ -265,7 +265,7 @@ static void test_global_import_with_local_globals(void) {
     wah_free_module(&provider);
 }
 
-static void test_global_import_not_found(void) {
+static void test_global_link_failed(void) {
     printf("Test 9: Global import not found\n");
 
     wah_module_t provider = {0};
@@ -285,7 +285,7 @@ static void test_global_import_not_found(void) {
     wah_exec_context_t ctx = {0};
     assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &provider));
-    assert_err(wah_instantiate(&ctx), WAH_ERROR_IMPORT_NOT_FOUND);
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&wasm_mod);
@@ -336,7 +336,7 @@ static void test_memory_import(void) {
     wah_free_module(&provider);
 }
 
-static void test_memory_import_not_found(void) {
+static void test_memory_link_failed(void) {
     printf("Test 11: Memory import not found\n");
 
     wah_module_t provider = {0};
@@ -355,7 +355,7 @@ static void test_memory_import_not_found(void) {
     wah_exec_context_t ctx = {0};
     assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &provider));
-    assert_err(wah_instantiate(&ctx), WAH_ERROR_IMPORT_NOT_FOUND);
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&wasm_mod);
@@ -401,7 +401,7 @@ static void test_table_import(void) {
     wah_free_module(&provider);
 }
 
-static void test_table_import_not_found(void) {
+static void test_table_link_failed(void) {
     printf("Test 13: Table import not found\n");
 
     wah_module_t provider = {0};
@@ -420,7 +420,7 @@ static void test_table_import_not_found(void) {
     wah_exec_context_t ctx = {0};
     assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &provider));
-    assert_err(wah_instantiate(&ctx), WAH_ERROR_IMPORT_NOT_FOUND);
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&wasm_mod);
@@ -542,7 +542,7 @@ static void test_import_type_mismatch() {
     wah_exec_context_t ctx = {0};
     assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
     assert_ok(wah_link_module(&ctx, "provider", &provider));
-    assert_err(wah_instantiate(&ctx), WAH_ERROR_IMPORT_NOT_FOUND);
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&consumer);
@@ -566,7 +566,7 @@ static void test_import_type_mismatch() {
     wah_exec_context_t ctx2 = {0};
     assert_ok(wah_exec_context_create(&ctx2, &cons2, NULL));
     assert_ok(wah_link_module(&ctx2, "provider", &prov2));
-    assert_err(wah_instantiate(&ctx2), WAH_ERROR_IMPORT_NOT_FOUND);
+    assert_err(wah_instantiate(&ctx2), WAH_ERROR_LINK_FAILED);
 
     wah_exec_context_destroy(&ctx2);
     wah_free_module(&cons2);
@@ -595,7 +595,7 @@ static void test_global_import_nullability() {
     wah_exec_context_t ctx = {0};
     assert_ok(wah_exec_context_create(&ctx, &consumer_b, NULL));
     assert_ok(wah_link_module(&ctx, "provider", &provider));
-    assert_err(wah_instantiate(&ctx), WAH_ERROR_IMPORT_NOT_FOUND);
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&consumer_b);
@@ -622,18 +622,18 @@ int main(void) {
     printf("=== Import Section & Import Resolution Tests ===\n\n");
 
     test_basic_import_resolution();
-    test_import_not_found_bad_module();
-    test_import_not_found_bad_field();
+    test_link_failed_bad_module();
+    test_link_failed_bad_field();
     test_import_index_space();
     test_no_imports_unchanged();
     test_global_import_i32();
     test_global_import_set();
     test_global_import_with_local_globals();
-    test_global_import_not_found();
+    test_global_link_failed();
     test_memory_import();
-    test_memory_import_not_found();
+    test_memory_link_failed();
     test_table_import();
-    test_table_import_not_found();
+    test_table_link_failed();
     test_mixed_imports();
     test_global_import_order();
     test_import_type_mismatch();

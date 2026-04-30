@@ -235,7 +235,7 @@ int main(void) {
         assert_not_null(wah_strerror(WAH_ERROR_INVALID_VERSION));
         assert_not_null(wah_strerror(WAH_ERROR_NOT_FOUND));
         assert_not_null(wah_strerror(WAH_ERROR_MISUSE));
-        assert_not_null(wah_strerror(WAH_ERROR_IMPORT_NOT_FOUND));
+        assert_not_null(wah_strerror(WAH_ERROR_LINK_FAILED));
         assert_not_null(wah_strerror(WAH_ERROR_EXCEPTION));
         assert_not_null(wah_strerror(WAH_ERROR_MULTI_RETURN));
         assert_not_null(wah_strerror((wah_error_t)9999));
