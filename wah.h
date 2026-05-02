@@ -123,6 +123,14 @@ typedef enum {
 
 // Enum: wah_exec_state_t
 //   Execution state of given module instance.
+//
+//   ```
+//     +------------------+------------------------------------------+----------------+
+//    \|/                 | cancel                                   | finish/cancel  | cancel
+//   READY --start--> SUSPENDED --resume--> RUNNING --complete--> FINISHED            |
+//                       /|\                 |   |                                    |
+//                        +----yield/fuel----+   +-----error----> TRAPPED ------------+
+//   ```
 typedef enum {
     WAH_EXEC_READY = 0,  // Ready to start execution
     WAH_EXEC_RUNNING,    // Execution on the way
@@ -311,19 +319,16 @@ typedef uint64_t wah_features_t;
 // Macro: WAH_USE_COMPUTED_GOTO
 //   Defined if the interpreter is using computed goto dispatch.
 //   Available on GCC and Clang, but not MSVC. Much faster than the switch-based portable dispatch.
-#ifdef WAH_FORCE_SWITCH
+#if defined(WAH_FORCE_SWITCH)
 // Force switch-based dispatch; skip musttail and computed goto.
+#elif defined(WAH_FORCE_COMPUTED_GOTO)
+#define WAH_USE_COMPUTED_GOTO
 #elif defined(WAH_FORCE_MUSTTAIL)
 #define WAH_USE_MUSTTAIL
 #elif WAH_HAS_ATTRIBUTE(musttail)
 #define WAH_USE_MUSTTAIL // clang 13+, GCC 15+
-#endif
-#if !defined(WAH_FORCE_SWITCH)
-#ifdef WAH_FORCE_COMPUTED_GOTO
-#define WAH_USE_COMPUTED_GOTO
 #elif defined(__GNUC__) || defined(__clang__)
 #define WAH_USE_COMPUTED_GOTO
-#endif
 #endif
 
 // Macro: WAH_BULK_CHECK_INTERVAL [user-definable, default = 16777216]
@@ -706,6 +711,8 @@ private:
         wah_exec_state_t state;
         wah_error_t stop_reason;
         uint32_t entry_result_count;
+        uint32_t entry_param_count;
+        const struct wah_function_s *entry_host_fn;
         wah_value_t *base_sp;
         uint32_t base_call_depth;
         uint32_t base_handler_depth;
@@ -14328,17 +14335,33 @@ static wah_error_t wah_start_internal(
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
     WAH_ENSURE(func_idx < ctx->function_table_count, WAH_ERROR_NOT_FOUND);
     const wah_function_t *fn = &ctx->function_table[func_idx];
-    WAH_ENSURE(!fn->is_host, WAH_ERROR_MISUSE);
-
-    uint32_t local_idx = (uint32_t)fn->local_idx;
-    const wah_module_t *fn_module = fn->fn_module ? fn->fn_module : ctx->module;
-    const wah_func_type_t *func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
-    WAH_ENSURE(param_count == func_type->param_count, WAH_ERROR_VALIDATION_FAILED);
 
     ctx->lifecycle.base_sp = ctx->sp;
     ctx->lifecycle.base_call_depth = ctx->call_depth;
     ctx->lifecycle.base_frame_ptr = ctx->frame_ptr;
     ctx->lifecycle.base_handler_depth = ctx->exception_handler_depth;
+
+    if (fn->is_host) {
+        WAH_ENSURE(param_count == fn->nparams, WAH_ERROR_VALIDATION_FAILED);
+        uint32_t result_count = (uint32_t)fn->nresults;
+        wah_value_t *preflight_top = ctx->sp + param_count + result_count;
+        WAH_ENSURE((uint8_t *)preflight_top <= (uint8_t *)ctx->frame_ptr, WAH_ERROR_STACK_OVERFLOW);
+        for (uint32_t i = 0; i < param_count; ++i) {
+            *ctx->sp++ = params[i];
+        }
+        ctx->sp += result_count;
+        ctx->lifecycle.entry_param_count = param_count;
+        ctx->lifecycle.entry_result_count = result_count;
+        ctx->lifecycle.entry_host_fn = fn;
+        ctx->lifecycle.state = WAH_EXEC_SUSPENDED;
+        ctx->lifecycle.stop_reason = WAH_OK;
+        return WAH_OK;
+    }
+
+    uint32_t local_idx = (uint32_t)fn->local_idx;
+    const wah_module_t *fn_module = fn->fn_module ? fn->fn_module : ctx->module;
+    const wah_func_type_t *func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
+    WAH_ENSURE(param_count == func_type->param_count, WAH_ERROR_VALIDATION_FAILED);
     ctx->lifecycle.entry_result_count = func_type->result_count;
 
     const wah_code_body_t *start_code = &fn_module->code_bodies[local_idx];
@@ -14373,7 +14396,18 @@ static wah_error_t wah_resume_internal(wah_exec_context_t *ctx) {
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_SUSPENDED, WAH_ERROR_MISUSE);
     ctx->lifecycle.state = WAH_EXEC_RUNNING;
     wah_deadline_timer_set_armed(ctx, true);
-    wah_error_t err = wah_run_interpreter(ctx);
+    wah_error_t err;
+    if (ctx->lifecycle.entry_host_fn) {
+        const wah_function_t *fn = ctx->lifecycle.entry_host_fn;
+        wah_value_t *params = ctx->lifecycle.base_sp;
+        wah_value_t *results = ctx->lifecycle.base_sp + ctx->lifecycle.entry_param_count;
+        err = wah_call_host_function_internal(ctx, fn, params, ctx->lifecycle.entry_param_count, results);
+        if (err == WAH_OK) {
+            ctx->sp = results + ctx->lifecycle.entry_result_count;
+        }
+    } else {
+        err = wah_run_interpreter(ctx);
+    }
     wah_deadline_timer_set_armed(ctx, false);
     if (err == WAH_OK) {
         ctx->lifecycle.state = WAH_EXEC_FINISHED;
@@ -14450,28 +14484,6 @@ static wah_error_t wah_call_module_multi(
     wah_exec_context_t *exec_ctx, uint32_t func_idx, const wah_value_t *params, uint32_t param_count,
     wah_value_t *results, uint32_t max_result_count, uint32_t *actual_result_count
 ) {
-    WAH_ENSURE(func_idx < exec_ctx->function_table_count, WAH_ERROR_NOT_FOUND);
-    const wah_function_t *fn = &exec_ctx->function_table[func_idx];
-
-    if (fn->is_host) {
-        uint32_t nresults = (uint32_t)fn->nresults;
-        uint32_t copy_count = nresults < max_result_count ? nresults : max_result_count;
-        wah_value_t *host_results = results;
-        if (nresults > max_result_count) {
-            WAH_ENSURE((uint8_t *)(exec_ctx->sp + nresults) <= (uint8_t *)exec_ctx->frame_ptr, WAH_ERROR_STACK_OVERFLOW);
-            host_results = exec_ctx->sp;
-        }
-        wah_deadline_timer_set_armed(exec_ctx, true);
-        wah_error_t host_err = wah_call_host_function_internal(exec_ctx, fn, params, param_count, host_results);
-        wah_deadline_timer_set_armed(exec_ctx, false);
-        if (host_results != results && host_err == WAH_OK && results) {
-            for (uint32_t i = 0; i < copy_count; ++i) results[i] = host_results[i];
-        }
-        WAH_CHECK(host_err);
-        if (actual_result_count) *actual_result_count = nresults;
-        return WAH_OK;
-    }
-
     wah_error_t err = wah_start_internal(exec_ctx, func_idx, params, param_count);
     if (err != WAH_OK) return err;
 
@@ -14634,9 +14646,7 @@ void wah_free_module(wah_module_t *module) {
         for (uint32_t i = module->wasm_function_count; i < module->local_function_count; ++i) {
             wah_function_t *fn = &module->functions[i];
             if (fn->is_host) {
-                if (fn->finalize && fn->userdata) {
-                    fn->finalize(fn->userdata);
-                }
+                if (fn->finalize) fn->finalize(fn->userdata);
                 wah_free(alloc, fn->name);
                 wah_free(alloc, fn->param_types);
                 wah_free(alloc, fn->result_types);

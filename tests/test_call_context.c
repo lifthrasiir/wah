@@ -188,6 +188,83 @@ int main() {
         wah_free_module(&mod);
     }
 
+    // Test 4b: resumable host multi-return with truncation
+    printf("Test 4b: Resumable host multi-return truncation\n");
+    {
+        wah_module_t mod = {0};
+        wah_exec_context_t exec = {0};
+        wah_value_t results[2] = {{0}};
+        uint32_t actual_results = 0;
+
+        assert_ok(wah_new_module(&mod, NULL));
+        assert_ok(wah_module_export_func(&mod, "test", "() -> (i32, i64, f32, f64)",
+            test_results, NULL, NULL));
+        assert_ok(wah_exec_context_create(&exec, &mod, NULL));
+
+        assert_ok(wah_start(&exec, 0, NULL, 0));
+        assert_eq_i32((int32_t)wah_exec_state(&exec), WAH_EXEC_SUSPENDED);
+        assert_ok(wah_resume(&exec));
+        assert_eq_i32((int32_t)wah_exec_state(&exec), WAH_EXEC_FINISHED);
+        assert_ok(wah_finish(&exec, results, 2, &actual_results));
+        assert_eq_u32(actual_results, 4);
+        assert_eq_i32(results[0].i32, 100);
+        assert_eq_i64(results[1].i64, 2000000000000LL);
+        assert_eq_i32((int32_t)wah_exec_state(&exec), WAH_EXEC_READY);
+
+        wah_exec_context_destroy(&exec);
+        wah_free_module(&mod);
+    }
+
+    // Test 4c: resumable host params are copied and don't overlap results
+    printf("Test 4c: Resumable host param copy and result overlap safety\n");
+    {
+        wah_module_t mod = {0};
+        wah_exec_context_t exec = {0};
+        wah_value_t params[2] = {{ .i32 = 4 }, { .i32 = 5 }};
+        wah_value_t result = {0};
+        uint32_t actual_results = 0;
+
+        assert_ok(wah_new_module(&mod, NULL));
+        assert_ok(wah_module_export_func(&mod, "test", "(i32, i32) -> i32",
+            host_write_result_then_read_two_params, NULL, NULL));
+        assert_ok(wah_exec_context_create(&exec, &mod, NULL));
+
+        assert_ok(wah_start(&exec, 0, params, 2));
+        params[0].i32 = 1000;
+        params[1].i32 = 2000;
+        assert_ok(wah_resume(&exec));
+        assert_ok(wah_finish(&exec, &result, 1, &actual_results));
+        assert_eq_u32(actual_results, 1);
+        assert_eq_i32(result.i32, 9);
+
+        wah_exec_context_destroy(&exec);
+        wah_free_module(&mod);
+    }
+
+    // Test 4d: resumable host trap leaves the context trapped until cancel
+    printf("Test 4d: Resumable host trap\n");
+    {
+        wah_module_t mod = {0};
+        wah_exec_context_t exec = {0};
+        wah_value_t result = {0};
+        uint32_t actual_results = 0;
+
+        assert_ok(wah_new_module(&mod, NULL));
+        assert_ok(wah_module_export_func(&mod, "test", "() -> i32",
+            test_trap_func, NULL, NULL));
+        assert_ok(wah_exec_context_create(&exec, &mod, NULL));
+
+        assert_ok(wah_start(&exec, 0, NULL, 0));
+        assert_err(wah_resume(&exec), WAH_ERROR_TRAP);
+        assert_eq_i32((int32_t)wah_exec_state(&exec), WAH_EXEC_TRAPPED);
+        assert_err(wah_finish(&exec, &result, 1, &actual_results), WAH_ERROR_MISUSE);
+        wah_cancel(&exec);
+        assert_eq_i32((int32_t)wah_exec_state(&exec), WAH_EXEC_READY);
+
+        wah_exec_context_destroy(&exec);
+        wah_free_module(&mod);
+    }
+
     // Test 5: write result THEN read param -- (i32) -> (i32), overlap at index 0
     printf("Test 5: wah_result then wah_param, (i32)->(i32)\n");
     {
