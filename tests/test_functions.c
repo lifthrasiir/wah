@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include "../wah.h"
 #include "common.h"
+#include "wah_impl.h"
 
 // --- Start Section Test ---
 
@@ -26,7 +27,7 @@ void test_start_section() {
     assert_ok(wah_instantiate(&ctx));
 
     // Verify that the global variable was set by the start function
-    assert_eq_i32(ctx.globals[0].i32, 42);
+    assert_eq_i32(wah_debug_global_value(&ctx, &module, 0).i32, 42);
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);

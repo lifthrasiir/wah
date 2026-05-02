@@ -1,5 +1,6 @@
 #include "../wah.h"
 #include "common.h"
+#include "wah_impl.h"
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -254,12 +255,12 @@ typedef struct {
 static void cleanup_runtime_call(void *userdata) {
     runtime_case_t *c = (runtime_case_t *)userdata;
     wah_cancel(&c->ctx);
-    c->ctx.alloc = c->saved_alloc;
+    wah_debug_set_exec_alloc(&c->ctx, c->saved_alloc);
 }
 
 static wah_error_t op_runtime_throw(oom_alloc_t *state, void *userdata) {
     runtime_case_t *c = (runtime_case_t *)userdata;
-    c->ctx.alloc = make_oom_alloc(state);
+    wah_debug_set_exec_alloc(&c->ctx, make_oom_alloc(state));
     wah_value_t result = {0};
     return wah_call(&c->ctx, 0, NULL, 0, &result);
 }
@@ -337,7 +338,7 @@ static void prepare_runtime_case(runtime_case_t *c) {
     assert_ok(wah_parse_module_from_spec(&c->module, spec));
     assert_ok(wah_exec_context_create(&c->ctx, &c->module, NULL));
     assert_ok(wah_instantiate(&c->ctx));
-    c->saved_alloc = c->ctx.alloc;
+    c->saved_alloc = wah_debug_exec_alloc(&c->ctx);
 }
 
 static void prepare_runtime_throw_ref_case(runtime_case_t *c) {
@@ -365,7 +366,7 @@ static void prepare_runtime_throw_ref_case(runtime_case_t *c) {
     assert_ok(wah_parse_module_from_spec(&c->module, spec));
     assert_ok(wah_exec_context_create(&c->ctx, &c->module, NULL));
     assert_ok(wah_instantiate(&c->ctx));
-    c->saved_alloc = c->ctx.alloc;
+    c->saved_alloc = wah_debug_exec_alloc(&c->ctx);
 }
 
 int main(void) {

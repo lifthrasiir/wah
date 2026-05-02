@@ -1,5 +1,6 @@
 #include "../wah.h"
 #include "common.h"
+#include "wah_impl.h"
 #include <stdio.h>
 
 // d39a915: Add i31 and extern conversion GC opcodes.
@@ -538,7 +539,7 @@ static void test_ref_test_cast_set_bitset_multiword() {
 
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_true(module.repr_count > 64);
+    assert_true(wah_debug_module_repr_count(&module) > 64);
 
     wah_exec_context_t ctx = {0};
     assert_ok(wah_exec_context_create(&ctx, &module, NULL));

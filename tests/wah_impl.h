@@ -12,8 +12,29 @@ uint32_t wah_debug_wasm_page_size(void);
 // --- Memory accessors ---
 uint8_t *wah_debug_memory_data(const wah_exec_context_t *ctx, uint32_t mem_idx);
 uint64_t wah_debug_memory_size(const wah_exec_context_t *ctx, uint32_t mem_idx);
+uint8_t *wah_debug_exec_memory_base(const wah_exec_context_t *ctx);
+uint64_t wah_debug_exec_memory_size(const wah_exec_context_t *ctx);
+uint32_t wah_debug_exec_memory_count(const wah_exec_context_t *ctx);
+uint32_t wah_debug_exec_global_count(const wah_exec_context_t *ctx);
+const wah_module_t *wah_debug_exec_module(const wah_exec_context_t *ctx);
+bool wah_debug_exec_is_instantiated(const wah_exec_context_t *ctx);
+wah_alloc_t wah_debug_exec_alloc(const wah_exec_context_t *ctx);
+void wah_debug_set_exec_alloc(wah_exec_context_t *ctx, wah_alloc_t alloc);
 wah_error_t wah_debug_replace_data_segment_fill(wah_module_t *mod,
     uint32_t data_idx, uint32_t size, uint8_t value);
+uint32_t wah_debug_module_data_segment_count(const wah_module_t *mod);
+bool wah_debug_module_has_data_count_section(const wah_module_t *mod);
+uint32_t wah_debug_module_repr_count(const wah_module_t *mod);
+uint32_t wah_debug_module_import_function_count(const wah_module_t *mod);
+uint32_t wah_debug_module_wasm_function_count(const wah_module_t *mod);
+uint32_t wah_debug_module_import_global_count(const wah_module_t *mod);
+uint32_t wah_debug_module_local_global_count(const wah_module_t *mod);
+uint32_t wah_debug_module_import_memory_count(const wah_module_t *mod);
+uint32_t wah_debug_module_local_memory_count(const wah_module_t *mod);
+uint32_t wah_debug_module_import_table_count(const wah_module_t *mod);
+uint32_t wah_debug_module_local_table_count(const wah_module_t *mod);
+bool wah_debug_module_has_start_function(const wah_module_t *mod);
+uint32_t wah_debug_module_start_function_idx(const wah_module_t *mod);
 
 // --- Table accessors ---
 uint64_t wah_debug_table_size(const wah_exec_context_t *ctx, uint32_t tbl_idx);
@@ -36,8 +57,13 @@ bool wah_debug_is_func_ref_in_ctx(const wah_exec_context_t *ctx, const void *ref
 bool wah_debug_is_func_ref_in_module(const wah_module_t *mod, const void *ref);
 bool wah_debug_type_is_exnref(const wah_module_t *mod, wah_type_t type);
 void wah_debug_free_exnref(wah_exec_context_t *ctx, void *ref);
+bool wah_debug_has_type_check_cache_entry(const wah_exec_context_t *ctx,
+    const wah_module_t *sub_module, wah_type_t sub_type,
+    const wah_module_t *sup_module, wah_type_t sup_type,
+    bool is_subtype);
 
 // --- Linked module accessors ---
+uint32_t wah_debug_linked_module_count(const wah_exec_context_t *ctx);
 const wah_module_t *wah_debug_linked_module(const wah_exec_context_t *ctx, uint32_t i);
 const wah_exec_context_t *wah_debug_linked_ctx(const wah_exec_context_t *ctx, uint32_t i);
 

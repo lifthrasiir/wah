@@ -563,7 +563,7 @@ static void test_ref_func_in_elem_with_import() {
     assert_ok(wah_module_export_func(&env_mod, "return42", "() -> i32", host_return42, NULL, NULL));
 
     assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
-    assert_eq_u32(wasm_mod.import_function_count, 1);
+    assert_eq_u32(wah_debug_module_import_function_count(&wasm_mod), 1);
 
     wah_exec_context_t ctx = {0};
     assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
@@ -596,7 +596,7 @@ static void test_typed_ref_decoding() {
         // Should parse and validate: param is (ref func) non-nullable
         assert_ok(wah_parse_module_from_spec(&module, spec));
         // Verify the parsed type has non-nullable flag
-        assert(module.type_count == 1);
+        assert(wah_module_type_count(&module) == 1);
         { wah_type_desc_t td;
           assert_ok(wah_module_type(&module, 0, &td));
           assert(td.param_count == 1); assert(td.param_types[0] == WAH_TYPE_FUNC); assert(!WAH_TYPE_IS_NULLABLE(td.param_types[0]));
@@ -615,7 +615,7 @@ static void test_typed_ref_decoding() {
             code {[ {[] local.get 0 ref.is_null end } ]}";
         wah_module_t module;
         assert_ok(wah_parse_module_from_spec(&module, spec));
-        assert(module.type_count == 1);
+        assert(wah_module_type_count(&module) == 1);
         { wah_type_desc_t td;
           assert_ok(wah_module_type(&module, 0, &td));
           assert(td.param_count == 1); assert(td.param_types[0] == WAH_TYPE_FUNCREF); assert(WAH_TYPE_IS_NULLABLE(td.param_types[0])); }

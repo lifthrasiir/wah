@@ -292,16 +292,6 @@ typedef struct {
     union wah_extern_desc_u u;
 } wah_export_desc_t;
 
-typedef struct {
-    wah_exec_state_t state;
-    wah_error_t stop_reason;
-    uint32_t entry_result_count;
-    wah_value_t *base_sp;
-    uint32_t base_call_depth;
-    uint32_t base_handler_depth;
-    struct wah_call_frame_s *base_frame_ptr;
-} wah_exec_lifecycle_t;
-
 // Opaque call context for host functions.
 typedef struct wah_call_context_s wah_call_context_t;
 
@@ -316,6 +306,10 @@ typedef void (*wah_func_t)(wah_call_context_t *ctx, void *userdata);
 typedef void (*wah_finalize_t)(void *userdata);
 
 typedef struct wah_module_s {
+#ifndef WAH_IMPLEMENTATION
+    WAH_ALIGNAS(16) char reserved[384];
+#else
+    WAH_ALIGNAS(16)
     uint32_t type_count;
     uint32_t wasm_function_count;
     uint32_t code_count;
@@ -386,18 +380,12 @@ typedef struct wah_module_s {
     wah_features_t enabled_features;
     wah_features_t required_features;
     bool fuel_metering;
+
+    void *reserved; // Ensure that at least one pimpl pointer can be added
+#endif
 } wah_module_t;
 
-typedef struct {
-    uint32_t call_depth;
-    wah_value_t *sp_base;
-    const uint8_t *catch_table;
-    uint32_t catch_count;
-    const uint8_t *bytecode_base;
-    struct wah_tag_instance_s *handler_tag_instances;
-    uint32_t handler_tag_instance_count;
-} wah_exception_handler_t;
-
+#ifdef WAH_IMPLEMENTATION
 // Atomic flag for fast POLL check. Setters may be called from another thread;
 // the interpreter hot loop only does a relaxed load.
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L && !defined(__STDC_NO_ATOMICS__)
@@ -418,23 +406,19 @@ typedef volatile int wah_poll_flag_t;
 #define WAH_POLL_FLAG_LOAD(f)       (f)
 #define WAH_POLL_FLAG_STORE(f, v)   ((f) = (v))
 #endif
-
-typedef struct wah_deadline_timer_s wah_deadline_timer_t;
+#endif
 
 #define WAH_TYPE_CHECK_CACHE_SIZE 64
-typedef struct wah_type_check_cache_entry_s {
-    const struct wah_module_s *sub_module;
-    const struct wah_module_s *sup_module;
-    wah_type_t sub_type;
-    wah_type_t sup_type;
-    bool is_subtype;
-    bool valid;
-} wah_type_check_cache_entry_t;
+#define WAH_MAX_EXCEPTION_HANDLER_DEPTH 64
 
 typedef struct wah_exec_context_s {
+#ifndef WAH_IMPLEMENTATION
+    WAH_ALIGNAS(16) char reserved[384];
+#else
+    WAH_ALIGNAS(16)
     // Unified stack: values grow upward from stack_buffer, call frames grow
     // downward from stack_end. Overflow when the two regions meet.
-    uint8_t *stack_buffer;          // Base of the unified stack allocation
+    uint8_t *stack_buffer; // Base of the unified stack allocation
     uint64_t stack_buffer_size;     // Total bytes allocated for stack_buffer
     wah_value_t *value_stack;       // = (wah_value_t *)stack_buffer
     wah_value_t *sp;                // Value stack pointer (next free slot)
@@ -478,8 +462,7 @@ typedef struct wah_exec_context_s {
     struct wah_exception_s *exceptions;
 
     // Exception handler stack (try_table frames)
-#define WAH_MAX_EXCEPTION_HANDLER_DEPTH 64
-    wah_exception_handler_t exception_handlers[WAH_MAX_EXCEPTION_HANDLER_DEPTH];
+    struct wah_exception_handler_s *exception_handlers;
     uint32_t exception_handler_depth;
 
     // GC heap state (NULL when GC is not enabled)
@@ -487,18 +470,34 @@ typedef struct wah_exec_context_s {
 
     int64_t fuel;
     uint64_t deadline_us;
-    wah_deadline_timer_t *deadline_timer;
+    struct wah_deadline_timer_s *deadline_timer;
 
     uint64_t max_memory_bytes;      // WAH_RLIMIT_UNLIMITED = no limit; 0 is a valid limit
     uint64_t memory_bytes_committed; // current total: linear mem + tables + GC heap
 
-    wah_exec_lifecycle_t lifecycle;
+    struct wah_exec_lifecycle_s {
+        wah_exec_state_t state;
+        wah_error_t stop_reason;
+        uint32_t entry_result_count;
+        wah_value_t *base_sp;
+        uint32_t base_call_depth;
+        uint32_t base_handler_depth;
+        struct wah_call_frame_s *base_frame_ptr;
+    } lifecycle;
 
-    wah_type_check_cache_entry_t type_check_cache[WAH_TYPE_CHECK_CACHE_SIZE];
+    struct wah_type_check_cache_entry_s *type_check_cache;
 
     wah_alloc_t alloc;
     wah_features_t enabled_features;
+
+    void *reserved; // Ensure that at least one pimpl pointer can be added
+#endif
 } wah_exec_context_t;
+
+typedef char wah_module_size_check_[sizeof(wah_module_t) <= 384 ? 1 : -1];
+typedef char wah_module_align_check_[WAH_ALIGNOF(wah_module_t) == 16 ? 1 : -1];
+typedef char wah_exec_context_size_check_[sizeof(wah_exec_context_t) <= 384 ? 1 : -1];
+typedef char wah_exec_context_align_check_[WAH_ALIGNOF(wah_exec_context_t) == 16 ? 1 : -1];
 
 // Convert error code to human-readable string
 const char *wah_strerror(wah_error_t err);
@@ -1968,6 +1967,16 @@ typedef struct wah_exception_s {
     wah_type_t *value_types;
 } wah_exception_t;
 
+typedef struct wah_exception_handler_s {
+    uint32_t call_depth;
+    wah_value_t *sp_base;
+    const uint8_t *catch_table;
+    uint32_t catch_count;
+    const uint8_t *bytecode_base;
+    struct wah_tag_instance_s *handler_tag_instances;
+    uint32_t handler_tag_instance_count;
+} wah_exception_handler_t;
+
 #define WAH_CATCH_KIND_CATCH     0
 #define WAH_CATCH_KIND_CATCH_REF 1
 #define WAH_CATCH_KIND_CATCH_ALL 2
@@ -2119,6 +2128,15 @@ typedef struct {
 
     uint32_t max_stack_depth;
 } wah_analyzed_code_t;
+
+typedef struct wah_type_check_cache_entry_s {
+    const struct wah_module_s *sub_module;
+    const struct wah_module_s *sup_module;
+    wah_type_t sub_type;
+    wah_type_t sup_type;
+    bool is_subtype;
+    bool valid;
+} wah_type_check_cache_entry_t;
 
 #define WAH_FUNCREF_FAKE_HEADER { .next_tagged = NULL, .repr_id = WAH_TYPE_FUNCTION, .size_bytes = 0 }
 
@@ -9046,7 +9064,7 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx) {
 }
 
 #ifndef WAH_NO_THREADS
-struct wah_deadline_timer_s {
+typedef struct wah_deadline_timer_s {
     wah_exec_context_t *ctx;
     uint64_t deadline_us;
     wah_poll_flag_t cancelled;
@@ -9060,7 +9078,7 @@ struct wah_deadline_timer_s {
     pthread_mutex_t mutex;
     pthread_cond_t cond;
 #endif
-};
+} wah_deadline_timer_t;
 
 static void wah_deadline_timer_fire(wah_deadline_timer_t *timer) {
     wah_request_interrupt(timer->ctx);
@@ -9291,6 +9309,11 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
     }
     exec_ctx->memory_bytes_committed = 0;
 
+    WAH_MALLOC_ARRAY_GOTO(exec_ctx->exception_handlers, WAH_MAX_EXCEPTION_HANDLER_DEPTH, cleanup);
+    memset(exec_ctx->exception_handlers, 0, sizeof(wah_exception_handler_t) * WAH_MAX_EXCEPTION_HANDLER_DEPTH);
+    WAH_MALLOC_ARRAY_GOTO(exec_ctx->type_check_cache, WAH_TYPE_CHECK_CACHE_SIZE, cleanup);
+    memset(exec_ctx->type_check_cache, 0, sizeof(wah_type_check_cache_entry_t) * WAH_TYPE_CHECK_CACHE_SIZE);
+
     WAH_CHECK_GOTO(wah_alloc_unified_stack(exec_ctx, limits->max_stack_bytes), cleanup);
 
     uint32_t total_globals = wah_global_index_limit(module);
@@ -9470,8 +9493,10 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
     wah_alloc_t alloc_storage = wah_resolve_alloc(&exec_ctx->alloc);
     const wah_alloc_t *alloc = &alloc_storage;
     wah_deadline_timer_destroy(exec_ctx);
-    exec_ctx->lifecycle = (wah_exec_lifecycle_t){0};
+    exec_ctx->lifecycle = (struct wah_exec_lifecycle_s){0};
     wah_free(alloc, exec_ctx->stack_buffer);
+    wah_free(alloc, exec_ctx->exception_handlers);
+    wah_free(alloc, exec_ctx->type_check_cache);
     wah_free(alloc, exec_ctx->globals);
     if (exec_ctx->memories) {
         for (uint32_t i = 0; i < exec_ctx->memory_count; ++i) {
@@ -13816,7 +13841,7 @@ static void wah_cancel_internal(wah_exec_context_t *ctx) {
         ctx->pending_exception = NULL;
     }
 #endif
-    ctx->lifecycle = (wah_exec_lifecycle_t){0};
+    ctx->lifecycle = (struct wah_exec_lifecycle_s){0};
 }
 
 static wah_error_t wah_start_internal(
@@ -13852,7 +13877,7 @@ static wah_error_t wah_start_internal(
         ctx->sp - func_type->param_count, func_type->result_count, fn->fn_ctx, preflight_top);
     if (err != WAH_OK) {
         ctx->sp = ctx->lifecycle.base_sp;
-        ctx->lifecycle = (wah_exec_lifecycle_t){0};
+        ctx->lifecycle = (struct wah_exec_lifecycle_s){0};
         return err;
     }
 
@@ -13912,7 +13937,7 @@ static wah_error_t wah_finish_internal(
     ctx->call_depth = ctx->lifecycle.base_call_depth;
     ctx->frame_ptr = ctx->lifecycle.base_frame_ptr;
     ctx->exception_handler_depth = ctx->lifecycle.base_handler_depth;
-    ctx->lifecycle = (wah_exec_lifecycle_t){0};
+    ctx->lifecycle = (struct wah_exec_lifecycle_s){0};
     return WAH_OK;
 }
 

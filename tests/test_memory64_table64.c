@@ -52,7 +52,7 @@ static void test_memory64_large_limits_parsing() {
 
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_eq_u32(module.memory_count, 1);
+    assert_eq_u32(wah_module_memory_count(&module), 1);
     wah_free_module(&module);
 
     // memory64 unbounded
@@ -206,7 +206,7 @@ static void test_memory64_basic() {
         ]}";
 
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_eq_u32(module.memory_count, 1);
+    assert_eq_u32(wah_module_memory_count(&module), 1);
     { wah_memory_desc_t md;
       assert_ok(wah_module_memory(&module, 0, &md));
       assert_true(md.addr_type == WAH_TYPE_I64); assert_eq_u64(md.min_pages, 1); }
@@ -367,7 +367,7 @@ static void test_memory64_data_segment() {
         ]}";
 
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_eq_u32(module.data_segment_count, 1);
+    assert_eq_u32(wah_debug_module_data_segment_count(&module), 1);
 
     assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));

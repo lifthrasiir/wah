@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include "../wah.h"
 #include "common.h"
+#include "wah_impl.h"
 
 // --- Test 1: Function returning two i32 values ---
 static void test_multi_return_i32_pair() {
@@ -306,14 +307,14 @@ static void test_wah_call_multi_return_no_execution() {
     assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_MULTI_RETURN);
 
     // Global must still be 0 -- the function was never executed
-    assert_eq_i32(ctx.globals[0].i32, 0);
+    assert_eq_i32(wah_debug_global_value(&ctx, &module, 0).i32, 0);
 
     // wah_call_multi with max_results=1 truncates and does execute
     uint32_t actual;
     assert_ok(wah_call_multi(&ctx, 0, NULL, 0, &result, 1, &actual));
     assert_eq_u32(actual, 2);
     assert_eq_i32(result.i32, 10);
-    assert_eq_i32(ctx.globals[0].i32, 42);
+    assert_eq_i32(wah_debug_global_value(&ctx, &module, 0).i32, 42);
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);

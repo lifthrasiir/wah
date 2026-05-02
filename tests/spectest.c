@@ -205,8 +205,8 @@ static int is_func_ref(const spectest_instance_t *instance, void *ref) {
     uint32_t i;
     if (!instance || !instance->live || !ref) return 0;
     if (wah_debug_is_func_ref_in_ctx(&instance->exec, ref)) return 1;
-    if (wah_debug_is_func_ref_in_module(instance->exec.module, ref)) return 1;
-    for (i = 0; i < instance->exec.linked_module_count; i++) {
+    if (wah_debug_is_func_ref_in_module(wah_debug_exec_module(&instance->exec), ref)) return 1;
+    for (i = 0; i < wah_debug_linked_module_count(&instance->exec); i++) {
         const wah_exec_context_t *lctx = wah_debug_linked_ctx(&instance->exec, i);
         const wah_module_t *lmod = wah_debug_linked_module(&instance->exec, i);
         if (lctx && wah_debug_is_func_ref_in_ctx(lctx, ref)) return 1;
@@ -216,7 +216,7 @@ static int is_func_ref(const spectest_instance_t *instance, void *ref) {
 }
 
 static void free_result_refs(spectest_instance_t *instance, wast_const_result_t *result) {
-    const wah_module_t *module = instance ? instance->exec.module : NULL;
+    const wah_module_t *module = instance ? wah_debug_exec_module(&instance->exec) : NULL;
     for (uint32_t i = 0; i < result->count; ++i) {
         if (wah_debug_type_is_exnref(module, result->values[i].type) && result->values[i].value.ref) {
             wah_debug_free_exnref(instance ? &instance->exec : NULL, result->values[i].value.ref);
@@ -370,7 +370,7 @@ static int ensure_instance_instantiated(spectest_instance_t *instance) {
     if (!instance || !instance->live) {
         return 0;
     }
-    if (!instance->exec.is_instantiated) {
+    if (!wah_debug_exec_is_instantiated(&instance->exec)) {
         return wah_instantiate(&instance->exec) == WAH_OK;
     }
     return 1;
@@ -387,7 +387,7 @@ static int action_export(spectest_instance_t *instance,
         snprintf(error_buf, error_buf_size, "no current instance");
         return 0;
     }
-    err = wah_module_export_by_name_len(instance->def ? &instance->def->module : instance->exec.module, field_name, field_name_len, entry);
+    err = wah_module_export_by_name_len(instance->def ? &instance->def->module : wah_debug_exec_module(&instance->exec), field_name, field_name_len, entry);
     if (err != WAH_OK) {
         snprintf(error_buf, error_buf_size, "export \"%s\" not found (%s)", field_name, wah_strerror(err));
         return 0;
@@ -523,14 +523,14 @@ static int execute_action(const wast_node_t *action_node,
             return 1;
         }
         global_idx = entry.index;
-        if (global_idx >= instance->exec.global_count) {
+        if (global_idx >= wah_debug_exec_global_count(&instance->exec)) {
             snprintf(error_buf, error_buf_size, "global index out of range");
             free(field_name);
             return 0;
         }
         result->values[0].type = entry.u.global.type;
         result->values[0].value = wah_debug_global_value(&instance->exec,
-            instance->exec.module, global_idx);
+            wah_debug_exec_module(&instance->exec), global_idx);
         result->count = 1;
         if (out_instance) *out_instance = instance;
         free(field_name);
@@ -581,12 +581,8 @@ static spectest_module_def_t *add_module_def(spectest_env_t *env, const char *na
                 env->instances[i].def = (spectest_module_def_t *)((char *)env->instances[i].def + delta);
             if (env->instances[i].live) {
                 wah_exec_context_t *ec = &env->instances[i].exec;
-                const char *mp = (const char *)ec->module;
-                if (mp >= (const char *)old_base &&
-                    mp < (const char *)old_base + env->def_count * sizeof(*env->defs)) {
-                    ec->module = (const wah_module_t *)(mp + delta);
-                }
-                for (uint32_t j = 0; j < ec->linked_module_count; j++) {
+                wah_debug_relocate_exec_refs(ec, old_base, env->def_count * sizeof(*env->defs), delta);
+                for (uint32_t j = 0; j < wah_debug_linked_module_count(ec); j++) {
                     const char *p = (const char *)wah_debug_linked_module(ec, j);
                     if (p >= (const char *)old_base &&
                         p < (const char *)old_base + env->def_count * sizeof(*env->defs)) {

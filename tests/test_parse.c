@@ -4,6 +4,7 @@
 
 #include "../wah.h"
 #include "common.h"
+#include "wah_impl.h"
 
 static void test_malformed_code_body_size_wasm() {
     printf("Running test_malformed_code_body_size_wasm...\n");
@@ -909,8 +910,8 @@ static void test_start_function_type() {
         code {[ {[] end } ]}";
     wah_module_t good = {0};
     assert_ok(wah_parse_module_from_spec(&good, good_spec));
-    assert_true(good.has_start_function);
-    assert_eq_u32(good.start_function_idx, 0);
+    assert_true(wah_debug_module_has_start_function(&good));
+    assert_eq_u32(wah_debug_module_start_function_idx(&good), 0);
     wah_free_module(&good);
 
     // Negative: start function with (i32) -> ()

@@ -13,6 +13,30 @@ uint8_t *wah_debug_memory_data(const wah_exec_context_t *ctx, uint32_t mem_idx) 
 uint64_t wah_debug_memory_size(const wah_exec_context_t *ctx, uint32_t mem_idx) {
     return ctx->memories[mem_idx].size;
 }
+uint8_t *wah_debug_exec_memory_base(const wah_exec_context_t *ctx) {
+    return ctx->memory_base;
+}
+uint64_t wah_debug_exec_memory_size(const wah_exec_context_t *ctx) {
+    return ctx->memory_size;
+}
+uint32_t wah_debug_exec_memory_count(const wah_exec_context_t *ctx) {
+    return ctx->memory_count;
+}
+uint32_t wah_debug_exec_global_count(const wah_exec_context_t *ctx) {
+    return ctx->global_count;
+}
+const wah_module_t *wah_debug_exec_module(const wah_exec_context_t *ctx) {
+    return ctx->module;
+}
+bool wah_debug_exec_is_instantiated(const wah_exec_context_t *ctx) {
+    return ctx && ctx->is_instantiated;
+}
+wah_alloc_t wah_debug_exec_alloc(const wah_exec_context_t *ctx) {
+    return ctx ? ctx->alloc : (wah_alloc_t){0};
+}
+void wah_debug_set_exec_alloc(wah_exec_context_t *ctx, wah_alloc_t alloc) {
+    if (ctx) ctx->alloc = alloc;
+}
 
 wah_error_t wah_debug_replace_data_segment_fill(wah_module_t *mod,
     uint32_t data_idx, uint32_t size, uint8_t value)
@@ -25,6 +49,45 @@ wah_error_t wah_debug_replace_data_segment_fill(wah_module_t *mod,
     mod->data_segments[data_idx].data = data;
     mod->data_segments[data_idx].data_len = size;
     return WAH_OK;
+}
+uint32_t wah_debug_module_data_segment_count(const wah_module_t *mod) {
+    return mod ? mod->data_segment_count : 0;
+}
+bool wah_debug_module_has_data_count_section(const wah_module_t *mod) {
+    return mod && mod->has_data_count_section;
+}
+uint32_t wah_debug_module_repr_count(const wah_module_t *mod) {
+    return mod ? mod->repr_count : 0;
+}
+uint32_t wah_debug_module_import_function_count(const wah_module_t *mod) {
+    return mod ? mod->import_function_count : 0;
+}
+uint32_t wah_debug_module_wasm_function_count(const wah_module_t *mod) {
+    return mod ? mod->wasm_function_count : 0;
+}
+uint32_t wah_debug_module_import_global_count(const wah_module_t *mod) {
+    return mod ? mod->import_global_count : 0;
+}
+uint32_t wah_debug_module_local_global_count(const wah_module_t *mod) {
+    return mod ? mod->global_count : 0;
+}
+uint32_t wah_debug_module_import_memory_count(const wah_module_t *mod) {
+    return mod ? mod->import_memory_count : 0;
+}
+uint32_t wah_debug_module_local_memory_count(const wah_module_t *mod) {
+    return mod ? mod->memory_count : 0;
+}
+uint32_t wah_debug_module_import_table_count(const wah_module_t *mod) {
+    return mod ? mod->import_table_count : 0;
+}
+uint32_t wah_debug_module_local_table_count(const wah_module_t *mod) {
+    return mod ? mod->table_count : 0;
+}
+bool wah_debug_module_has_start_function(const wah_module_t *mod) {
+    return mod && mod->has_start_function;
+}
+uint32_t wah_debug_module_start_function_idx(const wah_module_t *mod) {
+    return mod ? mod->start_function_idx : 0;
 }
 
 uint64_t wah_debug_table_size(const wah_exec_context_t *ctx, uint32_t tbl_idx) {
@@ -107,6 +170,24 @@ bool wah_debug_type_is_exnref(const wah_module_t *mod, wah_type_t type) {
     return wah_type_is_subtype(type, WAH_TYPE_EXNREF, mod);
 }
 
+bool wah_debug_has_type_check_cache_entry(const wah_exec_context_t *ctx,
+    const wah_module_t *sub_module, wah_type_t sub_type,
+    const wah_module_t *sup_module, wah_type_t sup_type,
+    bool is_subtype)
+{
+    if (!ctx || !ctx->type_check_cache) return false;
+    for (uint32_t i = 0; i < WAH_TYPE_CHECK_CACHE_SIZE; ++i) {
+        const wah_type_check_cache_entry_t *entry = &ctx->type_check_cache[i];
+        if (entry->valid &&
+            entry->sub_module == sub_module && entry->sub_type == sub_type &&
+            entry->sup_module == sup_module && entry->sup_type == sup_type &&
+            entry->is_subtype == is_subtype) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void wah_debug_free_exnref(wah_exec_context_t *ctx, void *ref) {
     wah_exception_free(ctx, (wah_exception_t *)ref);
 }
@@ -114,6 +195,10 @@ void wah_debug_free_exnref(wah_exec_context_t *ctx, void *ref) {
 const wah_module_t *wah_debug_linked_module(const wah_exec_context_t *ctx, uint32_t i) {
     if (i >= ctx->linked_module_count) return NULL;
     return ctx->linked_modules[i].module;
+}
+
+uint32_t wah_debug_linked_module_count(const wah_exec_context_t *ctx) {
+    return ctx ? ctx->linked_module_count : 0;
 }
 
 const wah_exec_context_t *wah_debug_linked_ctx(const wah_exec_context_t *ctx, uint32_t i) {
@@ -140,7 +225,10 @@ static wah_exec_context_t *relocate_ctx_ptr(wah_exec_context_t *p, void *old_bas
 
 void wah_debug_relocate_exec_refs(wah_exec_context_t *ctx, void *old_base, size_t byte_size, ptrdiff_t delta) {
     if (!ctx || !old_base || byte_size == 0 || delta == 0) return;
+    ctx->module = (const wah_module_t *)relocate_ctx_ptr((wah_exec_context_t *)ctx->module, old_base, byte_size, delta);
     for (uint32_t i = 0; i < ctx->linked_module_count; i++) {
+        ctx->linked_modules[i].module =
+            (const wah_module_t *)relocate_ctx_ptr((wah_exec_context_t *)ctx->linked_modules[i].module, old_base, byte_size, delta);
         ctx->linked_modules[i].ctx = relocate_ctx_ptr(ctx->linked_modules[i].ctx, old_base, byte_size, delta);
     }
     for (uint32_t i = 0; i < ctx->function_table_count; i++) {

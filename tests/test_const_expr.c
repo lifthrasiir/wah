@@ -4,6 +4,7 @@
 
 #include "../wah.h"
 #include "common.h"
+#include "wah_impl.h"
 
 // Test 1: Simple const expression (i32.const)
 void test_simple_const(void) {
@@ -52,9 +53,9 @@ void test_binary_op(void) {
     assert_ok(wah_instantiate(&ctx));
 
     // Check that all globals are initialized correctly
-    assert_eq_i32(ctx.globals[0].i32, 10);
-    assert_eq_i32(ctx.globals[1].i32, 32);
-    assert_eq_i32(ctx.globals[2].i32, 50);
+    assert_eq_i32(wah_debug_global_value(&ctx, &module, 0).i32, 10);
+    assert_eq_i32(wah_debug_global_value(&ctx, &module, 1).i32, 32);
+    assert_eq_i32(wah_debug_global_value(&ctx, &module, 2).i32, 50);
 
     wah_exec_context_destroy(&ctx);
     wah_free_module(&module);
@@ -81,8 +82,8 @@ void test_global_get(void) {
     assert_ok(wah_instantiate(&ctx));
 
     // global[1] should have the value of global[0]
-    assert_eq_i32(ctx.globals[0].i32, 100);
-    assert_eq_i32(ctx.globals[1].i32, 100);
+    assert_eq_i32(wah_debug_global_value(&ctx, &module, 0).i32, 100);
+    assert_eq_i32(wah_debug_global_value(&ctx, &module, 1).i32, 100);
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
@@ -114,9 +115,9 @@ void test_complex_const_expr(void) {
     assert_ok(wah_instantiate(&ctx));
 
     // global[2] should be global[0] + global[1] = 10 + 32 = 42
-    assert_eq_i32(ctx.globals[0].i32, 10);
-    assert_eq_i32(ctx.globals[1].i32, 32);
-    assert_eq_i32(ctx.globals[2].i32, 42);
+    assert_eq_i32(wah_debug_global_value(&ctx, &module, 0).i32, 10);
+    assert_eq_i32(wah_debug_global_value(&ctx, &module, 1).i32, 32);
+    assert_eq_i32(wah_debug_global_value(&ctx, &module, 2).i32, 42);
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));

@@ -169,9 +169,9 @@ int main(void) {
         assert_ok(wah_module_export_global_i32(&mod, "g1", false, 1));
         assert_ok(wah_module_export_global_i64(&mod, "g2", true, 2));
 
-        assert_eq_u32(mod.export_count, 3);
-        assert_eq_u32(mod.memory_count, 1);
-        assert_eq_u32(mod.global_count, 2);
+        assert_eq_u32(wah_module_export_count(&mod), 3);
+        assert_eq_u32(wah_module_memory_count(&mod), 1);
+        assert_eq_u32(wah_module_global_count(&mod), 2);
 
         wah_free_module(&mod);
     }

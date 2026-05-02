@@ -42,9 +42,9 @@ void wah_test_data_and_bulk_memory_ops() {
 
     // Test 1: Parse module using DSL
     assert_ok(wah_parse_module_from_spec(&module, wasm_data_and_bulk_memory_spec));
-    assert_eq_u32(module.memory_count, 1);
-    assert_eq_u32(module.data_segment_count, 2);
-    assert_true(module.has_data_count_section == true);
+    assert_eq_u32(wah_module_memory_count(&module), 1);
+    assert_eq_u32(wah_debug_module_data_segment_count(&module), 2);
+    assert_true(wah_debug_module_has_data_count_section(&module));
 
     // Test 2: Create and instantiate execution context
     assert_ok(wah_exec_context_create(&ctx, &module, NULL));
@@ -164,7 +164,7 @@ void test_memory_api() {
             {[] local.get 0 i32.load align=4 offset=0 end}, \
         ]}";
     assert_ok(wah_parse_module_from_spec(&module, wasm_memory_spec));
-    assert_eq_u32(module.memory_count, 1);
+    assert_eq_u32(wah_module_memory_count(&module), 1);
     { wah_memory_desc_t md; assert_ok(wah_module_memory(&module, 0, &md)); assert_eq_u64(md.min_pages, 1); }
 
     // Test 2: Create execution context
@@ -253,7 +253,7 @@ void test_memory_ops() {
             {[] local.get 0 local.get 1 local.get 2 memory.fill 0 end}, \
         ]}";
     assert_ok(wah_parse_module_from_spec(&module, wasm_memory_spec_2));
-    assert_eq_u32(module.memory_count, 1);
+    assert_eq_u32(wah_module_memory_count(&module), 1);
     { wah_memory_desc_t md; assert_ok(wah_module_memory(&module, 0, &md));
       assert_eq_u64(md.min_pages, 1); assert_eq_u64(md.max_pages, 2); }
 
@@ -352,17 +352,17 @@ void test_multiple_memories() {
         ]}";
 
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_eq_u32(module.memory_count, 2);
+    assert_eq_u32(wah_module_memory_count(&module), 2);
 
     assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_true(wah_debug_memory_data(&ctx, 0) != NULL);
     assert_true(wah_debug_memory_data(&ctx, 1) != NULL);
-    assert_eq_u32(ctx.memory_count, 2);
+    assert_eq_u32(wah_debug_exec_memory_count(&ctx), 2);
     assert_eq_u64(wah_debug_memory_size(&ctx, 0), wah_debug_wasm_page_size());
     assert_eq_u64(wah_debug_memory_size(&ctx, 1), wah_debug_wasm_page_size());
     // memory_base/memory_size must be aliases to memory 0
-    assert_true(ctx.memory_base == wah_debug_memory_data(&ctx, 0));
-    assert_eq_u64(ctx.memory_size, wah_debug_memory_size(&ctx, 0));
+    assert_true(wah_debug_exec_memory_base(&ctx) == wah_debug_memory_data(&ctx, 0));
+    assert_eq_u64(wah_debug_exec_memory_size(&ctx), wah_debug_memory_size(&ctx, 0));
 
     // Test 1: store to memory 0, verify memory 1 is unaffected
     params[0].i32 = 100; params[1].i32 = 0xAABBCCDD;
@@ -408,7 +408,7 @@ void test_multiple_memories() {
     // Test 8: memory.size 1 after grow
     assert_ok(wah_call(&ctx, 5, NULL, 0, &result));
     assert_eq_i32(result.i32, 2);
-    assert_eq_u64(ctx.memory_size, wah_debug_wasm_page_size()); // memory_base alias unchanged
+    assert_eq_u64(wah_debug_memory_size(&ctx, 0), wah_debug_wasm_page_size()); // memory 0 unchanged
 
     // Test 9: memory.copy from memory 1 to memory 0
     // copy1to0(dst_in_mem0, src_in_mem1, n)
@@ -456,8 +456,8 @@ void test_multiple_memories_data_segment() {
         ]}";
 
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_eq_u32(module.memory_count, 2);
-    assert_eq_u32(module.data_segment_count, 2);
+    assert_eq_u32(wah_module_memory_count(&module), 2);
+    assert_eq_u32(wah_debug_module_data_segment_count(&module), 2);
 
     assert_ok(wah_exec_context_create(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));

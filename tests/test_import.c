@@ -35,9 +35,9 @@ static void test_basic_import_resolution(void) {
 
     assert_ok(make_env_module(&env_mod));
     assert_ok(wah_parse_module_from_spec(&wasm_mod, k_import_spec));
-    assert_eq_u32(wasm_mod.import_function_count, 1);
+    assert_eq_u32(wah_debug_module_import_function_count(&wasm_mod), 1);
     printf("  import_function_count=%u  wasm_function_count=%u\n",
-           wasm_mod.import_function_count, wasm_mod.wasm_function_count);
+           wah_debug_module_import_function_count(&wasm_mod), wah_debug_module_wasm_function_count(&wasm_mod));
 
     assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &env_mod));
@@ -132,7 +132,7 @@ static void test_no_imports_unchanged(void) {
         code {[ {[] local.get 0 local.get 1 i32.add end} ]} \
     ";
     assert_ok(wah_parse_module_from_spec(&mod, wasm_spec));
-    assert_eq_u32(mod.import_function_count, 0);
+    assert_eq_u32(wah_debug_module_import_function_count(&mod), 0);
     assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
 
     wah_export_desc_t entry;
@@ -166,8 +166,8 @@ static void test_global_import_i32(void) {
 
     wah_module_t wasm_mod = {0};
     assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
-    assert_eq_u32(wasm_mod.import_global_count, 1);
-    assert_eq_u32(wasm_mod.global_count, 0);
+    assert_eq_u32(wah_debug_module_import_global_count(&wasm_mod), 1);
+    assert_eq_u32(wah_debug_module_local_global_count(&wasm_mod), 0);
 
     wah_exec_context_t ctx = {0};
     assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
@@ -245,8 +245,8 @@ static void test_global_import_with_local_globals(void) {
 
     wah_module_t wasm_mod = {0};
     assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
-    assert_eq_u32(wasm_mod.import_global_count, 1);
-    assert_eq_u32(wasm_mod.global_count, 1);
+    assert_eq_u32(wah_debug_module_import_global_count(&wasm_mod), 1);
+    assert_eq_u32(wah_debug_module_local_global_count(&wasm_mod), 1);
 
     wah_exec_context_t ctx = {0};
     assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
@@ -310,8 +310,8 @@ static void test_memory_import(void) {
 
     wah_module_t wasm_mod = {0};
     assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
-    assert_eq_u32(wasm_mod.import_memory_count, 1);
-    assert_eq_u32(wasm_mod.memory_count, 0);
+    assert_eq_u32(wah_debug_module_import_memory_count(&wasm_mod), 1);
+    assert_eq_u32(wah_debug_module_local_memory_count(&wasm_mod), 0);
 
     wah_exec_context_t ctx = {0};
     assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
@@ -381,8 +381,8 @@ static void test_table_import(void) {
 
     wah_module_t wasm_mod = {0};
     assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
-    assert_eq_u32(wasm_mod.import_table_count, 1);
-    assert_eq_u32(wasm_mod.table_count, 0);
+    assert_eq_u32(wah_debug_module_import_table_count(&wasm_mod), 1);
+    assert_eq_u32(wah_debug_module_local_table_count(&wasm_mod), 0);
 
     wah_exec_context_t ctx = {0};
     assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
@@ -456,9 +456,9 @@ static void test_mixed_imports(void) {
 
     wah_module_t wasm_mod = {0};
     assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
-    assert_eq_u32(wasm_mod.import_function_count, 1);
-    assert_eq_u32(wasm_mod.import_global_count, 1);
-    assert_eq_u32(wasm_mod.import_memory_count, 1);
+    assert_eq_u32(wah_debug_module_import_function_count(&wasm_mod), 1);
+    assert_eq_u32(wah_debug_module_import_global_count(&wasm_mod), 1);
+    assert_eq_u32(wah_debug_module_import_memory_count(&wasm_mod), 1);
 
     wah_exec_context_t ctx = {0};
     assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
