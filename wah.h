@@ -14,6 +14,13 @@
 #include <math.h>
 #include <stdarg.h>
 
+// Macro: WAH_FORCE_PORTABLE [user-definable]
+//   If defined, forces the interpreter to use portable C implementations
+//   instead of platform-specific SIMD instructions.
+//
+// Macro: WAH_X86_64
+// Macro: WAH_AARCH64
+//   Defined automatically based on compiler macros if WAH_FORCE_PORTABLE is not defined.
 #ifndef WAH_FORCE_PORTABLE
 #if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
 #define WAH_X86_64
@@ -24,9 +31,16 @@
 #endif
 #endif
 
-// Assertions are only used for always-true conditions as a correctness check.
-// Any possible runtime error should be checked with WAH_ENSURE etc. instead.
-// Exception: Public interfaces without wah_error_t return type may use WAH_ASSERT as a last resort.
+// Macro: WAH_DEBUG [user-definable]
+//   If defined, enables internal correctness checks and debug logging.
+//
+// Macro: WAH_ASSERT(cond) [user-definable]
+//   Assertion macro for internal correctness checks. Enabled when WAH_DEBUG is defined.
+//   Can also be overriden to integrate with the user's logging/assertion system.
+//
+//   Assertions are only used for always-true conditions as a correctness check.
+//   Any possible runtime error should be checked with WAH_ENSURE etc. instead.
+//   Exception: Public interfaces without wah_error_t return type may use WAH_ASSERT as a last resort.
 #ifndef WAH_ASSERT
 #ifdef WAH_DEBUG
 #define WAH_ASSERT(cond) assert(cond)
@@ -35,9 +49,32 @@
 #endif
 #endif
 
-// Macro: WAH_ALIGNAS(N) [user-definable]
-//   C99-compatible alias of `_Alignas` or `alignas` keyword. Can be overriden.
-#ifndef WAH_ALIGNAS
+// Macro: WAH_HAS_BUILTIN(x)
+//   If evaluates to true, the compiler definitely supports the builtin function `__builtin_x`.
+#ifdef __has_builtin
+#define WAH_HAS_BUILTIN(x) __has_builtin(x)
+#else
+#define WAH_HAS_BUILTIN(x) 0
+#endif
+
+// Macro: WAH_HAS_FEATURE(x)
+//   If evaluates to true, the compiler definitely supports the feature named as `x` as named by Clang.
+#ifdef __has_feature
+#define WAH_HAS_FEATURE(x) __has_feature(x)
+#else
+#define WAH_HAS_FEATURE(x) 0
+#endif
+
+// Macro: WAH_HAS_ATTRIBUTE(x)
+//   If evaluates to true, the compiler definitely supports `__attribute__((x))` or `[[x]]`.
+#ifdef __has_attribute
+#define WAH_HAS_ATTRIBUTE(x) __has_attribute(x)
+#else
+#define WAH_HAS_ATTRIBUTE(x) 0
+#endif
+
+// Macro: WAH_ALIGNAS(N)
+//   C99-compatible alias of `_Alignas` or `alignas` keyword.
 #if defined(__cplusplus) && __cplusplus >= 201103L
 #define WAH_ALIGNAS(N) alignas(N)
 #elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
@@ -49,16 +86,13 @@
 #else
 #define WAH_ALIGNAS(N)
 #endif
-#endif
 
-// Macro: WAH_ALIGNOF(T) [user-definable]
-//   C99-compatible alias of `_Alignof` or `alignof` operator. Can be overriden.
-#ifndef WAH_ALIGNOF
+// Macro: WAH_ALIGNOF(T)
+//   C99-compatible alias of `_Alignof` or `alignof` operator.
 #if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 #define WAH_ALIGNOF(T) _Alignof(T)
 #else
 #define WAH_ALIGNOF(T) offsetof(struct { char c; T t; }, t)
-#endif
 #endif
 
 // Enum: wah_error_t
@@ -87,18 +121,33 @@ typedef enum {
     WAH_STATUS_YIELDED = 3,                // Execution yielded by interrupt, can be resumed
 } wah_error_t;
 
+// Enum: wah_exec_state_t
+//   Execution state of given module instance.
 typedef enum {
-    WAH_EXEC_READY = 0,
-    WAH_EXEC_RUNNING,
-    WAH_EXEC_SUSPENDED,
-    WAH_EXEC_FINISHED,
-    WAH_EXEC_TRAPPED,
+    WAH_EXEC_READY = 0,  // Ready to start execution
+    WAH_EXEC_RUNNING,    // Execution on the way
+    WAH_EXEC_SUSPENDED,  // Execution suspended by interrupt or fuel exhausted, can be resumed
+    WAH_EXEC_FINISHED,   // Execution finished, ready to start another execution
+    WAH_EXEC_TRAPPED,    // Execution trapped
 } wah_exec_state_t;
 
+// Struct: wah_alloc_t
+//   Custom allocator interface.
 typedef struct {
+    // Field: malloc
+    //   Should allocate and return a block of memory of at least the given size,
+    //   or return NULL on failure. `size` is guaranteed to be non-zero.
     void *(*malloc)(size_t size, void *userdata);
+    // Field: realloc
+    //   Should resize the given memory block to at least the given size,
+    //   or return NULL on failure without deallocating the original block.
+    //   `ptr` is guaranteed to be non-NULL and `size` is guaranteed to be non-zero.
     void *(*realloc)(void *ptr, size_t size, void *userdata);
+    // Field: free
+    //   Should deallocate the given memory block. `ptr` is guaranteed to be non-NULL.
     void (*free)(void *ptr, void *userdata);
+    // Field: userdata
+    //   Will be passed to the malloc/realloc/free functions.
     void *userdata;
 } wah_alloc_t;
 
@@ -124,7 +173,7 @@ typedef union {
 
     // Field: ref
     //   Can hold any reference type (funcref, externref, structref, arrayref, exnref, ...).
-    //   Pointers returned by `wah_gc_alloc` are always valid externrefs or anyrefs.
+    //   Pointers returned by `wah_gc_alloc_host` are always valid externrefs or anyrefs.
     //   Other types have private representations and shouldn't be directly used.
     void* ref;
 
@@ -139,42 +188,45 @@ typedef union {
 #endif
 } wah_value_t;
 
+// Typedef: wah_type_t
+//   Compact type representation. Non-negative values are type indices;
+//   negative values are built-in types (based on their binary encodings).
+//   Even values are non-nullable, odd values are nullable (for ref types).
 typedef int32_t wah_type_t;
 
-// Value types (non-ref, always even, never nullable)
-#define WAH_TYPE_I32        -2
-#define WAH_TYPE_I64        -4
-#define WAH_TYPE_F32        -6
-#define WAH_TYPE_F64        -8
-#define WAH_TYPE_V128       -10
-#define WAH_TYPE_PACKED_I8  -16
-#define WAH_TYPE_PACKED_I16 -18
-
-// Ref types: even = (ref ht), odd = (ref null ht)
-#define WAH_TYPE_FUNC          -32
-#define WAH_TYPE_FUNCREF       -31
-#define WAH_TYPE_EXTERN        -34
-#define WAH_TYPE_EXTERNREF     -33
-#define WAH_TYPE_ANY           -36
-#define WAH_TYPE_ANYREF        -35
-#define WAH_TYPE_EQ            -38
-#define WAH_TYPE_EQREF         -37
-#define WAH_TYPE_I31           -40
-#define WAH_TYPE_I31REF        -39
-#define WAH_TYPE_STRUCT        -42
-#define WAH_TYPE_STRUCTREF     -41
-#define WAH_TYPE_ARRAY         -44
-#define WAH_TYPE_ARRAYREF      -43
-#define WAH_TYPE_EXN           -46
-#define WAH_TYPE_EXNREF        -45
-#define WAH_TYPE_NOFUNC        -48
-#define WAH_TYPE_NULLFUNCREF   -47
-#define WAH_TYPE_NOEXTERN      -50
-#define WAH_TYPE_NULLEXTERNREF -49
-#define WAH_TYPE_NONE          -52
-#define WAH_TYPE_NULLREF       -51
-#define WAH_TYPE_NOEXN         -54
-#define WAH_TYPE_NULLEXNREF    -53
+// Macros: WAH_TYPE_*
+//   Built-in type values. Any other negative values are reserved.
+#define WAH_TYPE_I32           -2   // i32
+#define WAH_TYPE_I64           -4   // i64
+#define WAH_TYPE_F32           -6   // f32
+#define WAH_TYPE_F64           -8   // f64
+#define WAH_TYPE_V128          -10  // v128
+#define WAH_TYPE_PACKED_I8     -16  // i8 (packed only)
+#define WAH_TYPE_PACKED_I16    -18  // i16 (packed only)
+#define WAH_TYPE_FUNC          -32  // (ref func)
+#define WAH_TYPE_FUNCREF       -31  // (ref null func) = funcref
+#define WAH_TYPE_EXTERN        -34  // (ref extern)
+#define WAH_TYPE_EXTERNREF     -33  // (ref null extern) = externref
+#define WAH_TYPE_ANY           -36  // (ref any)
+#define WAH_TYPE_ANYREF        -35  // (ref null any) = anyref
+#define WAH_TYPE_EQ            -38  // (ref eq)
+#define WAH_TYPE_EQREF         -37  // (ref null eq) = eqref
+#define WAH_TYPE_I31           -40  // (ref i31)
+#define WAH_TYPE_I31REF        -39  // (ref null i31) = i31ref
+#define WAH_TYPE_STRUCT        -42  // (ref struct)
+#define WAH_TYPE_STRUCTREF     -41  // (ref null struct) = structref
+#define WAH_TYPE_ARRAY         -44  // (ref array)
+#define WAH_TYPE_ARRAYREF      -43  // (ref null array) = arrayref
+#define WAH_TYPE_EXN           -46  // (ref exn)
+#define WAH_TYPE_EXNREF        -45  // (ref null exn) = exnref
+#define WAH_TYPE_NOFUNC        -48  // (ref nofunc)
+#define WAH_TYPE_NULLFUNCREF   -47  // (ref null nofunc) = nullfuncref
+#define WAH_TYPE_NOEXTERN      -50  // (ref noextern)
+#define WAH_TYPE_NULLEXTERNREF -49  // (ref null noextern) = nullexternref
+#define WAH_TYPE_NONE          -52  // (ref none)
+#define WAH_TYPE_NULLREF       -51  // (ref null none) = nullref
+#define WAH_TYPE_NOEXN         -54  // (ref noexn)
+#define WAH_TYPE_NULLEXNREF    -53  // (ref null noexn) = nullexnref
 
 #define WAH_TYPE_IS_NULLABLE(t)    ((t) & 1)
 #define WAH_TYPE_AS_NULLABLE(t)    ((t) | 1)
@@ -188,30 +240,112 @@ typedef int32_t wah_type_t;
 #define WAH_TYPE_IS_EXTERNREF(t) ((t) == WAH_TYPE_EXTERNREF || (t) == WAH_TYPE_EXTERN)
 #define WAH_TYPE_IS_REF(t)      (((t) <= -31 && (t) >= -54) || (t) >= 0)
 
+// Typedef: wah_features_t
+//   Bitmap of supported WebAssembly features. See WAH_FEATURE_* macros below.
 typedef uint64_t wah_features_t;
 
-#define WAH_FEATURE_MVP              UINT64_C(0)
-#define WAH_FEATURE_MULTI_VALUE      (UINT64_C(1) << 0)
-#define WAH_FEATURE_MUTABLE_GLOBALS  (UINT64_C(1) << 1)
-#define WAH_FEATURE_SIGN_EXT         (UINT64_C(1) << 2)
-#define WAH_FEATURE_NONTRAPPING_F2I  (UINT64_C(1) << 3)
-#define WAH_FEATURE_BULK_MEMORY      (UINT64_C(1) << 4)
-#define WAH_FEATURE_REF_TYPES        (UINT64_C(1) << 5)
-#define WAH_FEATURE_SIMD             (UINT64_C(1) << 6)
-#define WAH_FEATURE_TAIL_CALL        (UINT64_C(1) << 7)
-#define WAH_FEATURE_EXCEPTION        (UINT64_C(1) << 8)
-#define WAH_FEATURE_GC               (UINT64_C(1) << 9)
-#define WAH_FEATURE_TYPED_FUNCREF    (UINT64_C(1) << 10)
-#define WAH_FEATURE_MEMORY64         (UINT64_C(1) << 11)
-#define WAH_FEATURE_RELAXED_SIMD     (UINT64_C(1) << 12)
+// Macros: WAH_FEATURE_*
+//   Bit flags for supported WebAssembly proposals.
+#define WAH_FEATURE_MULTI_VALUE      (UINT64_C(1) << 0)   // Multi-value (2.0)
+#define WAH_FEATURE_MUTABLE_GLOBALS  (UINT64_C(1) << 1)   // Mutable globals (2.0)
+#define WAH_FEATURE_SIGN_EXT         (UINT64_C(1) << 2)   // Sign-extension operators (2.0)
+#define WAH_FEATURE_NONTRAPPING_F2I  (UINT64_C(1) << 3)   // Non-trapping float-to-int conversions (2.0)
+#define WAH_FEATURE_BULK_MEMORY      (UINT64_C(1) << 4)   // Bulk memory operations (2.0)
+#define WAH_FEATURE_REF_TYPES        (UINT64_C(1) << 5)   // Reference types (2.0)
+#define WAH_FEATURE_SIMD             (UINT64_C(1) << 6)   // 128-bit SIMD (2.0)
+#define WAH_FEATURE_TAIL_CALL        (UINT64_C(1) << 7)   // Tail calls (3.0)
+#define WAH_FEATURE_EXCEPTION        (UINT64_C(1) << 8)   // Exception handling (3.0)
+#define WAH_FEATURE_GC               (UINT64_C(1) << 9)   // GC (3.0)
+#define WAH_FEATURE_TYPED_FUNCREF    (UINT64_C(1) << 10)  // Typed funcrefs (3.0)
+#define WAH_FEATURE_MEMORY64         (UINT64_C(1) << 11)  // Memory64 & table64 (3.0)
+#define WAH_FEATURE_RELAXED_SIMD     (UINT64_C(1) << 12)  // Relaxed SIMD (3.0)
 
+// Macro: WAH_FEATURE_MVP
+//   WebAssembly 1.0 (MVP) features. Cannot be disabled, hence zero.
+#define WAH_FEATURE_MVP UINT64_C(0)
+// Macro: WAH_FEATURE_WASM_V2
+//   WebAssembly 2.0 features.
 #define WAH_FEATURE_WASM_V2 ( \
     WAH_FEATURE_MULTI_VALUE | WAH_FEATURE_MUTABLE_GLOBALS | WAH_FEATURE_SIGN_EXT | \
     WAH_FEATURE_NONTRAPPING_F2I | WAH_FEATURE_BULK_MEMORY | WAH_FEATURE_REF_TYPES | WAH_FEATURE_SIMD)
+// Macro: WAH_FEATURE_WASM_V3
+//   WebAssembly 3.0 features.
 #define WAH_FEATURE_WASM_V3 ( \
     WAH_FEATURE_WASM_V2 | WAH_FEATURE_TAIL_CALL | WAH_FEATURE_EXCEPTION | \
     WAH_FEATURE_GC | WAH_FEATURE_TYPED_FUNCREF | WAH_FEATURE_MEMORY64 | WAH_FEATURE_RELAXED_SIMD)
+// Macro: WAH_FEATURE_ALL
+//   A bitmap containing every supported feature.
 #define WAH_FEATURE_ALL WAH_FEATURE_WASM_V3
+
+// Macro: WAH_COMPILED_FEATURES [user-definable, default = WAH_FEATURE_ALL]
+//   If set, restricts the compiled interpreter to only support the specified features.
+#ifndef WAH_COMPILED_FEATURES
+#define WAH_COMPILED_FEATURES WAH_FEATURE_ALL
+#endif
+
+// Macro: WAH_DEFAULT_FEATURES [user-definable, default = WAH_COMPILED_FEATURES]
+//   If set, specifies the default enabled features for parsing and execution when not explicitly specified.
+#ifndef WAH_DEFAULT_FEATURES
+#define WAH_DEFAULT_FEATURES WAH_COMPILED_FEATURES
+#endif
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_RELAXED_SIMD) && !((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
+#error "WAH_FEATURE_RELAXED_SIMD requires WAH_FEATURE_SIMD"
+#endif
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC) && !((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
+#error "WAH_FEATURE_GC requires WAH_FEATURE_REF_TYPES"
+#endif
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF) && !((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
+#error "WAH_FEATURE_TYPED_FUNCREF requires WAH_FEATURE_REF_TYPES"
+#endif
+
+// Macro: WAH_FORCE_MUSTTAIL [user-definable]
+// Macro: WAH_FORCE_COMPUTED_GOTO [user-definable]
+// Macro: WAH_FORCE_SWITCH [user-definable]
+//   If one of these is defined, forces the interpreter to use the corresponding dispatch method.
+//   The interpreter otherwise tries the first dispatch scheme available for given compiler.
+//   It is a undefined behavior that more than one of these macros are defined.
+//
+// Macro: WAH_USE_MUSTTAIL
+//   Defined if the interpreter is using guaranteed tail call dispatch.
+//   Available since GCC 15 and Clang 13. At least as fast as the computed goto dispatch.
+//
+// Macro: WAH_USE_COMPUTED_GOTO
+//   Defined if the interpreter is using computed goto dispatch.
+//   Available on GCC and Clang, but not MSVC. Much faster than the switch-based portable dispatch.
+#ifdef WAH_FORCE_SWITCH
+// Force switch-based dispatch; skip musttail and computed goto.
+#elif defined(WAH_FORCE_MUSTTAIL)
+#define WAH_USE_MUSTTAIL
+#elif WAH_HAS_ATTRIBUTE(musttail)
+#define WAH_USE_MUSTTAIL // clang 13+, GCC 15+
+#endif
+#if !defined(WAH_FORCE_SWITCH)
+#ifdef WAH_FORCE_COMPUTED_GOTO
+#define WAH_USE_COMPUTED_GOTO
+#elif defined(__GNUC__) || defined(__clang__)
+#define WAH_USE_COMPUTED_GOTO
+#endif
+#endif
+
+// Macro: WAH_BULK_CHECK_INTERVAL [user-definable, default = 16777216]
+//   How many items have to be processed in a bulk operation (e.g. memory.copy, table.init)
+//   before checking for fuel exhaustion and interrupts.
+//
+//   Fuel metering is still accurately done regardless of this interval, but higher values
+//   may cause longer stalls on interrupts while lower values may cause more overhead
+//   from checking too frequently. The default targets the interval around 1--10 milliseconds.
+#ifndef WAH_BULK_CHECK_INTERVAL
+#define WAH_BULK_CHECK_INTERVAL (1u << 24)
+#endif
+
+// Macro: WAH_BULK_ITEMS_PER_FUEL [user-definable, default = 4096]
+//   When fuel metering is enabled, determines how many items can be processed per unit fuel
+//   in bulk operations (e.g. memory.copy, table.init and so on).
+//   This prevents excessively long opcode execution without consuming any fuel.
+#ifndef WAH_BULK_ITEMS_PER_FUEL
+#define WAH_BULK_ITEMS_PER_FUEL 4096
+#endif
 
 typedef enum {
     WAH_COMP_FUNC   = 0x60,
@@ -219,12 +353,16 @@ typedef enum {
     WAH_COMP_ARRAY  = 0x5E,
 } wah_comp_type_kind_t;
 
-#define WAH_KIND_FUNCTION 0
-#define WAH_KIND_TABLE    1
-#define WAH_KIND_MEMORY   2
-#define WAH_KIND_GLOBAL   3
-#define WAH_KIND_TAG      4
+// Macros: WAH_KIND_*
+//   The entity kind of specific import or export.
+#define WAH_KIND_FUNCTION 0  // Imported or exported function
+#define WAH_KIND_TABLE    1  // Imported or exported table
+#define WAH_KIND_MEMORY   2  // Imported or exported memory
+#define WAH_KIND_GLOBAL   3  // Imported or exported global
+#define WAH_KIND_TAG      4  // Imported or exported tag
 
+// Struct: wah_type_desc_t
+//   Describes a defined type.
 typedef struct {
     wah_comp_type_kind_t kind;
     bool is_final;
@@ -238,43 +376,99 @@ typedef struct {
     const bool *field_mutables;
 } wah_type_desc_t;
 
+// Struct: wah_func_desc_t
+//   Describes a defined or imported function.
 typedef struct {
     bool is_import;
     bool is_host;
     uint32_t type_index;
+    // Field: param_count
+    // Field: result_count
+    //   The number of parameters and results of the function type.
     uint32_t param_count, result_count;
+    // Field: param_types [borrowed]
+    // Field: result_types [borrowed]
+    //   The parameter and result types of the function type.
     const wah_type_t *param_types, *result_types;
 } wah_func_desc_t;
 
+// Struct: wah_global_desc_t
+//   Describes a defined or imported global variable.
 typedef struct {
+    // Field: type
+    //   The type of the global variable.
     wah_type_t type;
+    // Field: is_mutable
+    //   Set to true if the global variable is mutable.
     bool is_mutable;
 } wah_global_desc_t;
 
+// Struct: wah_memory_desc_t
+//   Describes a defined or imported linear memory.
 typedef struct {
+    // Field: addr_type
+    //   The address type of the memory, either WAH_TYPE_I32 or WAH_TYPE_I64.
     wah_type_t addr_type;
+    // Field: min_pages
+    // Field: max_pages
+    //   The initial and maximum size of the memory in WebAssembly pages (64KiB each).
+    //   For `max_pages`, UINT64_MAX means no maximum limit.
     uint64_t min_pages, max_pages;
 } wah_memory_desc_t;
 
+// Struct: wah_table_desc_t
+//   Describes a defined or imported table.
 typedef struct {
+    // Field: elem_type
+    //   The type of elements in the table.
     wah_type_t elem_type;
+    // Field: addr_type
+    //   The address type of the table, either WAH_TYPE_I32 or WAH_TYPE_I64.
     wah_type_t addr_type;
+    // Field: min_elements
+    // Field: max_elements
+    //   The initial and maximum number of elements in the table.
+    //   For `max_elements`, UINT64_MAX means no maximum limit.
     uint64_t min_elements, max_elements;
 } wah_table_desc_t;
 
+// Struct: wah_tag_desc_t
+//   Describes a defined or imported tag.
 typedef struct {
+    // Field: type_index
+    //   The index of function that mirrors the tag type.
     uint32_t type_index;
+    // Field: param_count
+    //   The number of parameters of the tag type.
     uint32_t param_count;
+    // Field: param_types [borrowed]
+    //   The parameter types of the tag type.
     const wah_type_t *param_types;
 } wah_tag_desc_t;
 
+// Struct: wah_import_desc_t
+//   Describes an imported entity (function, table, memory, global or tag).
 typedef struct {
+    // Field: kind
+    //   The kind of the imported entity, one of WAH_KIND_* macros.
     uint8_t kind;
+    // Field: index
+    //   The index of the imported entity.
     uint32_t index;
+    // Field: module [borrowed]
+    //   The zero-terminated name of the module from which the entity is imported.
     const char *module;
+    // Field: module_len
+    //   The length of the module name.
     size_t module_len;
+    // Field: name [borrowed]
+    //   The zero-terminated name of the entity to import.
     const char *name;
+    // Field: name_len
+    //   The length of the entity name.
     size_t name_len;
+    // Field: u
+    //   Contains one of wah_*_desc_t types depending on the `kind`.
     union wah_extern_desc_u {
         wah_func_desc_t func;
         wah_table_desc_t table;
@@ -284,29 +478,60 @@ typedef struct {
     } u;
 } wah_import_desc_t;
 
+// Struct: wah_export_desc_t
+//   Describes an exported entity (function, table, memory, global or tag).
 typedef struct {
+    // Field: kind
+    //   The kind of the exported entity, one of WAH_KIND_* macros.
     uint8_t kind;
+    // Field: index
+    //   The index of the exported entity.
     uint32_t index;
+    // Field: name [borrowed]
+    //   The zero-terminated name of the entity to export.
     const char *name;
+    // Field: name_len
+    //   The length of the entity name.
     size_t name_len;
+    // Field: u
+    //   Contains one of wah_*_desc_t types depending on the `kind`.
     union wah_extern_desc_u u;
 } wah_export_desc_t;
 
-// Opaque call context for host functions.
+// Struct: wah_call_context_t
+//   The context available to host functions when they are called.
 typedef struct wah_call_context_s wah_call_context_t;
 
-// Host function types
+// Typedef: wah_func_t
+//   Host can define a function of this type and export it to WebAssembly as a host function.
 //
-// GC host boundary policy: GC-managed references passed to host functions
-// (via params or accessible through the exec context) are valid only for the
-// duration of the host call. Host code must NOT retain pointers to managed
-// objects after returning. Violating this policy causes undefined behavior
-// when the GC relocates or frees the referenced object.
+//   - ctx [in, borrowed]: Pointer to a `wah_call_context_t` struct for interacting
+//     with the current execution. Valid only for the duration of the host call.
+//   - userdata [in, borrowed]: The `userdata` field given on registration.
+//
+//   GC host boundary policy: GC-managed references passed to host functions
+//   (via params or accessible through the exec context) are valid only for the
+//   duration of the host call. Host code must NOT retain pointers to managed
+//   objects after returning. Violating this policy causes undefined behavior
+//   when the GC relocates or frees the referenced object.
 typedef void (*wah_func_t)(wah_call_context_t *ctx, void *userdata);
+
+// Typedef: wah_finalize_t
+//   Can be given with `wah_func_t` to specify a finalizer function that will be called
+//   when the host function is unregistered or when the module instance is deallocated.
+//
+//   - userdata [in, borrowed]: The `userdata` field given on registration.
 typedef void (*wah_finalize_t)(void *userdata);
 
+// Struct: wah_module_t
+//   Opaque type representing a parsed WebAssembly module.
+//
+//   This type is meant to be stack-allocatable and has a fixed size for ABI compatibility.
 typedef struct wah_module_s {
 #ifndef WAH_IMPLEMENTATION
+#ifdef __cplusplus
+private:
+#endif
     WAH_ALIGNAS(16) char reserved[384];
 #else
     WAH_ALIGNAS(16)
@@ -408,11 +633,15 @@ typedef volatile int wah_poll_flag_t;
 #endif
 #endif
 
-#define WAH_TYPE_CHECK_CACHE_SIZE 64
-#define WAH_MAX_EXCEPTION_HANDLER_DEPTH 64
-
+// Struct: wah_exec_context_t
+//   Opaque type representing an instantiated module ready for execution.
+//
+//   This type is meant to be stack-allocatable and has a fixed size for ABI compatibility.
 typedef struct wah_exec_context_s {
 #ifndef WAH_IMPLEMENTATION
+#ifdef __cplusplus
+private:
+#endif
     WAH_ALIGNAS(16) char reserved[384];
 #else
     WAH_ALIGNAS(16)
@@ -499,35 +728,74 @@ typedef char wah_module_align_check_[WAH_ALIGNOF(wah_module_t) == 16 ? 1 : -1];
 typedef char wah_exec_context_size_check_[sizeof(wah_exec_context_t) <= 384 ? 1 : -1];
 typedef char wah_exec_context_align_check_[WAH_ALIGNOF(wah_exec_context_t) == 16 ? 1 : -1];
 
-// Convert error code to human-readable string
+// Function: wah_strerror
+//   Converts an error code to a human-readable string.
+//   Unlike API functions, the returned error string is not guaranteed to be stable.
 const char *wah_strerror(wah_error_t err);
 
+// Struct: wah_parse_options_t
+//   Options for parsing a WebAssembly module.
 typedef struct {
+    // Field: features [default = WAH_DEFAULT_FEATURES if `wah_parse_options_t` is not given]
+    //   Bitmap of WAH_FEATURE_* flags indicating which features to enable when parsing.
     wah_features_t features;
+    // Field: enable_fuel_metering [default = false]
+    //   Whether to enable fuel metering during execution.
     bool enable_fuel_metering;
+    // Field: alloc [default = NULL]
+    //   Custom allocator to be used for parsing and eventually by the returned module.
+    //   The standard allocator is used if NULL is given.
     const wah_alloc_t *alloc;
 } wah_parse_options_t;
 
-wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *wasm_binary, size_t binary_size, const wah_parse_options_t *options);
+// Function: wah_parse_module
+//   Parses a WebAssembly binary into a `wah_module_t` struct.
+//
+//   - module [out, owned]: Pointer to an uninitialized `wah_module_t` struct.
+//   - binary [in, borrowed]: Pointer to the WebAssembly binary data.
+//   - binary_size [in]: Size of the WebAssembly binary data in bytes.
+//   - options [in, borrowed, optional]: Parsing options. Can be NULL for defaults.
+wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t binary_size, const wah_parse_options_t *options);
 
-uint32_t wah_module_type_count(const wah_module_t *module);
-uint32_t wah_module_function_count(const wah_module_t *module);
-uint32_t wah_module_global_count(const wah_module_t *module);
-uint32_t wah_module_memory_count(const wah_module_t *module);
-uint32_t wah_module_table_count(const wah_module_t *module);
-uint32_t wah_module_tag_count(const wah_module_t *module);
-uint32_t wah_module_import_count(const wah_module_t *module);
-uint32_t wah_module_export_count(const wah_module_t *module);
+// Functions: wah_module_*_count
+//   Get the count of various entities in the module.
+uint32_t wah_module_type_count(const wah_module_t *module);      // Count of defined types
+uint32_t wah_module_function_count(const wah_module_t *module);  // Combined count of imported and defined functions
+uint32_t wah_module_global_count(const wah_module_t *module);    // Combined count of imported and defined globals
+uint32_t wah_module_memory_count(const wah_module_t *module);    // Combined count of imported and defined memories
+uint32_t wah_module_table_count(const wah_module_t *module);     // Combined count of imported and defined tables
+uint32_t wah_module_tag_count(const wah_module_t *module);       // Combined count of imported and defined tags
+uint32_t wah_module_import_count(const wah_module_t *module);    // Total count of imports
+uint32_t wah_module_export_count(const wah_module_t *module);    // Total count of exports
 
-wah_error_t wah_module_type(const wah_module_t *module, uint32_t typeidx, wah_type_desc_t *out);
-wah_error_t wah_module_function(const wah_module_t *module, uint32_t funcidx, wah_func_desc_t *out);
-wah_error_t wah_module_global(const wah_module_t *module, uint32_t globalidx, wah_global_desc_t *out);
-wah_error_t wah_module_memory(const wah_module_t *module, uint32_t memidx, wah_memory_desc_t *out);
-wah_error_t wah_module_table(const wah_module_t *module, uint32_t tableidx, wah_table_desc_t *out);
-wah_error_t wah_module_tag(const wah_module_t *module, uint32_t tagidx, wah_tag_desc_t *out);
-wah_error_t wah_module_import(const wah_module_t *module, uint32_t importidx, wah_import_desc_t *out);
-wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_export_desc_t *out);
+// Functions: wah_module_*
+//   Get the description of various entities in the module by index.
+//
+//   - idx [in]: Index of the entity to query.
+//   - out [out, borrowed]: Pointer to a description struct to be filled in.
+//     Any borrowed pointers in `wah_*_desc_t` structs are only valid before the next API call.
+wah_error_t wah_module_type(const wah_module_t *module, uint32_t idx, wah_type_desc_t *out);      // A defined type by index
+wah_error_t wah_module_function(const wah_module_t *module, uint32_t idx, wah_func_desc_t *out);  // An imported or defined function by index
+wah_error_t wah_module_global(const wah_module_t *module, uint32_t idx, wah_global_desc_t *out);  // An imported or defined global by index
+wah_error_t wah_module_memory(const wah_module_t *module, uint32_t idx, wah_memory_desc_t *out);  // An imported or defined memory by index
+wah_error_t wah_module_table(const wah_module_t *module, uint32_t idx, wah_table_desc_t *out);    // An imported or defined table by index
+wah_error_t wah_module_tag(const wah_module_t *module, uint32_t idx, wah_tag_desc_t *out);        // An imported or defined tag by index
+wah_error_t wah_module_import(const wah_module_t *module, uint32_t idx, wah_import_desc_t *out);  // An import by index
+wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_export_desc_t *out);    // An export by index
+
+// Functions: wah_module_export_by_name
+//   Get the description of an exported entity by name.
+//
+//   - name [in, borrowed]: Zero-terminated name of the export to query.
+//   - out [out, borrowed]: Pointer to a description struct to be filled in.
 wah_error_t wah_module_export_by_name(const wah_module_t *module, const char *name, wah_export_desc_t *out);
+
+// Functions: wah_module_export_by_name_len
+//   Get the description of an exported entity by name with a specified length.
+//
+//   - name [in, borrowed]: Name of the export to query. Can have embedded null bytes.
+//   - name_len [in]: Length of the name.
+//   - out [out, borrowed]: Pointer to a description struct to be filled in.
 wah_error_t wah_module_export_by_name_len(const wah_module_t *module, const char *name, size_t name_len, wah_export_desc_t *out);
 
 // --- Resource Limits ---
@@ -546,7 +814,7 @@ typedef struct wah_rlimits_s {
     // Field: fuel
     //   Execution fuel. The interpreter will stop with WAH_STATUS_FUEL_EXHAUSTED when fuel runs out.
     //   Any WebAssembly opcode or ~WAH_BULK_ITEMS_PER_FUEL items handled consume a single fuel.
-    //   Only applicable when `wah_exec_context_t.fuel_metering` is true.
+    //   Only applicable when `wah_parse_options_t::fuel_metering` was true for the primary module.
     uint64_t fuel;
     // Field: deadline_us
     //   Cooperative time limit in microseconds. Be aware that this is not precise nor deterministic.
@@ -556,142 +824,405 @@ typedef struct wah_rlimits_s {
     bool no_memory_bytes;
 } wah_rlimits_t;
 
+// Struct: wah_exec_options_t
+//   Options for running WebAssembly modules.
 typedef struct {
+    // Field: limits
+    //   Initial resource limits for execution. Can be set by `wah_exec_context_set_limits` later.
     wah_rlimits_t limits;
+    // Field: alloc
+    //   Custom allocator to be used for execution. The standard allocator is used if NULL is given.
+    //   Note that this is distinct from `wah_parse_options_t::alloc` and should be given separately.
     const wah_alloc_t *alloc;
 } wah_exec_options_t;
 
-// Creates and initializes an execution context.
-wah_error_t wah_exec_context_create(
-    wah_exec_context_t *exec_ctx, const wah_module_t *module,
-    const wah_exec_options_t *options);
+// Function: wah_exec_context_create
+//   Creates and initializes an execution context.
+//
+//   - exec_ctx [out, owned]: Pointer to an uninitialized `wah_exec_context_t` struct.
+//   - module [in, borrowed]: Pointer to a parsed `wah_module_t` to execute.
+//   - options [in, borrowed, optional]: Execution options. Can be NULL for defaults (all zeroed).
+wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_exec_options_t *options);
 
-wah_error_t wah_exec_context_set_limits(
-    wah_exec_context_t *exec_ctx, const wah_rlimits_t *limits);
-void wah_exec_context_get_limits(
-    const wah_exec_context_t *exec_ctx, wah_rlimits_t *out);
+// Function: wah_exec_context_set_limits
+//   Updates resource limits of an execution context.
+//
+//   - limits [in, borrowed]: Pointer to a `wah_rlimits_t` struct containing the new limits.
+//     Any zero or false field is ignored (i.e. the corresponding limit is unchanged).
+wah_error_t wah_exec_context_set_limits(wah_exec_context_t *exec_ctx, const wah_rlimits_t *limits);
 
-// Destroys and frees resources of an execution context.
+// Function: wah_exec_context_get_limits
+//   Retrieves the current resource limits of an execution context.
+//
+//   - out [out, borrowed]: Pointer to a `wah_rlimits_t` struct to be filled in with the current limits.
+void wah_exec_context_get_limits(const wah_exec_context_t *exec_ctx, wah_rlimits_t *out);
+
+// Function: wah_exec_context_destroy
+//   Destroys and frees resources of an execution context.
 void wah_exec_context_destroy(wah_exec_context_t *exec_ctx);
 
-// Call a WebAssembly function by index.
-// Returns WAH_ERROR_MULTI_RETURN if the function has multiple return values.
+// Function: wah_call
+//   Calls a WebAssembly function by index.
+//   Returns WAH_ERROR_MULTI_RETURN if the function has multiple return values.
+//
+//   - func_idx [in]: Index of the function to call. See `wah_export_desc_t.index`.
+//   - params [in, borrowed, optional if param_count == 0]: Array of parameter values.
+//     Must have at least `param_count` elements. Can be NULL if `param_count` is zero.
+//   - param_count [in]: Number of parameters to pass.
+//   - result [out, owned, optional]: Pointer to a `wah_value_t` to store the result.
+//     Can be NULL if the result is not needed.
 wah_error_t wah_call(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
 
-// Call a WebAssembly function by index with multiple return values.
-wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *results, uint32_t max_results, uint32_t *actual_results);
+// Function: wah_call_multi
+//   Calls a WebAssembly function by index with multiple return values.
+//   Unlike wah_call, this function can receive multiple return values but truncates them
+//   if the caller didn't provide enough space.
+//
+//   - func_idx [in]: Index of the function to call. See `wah_export_desc_t.index`.
+//   - params [in, borrowed, optional if param_count == 0]: Array of parameter values.
+//     Must have at least `param_count` elements. Can be NULL if `param_count` is zero.
+//   - param_count [in]: Number of parameters to pass.
+//   - results [out, owned, optional if max_result_count == 0]: Array to store the results.
+//     Must have at least `max_result_count` elements. Can be NULL if `max_result_count` is zero.
+//   - max_result_count [in]: Maximum number of results to store. Results will be truncated
+//     if the function returns more than this number of values.
+//   - actual_result_count [out, owned, optional]: Pointer to store the actual number of
+//     results to be returned if `max_result_count` were large enough.
+wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count,
+                           wah_value_t *results, uint32_t max_result_count, uint32_t *actual_result_count);
 
-// Call an exported WebAssembly function by name.
+// Function: wah_call_by_name
+//   Same as `wah_call`, but calls an exported WebAssembly function by name.
+//
+//   - name [in, borrowed]: Zero-terminated name of the export to call.
+//   - params [in, borrowed, optional if param_count == 0]: Array of parameter values.
+//     Must have at least `param_count` elements. Can be NULL if `param_count` is zero.
+//   - param_count [in]: Number of parameters to pass.
+//   - result [out, owned, optional]: Pointer to a `wah_value_t` to store the result.
+//     Can be NULL if the result is not needed.
 wah_error_t wah_call_by_name(wah_exec_context_t *exec_ctx, const char *name, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
 
-// Fuel metering control. Default fuel is INT64_MAX (effectively unlimited).
+// Function: wah_set_fuel
+//   Resets the available fuel for execution.
+//
+//   - fuel [in]: New fuel value. Only meaningful when fuel metering is enabled for the module.
+//     Can be set to INT64_MAX to effectively disable fuel exhaustion.
 void wah_set_fuel(wah_exec_context_t *ctx, int64_t fuel);
+
+// Function: wah_get_fuel
+//   Returns the remaining fuel for execution.
 int64_t wah_get_fuel(const wah_exec_context_t *ctx);
 
-// Resumable execution API.
-// wah_start sets up a call frame without executing. wah_resume drives execution
-// until completion, terminal error, or resumable stop. wah_finish extracts results
-// after WAH_OK. wah_cancel discards a suspended/finished/trapped activation.
+// Function: wah_start
+//   Sets up a call frame without executing.
+//
+//   - func_idx [in]: Index of the function to call. See `wah_export_desc_t::index`.
+//   - params [in, borrowed, optional if param_count == 0]: Array of parameter values.
+//     Must have at least `param_count` elements. Can be NULL if `param_count` is zero.
+//   - param_count [in]: Number of parameters to pass.
 wah_error_t wah_start(wah_exec_context_t *ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count);
+
+// Function: wah_resume
+//   Drives execution until completion, terminal error, or resumable stop.
 wah_error_t wah_resume(wah_exec_context_t *ctx);
-wah_error_t wah_finish(wah_exec_context_t *ctx, wah_value_t *results, uint32_t max_results, uint32_t *actual_results);
+
+// Function: wah_finish
+//   Extracts results after WAH_OK.
+//
+//   - results [out, owned, optional if max_result_count == 0]: Array to store the results.
+//     Must have at least `max_result_count` elements. Can be NULL if `max_result_count` is zero.
+//   - max_result_count [in]: Maximum number of results to store. Results will be truncated
+//     if the function returns more than this number of values.
+//   - actual_result_count [out, owned, optional]: Pointer to store the actual number of
+//     results to be returned if `max_result_count` were large enough.
+wah_error_t wah_finish(wah_exec_context_t *ctx, wah_value_t *results, uint32_t max_result_count, uint32_t *actual_result_count);
+
+// Function: wah_cancel
+//   Discards a suspended, finished or trapped activation.
+//   After cancellation, the execution context can be safely destroyed or reused for another start.
 void wah_cancel(wah_exec_context_t *ctx);
+
+// Function: wah_is_suspended
+//   Returns true if the execution context is currently waiting to be resumed.
 bool wah_is_suspended(const wah_exec_context_t *ctx);
+
+// Function: wah_exec_state
+//   Returns the current execution state of the context.
 wah_exec_state_t wah_exec_state(const wah_exec_context_t *ctx);
 
-// --- Module Cleanup ---
+// Function: wah_free_module
+//    Frees resources associated with a parsed module. The module pointer itself is not freed.
 void wah_free_module(wah_module_t *module);
 
 // --- Programmatically create modules ---
+
+// Function: wah_new_module
+//   Initializes an empty module for programmatic construction.
+//
+//   - alloc [in, borrowed, optional]: Custom allocator for constructing the module.
+//     The standard allocator is used if NULL is given.
 wah_error_t wah_new_module(wah_module_t *mod, const wah_alloc_t *alloc);
+
+// Function: wah_module_define_type
+//   Defines a new type in the module based on a type specification string and arguments.
+//
+//   The type specification is as follows:
+//     fn (i32, f64) -> i32                // 2 arguments, 1 return
+//     fn (i32, f64) -> (i32)              // Same as above
+//     fn (i32, f64) -> (i32, f64)         // 2 arguments, 2 returns
+//     fn (i32, f64) -> ()                 // 0 arguments, 0 returns
+//     fn (i32, f64)                       // Same as above
+//     struct { i32, mut funcref }         // 1 immutable field, 1 mutable field
+//     struct { i32, mut ref null func, }  // Same as above, trailing comma is allowed
+//     struct { i32, mut ref func }        // Same as above, but the second field is non-nullable now
+//     array i32                           // Immutable array of i32
+//     array mut anyref                    // Mutable array of anyref
+//   A placeholder `%T` can go anywhere i32/f64/func/funcref/anyref/... are used above.
+//   Its semantics strictly depend on its macro spelling (so `ref %T` accepts WAH_TYPE_FUNC
+//   but no WAH_TYPE_FUNCREF). Packed types are only usable in struct fields and array elements.
+//   In addition, prepending `fresh` ensures that the returned type is distinct from any other type;
+//   by default structurally identical types are automatically merged.
+//
+//   - out_type [out]: Pointer to retrieve the (newly or previously) defined type index.
+//   - spec [in, borrowed]: Type specification string as described above.
+//   - ... [in]: Additional arguments for the type specification. `%T` accepts wah_type_t.
+//
+//   You can enable `WAH_DEBUG` if you receive `WAH_ERROR_BAD_SPEC`
+//   to get more detailed error message via `WAH_LOG`.
 wah_error_t wah_module_define_type(wah_module_t *mod, wah_type_t *out_type, const char *spec, ...);
+
+// Function: wah_module_define_typev
+//   Same as `wah_module_define_type` but with a `va_list` for arguments.
 wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, const char *spec, va_list *args);
 
+// Function: wah_module_export_func
+//   Exports a host function from the module.
+//
+//   - name [in, borrowed]: Zero-terminated name of the export.
+//   - types [in, borrowed]: Type specification string for the function signature.
+//     Same as what `wah_module_define_type` accepts for function types, but without `%T`
+//     and `fn` can be omitted as other types are forbidden in this context.
+//   - func [in, consumed]: Function pointer to be called when the exported function is invoked.
+//   - userdata [in, consumed]: User data pointer to be passed to the function on each call.
+//   - finalize [in, consumed, optional]: Called with userdata when the module is freed.
 wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const char *types, wah_func_t func, void *userdata, wah_finalize_t finalize);
+
+// Function: wah_module_export_typed_func
+//   Same as `wah_module_export_func` but with an explicit `wah_type_t` defined from `wah_module_define_type`.
+//
+//   - name [in, borrowed]: Zero-terminated name of the export.
+//   - type [in]: Type index for the function signature, must be defined from `wah_module_define_type*`.
+//   - func [in, consumed]: Function pointer to be called when the exported function is invoked.
+//   - userdata [in, consumed]: User data pointer to be passed to the function on each call.
+//   - finalize [in, consumed, optional]: Called with userdata when the module is freed.
 wah_error_t wah_module_export_typed_func(wah_module_t *mod, const char *name, wah_type_t type, wah_func_t func, void *userdata, wah_finalize_t finalize);
+
+// Function: wah_module_export_memory
+//   Exports a new memory from the module.
+//
+//   - name [in, borrowed]: Zero-terminated name of the export.
+//   - min_pages [in]: Initial memory size in WebAssembly pages (64KiB each).
+//   - max_pages [in]: Optional maximum memory size in pages. Use UINT64_MAX for no maximum.
 wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages);
-wah_error_t wah_module_export_global_i32(wah_module_t *mod, const char *name, bool mutable, int32_t init_value);
-wah_error_t wah_module_export_global_i64(wah_module_t *mod, const char *name, bool mutable, int64_t init_value);
-wah_error_t wah_module_export_global_f32(wah_module_t *mod, const char *name, bool mutable, float init_value);
-wah_error_t wah_module_export_global_f64(wah_module_t *mod, const char *name, bool mutable, double init_value);
-wah_error_t wah_module_export_global_v128(wah_module_t *mod, const char *name, bool mutable, const wah_v128_t *init_value);
+
+// Function: wah_module_export_global_*
+//   Exports a new global variable from the module.
+//
+//   - name [in, borrowed]: Zero-terminated name of the export.
+//   - mutable [in]: True if the global variable should be mutable, false if immutable.
+//   - init_value [in]: Initial value of the global variable.
+wah_error_t wah_module_export_global_i32(wah_module_t *mod, const char *name, bool mutable, int32_t init_value);  // Exports an i32 global variable
+wah_error_t wah_module_export_global_i64(wah_module_t *mod, const char *name, bool mutable, int64_t init_value);  // Exports an i64 global variable
+wah_error_t wah_module_export_global_f32(wah_module_t *mod, const char *name, bool mutable, float init_value);    // Exports an f32 global variable
+wah_error_t wah_module_export_global_f64(wah_module_t *mod, const char *name, bool mutable, double init_value);   // Exports an f64 global variable
+wah_error_t wah_module_export_global_v128(wah_module_t *mod, const char *name, bool mutable, const wah_v128_t *init_value); // Exports a v128 global variable
 
 // --- Call context for host functions ---
 
-int32_t wah_param_i32(const wah_call_context_t *ctx, size_t index);
-int64_t wah_param_i64(const wah_call_context_t *ctx, size_t index);
-float wah_param_f32(const wah_call_context_t *ctx, size_t index);
-double wah_param_f64(const wah_call_context_t *ctx, size_t index);
-wah_v128_t wah_param_v128(const wah_call_context_t *ctx, size_t index);
+// Functions: wah_param_*
+//   Get parameters passed to a host function by index. Valid only during the host function call.
+//
+//   - idx [in]: Index of the parameter to retrieve. Must be less than the number of parameters.
+int32_t wah_param_i32(const wah_call_context_t *ctx, size_t index);      // i32 parameter by index
+int64_t wah_param_i64(const wah_call_context_t *ctx, size_t index);      // i64 parameter by index
+float wah_param_f32(const wah_call_context_t *ctx, size_t index);        // f32 parameter by index
+double wah_param_f64(const wah_call_context_t *ctx, size_t index);       // f64 parameter by index
+wah_v128_t wah_param_v128(const wah_call_context_t *ctx, size_t index);  // v128 parameter by index
+
+// Function: wah_param_ref
+//   Get a `wah_gc_alloc_host`-compatible reference parameter passed to a host function by index.
+//   Valid only during the host function call.
+//
+//   - idx [in]: Index of the parameter to retrieve. Must be less than the number of parameters.
 void *wah_param_ref(const wah_call_context_t *ctx, size_t index);
+
+// Function: wah_param_type
+//   Returns the type of a parameter passed to a host function by index.
+//   Valid only during the host function call.
+//
+//   - idx [in]: Index of the parameter to retrieve. Must be less than the number of parameters.
 wah_type_t wah_param_type(const wah_call_context_t *ctx, size_t index);
 
-void wah_result_i32(wah_call_context_t *ctx, size_t index, int32_t value);
-void wah_result_i64(wah_call_context_t *ctx, size_t index, int64_t value);
-void wah_result_f32(wah_call_context_t *ctx, size_t index, float value);
-void wah_result_f64(wah_call_context_t *ctx, size_t index, double value);
-void wah_result_v128(wah_call_context_t *ctx, size_t index, const wah_v128_t *value);
+// Functions: wah_result_*
+//   Set results for a host function by index. Valid only during the host function call.
+//
+//   - index [in]: Index of the result to set. Must be less than the number of results.
+//   - value [in]: Value to set for the result.
+void wah_result_i32(wah_call_context_t *ctx, size_t index, int32_t value);             // Sets i32 result by index
+void wah_result_i64(wah_call_context_t *ctx, size_t index, int64_t value);             // Sets i64 result by index
+void wah_result_f32(wah_call_context_t *ctx, size_t index, float value);               // Sets f32 result by index
+void wah_result_f64(wah_call_context_t *ctx, size_t index, double value);              // Sets f64 result by index
+void wah_result_v128(wah_call_context_t *ctx, size_t index, const wah_v128_t *value);  // Sets v128 result by index
+
+// Function: wah_result_ref
+//   Set a `wah_gc_alloc_host`-compatible reference result for a host function by index.
+//   Valid only during the host function call.
+//
+//   - index [in]: Index of the result to set. Must be less than the number of results.
+//   - value [in]: Value to set for the result. Can be NULL if the result type is nullable.
 void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value);
+
+// Function: wah_result_type
+//   Returns the expected type of a result for a host function by index.
+//   Valid only during the host function call.
+//
+//   - index [in]: Index of the result to retrieve. Must be less than the number of results.
 wah_type_t wah_result_type(const wah_call_context_t *ctx, size_t index);
 
-// Convenience macros for single return values
-#define wah_return_i32(ctx, value) wah_result_i32(ctx, 0, value)
-#define wah_return_i64(ctx, value) wah_result_i64(ctx, 0, value)
-#define wah_return_f32(ctx, value) wah_result_f32(ctx, 0, value)
-#define wah_return_f64(ctx, value) wah_result_f64(ctx, 0, value)
+// Macros: wah_return_*
+//   Convenience macros for setting a single return value at index 0.
+//   Valid only during the host function call.
+//
+//   - value [in]: Value to set for the single return value.
+#define wah_return_i32(ctx, value) wah_result_i32(ctx, 0, value)    // Sets a single i32 return value
+#define wah_return_i64(ctx, value) wah_result_i64(ctx, 0, value)    // Sets a single i64 return value
+#define wah_return_f32(ctx, value) wah_result_f32(ctx, 0, value)    // Sets a single f32 return value
+#define wah_return_f64(ctx, value) wah_result_f64(ctx, 0, value)    // Sets a single f64 return value
+#define wah_return_v128(ctx, value) wah_result_v128(ctx, 0, value)  // Sets a single v128 return value
+#define wah_return_ref(ctx, value) wah_result_ref(ctx, 0, value)    // Sets a single reference return value
 
+// Function: wah_trap
+//   Traps from a host function with a specified reason.
+//
+//   - reason [in]: Error code to be propagated. Cannot be any non-error code like WAH_OK.
 void wah_trap(wah_call_context_t *ctx, wah_error_t reason);
 
 // --- Linkage ---
-// Fulfills the named import in the primary module of the context.
+
+// Function: wah_link_module
+//   Links a module into the primary module of the context under a specified name.
+//   Can be called multiple times to link multiple modules.
+//
+//   - name [in, borrowed]: Name to link the module under. Must be unique among linked modules.
+//   - mod [in, borrowed]: Module to link. Must outlive the execution context.
 wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah_module_t *mod);
+
+// Function: wah_link_context
+//   Links another execution context into the primary module of the context under a specified name.
+//   This allows sharing already-instantiated module instances, including runtime state
+//   such as memories, tables, globals, and tags, between contexts.
+//
+//   - name [in, borrowed]: Name to link the context under. Must be unique among linked modules.
+//   - linked_ctx [in, borrowed]: Execution context to link. Must outlive the primary context.
 wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec_context_t *linked_ctx);
 
-// Optional. Ensures that the execution context is fully instantiated.
-// Any `wah_link_*` calls are now invalid. Any `wah_call` call will implicitly call this function.
+// Function: wah_instantiate
+//   Instantiates the execution context, preparing it for execution.
+//   This is optional since `wah_call` will automatically instantiate if it hasn't been done yet,
+//   but it can be used as an early verification step after linking and before execution.
+//
+//   After instantiation, any `wah_link_*` calls are invalid since the module is finalized.
 wah_error_t wah_instantiate(wah_exec_context_t *ctx);
 
 // --- GC Management ---
+
+// Enum: wah_gc_phase_t
+//   GC phase for reporting and debugging purposes.
 typedef enum {
-    WAH_GC_PHASE_IDLE = 0,
-    WAH_GC_PHASE_MARK,
-    WAH_GC_PHASE_SWEEP,
+    WAH_GC_PHASE_IDLE = 0,  // Not currently collecting
+    WAH_GC_PHASE_MARK,      // Mark phase: tracing live objects from roots
+    WAH_GC_PHASE_SWEEP,     // Sweep phase: reclaiming unreachable objects
 } wah_gc_phase_t;
 
+// Struct: wah_gc_heap_stats_t
+//   GC heap statistics for reporting and debugging purposes.
 typedef struct wah_gc_heap_stats_s {
+    // Field: object_count
+    //   Total number of objects currently allocated on the GC heap.
     uint32_t object_count;
+    // Field: allocated_bytes
+    //   Total bytes currently allocated on the GC heap for object payloads.
     size_t allocated_bytes;
+    // Field: allocation_threshold
+    //   The threshold in bytes at which the GC will be triggered.
     size_t allocation_threshold;
+    // Field: phase
+    //   Current GC phase. Will be WAH_GC_PHASE_IDLE if GC is not currently running.
     wah_gc_phase_t phase;
-#ifdef WAH_DEBUG
+
+    // Field: total_collections
+    //   Total number of GC collections so far. `WAH_DEBUG` is required.
     uint32_t total_collections;
+    // Field: total_allocations
+    //   Total number of allocations on the GC heap so far. `WAH_DEBUG` is required.
     uint32_t total_allocations;
+    // Field: total_frees
+    //   Total number of frees on the GC heap so far. `WAH_DEBUG` is required.
     uint32_t total_frees;
+    // Field: total_polls
+    //   Total number of GC polls so far. `WAH_DEBUG` is required.
     uint32_t total_polls;
-#endif
 } wah_gc_heap_stats_t;
 
-// Enables GC on the execution context. Idempotent.
+// Function: wah_gc_start
+//   Enables GC on the execution context. Can be called multiple times (idempotent).
+//
+//   This doesn't have to be called directly since GC will be automatically started when necessary.
+//   One exception is to be able to use `wah_gc_alloc_host` before `wah_start` or `wah_call*`.
 wah_error_t wah_gc_start(wah_exec_context_t *ctx);
-// Returns current GC heap statistics.
+
+// Function: wah_gc_heap_stats
+//   Retrieves GC heap statistics for the execution context.
+//
+//   - stats [out, borrowed]: Pointer to a `wah_gc_heap_stats_t` struct to be filled.
 void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats);
+
+// Function: wah_gc_heap_stats_from_host
+//   Same as `wah_gc_heap_stats` but can be called from a host function call context.
 void wah_gc_heap_stats_from_host(const wah_call_context_t *ctx, wah_gc_heap_stats_t *stats);
-// Verifies GC heap consistency. Returns true if valid. Logs errors via WAH_LOG in debug builds.
+
+// Function: wah_gc_verify_heap
+//   Verifies GC heap consistency for debugging. Logs errors via WAH_LOG in debug builds.
+//
+//   - returns: true if the heap is consistent, false if any inconsistency is detected.
 bool wah_gc_verify_heap(const wah_exec_context_t *ctx);
-// Allocates an opaque host object on the GC heap. Returns a pointer to the payload of the given size, or NULL on failure.
+
+// Function: wah_gc_alloc_host
+//   Allocates an opaque host object on the GC heap.
+//   This object goes into `wah_value_t::ref` and can be stored in `externref` or `anyref`.
+//
+//   - size [in]: Size of the host object payload in bytes.
+//   - returns: Pointer to the payload of the allocated host object, or NULL on allocation failure.
 void *wah_gc_alloc_host(wah_exec_context_t *ctx, size_t size);
 
-// Requests an interrupt from the interpreter. Safe to call from another thread.
-// The interpreter will yield at the next POLL/TICK point.
+// Function: wah_request_interrupt
+//   Requests an interrupt from the interpreter. Calling this multiple times does nothing.
+//   The interpreter will yield at the next POLL/TICK point. Safe to call from another thread.
 void wah_request_interrupt(wah_exec_context_t *ctx);
+
+// Function: wah_request_interrupt_from_host
+//   Same as `wah_request_interrupt` but can be called from a host function call context.
 void wah_request_interrupt_from_host(wah_call_context_t *ctx);
 
-// Returns true if an interrupt has been requested and not yet consumed.
-// Safe to call from another thread.
+// Function: wah_is_interrupted
+//   Checks if an interrupt has been requested for the execution context.
+//   Safe to call from another thread.
 bool wah_is_interrupted(const wah_exec_context_t *ctx);
 
 ////////////////////////////////////////////////////////////////////////////////
 
+// Macro: WAH_IMPLEMENTATION [user-definable]
+//   Define this in exactly one C file that includes this header file.
 #ifdef WAH_IMPLEMENTATION
 
 #include <string.h> // For memcpy, memset
@@ -722,17 +1253,6 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 #endif
 #endif
 
-struct wah_call_context_s {
-    struct wah_exec_context_s *exec;
-
-    size_t nparams, nresults;
-    const wah_value_t *params;
-    wah_value_t *results;
-    const wah_type_t *param_types, *result_types;
-
-    wah_error_t trap_reason;
-};
-
 ////////////////////////////////////////////////////////////////////////////////
 // Support macros //////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -746,24 +1266,6 @@ struct wah_call_context_s {
 #define WAH_VA_ARG1(x,y,...) y
 #define WAH_VA_EMPTY(...) WAH_VA_ARG1(__VA_OPT__(,)0,1,)
 #define WAH_VA_OPT_SUPPORT WAH_VA_EMPTY
-#endif
-
-#ifdef __has_builtin
-#define WAH_HAS_BUILTIN(x) __has_builtin(x)
-#else
-#define WAH_HAS_BUILTIN(x) 0
-#endif
-
-#ifdef __has_feature
-#define WAH_HAS_FEATURE(x) __has_feature(x)
-#else
-#define WAH_HAS_FEATURE(x) 0
-#endif
-
-#ifdef __has_attribute
-#define WAH_HAS_ATTRIBUTE(x) __has_attribute(x)
-#else
-#define WAH_HAS_ATTRIBUTE(x) 0
 #endif
 
 #if defined(WAH_SANITIZE_UNDEFINED) || WAH_HAS_FEATURE(undefined_behavior_sanitizer)
@@ -841,30 +1343,11 @@ struct wah_call_context_s {
 #define WAH_IF_AARCH64(then, ...) __VA_ARGS__
 #endif
 
-#define WAH_TYPE_BOT -99
-#define WAH_TYPE_FUNCTION -100
+#define WAH_TYPE_BOT -99 // Placeholder for bottom type in type checking
 
 ////////////////////////////////////////////////////////////////////////////////
 // Feature configuration ///////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
-
-#ifndef WAH_COMPILED_FEATURES
-#define WAH_COMPILED_FEATURES WAH_FEATURE_ALL
-#endif
-
-#ifndef WAH_DEFAULT_FEATURES
-#define WAH_DEFAULT_FEATURES WAH_COMPILED_FEATURES
-#endif
-
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_RELAXED_SIMD) && !((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
-#error "WAH_FEATURE_RELAXED_SIMD requires WAH_FEATURE_SIMD"
-#endif
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC) && !((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
-#error "WAH_FEATURE_GC requires WAH_FEATURE_REF_TYPES"
-#endif
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF) && !((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
-#error "WAH_FEATURE_TYPED_FUNCREF requires WAH_FEATURE_REF_TYPES"
-#endif
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
 #define WAH_IF_SIMD(...) __VA_ARGS__
@@ -1626,6 +2109,17 @@ static wah_opcode_t wah_x86_64_opcode(wah_opcode_t opcode, wah_x86_64_features_t
 // Internal API ////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+struct wah_call_context_s {
+    struct wah_exec_context_s *exec;
+
+    size_t nparams, nresults;
+    const wah_value_t *params;
+    wah_value_t *results;
+    const wah_type_t *param_types, *result_types;
+
+    wah_error_t trap_reason;
+};
+
 // --- Repr Metadata ---
 typedef int32_t wah_repr_t;
 
@@ -1678,6 +2172,8 @@ typedef struct wah_type_def_s {
     uint32_t rec_group_start;
     uint32_t rec_group_size;
 } wah_type_def_t;
+
+#define WAH_TYPE_CHECK_CACHE_SIZE 64
 
 // --- GC State ---
 #define WAH_GC_TAG_MARK ((uintptr_t)0x1)
@@ -2138,7 +2634,11 @@ typedef struct wah_type_check_cache_entry_s {
     bool valid;
 } wah_type_check_cache_entry_t;
 
-#define WAH_FUNCREF_FAKE_HEADER { .next_tagged = NULL, .repr_id = WAH_TYPE_FUNCTION, .size_bytes = 0 }
+// -- Exceptions --
+#define WAH_MAX_EXCEPTION_HANDLER_DEPTH 64
+
+// -- Function References --
+#define WAH_FUNCREF_FAKE_HEADER { .next_tagged = NULL, .repr_id = WAH_TYPE_BOT, .size_bytes = 0 }
 
 // Sentinel used by wah_value_t._prefuncref to distinguish ref.func 0 from ref.null.
 // A prefuncref with .sentinel == wah_funcref_sentinel is a valid function reference;
@@ -2151,6 +2651,8 @@ static inline void *wah_func_to_ref(wah_function_t *fn) {
 static inline wah_function_t *wah_ref_to_func(void *ref) {
     return (wah_function_t *)wah_gc_header(ref);
 }
+
+// -- Forward declarations --
 
 // Const expression functions
 static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, const uint8_t *bytecode, uint32_t bytecode_size, wah_value_t *result);
@@ -4039,7 +4541,7 @@ static inline uint32_t wah_type_check_cache_slot(const wah_module_t *sub_m, wah_
     h ^= ((uintptr_t)sup_m >> 9) * UINT64_C(0x9e3779b97f4a7c15);
     h ^= (uintptr_t)(uint32_t)sub_t * UINT64_C(0xbf58476d1ce4e5b9);
     h ^= (uintptr_t)(uint32_t)sup_t * UINT64_C(0x94d049bb133111eb);
-    return (uint32_t)(h & (WAH_TYPE_CHECK_CACHE_SIZE - 1));
+    return (uint32_t)(h % WAH_TYPE_CHECK_CACHE_SIZE);
 }
 
 static bool wah_cross_module_subtype_cached(wah_exec_context_t *ctx,
@@ -8396,9 +8898,9 @@ static const struct wah_section_handler_s {
     [11] = { .order = 13, .parser_func = wah_parse_data_section },
 };
 
-wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *wasm_binary, size_t binary_size, const wah_parse_options_t *options) {
+wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t binary_size, const wah_parse_options_t *options) {
     wah_error_t err = WAH_OK;
-    WAH_ENSURE(wasm_binary && module && binary_size >= 8, WAH_ERROR_UNEXPECTED_EOF);
+    WAH_ENSURE(binary && module && binary_size >= 8, WAH_ERROR_UNEXPECTED_EOF);
 
     *module = (wah_module_t){0}; // Initialize module struct
     module->alloc = wah_resolve_alloc(options ? options->alloc : NULL);
@@ -8409,8 +8911,8 @@ wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *wasm_binary, s
     module->required_features = 0;
     module->fuel_metering = options && options->enable_fuel_metering;
 
-    const uint8_t *ptr = wasm_binary;
-    const uint8_t *end = wasm_binary + binary_size;
+    const uint8_t *ptr = binary;
+    const uint8_t *end = binary + binary_size;
 
     // For section order validation
     int8_t last_parsed_order = 0; // Start with 0, as Type section is 1. Custom sections are 0 in map.
@@ -9573,13 +10075,6 @@ static wah_error_t wah_poll_handler(wah_exec_context_t *ctx) {
     return WAH_OK;
 }
 
-#ifndef WAH_BULK_CHECK_INTERVAL
-#define WAH_BULK_CHECK_INTERVAL (1u << 24)
-#endif
-#ifndef WAH_BULK_ITEMS_PER_FUEL
-#define WAH_BULK_ITEMS_PER_FUEL 4096
-#endif
-
 static inline bool wah_bulk_should_interrupt(const wah_exec_context_t *ctx) {
     return WAH_POLL_FLAG_LOAD(ctx->interrupt_flag) != 0;
 }
@@ -9784,7 +10279,7 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
         uint32_t target_idx = WAH_TYIDX(target);
         if (wah_type_accepts_repr(ctx->module, target_idx, repr_id))
             return true;
-        if (repr_id == WAH_TYPE_FUNCTION &&
+        if (repr_id == WAH_TYPE_BOT &&
             ctx->module->type_defs && target_idx < ctx->module->type_count &&
             ctx->module->type_defs[target_idx].kind == WAH_COMP_FUNC) {
             const wah_function_t *fn = wah_ref_to_func(ref);
@@ -9799,11 +10294,11 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
     }
 
     switch (ht) {
-        case WAH_TYPE_ANY: case WAH_TYPE_EXTERN: return repr_id != WAH_TYPE_FUNCTION;
+        case WAH_TYPE_ANY: case WAH_TYPE_EXTERN: return repr_id != WAH_TYPE_BOT;
         case WAH_TYPE_EQ: return repr_id >= 0;
         case WAH_TYPE_STRUCT: return repr_id >= 0 && ctx->module->repr_infos[repr_id]->type == WAH_REPR_STRUCT;
         case WAH_TYPE_ARRAY: return repr_id >= 0 && ctx->module->repr_infos[repr_id]->type == WAH_REPR_ARRAY;
-        case WAH_TYPE_FUNC: return repr_id == WAH_TYPE_FUNCTION;
+        case WAH_TYPE_FUNC: return repr_id == WAH_TYPE_BOT;
         case WAH_TYPE_I31: default: return false;
     }
 }
@@ -10123,22 +10618,6 @@ static bool wah_memory_grow_internal(
 
     return true;
 }
-
-#ifdef WAH_FORCE_SWITCH
-    // Force switch-based dispatch; skip musttail and computed goto.
-#elif defined(WAH_FORCE_MUSTTAIL)
-    #define WAH_USE_MUSTTAIL
-#elif WAH_HAS_ATTRIBUTE(musttail)
-    #define WAH_USE_MUSTTAIL // clang 13+, GCC 15+
-#endif
-
-#if !defined(WAH_FORCE_SWITCH)
-#ifdef WAH_FORCE_COMPUTED_GOTO
-    #define WAH_USE_COMPUTED_GOTO
-#elif defined(__GNUC__) || defined(__clang__)
-    #define WAH_USE_COMPUTED_GOTO
-#endif
-#endif
 
 // Enforce deterministic fp operations.
 #if defined(__GNUC__) && !defined(__clang__)
@@ -13911,27 +14390,22 @@ static wah_error_t wah_resume_internal(wah_exec_context_t *ctx) {
 
 static wah_error_t wah_finish_internal(
     wah_exec_context_t *ctx, wah_value_t *results,
-    uint32_t max_results, uint32_t *actual_results
+    uint32_t max_result_count, uint32_t *actual_result_count
 ) {
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_FINISHED, WAH_ERROR_MISUSE);
     uint32_t result_count = ctx->lifecycle.entry_result_count;
-    uint32_t copy_count = result_count < max_results ? result_count : max_results;
+    uint32_t copy_count = result_count < max_result_count ? result_count : max_result_count;
 
     if (results) {
         if (result_count == 0) {
-            memset(results, 0, sizeof(wah_value_t) * max_results);
-            if (actual_results) *actual_results = 0;
+            memset(results, 0, sizeof(wah_value_t));
         } else if (ctx->sp >= ctx->lifecycle.base_sp + result_count) {
             for (uint32_t i = 0; i < copy_count; ++i) {
                 results[i] = *(ctx->sp - result_count + i);
             }
-            if (actual_results) *actual_results = result_count;
-        } else {
-            if (actual_results) *actual_results = 0;
         }
-    } else {
-        if (actual_results) *actual_results = 0;
     }
+    if (actual_result_count) *actual_result_count = result_count;
 
     ctx->sp = ctx->lifecycle.base_sp;
     ctx->call_depth = ctx->lifecycle.base_call_depth;
@@ -13976,16 +14450,16 @@ wah_exec_state_t wah_exec_state(const wah_exec_context_t *ctx) {
 
 static wah_error_t wah_call_module_multi(
     wah_exec_context_t *exec_ctx, uint32_t func_idx, const wah_value_t *params, uint32_t param_count,
-    wah_value_t *results, uint32_t max_results, uint32_t *actual_results
+    wah_value_t *results, uint32_t max_result_count, uint32_t *actual_result_count
 ) {
     WAH_ENSURE(func_idx < exec_ctx->function_table_count, WAH_ERROR_NOT_FOUND);
     const wah_function_t *fn = &exec_ctx->function_table[func_idx];
 
     if (fn->is_host) {
         uint32_t nresults = (uint32_t)fn->nresults;
-        uint32_t copy_count = nresults < max_results ? nresults : max_results;
+        uint32_t copy_count = nresults < max_result_count ? nresults : max_result_count;
         wah_value_t *host_results = results;
-        if (nresults > max_results) {
+        if (nresults > max_result_count) {
             WAH_ENSURE((uint8_t *)(exec_ctx->sp + nresults) <= (uint8_t *)exec_ctx->frame_ptr, WAH_ERROR_STACK_OVERFLOW);
             host_results = exec_ctx->sp;
         }
@@ -13996,7 +14470,7 @@ static wah_error_t wah_call_module_multi(
             for (uint32_t i = 0; i < copy_count; ++i) results[i] = host_results[i];
         }
         WAH_CHECK(host_err);
-        *actual_results = nresults;
+        if (actual_result_count) *actual_result_count = nresults;
         return WAH_OK;
     }
 
@@ -14005,7 +14479,7 @@ static wah_error_t wah_call_module_multi(
 
     err = wah_resume_internal(exec_ctx);
     if (err == WAH_OK) {
-        return wah_finish_internal(exec_ctx, results, max_results, actual_results);
+        return wah_finish_internal(exec_ctx, results, max_result_count, actual_result_count);
     }
 
     wah_cancel_internal(exec_ctx);
@@ -14043,18 +14517,17 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_
 
 wah_error_t wah_call_multi(
     wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count,
-    wah_value_t *results, uint32_t max_results, uint32_t *actual_results
+    wah_value_t *results, uint32_t max_result_count, uint32_t *actual_result_count
 ) {
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(exec_ctx->module, WAH_ERROR_MISUSE);
-    WAH_ENSURE(actual_results, WAH_ERROR_MISUSE);
 
     if (!exec_ctx->is_instantiated) {
         WAH_CHECK(wah_instantiate(exec_ctx));
     }
 
     // func_idx is always uint32_t for functions.
-    return wah_call_module_multi(exec_ctx, (uint32_t)func_idx, params, param_count, results, max_results, actual_results);
+    return wah_call_module_multi(exec_ctx, (uint32_t)func_idx, params, param_count, results, max_result_count, actual_result_count);
 }
 
 wah_error_t wah_call_by_name(wah_exec_context_t *exec_ctx, const char *name, const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
@@ -14595,7 +15068,7 @@ wah_type_t wah_result_type(const wah_call_context_t *ctx, size_t index) {
 
 void wah_trap(wah_call_context_t *ctx, wah_error_t reason) {
     WAH_ASSERT(ctx && "Call context is NULL");
-    WAH_ASSERT(reason != WAH_OK && "Cannot trap with WAH_OK");
+    WAH_ASSERT(reason < 0 && "Cannot trap with a non-error code such as WAH_OK");
     WAH_ASSERT(ctx->trap_reason == WAH_OK && "Call context already has a trap reason set");
     ctx->trap_reason = reason;
 }
