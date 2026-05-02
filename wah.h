@@ -302,17 +302,8 @@ typedef struct {
     struct wah_call_frame_s *base_frame_ptr;
 } wah_exec_lifecycle_t;
 
-// Call context for host functions
-typedef struct wah_call_context_s {
-    struct wah_exec_context_s *exec;
-
-    size_t nparams, nresults;
-    const wah_value_t *params;
-    wah_value_t *results;
-    const wah_type_t *param_types, *result_types;
-
-    wah_error_t trap_reason;
-} wah_call_context_t;
+// Opaque call context for host functions.
+typedef struct wah_call_context_s wah_call_context_t;
 
 // Host function types
 //
@@ -628,29 +619,21 @@ wah_error_t wah_module_export_global_v128(wah_module_t *mod, const char *name, b
 
 // --- Call context for host functions ---
 
-#define WAH_PARAM(ty, field) \
-    WAH_ASSERT(ctx && "Call context is NULL"); \
-    WAH_ASSERT(index < ctx->nparams && "Parameter index out of bounds"); \
-    WAH_ASSERT(ctx->param_types[index] == ty && "Parameter type mismatch"); \
-    return ctx->params[index].field
-#define WAH_RESULT(ty, field) \
-    WAH_ASSERT(ctx && "Call context is NULL"); \
-    WAH_ASSERT(index < ctx->nresults && "Result index out of bounds"); \
-    WAH_ASSERT(ctx->result_types[index] == ty && "Result type mismatch"); \
-    ctx->results[index].field = value
+int32_t wah_param_i32(const wah_call_context_t *ctx, size_t index);
+int64_t wah_param_i64(const wah_call_context_t *ctx, size_t index);
+float wah_param_f32(const wah_call_context_t *ctx, size_t index);
+double wah_param_f64(const wah_call_context_t *ctx, size_t index);
+wah_v128_t wah_param_v128(const wah_call_context_t *ctx, size_t index);
+void *wah_param_ref(const wah_call_context_t *ctx, size_t index);
+wah_type_t wah_param_type(const wah_call_context_t *ctx, size_t index);
 
-static inline int32_t wah_param_i32(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(WAH_TYPE_I32, i32); }
-static inline int64_t wah_param_i64(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(WAH_TYPE_I64, i64); }
-static inline float wah_param_f32(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(WAH_TYPE_F32, f32); }
-static inline double wah_param_f64(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(WAH_TYPE_F64, f64); }
-
-static inline void wah_result_i32(wah_call_context_t *ctx, size_t index, int32_t value) { WAH_RESULT(WAH_TYPE_I32, i32); }
-static inline void wah_result_i64(wah_call_context_t *ctx, size_t index, int64_t value) { WAH_RESULT(WAH_TYPE_I64, i64); }
-static inline void wah_result_f32(wah_call_context_t *ctx, size_t index, float value) { WAH_RESULT(WAH_TYPE_F32, f32); }
-static inline void wah_result_f64(wah_call_context_t *ctx, size_t index, double value) { WAH_RESULT(WAH_TYPE_F64, f64); }
-
-#undef WAH_PARAM
-#undef WAH_RESULT
+void wah_result_i32(wah_call_context_t *ctx, size_t index, int32_t value);
+void wah_result_i64(wah_call_context_t *ctx, size_t index, int64_t value);
+void wah_result_f32(wah_call_context_t *ctx, size_t index, float value);
+void wah_result_f64(wah_call_context_t *ctx, size_t index, double value);
+void wah_result_v128(wah_call_context_t *ctx, size_t index, const wah_v128_t *value);
+void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value);
+wah_type_t wah_result_type(const wah_call_context_t *ctx, size_t index);
 
 // Convenience macros for single return values
 #define wah_return_i32(ctx, value) wah_result_i32(ctx, 0, value)
@@ -693,6 +676,7 @@ typedef struct wah_gc_heap_stats_s {
 wah_error_t wah_gc_start(wah_exec_context_t *ctx);
 // Returns current GC heap statistics.
 void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats);
+void wah_gc_heap_stats_from_host(const wah_call_context_t *ctx, wah_gc_heap_stats_t *stats);
 // Verifies GC heap consistency. Returns true if valid. Logs errors via WAH_LOG in debug builds.
 bool wah_gc_verify_heap(const wah_exec_context_t *ctx);
 // Allocates an opaque host object on the GC heap. Returns a pointer to the payload of the given size, or NULL on failure.
@@ -701,6 +685,7 @@ void *wah_gc_alloc_host(wah_exec_context_t *ctx, size_t size);
 // Requests an interrupt from the interpreter. Safe to call from another thread.
 // The interpreter will yield at the next POLL/TICK point.
 void wah_request_interrupt(wah_exec_context_t *ctx);
+void wah_request_interrupt_from_host(wah_call_context_t *ctx);
 
 // Returns true if an interrupt has been requested and not yet consumed.
 // Safe to call from another thread.
@@ -737,6 +722,17 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 #define WAH_NO_THREADS
 #endif
 #endif
+
+struct wah_call_context_s {
+    struct wah_exec_context_s *exec;
+
+    size_t nparams, nresults;
+    const wah_value_t *params;
+    wah_value_t *results;
+    const wah_type_t *param_types, *result_types;
+
+    wah_error_t trap_reason;
+};
 
 ////////////////////////////////////////////////////////////////////////////////
 // Support macros //////////////////////////////////////////////////////////////
@@ -8968,6 +8964,11 @@ void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats
     };
 }
 
+void wah_gc_heap_stats_from_host(const wah_call_context_t *ctx, wah_gc_heap_stats_t *stats) {
+    WAH_ASSERT(ctx && "Call context is NULL");
+    wah_gc_heap_stats(ctx->exec, stats);
+}
+
 bool wah_gc_verify_heap(const wah_exec_context_t *ctx) {
     if (!ctx->gc) return true;
     const wah_gc_state_t *gc = ctx->gc;
@@ -9002,6 +9003,9 @@ void wah_gc_step(wah_exec_context_t *ctx) { (void)ctx; }
 void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats) {
     (void)ctx; *stats = (wah_gc_heap_stats_t){0};
 }
+void wah_gc_heap_stats_from_host(const wah_call_context_t *ctx, wah_gc_heap_stats_t *stats) {
+    (void)ctx; *stats = (wah_gc_heap_stats_t){0};
+}
 bool wah_gc_verify_heap(const wah_exec_context_t *ctx) { (void)ctx; return true; }
 
 static inline void wah_ref_store_global(wah_exec_context_t *ctx, uint32_t idx, wah_value_t val) {
@@ -9030,6 +9034,11 @@ void wah_request_interrupt(wah_exec_context_t *ctx) {
     if (!ctx) return;
     WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 1);
     WAH_POLL_FLAG_STORE(ctx->poll_flag, 1);
+}
+
+void wah_request_interrupt_from_host(wah_call_context_t *ctx) {
+    if (!ctx) return;
+    wah_request_interrupt(ctx->exec);
 }
 
 bool wah_is_interrupted(const wah_exec_context_t *ctx) {
@@ -14510,6 +14519,54 @@ wah_error_t wah_module_export_global_v128(wah_module_t *mod, const char *name, b
 }
 
 // --- Call Context Implementation ---
+
+#define WAH_PARAM(ty, field) \
+    WAH_ASSERT(ctx && "Call context is NULL"); \
+    WAH_ASSERT(index < ctx->nparams && "Parameter index out of bounds"); \
+    WAH_ASSERT(ctx->param_types[index] == WAH_TYPE_##ty && "Parameter type mismatch"); \
+    return ctx->params[index].field
+#define WAH_RESULT(ty, field, pre) \
+    WAH_ASSERT(ctx && "Call context is NULL"); \
+    WAH_ASSERT(index < ctx->nresults && "Result index out of bounds"); \
+    WAH_ASSERT(ctx->result_types[index] == WAH_TYPE_##ty && "Result type mismatch"); \
+    ctx->results[index].field = pre value
+
+int32_t wah_param_i32(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(I32, i32); }
+int64_t wah_param_i64(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(I64, i64); }
+float wah_param_f32(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(F32, f32); }
+double wah_param_f64(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(F64, f64); }
+wah_v128_t wah_param_v128(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(V128, v128); }
+void *wah_param_ref(const wah_call_context_t *ctx, size_t index) {
+    WAH_ASSERT(ctx && "Call context is NULL");
+    WAH_ASSERT(index < ctx->nparams && "Parameter index out of bounds");
+    WAH_ASSERT(WAH_TYPE_IS_REF(ctx->param_types[index]) && "Parameter type mismatch");
+    return ctx->params[index].ref;
+}
+wah_type_t wah_param_type(const wah_call_context_t *ctx, size_t index) {
+    WAH_ASSERT(ctx && "Call context is NULL");
+    WAH_ASSERT(index < ctx->nparams && "Parameter index out of bounds");
+    return ctx->param_types[index];
+}
+
+void wah_result_i32(wah_call_context_t *ctx, size_t index, int32_t value) { WAH_RESULT(I32, i32, ); }
+void wah_result_i64(wah_call_context_t *ctx, size_t index, int64_t value) { WAH_RESULT(I64, i64, ); }
+void wah_result_f32(wah_call_context_t *ctx, size_t index, float value) { WAH_RESULT(F32, f32, ); }
+void wah_result_f64(wah_call_context_t *ctx, size_t index, double value) { WAH_RESULT(F64, f64, ); }
+void wah_result_v128(wah_call_context_t *ctx, size_t index, const wah_v128_t *value) { WAH_RESULT(V128, v128, *); }
+void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value) {
+    WAH_ASSERT(ctx && "Call context is NULL");
+    WAH_ASSERT(index < ctx->nresults && "Result index out of bounds");
+    WAH_ASSERT(WAH_TYPE_IS_REF(ctx->result_types[index]) && "Result type mismatch");
+    ctx->results[index].ref = value;
+}
+wah_type_t wah_result_type(const wah_call_context_t *ctx, size_t index) {
+    WAH_ASSERT(ctx && "Call context is NULL");
+    WAH_ASSERT(index < ctx->nresults && "Result index out of bounds");
+    return ctx->result_types[index];
+}
+
+#undef WAH_PARAM
+#undef WAH_RESULT
 
 void wah_trap(wah_call_context_t *ctx, wah_error_t reason) {
     WAH_ASSERT(ctx && "Call context is NULL");

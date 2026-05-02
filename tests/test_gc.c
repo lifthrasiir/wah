@@ -51,7 +51,7 @@ static void host_trigger_gc(wah_call_context_t *cc, void *ud) {
 static void host_gc_object_count(wah_call_context_t *cc, void *ud) {
     (void)ud;
     wah_gc_heap_stats_t stats;
-    wah_gc_heap_stats(cc->exec, &stats);
+    wah_gc_heap_stats_from_host(cc, &stats);
     wah_return_i32(cc, (int32_t)stats.object_count);
 }
 

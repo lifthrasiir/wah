@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include "../wah.h"
+#include "wah_impl.h"
 #include "common.h"
 
 #if defined(_WIN32)
@@ -47,7 +48,7 @@ static void test_interrupt_without_gc(void) {
 
 static void host_observe_interrupt(wah_call_context_t *call, void *userdata) {
     (void)userdata;
-    wah_result_i32(call, 0, wah_is_interrupted(call->exec) ? 1 : 0);
+    wah_result_i32(call, 0, wah_debug_is_interrupted_from_host(call) ? 1 : 0);
 }
 
 static void test_is_interrupted_in_host_function(void) {

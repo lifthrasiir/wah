@@ -222,17 +222,17 @@ static int host_externref_identity_called = 0;
 static void host_externref_identity(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
     host_externref_identity_called = 1;
-    ctx->results[0].ref = ctx->params[0].ref;
+    wah_result_ref(ctx, 0, wah_param_ref(ctx, 0));
 }
 
 static void host_externref_is_null(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
-    wah_return_i32(ctx, ctx->params[0].ref == NULL ? 1 : 0);
+    wah_return_i32(ctx, wah_param_ref(ctx, 0) == NULL ? 1 : 0);
 }
 
 static void host_return_externref(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
-    ctx->results[0].ref = (void *)(uintptr_t)0xDEADBEEF;
+    wah_result_ref(ctx, 0, (void *)(uintptr_t)0xDEADBEEF);
 }
 
 static void test_externref_host_roundtrip() {

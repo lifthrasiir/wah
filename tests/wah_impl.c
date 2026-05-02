@@ -355,3 +355,7 @@ cleanup:
 void wah_debug_gc_step(wah_exec_context_t *ctx) {
     wah_gc_step(ctx);
 }
+
+bool wah_debug_is_interrupted_from_host(const wah_call_context_t *ctx) {
+    return ctx && wah_is_interrupted(ctx->exec);
+}

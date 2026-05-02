@@ -14,9 +14,9 @@ static void add_i32_host(wah_call_context_t *ctx, void *userdata) {
 static bool flags_checked = false;
 static void check_flags_host(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
-    assert_true(WAH_TYPE_IS_NULLABLE(ctx->param_types[0]));
-    assert_true(!WAH_TYPE_IS_NULLABLE(ctx->param_types[1]));
-    assert_true(!WAH_TYPE_IS_NULLABLE(ctx->result_types[0]));
+    assert_true(WAH_TYPE_IS_NULLABLE(wah_param_type(ctx, 0)));
+    assert_true(!WAH_TYPE_IS_NULLABLE(wah_param_type(ctx, 1)));
+    assert_true(!WAH_TYPE_IS_NULLABLE(wah_result_type(ctx, 0)));
     flags_checked = true;
     wah_return_i32(ctx, 1);
 }

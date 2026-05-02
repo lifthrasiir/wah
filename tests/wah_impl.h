@@ -93,5 +93,6 @@ void wah_debug_free_type_spec(wah_debug_type_spec_t *spec);
 
 // --- GC ---
 void wah_debug_gc_step(wah_exec_context_t *ctx);
+bool wah_debug_is_interrupted_from_host(const wah_call_context_t *ctx);
 
 #endif

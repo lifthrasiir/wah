@@ -8,7 +8,7 @@
 
 static void host_request_interrupt(wah_call_context_t *call, void *userdata) {
     (void)userdata;
-    wah_request_interrupt(call->exec);
+    wah_request_interrupt_from_host(call);
 }
 
 static void resume_to_ok(wah_exec_context_t *ctx) {

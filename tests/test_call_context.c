@@ -111,100 +111,81 @@ int main() {
     // Test 1: Param accessors
     printf("Test 1: Param accessors\n");
     {
-        wah_call_context_t ctx = {0};
-
-        // Set up params
-        int32_t i32_val = 42;
-        int64_t i64_val = 1234567890123LL;
-        float f32_val = 3.14f;
-        double f64_val = 2.71828;
+        wah_module_t mod = {0};
+        wah_exec_context_t exec = {0};
 
         wah_value_t params[4] = {
-            {.i32 = i32_val},
-            {.i64 = i64_val},
-            {.f32 = f32_val},
-            {.f64 = f64_val}
+            {.i32 = 42},
+            {.i64 = 1234567890123LL},
+            {.f32 = 3.14f},
+            {.f64 = 2.71828}
         };
 
-        wah_type_t param_types[4] = {
-            WAH_TYPE_I32,
-            WAH_TYPE_I64,
-            WAH_TYPE_F32,
-            WAH_TYPE_F64
-        };
-
-        ctx.params = params;
-        ctx.nparams = 4;
-        ctx.param_types = param_types;
-
-        test_params(&ctx, NULL);
-
-        assert_err(ctx.trap_reason, WAH_OK);
+        assert_ok(wah_new_module(&mod, NULL));
+        assert_ok(wah_module_export_func(&mod, "test", "(i32, i64, f32, f64) -> ()",
+            test_params, NULL, NULL));
+        assert_ok(wah_exec_context_create(&exec, &mod, NULL));
+        assert_ok(wah_call(&exec, 0, params, 4, NULL));
+        wah_exec_context_destroy(&exec);
+        wah_free_module(&mod);
     }
 
     // Test 2: Result accessors
     printf("Test 2: Result accessors\n");
     {
-        wah_call_context_t ctx = {0};
-        wah_value_t results[4];
-        memset(results, 0, sizeof(results));
+        wah_module_t mod = {0};
+        wah_exec_context_t exec = {0};
+        wah_value_t results[4] = {{0}};
+        uint32_t actual_results = 0;
 
-        wah_type_t result_types[4] = {
-            WAH_TYPE_I32,
-            WAH_TYPE_I64,
-            WAH_TYPE_F32,
-            WAH_TYPE_F64
-        };
-
-        ctx.results = results;
-        ctx.nresults = 4;
-        ctx.result_types = result_types;
-
-        test_results(&ctx, NULL);
+        assert_ok(wah_new_module(&mod, NULL));
+        assert_ok(wah_module_export_func(&mod, "test", "() -> (i32, i64, f32, f64)",
+            test_results, NULL, NULL));
+        assert_ok(wah_exec_context_create(&exec, &mod, NULL));
+        assert_ok(wah_call_multi(&exec, 0, NULL, 0, results, 4, &actual_results));
+        assert_eq_u32(actual_results, 4);
 
         assert_eq_i32(results[0].i32, 100);
         assert_eq_i64(results[1].i64, 2000000000000LL);
         assert_eq_f32(results[2].f32, 1.5f, 1e-5f);
         assert_eq_f64(results[3].f64, 2.5, 1e-5);
+        wah_exec_context_destroy(&exec);
+        wah_free_module(&mod);
     }
 
     // Test 3: Return macros
     printf("Test 3: Return macros\n");
     {
-        wah_call_context_t ctx = {0};
-        wah_value_t results[1];
-        memset(results, 0, sizeof(results));
+        wah_module_t mod = {0};
+        wah_exec_context_t exec = {0};
+        wah_value_t result = {0};
 
-        wah_type_t result_types[1] = { WAH_TYPE_F64 };
-
-        ctx.results = results;
-        ctx.nresults = 1;
-        ctx.result_types = result_types;
-
-        test_returns(&ctx, NULL);
+        assert_ok(wah_new_module(&mod, NULL));
+        assert_ok(wah_module_export_func(&mod, "test", "() -> f64",
+            test_returns, NULL, NULL));
+        assert_ok(wah_exec_context_create(&exec, &mod, NULL));
+        assert_ok(wah_call(&exec, 0, NULL, 0, &result));
 
         // Verify results
-        assert_eq_f64(results[0].f64, 3.14, 1e-5);
+        assert_eq_f64(result.f64, 3.14, 1e-5);
+        wah_exec_context_destroy(&exec);
+        wah_free_module(&mod);
     }
 
     // Test 4: Trap
     printf("Test 4: Trap\n");
     {
-        wah_call_context_t ctx = {0};
-        wah_value_t results[1];
-        memset(results, 0, sizeof(results));
+        wah_module_t mod = {0};
+        wah_exec_context_t exec = {0};
+        wah_value_t result = {0};
 
-        wah_type_t result_types[1] = { WAH_TYPE_I32 };
-
-        ctx.results = results;
-        ctx.nresults = 1;
-        ctx.result_types = result_types;
-
-        test_trap_func(&ctx, NULL);
-
-        assert_err(ctx.trap_reason, WAH_ERROR_TRAP);
-
-        // results[0] is not guaranteed to be preserved after a trap, but in our implementation it is
+        assert_ok(wah_new_module(&mod, NULL));
+        assert_ok(wah_module_export_func(&mod, "test", "() -> i32",
+            test_trap_func, NULL, NULL));
+        assert_ok(wah_exec_context_create(&exec, &mod, NULL));
+        assert_err(wah_call(&exec, 0, NULL, 0, &result), WAH_ERROR_TRAP);
+        wah_exec_context_destroy(&exec);
+        wah_free_module(&mod);
     }
 
     // Test 5: write result THEN read param -- (i32) -> (i32), overlap at index 0
