@@ -246,27 +246,25 @@ typedef uint64_t wah_features_t;
 
 // Macros: WAH_FEATURE_*
 //   Bit flags for supported WebAssembly proposals.
-#define WAH_FEATURE_MULTI_VALUE      (UINT64_C(1) << 0)   // Multi-value (2.0)
-#define WAH_FEATURE_MUTABLE_GLOBALS  (UINT64_C(1) << 1)   // Mutable globals (2.0)
-#define WAH_FEATURE_SIGN_EXT         (UINT64_C(1) << 2)   // Sign-extension operators (2.0)
-#define WAH_FEATURE_NONTRAPPING_F2I  (UINT64_C(1) << 3)   // Non-trapping float-to-int conversions (2.0)
-#define WAH_FEATURE_BULK_MEMORY      (UINT64_C(1) << 4)   // Bulk memory operations (2.0)
-#define WAH_FEATURE_REF_TYPES        (UINT64_C(1) << 5)   // Reference types (2.0)
-#define WAH_FEATURE_SIMD             (UINT64_C(1) << 6)   // 128-bit SIMD (2.0)
-#define WAH_FEATURE_TAIL_CALL        (UINT64_C(1) << 7)   // Tail calls (3.0)
-#define WAH_FEATURE_EXCEPTION        (UINT64_C(1) << 8)   // Exception handling (3.0)
-#define WAH_FEATURE_GC               (UINT64_C(1) << 9)   // GC (3.0)
-#define WAH_FEATURE_TYPED_FUNCREF    (UINT64_C(1) << 10)  // Typed funcrefs (3.0)
-#define WAH_FEATURE_MEMORY64         (UINT64_C(1) << 11)  // Memory64 & table64 (3.0)
-#define WAH_FEATURE_RELAXED_SIMD     (UINT64_C(1) << 12)  // Relaxed SIMD (3.0)
+#define WAH_FEATURE_MVP              (UINT64_C(1) << 0)   // 1.0 MVP, always implied even when not given
+#define WAH_FEATURE_MULTI_VALUE      (UINT64_C(1) << 1)   // Multi-value (2.0)
+#define WAH_FEATURE_MUTABLE_GLOBALS  (UINT64_C(1) << 2)   // Mutable globals (2.0)
+#define WAH_FEATURE_SIGN_EXT         (UINT64_C(1) << 3)   // Sign-extension operators (2.0)
+#define WAH_FEATURE_NONTRAPPING_F2I  (UINT64_C(1) << 4)   // Non-trapping float-to-int conversions (2.0)
+#define WAH_FEATURE_BULK_MEMORY      (UINT64_C(1) << 5)   // Bulk memory operations (2.0)
+#define WAH_FEATURE_REF_TYPES        (UINT64_C(1) << 6)   // Reference types (2.0)
+#define WAH_FEATURE_SIMD             (UINT64_C(1) << 7)   // 128-bit SIMD (2.0)
+#define WAH_FEATURE_TAIL_CALL        (UINT64_C(1) << 8)   // Tail calls (3.0)
+#define WAH_FEATURE_EXCEPTION        (UINT64_C(1) << 9)   // Exception handling (3.0)
+#define WAH_FEATURE_GC               (UINT64_C(1) << 10)  // GC (3.0)
+#define WAH_FEATURE_TYPED_FUNCREF    (UINT64_C(1) << 11)  // Typed funcrefs (3.0)
+#define WAH_FEATURE_MEMORY64         (UINT64_C(1) << 12)  // Memory64 & table64 (3.0)
+#define WAH_FEATURE_RELAXED_SIMD     (UINT64_C(1) << 13)  // Relaxed SIMD (3.0)
 
-// Macro: WAH_FEATURE_MVP
-//   WebAssembly 1.0 (MVP) features. Cannot be disabled, hence zero.
-#define WAH_FEATURE_MVP UINT64_C(0)
 // Macro: WAH_FEATURE_WASM_V2
 //   WebAssembly 2.0 features.
 #define WAH_FEATURE_WASM_V2 ( \
-    WAH_FEATURE_MULTI_VALUE | WAH_FEATURE_MUTABLE_GLOBALS | WAH_FEATURE_SIGN_EXT | \
+    WAH_FEATURE_MVP | WAH_FEATURE_MULTI_VALUE | WAH_FEATURE_MUTABLE_GLOBALS | WAH_FEATURE_SIGN_EXT | \
     WAH_FEATURE_NONTRAPPING_F2I | WAH_FEATURE_BULK_MEMORY | WAH_FEATURE_REF_TYPES | WAH_FEATURE_SIMD)
 // Macro: WAH_FEATURE_WASM_V3
 //   WebAssembly 3.0 features.
@@ -1363,26 +1361,26 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 static inline wah_features_t wah_feature_closure(wah_features_t f) {
     if (f & WAH_FEATURE_RELAXED_SIMD) f |= WAH_FEATURE_SIMD;
     if (f & (WAH_FEATURE_GC | WAH_FEATURE_TYPED_FUNCREF)) f |= WAH_FEATURE_REF_TYPES;
-    return f;
+    return f | WAH_FEATURE_MVP;
 }
 
-#define WAH_FEATURE_SHIFT_                   -1 // Always available
-#define WAH_FEATURE_SHIFT_MULTI_VALUE        0
-#define WAH_FEATURE_SHIFT_MUTABLE_GLOBALS    1
-#define WAH_FEATURE_SHIFT_SIGN_EXT           2
-#define WAH_FEATURE_SHIFT_NONTRAPPING_F2I    3
-#define WAH_FEATURE_SHIFT_BULK_MEMORY        4
-#define WAH_FEATURE_SHIFT_REF_TYPES          5
-#define WAH_FEATURE_SHIFT_SIMD               6
-#define WAH_FEATURE_SHIFT_TAIL_CALL          7
-#define WAH_FEATURE_SHIFT_EXCEPTION          8
-#define WAH_FEATURE_SHIFT_GC                 9
-#define WAH_FEATURE_SHIFT_TYPED_FUNCREF      10
-#define WAH_FEATURE_SHIFT_MEMORY64           11
-#define WAH_FEATURE_SHIFT_RELAXED_SIMD       12
+#define WAH_FEATURE_SHIFT_                   0 // Always available
+#define WAH_FEATURE_SHIFT_MULTI_VALUE        1
+#define WAH_FEATURE_SHIFT_MUTABLE_GLOBALS    2
+#define WAH_FEATURE_SHIFT_SIGN_EXT           3
+#define WAH_FEATURE_SHIFT_NONTRAPPING_F2I    4
+#define WAH_FEATURE_SHIFT_BULK_MEMORY        5
+#define WAH_FEATURE_SHIFT_REF_TYPES          6
+#define WAH_FEATURE_SHIFT_SIMD               7
+#define WAH_FEATURE_SHIFT_TAIL_CALL          8
+#define WAH_FEATURE_SHIFT_EXCEPTION          9
+#define WAH_FEATURE_SHIFT_GC                 10
+#define WAH_FEATURE_SHIFT_TYPED_FUNCREF      11
+#define WAH_FEATURE_SHIFT_MEMORY64           12
+#define WAH_FEATURE_SHIFT_RELAXED_SIMD       13
 
 static inline wah_error_t wah_require_feature(wah_module_t *module, int8_t shift) {
-    if (shift < 0) return WAH_OK;
+    if (shift == 0) return WAH_OK;
     wah_features_t bit = UINT64_C(1) << shift;
     module->required_features |= bit;
     return (module->enabled_features & bit) ? WAH_OK : WAH_ERROR_DISABLED_FEATURE;
@@ -1823,7 +1821,7 @@ static const uint8_t wah_opclasses[WAH_FE] = {
 #undef WAH_OPCLASS_INIT
 };
 
-static const int8_t wah_opcode_features[WAH_FE] = {
+static const uint8_t wah_opcode_features[WAH_FE] = {
 #define WAH_OPCODE_FEATURE_INIT(name, cls, val, feat) [WAH_OP_##name] = WAH_FEATURE_SHIFT_##feat,
     WAH_OPCODES(WAH_OPCODE_FEATURE_INIT)
 #undef WAH_OPCODE_FEATURE_INIT
@@ -8906,7 +8904,7 @@ wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t
     module->alloc = wah_resolve_alloc(options ? options->alloc : NULL);
     const wah_alloc_t *alloc = &module->alloc;
 
-    wah_features_t requested = options ? options->features : (WAH_DEFAULT_FEATURES);
+    wah_features_t requested = options && options->features ? options->features : (WAH_DEFAULT_FEATURES);
     module->enabled_features = wah_feature_closure(requested) & (WAH_COMPILED_FEATURES);
     module->required_features = 0;
     module->fuel_metering = options && options->enable_fuel_metering;
@@ -15050,11 +15048,16 @@ void wah_result_i32(wah_call_context_t *ctx, size_t index, int32_t value) { WAH_
 void wah_result_i64(wah_call_context_t *ctx, size_t index, int64_t value) { WAH_RESULT(I64, i64, ); }
 void wah_result_f32(wah_call_context_t *ctx, size_t index, float value) { WAH_RESULT(F32, f32, ); }
 void wah_result_f64(wah_call_context_t *ctx, size_t index, double value) { WAH_RESULT(F64, f64, ); }
-void wah_result_v128(wah_call_context_t *ctx, size_t index, const wah_v128_t *value) { WAH_RESULT(V128, v128, *); }
+void wah_result_v128(wah_call_context_t *ctx, size_t index, const wah_v128_t *value) {
+    WAH_ASSERT(value && "Value is NULL");
+    WAH_RESULT(V128, v128, *);
+}
 void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value) {
     WAH_ASSERT(ctx && "Call context is NULL");
     WAH_ASSERT(index < ctx->nresults && "Result index out of bounds");
     WAH_ASSERT(WAH_TYPE_IS_REF(ctx->result_types[index]) && "Result type mismatch");
+    WAH_ASSERT((value != NULL || WAH_TYPE_IS_NULLABLE(ctx->result_types[index])) &&
+               "Non-nullable reference result cannot be set to NULL");
     ctx->results[index].ref = value;
 }
 wah_type_t wah_result_type(const wah_call_context_t *ctx, size_t index) {
