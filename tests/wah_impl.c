@@ -231,17 +231,40 @@ static wah_exec_context_t *relocate_ctx_ptr(wah_exec_context_t *p, void *old_bas
     return (wah_exec_context_t *)((char *)p + delta);
 }
 
+static const wah_module_t *relocate_module_ptr(const wah_module_t *p, void *old_base, size_t byte_size, ptrdiff_t delta) {
+    if (!p || !ptr_in_range(p, old_base, byte_size)) return p;
+    return (const wah_module_t *)((const char *)p + delta);
+}
+
 void wah_debug_relocate_exec_refs(wah_exec_context_t *ctx, void *old_base, size_t byte_size, ptrdiff_t delta) {
     if (!ctx || !old_base || byte_size == 0 || delta == 0) return;
-    ctx->module = (const wah_module_t *)relocate_ctx_ptr((wah_exec_context_t *)ctx->module, old_base, byte_size, delta);
+    ctx->module = relocate_module_ptr(ctx->module, old_base, byte_size, delta);
     for (uint32_t i = 0; i < ctx->linked_module_count; i++) {
-        ctx->linked_modules[i].module =
-            (const wah_module_t *)relocate_ctx_ptr((wah_exec_context_t *)ctx->linked_modules[i].module, old_base, byte_size, delta);
+        ctx->linked_modules[i].module = relocate_module_ptr(ctx->linked_modules[i].module, old_base, byte_size, delta);
         ctx->linked_modules[i].ctx = relocate_ctx_ptr(ctx->linked_modules[i].ctx, old_base, byte_size, delta);
+        if (ctx->linked_modules[i].owns_ctx && ctx->linked_modules[i].ctx) {
+            ctx->linked_modules[i].ctx->module =
+                relocate_module_ptr(ctx->linked_modules[i].ctx->module, old_base, byte_size, delta);
+        }
     }
     for (uint32_t i = 0; i < ctx->function_table_count; i++) {
         if (!ctx->function_table[i].is_host) {
+            ctx->function_table[i].fn_module =
+                relocate_module_ptr(ctx->function_table[i].fn_module, old_base, byte_size, delta);
             ctx->function_table[i].fn_ctx = relocate_ctx_ptr(ctx->function_table[i].fn_ctx, old_base, byte_size, delta);
+        }
+    }
+    for (uint32_t i = 0; i < ctx->call_depth; i++) {
+        wah_call_frame_t *frame = ctx->frame_ptr + i;
+        frame->module = relocate_module_ptr(frame->module, old_base, byte_size, delta);
+        frame->frame_ctx = relocate_ctx_ptr(frame->frame_ctx, old_base, byte_size, delta);
+    }
+    if (ctx->type_check_cache) {
+        for (uint32_t i = 0; i < WAH_TYPE_CHECK_CACHE_SIZE; i++) {
+            ctx->type_check_cache[i].sub_module =
+                relocate_module_ptr(ctx->type_check_cache[i].sub_module, old_base, byte_size, delta);
+            ctx->type_check_cache[i].sup_module =
+                relocate_module_ptr(ctx->type_check_cache[i].sup_module, old_base, byte_size, delta);
         }
     }
     for (uint32_t i = 0; i < ctx->table_count; i++) {
