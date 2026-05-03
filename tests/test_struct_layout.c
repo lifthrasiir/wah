@@ -142,7 +142,7 @@ static void test_parse_rebuild_path(void) {
     wah_debug_repr_field_t fields[3] = {{0}};
 
     assert_ok(wah_parse_module_from_spec(&mod, spec));
-    get_repr(&mod, WAH_TYPE_FROM_IDX(0, false), &info, fields, 3);
+    get_repr(&mod, wah_debug_type_from_idx(0, false), &info, fields, 3);
     assert_eq_u32(info.type, DEBUG_REPR_STRUCT);
     assert_eq_u32(info.size, 32);
     assert_eq_u32(fields[0].offset, 0);

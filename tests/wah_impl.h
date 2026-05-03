@@ -43,6 +43,10 @@ uint64_t wah_debug_table_size(const wah_exec_context_t *ctx, uint32_t tbl_idx);
 wah_value_t wah_debug_global_value(const wah_exec_context_t *ctx,
     const wah_module_t *mod, uint32_t global_idx);
 
+// --- Type index helpers (mirror internal WAH_TYIDX / WAH_TYPE_FROM_IDX macros) ---
+uint32_t wah_debug_typidx(wah_type_t t);
+wah_type_t wah_debug_type_from_idx(uint32_t idx, bool nullable);
+
 // --- Element segment accessors ---
 wah_error_t wah_debug_element_segment(const wah_module_t *mod, uint32_t idx,
     wah_type_t *out_elem_type);

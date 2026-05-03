@@ -165,6 +165,14 @@ bool wah_debug_is_func_ref_in_module(const wah_module_t *mod, const void *ref) {
                                 sizeof(wah_function_t), ref) != 0;
 }
 
+uint32_t wah_debug_typidx(wah_type_t t) {
+    return WAH_TYIDX(t);
+}
+
+wah_type_t wah_debug_type_from_idx(uint32_t idx, bool nullable) {
+    return WAH_TYPE_FROM_IDX(idx, nullable);
+}
+
 bool wah_debug_type_is_exnref(const wah_module_t *mod, wah_type_t type) {
     if (!mod || !WAH_TYPE_IS_REF(type)) return false;
     return wah_type_is_subtype(type, WAH_TYPE_EXNREF, mod);

@@ -17,7 +17,7 @@ static void count_ref_roots_visitor(wah_value_t *slot, wah_type_t type, void *ud
 
 static void count_funcref_roots_visitor(wah_value_t *slot, wah_type_t type, void *ud) {
     (void)slot;
-    assert(WAH_TYPE_IS_FUNCREF(type));
+    assert(WAH_TYPE_AS_NULLABLE(type) == WAH_TYPE_FUNCREF);
     (*(uint32_t*)ud)++;
 }
 

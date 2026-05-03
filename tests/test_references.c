@@ -678,7 +678,7 @@ static void test_typed_ref_decoding() {
         assert_ok(wah_parse_module_from_spec(&module, spec));
         { wah_type_desc_t td;
           assert_ok(wah_module_type(&module, 0, &td));
-          assert(td.result_count == 1); assert(WAH_TYIDX(td.result_types[0]) == 0); assert(WAH_TYPE_IS_NULLABLE(td.result_types[0])); }
+          assert(td.result_count == 1); assert(wah_debug_typidx(td.result_types[0]) == 0); assert(WAH_TYPE_IS_NULLABLE(td.result_types[0])); }
         wah_free_module(&module);
     }
 }

@@ -236,17 +236,22 @@ typedef int32_t wah_type_t;
 #define WAH_TYPE_NOEXN         -54  // (ref noexn)
 #define WAH_TYPE_NULLEXNREF    -53  // (ref null noexn) = nullexnref
 
-#define WAH_TYPE_IS_NULLABLE(t)    ((t) & 1)
-#define WAH_TYPE_AS_NULLABLE(t)    ((t) | 1)
-#define WAH_TYPE_AS_NON_NULL(t)    ((t) & ~(wah_type_t)1)
-#define WAH_TYIDX(t)               ((uint32_t)(t) >> 1)
-#define WAH_TYPE_FROM_IDX(i, null) ((wah_type_t)((i) * 2 + !!(null)))
-#define WAH_MAX_TYPE_INDEX         ((uint32_t)INT32_MAX >> 1)
+// Macro: WAH_TYPE_IS_NULLABLE(t)
+//   Returns true if the given type is nullable (i.e. a reference type with nullability).
+#define WAH_TYPE_IS_NULLABLE(t)  ((t) & 1)
+// Macro: WAH_TYPE_AS_NULLABLE(t)
+//   Converts the given type to its nullable version. Only valid for ref types.
+#define WAH_TYPE_AS_NULLABLE(t)  ((t) | 1)
+// Macro: WAH_TYPE_AS_NON_NULL(t)
+//   Converts the given type to its non-nullable version. Only valid for ref types.
+#define WAH_TYPE_AS_NON_NULL(t)  ((t) & ~(wah_type_t)1)
 
-#define WAH_TYPE_IS_PACKED(t)   ((t) == WAH_TYPE_PACKED_I8 || (t) == WAH_TYPE_PACKED_I16)
-#define WAH_TYPE_IS_FUNCREF(t)  ((t) == WAH_TYPE_FUNCREF || (t) == WAH_TYPE_FUNC)
-#define WAH_TYPE_IS_EXTERNREF(t) ((t) == WAH_TYPE_EXTERNREF || (t) == WAH_TYPE_EXTERN)
-#define WAH_TYPE_IS_REF(t)      (((t) <= -31 && (t) >= -54) || (t) >= 0)
+// Macro: WAH_TYPE_IS_PACKED(t)
+//   Returns true if the given type is a packed integer type (i8 or i16).
+#define WAH_TYPE_IS_PACKED(t)    ((t) == WAH_TYPE_PACKED_I8 || (t) == WAH_TYPE_PACKED_I16)
+// Macro: WAH_TYPE_IS_REF(t)
+//   Returns true if the given type is any kind of reference type (including nullref).
+#define WAH_TYPE_IS_REF(t)       (((t) <= -31 && (t) >= -54) || (t) >= 0)
 
 // Typedef: wah_features_t
 //   Bitmap of supported WebAssembly features. See WAH_FEATURE_* macros below.
@@ -350,9 +355,17 @@ typedef uint64_t wah_features_t;
 #define WAH_BULK_ITEMS_PER_FUEL 4096
 #endif
 
+// Enum: wah_comp_type_kind_t
+//   The kind of a component type (function, struct or array).
 typedef enum {
+    // Variant: WAH_COMP_FUNC
+    //   A function type.
     WAH_COMP_FUNC   = 0x60,
+    // Variant: WAH_COMP_STRUCT
+    //   A struct type.
     WAH_COMP_STRUCT = 0x5F,
+    // Variant: WAH_COMP_ARRAY
+    //   An array type.
     WAH_COMP_ARRAY  = 0x5E,
 } wah_comp_type_kind_t;
 
@@ -367,23 +380,46 @@ typedef enum {
 // Struct: wah_type_desc_t
 //   Describes a defined type.
 typedef struct {
+    // Field: kind
+    //   The kind of the type, one of WAH_COMP_* macros.
     wah_comp_type_kind_t kind;
+    // Field: is_final
+    //   Set to true if the type is not open for subtyping.
     bool is_final;
-    uint32_t supertype; // UINT32_MAX if no supertype
-    uint32_t rec_group_start;
-    uint32_t rec_group_size;
+    // Field: supertype
+    //   The index of the supertype designated, or UINT32_MAX if none.
+    uint32_t supertype;
+    // Field: param_count
+    // Field: result_count
+    //   The number of parameters and results of the function type, or 0 otherwise.
     uint32_t param_count, result_count;
+    // Field: param_types [borrowed]
+    // Field: result_types [borrowed]
+    //   The parameter and result types of the function type, or NULL otherwise.
     const wah_type_t *param_types, *result_types;
+    // Field: field_count
+    //   The number of fields of the struct or array type, or 0 otherwise.
+    //   Note that arrays only have one implicit field representing the element type.
     uint32_t field_count;
+    // Field: field_types [borrowed]
+    //   The field types of the struct or array type, or NULL otherwise.
     const wah_type_t *field_types;
+    // Field: field_mutables [borrowed]
+    //   The mutability of fields of the struct type, or NULL otherwise.
     const bool *field_mutables;
 } wah_type_desc_t;
 
 // Struct: wah_func_desc_t
 //   Describes a defined or imported function.
 typedef struct {
+    // Field: is_import
+    //   Set to true if the function is imported, false if defined in the module.
     bool is_import;
+    // Field: is_host
+    //   Set to true if the function is a host function (i.e. implemented in C).
     bool is_host;
+    // Field: type_index
+    //   The index of the function type in the module's type section.
     uint32_t type_index;
     // Field: param_count
     // Field: result_count
@@ -704,7 +740,7 @@ private:
     uint64_t deadline_us;
     struct wah_timer_s *timer;
 
-    uint64_t max_memory_bytes;      // WAH_RLIMIT_UNLIMITED = no limit; 0 is a valid limit
+    uint64_t max_memory_bytes;      // UINT64_MAX = no limit; 0 is a valid limit
     uint64_t memory_bytes_committed; // current total: linear mem + tables + GC heap
 
     struct wah_exec_lifecycle_s {
@@ -804,27 +840,29 @@ wah_error_t wah_export_by_name(const wah_module_t *module, const char *name, wah
 wah_error_t wah_export_by_name_len(const wah_module_t *module, const char *name, size_t name_len, wah_export_desc_t *out);
 
 // --- Resource Limits ---
-#define WAH_RLIMIT_UNLIMITED UINT64_MAX
 
 // Struct: wah_rlimits_t
-//   Resource limits for execution. All limits are optional (0 means default or unchanged).
+//   Resource limits for execution. All limits are optional; 0 or false always mean unchanged,
+//   which is the default when being initialized.
 typedef struct wah_rlimits_s {
-    // Field: max_stack_bytes
-    //   Maximum total bytes for the unified value-call frame stack.
+    // Field: max_stack_bytes [default = see below]
+    //   Maximum total bytes for the unified value-call frame stack allocated prior to execution.
+    //   The default value (1--2MB) is enough for 1024 nested calls with 64 stack values per each.
+    //   (The actual recursion limit depends on stack usage of each call frame.)
     uint64_t max_stack_bytes;
-    // Field: max_memory_bytes
+    // Field: max_memory_bytes [default = UINT64_MAX (unlimited)]
     //   Maximum total bytes for linear memory, tables, and GC heap combined.
-    //   Zero means the default, unlimited. Use `no_memory_bytes` to enforce a 0-byte limit.
+    //   Zero means the default (UINT64_MAX). Use `no_memory_bytes` to enforce a 0-byte limit.
     uint64_t max_memory_bytes;
-    // Field: fuel
+    // Field: fuel [default = UINT64_MAX (unlimited)]
     //   Execution fuel. The interpreter will stop with WAH_STATUS_FUEL_EXHAUSTED when fuel runs out.
     //   Any WebAssembly opcode or ~WAH_BULK_ITEMS_PER_FUEL items handled consume a single fuel.
     //   Only applicable when `wah_parse_options_t::fuel_metering` was true for the primary module.
     uint64_t fuel;
-    // Field: deadline_us
+    // Field: deadline_us [default = UINT64_MAX (no deadline)]
     //   Cooperative time limit in microseconds. Be aware that this is not precise nor deterministic.
     uint64_t deadline_us;
-    // Field: no_memory_bytes
+    // Field: no_memory_bytes [default = false]
     //   If true, enforces a 0-byte limit on all memory. Incompatible with any `max_memory_bytes` > 0.
     bool no_memory_bytes;
 } wah_rlimits_t;
@@ -860,6 +898,8 @@ wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_rlimits_t *li
 //   Retrieves the current resource limits of an execution context.
 //
 //   - out [out, borrowed]: Pointer to a `wah_rlimits_t` struct to be filled in with the current limits.
+//     All fields are populated, except that 0 stands in for "unlimited" to match the default
+//     initialization state and to keep get/set round-trips safe.
 void wah_get_limits(const wah_exec_context_t *exec_ctx, wah_rlimits_t *out);
 
 // Function: wah_free_exec_context
@@ -1044,6 +1084,18 @@ wah_error_t wah_export_global_v128(wah_module_t *mod, const char *name, bool mut
 
 // --- Call context for host functions ---
 
+// Function: wah_param_count
+//   Returns the number of parameters passed to a host function.
+//   Valid only during the host function call.
+size_t wah_param_count(const wah_call_context_t *ctx);
+
+// Function: wah_param_type
+//   Returns the type of a parameter passed to a host function by index.
+//   Valid only during the host function call.
+//
+//   - idx [in]: Index of the parameter to retrieve. Must be less than the number of parameters.
+wah_type_t wah_param_type(const wah_call_context_t *ctx, size_t index);
+
 // Functions: wah_param_*
 //   Get parameters passed to a host function by index. Valid only during the host function call.
 //
@@ -1061,12 +1113,17 @@ wah_v128_t wah_param_v128(const wah_call_context_t *ctx, size_t index);  // v128
 //   - idx [in]: Index of the parameter to retrieve. Must be less than the number of parameters.
 void *wah_param_ref(const wah_call_context_t *ctx, size_t index);
 
-// Function: wah_param_type
-//   Returns the type of a parameter passed to a host function by index.
+// Function: wah_result_count
+//   Returns the number of results expected for a host function.
+//   Valid only during the host function call.
+size_t wah_result_count(const wah_call_context_t *ctx);
+
+// Function: wah_result_type
+//   Returns the expected type of a result for a host function by index.
 //   Valid only during the host function call.
 //
-//   - idx [in]: Index of the parameter to retrieve. Must be less than the number of parameters.
-wah_type_t wah_param_type(const wah_call_context_t *ctx, size_t index);
+//   - index [in]: Index of the result to retrieve. Must be less than the number of results.
+wah_type_t wah_result_type(const wah_call_context_t *ctx, size_t index);
 
 // Functions: wah_result_*
 //   Set results for a host function by index. Valid only during the host function call.
@@ -1086,13 +1143,6 @@ void wah_result_v128(wah_call_context_t *ctx, size_t index, const wah_v128_t *va
 //   - index [in]: Index of the result to set. Must be less than the number of results.
 //   - value [in]: Value to set for the result. Can be NULL if the result type is nullable.
 void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value);
-
-// Function: wah_result_type
-//   Returns the expected type of a result for a host function by index.
-//   Valid only during the host function call.
-//
-//   - index [in]: Index of the result to retrieve. Must be less than the number of results.
-wah_type_t wah_result_type(const wah_call_context_t *ctx, size_t index);
 
 // Macros: wah_return_*
 //   Convenience macros for setting a single return value at index 0.
@@ -2113,6 +2163,10 @@ static wah_opcode_t wah_x86_64_opcode(wah_opcode_t opcode, wah_x86_64_features_t
 ////////////////////////////////////////////////////////////////////////////////
 // Internal API ////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
+
+#define WAH_TYIDX(t)               ((uint32_t)(t) >> 1)
+#define WAH_TYPE_FROM_IDX(i, null) ((wah_type_t)((i) * 2 + !!(null)))
+#define WAH_MAX_TYPE_INDEX         ((uint32_t)INT32_MAX >> 1)
 
 struct wah_call_context_s {
     struct wah_exec_context_s *exec;
@@ -4206,7 +4260,7 @@ static WAH_ALWAYS_INLINE uint8x16_t wah_i32x4_trunc_sat_f32x4_s_neon(uint8x16_t 
 ////////////////////////////////////////////////////////////////////////////////
 
 static bool wah_budget_check(const wah_exec_context_t *ctx, uint64_t additional) {
-    if (ctx->max_memory_bytes == WAH_RLIMIT_UNLIMITED) return true;
+    if (ctx->max_memory_bytes == UINT64_MAX) return true;
     if (ctx->memory_bytes_committed > ctx->max_memory_bytes) return false;
     return additional <= ctx->max_memory_bytes - ctx->memory_bytes_committed;
 }
@@ -9802,7 +9856,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
     } else if (limits->max_memory_bytes > 0) {
         exec_ctx->max_memory_bytes = limits->max_memory_bytes;
     } else {
-        exec_ctx->max_memory_bytes = WAH_RLIMIT_UNLIMITED;
+        exec_ctx->max_memory_bytes = UINT64_MAX;
     }
     exec_ctx->memory_bytes_committed = 0;
 
@@ -9822,7 +9876,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
 
     exec_ctx->module = module;
     exec_ctx->enabled_features = module->enabled_features;
-    exec_ctx->fuel = (limits->fuel != 0) ? (int64_t)limits->fuel : INT64_MAX;
+    exec_ctx->fuel = limits->fuel != 0 && limits->fuel <= INT64_MAX ? (int64_t)limits->fuel : INT64_MAX;
     exec_ctx->deadline_us = limits->deadline_us;
     if (exec_ctx->deadline_us > 0) {
         WAH_CHECK_GOTO(wah_new_timer(exec_ctx), cleanup);
@@ -9963,7 +10017,7 @@ wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_rlimits_t *li
     }
 
     if (limits->fuel != 0) {
-        exec_ctx->fuel = (int64_t)limits->fuel;
+        exec_ctx->fuel = limits->fuel <= INT64_MAX ? (int64_t)limits->fuel : INT64_MAX;
     }
 
     if (limits->deadline_us != 0) {
@@ -9978,7 +10032,7 @@ void wah_get_limits(const wah_exec_context_t *exec_ctx, wah_rlimits_t *out) {
     uint64_t mm = exec_ctx->max_memory_bytes;
     *out = (wah_rlimits_t){
         .max_stack_bytes = exec_ctx->stack_buffer_size,
-        .max_memory_bytes = (mm == WAH_RLIMIT_UNLIMITED) ? 0 : mm,
+        .max_memory_bytes = (mm == UINT64_MAX) ? 0 : mm,
         .no_memory_bytes = (mm == 0),
         .fuel = (exec_ctx->fuel >= 0 && exec_ctx->fuel < INT64_MAX) ? (uint64_t)exec_ctx->fuel : 0,
         .deadline_us = exec_ctx->deadline_us,
@@ -15026,6 +15080,15 @@ wah_error_t wah_export_global_v128(wah_module_t *mod, const char *name, bool is_
     WAH_ASSERT(ctx->result_types[index] == WAH_TYPE_##ty && "Result type mismatch"); \
     ctx->results[index].field = pre value
 
+size_t wah_param_count(const wah_call_context_t *ctx) {
+    WAH_ASSERT(ctx && "Call context is NULL");
+    return ctx->nparams;
+}
+wah_type_t wah_param_type(const wah_call_context_t *ctx, size_t index) {
+    WAH_ASSERT(ctx && "Call context is NULL");
+    WAH_ASSERT(index < ctx->nparams && "Parameter index out of bounds");
+    return ctx->param_types[index];
+}
 int32_t wah_param_i32(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(I32, i32); }
 int64_t wah_param_i64(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(I64, i64); }
 float wah_param_f32(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(F32, f32); }
@@ -15037,12 +15100,16 @@ void *wah_param_ref(const wah_call_context_t *ctx, size_t index) {
     WAH_ASSERT(WAH_TYPE_IS_REF(ctx->param_types[index]) && "Parameter type mismatch");
     return ctx->params[index].ref;
 }
-wah_type_t wah_param_type(const wah_call_context_t *ctx, size_t index) {
-    WAH_ASSERT(ctx && "Call context is NULL");
-    WAH_ASSERT(index < ctx->nparams && "Parameter index out of bounds");
-    return ctx->param_types[index];
-}
 
+size_t wah_result_count(const wah_call_context_t *ctx) {
+    WAH_ASSERT(ctx && "Call context is NULL");
+    return ctx->nresults;
+}
+wah_type_t wah_result_type(const wah_call_context_t *ctx, size_t index) {
+    WAH_ASSERT(ctx && "Call context is NULL");
+    WAH_ASSERT(index < ctx->nresults && "Result index out of bounds");
+    return ctx->result_types[index];
+}
 void wah_result_i32(wah_call_context_t *ctx, size_t index, int32_t value) { WAH_RESULT(I32, i32, ); }
 void wah_result_i64(wah_call_context_t *ctx, size_t index, int64_t value) { WAH_RESULT(I64, i64, ); }
 void wah_result_f32(wah_call_context_t *ctx, size_t index, float value) { WAH_RESULT(F32, f32, ); }
@@ -15059,11 +15126,6 @@ void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value) {
                "Non-nullable reference result cannot be set to NULL");
     ctx->results[index].ref = value;
 }
-wah_type_t wah_result_type(const wah_call_context_t *ctx, size_t index) {
-    WAH_ASSERT(ctx && "Call context is NULL");
-    WAH_ASSERT(index < ctx->nresults && "Result index out of bounds");
-    return ctx->result_types[index];
-}
 
 #undef WAH_PARAM
 #undef WAH_RESULT
@@ -15072,7 +15134,7 @@ void wah_trap(wah_call_context_t *ctx, wah_error_t reason) {
     WAH_ASSERT(ctx && "Call context is NULL");
     WAH_ASSERT(reason < 0 && "Cannot trap with a non-error code such as WAH_OK");
     WAH_ASSERT(ctx->trap_reason == WAH_OK && "Call context already has a trap reason set");
-    ctx->trap_reason = reason;
+    if (ctx->trap_reason == WAH_OK) ctx->trap_reason = reason;
 }
 
 // --- Linkage Implementation ---
@@ -15729,7 +15791,6 @@ wah_error_t wah_module_type(const wah_module_t *module, uint32_t typeidx, wah_ty
     const wah_type_def_t *td = &module->type_defs[typeidx];
     *out = (wah_type_desc_t){
         .kind = td->kind, .is_final = td->is_final, .supertype = td->supertype,
-        .rec_group_start = td->rec_group_start, .rec_group_size = td->rec_group_size,
         .param_count = ft->param_count, .result_count = ft->result_count,
         .param_types = ft->param_types, .result_types = ft->result_types,
         .field_count = td->field_count, .field_types = td->field_types, .field_mutables = td->field_mutables,

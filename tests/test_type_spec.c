@@ -150,12 +150,12 @@ static void test_placeholders(void) {
     assert_err(wah_debug_parse_export_func_type_spec(&mod, &spec, "fn (%T)"), WAH_ERROR_BAD_SPEC);
     assert_err(wah_debug_parse_export_func_type_spec(&mod, &spec, "fn (ref %T)"), WAH_ERROR_BAD_SPEC);
 
-    assert_err(wah_debug_parse_define_type_spec(&mod, &spec, "fn (%T)", WAH_TYPE_FROM_IDX(0, false)), WAH_ERROR_BAD_SPEC);
+    assert_err(wah_debug_parse_define_type_spec(&mod, &spec, "fn (%T)", wah_debug_type_from_idx(0, false)), WAH_ERROR_BAD_SPEC);
     assert_ok(wah_define_type(&mod, &struct_type, "struct { i32 }"));
     assert_ok(wah_debug_parse_define_type_spec(&mod, &spec, "fn (%T) -> ref null %T", struct_type, struct_type));
     assert_func_counts(&spec, 1, 1);
     assert_eq_i32(spec.param_types[0], struct_type);
-    assert_eq_i32(spec.result_types[0], WAH_TYPE_FROM_IDX(WAH_TYIDX(struct_type), true));
+    assert_eq_i32(spec.result_types[0], wah_debug_type_from_idx(wah_debug_typidx(struct_type), true));
     wah_debug_free_type_spec(&spec);
 
     wah_free_module(&mod);
