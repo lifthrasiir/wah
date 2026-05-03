@@ -576,6 +576,11 @@ typedef void (*wah_func_t)(wah_call_context_t *ctx, void *userdata);
 //   - userdata [in, borrowed]: The `userdata` field given on registration.
 typedef void (*wah_finalize_t)(void *userdata);
 
+#if defined(__cplusplus) && defined(__clang__)
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-private-field"
+#endif
+
 // Struct: wah_module_t
 //   Opaque type representing a parsed WebAssembly module.
 //
@@ -786,6 +791,10 @@ private:
     void *reserved; // Ensure that at least one pimpl pointer can be added
 #endif
 } wah_exec_context_t;
+
+#if defined(__cplusplus) && defined(__clang__)
+#pragma clang diagnostic pop
+#endif
 
 typedef char wah_module_size_check_[sizeof(wah_module_t) <= 384 ? 1 : -1];
 typedef char wah_module_align_check_[WAH_ALIGNOF(wah_module_t) == 16 ? 1 : -1];
