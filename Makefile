@@ -1,5 +1,7 @@
 CC ?= gcc
+CXX ?= g++
 CFLAGS ?= -W -Wall -Wextra
+CXXFLAGS ?= -W -Wall -Wextra -std=c++11
 LDFLAGS ?= -lm
 SANITIZERS ?= address,undefined
 
@@ -23,6 +25,7 @@ endif
 endif
 
 TEST_CFLAGS := $(CFLAGS) $(SANITIZER_FLAGS)
+TEST_CXXFLAGS := $(CXXFLAGS) $(SANITIZER_FLAGS)
 TEST_LDFLAGS := $(LDFLAGS) $(SANITIZER_FLAGS)
 
 TEST_RUN_PREFIX ?=
@@ -70,6 +73,12 @@ $(patsubst %.c, %, $(API_SRCS)): tests/test_%: tests/test_%.c tests/wah_impl.o t
 	@$(CC) tests/test_$*.o tests/wah_impl.o tests/common.o -o $@ $(TEST_LDFLAGS)
 	@rm -f tests/test_$*.o
 
+tests/test_cpp: tests/test_cpp.cpp tests/wah_impl.o wah.h tests/wah_impl.h
+	@echo "## Compiling test_cpp.cpp..."
+	@$(CXX) $(TEST_CXXFLAGS) -c $< -o tests/test_cpp.o
+	@$(CXX) tests/test_cpp.o tests/wah_impl.o -o $@ $(TEST_LDFLAGS)
+	@rm -f tests/test_cpp.o
+
 # --- Run targets ---
 # test depends on all run_X; each run_X depends on its binary.
 # With -j2, make can compile one test while running another.
@@ -87,8 +96,14 @@ $(foreach t,$(ALL_TEST_NAMES),$(eval $(call MAKE_RUN_RULE,$(t))))
 
 .PHONY: all test
 all: test
-test: $(RUN_TARGETS)
+test: $(RUN_TARGETS) test-cpp
 	@echo "## All tests passed."
+
+.PHONY: test-cpp
+test-cpp: tests/test_cpp
+	@echo "## Running test_cpp.cpp..."
+	@$(TEST_RUN_PREFIX) ./tests/test_cpp
+	@echo ""
 
 # --- Individual test targets (make test_basic, etc.) ---
 
@@ -208,6 +223,7 @@ coverage: clean
 clean:
 	@echo "## Cleaning up..."
 	@rm -f $(patsubst %.c, %, $(ALL_TEST_SRCS)) $(patsubst %.c, %_cov, $(ALL_TEST_SRCS))
+	@rm -f tests/test_cpp
 	@rm -f tests/*.o
 	@rm -f $(FUZZ_HARNESS_BIN)
 	@rm -f $(LIBFUZZER_HARNESS_BIN)

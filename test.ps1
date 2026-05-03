@@ -129,6 +129,84 @@ if ($compilerKind -eq 'msvc') {
     }
 }
 
+if ($filter -eq 'cpp') {
+    $wahH = "$projDir\wah.h"
+    $wahImplSrc = "$projDir\tests\wah_impl.c"
+    $wahImplHdr = "$projDir\tests\wah_impl.h"
+    $wahImplObj = "$projDir\tests\wah_impl$objExt"
+    $cppSrc = "$projDir\tests\test_cpp.cpp"
+    $cppObj = "$projDir\tests\test_cpp$objExt"
+    $cppExe = "$projDir\tests\test_cpp.exe"
+
+    if (-not (Test-Path $cppSrc)) {
+        Write-Host "## Error: tests\test_cpp.cpp not found."
+        exit 1
+    }
+
+    if ($compilerKind -eq 'msvc') {
+        $cxx = 'cl'
+        $cppFlags = @('/W4', '/EHsc', '/std:c++14', '/D_CRT_SECURE_NO_WARNINGS')
+        if ($g) {
+            $cppFlags += '/DWAH_DEBUG', '/Zi'
+        } else {
+            $cppFlags += '/DWAH_ASSERT=assert'
+        }
+
+        Write-Host '## Compiling wah_impl.obj...'
+        & cl /nologo @cflags /TC /c $wahImplSrc /Fo"$wahImplObj"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        Write-Host '## Compiling test_cpp.cpp...'
+        & $cxx /nologo @cppFlags /c $cppSrc /Fo"$cppObj"
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        & $cxx /nologo $cppObj $wahImplObj /Fe"$cppExe" /link /nologo
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    } else {
+        $cxx = if ($compilerKind -eq 'gcc') {
+            if ($compiler -like '*gcc.exe') { $compiler -replace 'gcc\.exe$', 'g++.exe' } else { 'g++' }
+        } else {
+            if ($compiler -like '*clang.exe') { $compiler -replace 'clang\.exe$', 'clang++.exe' } else { 'clang++' }
+        }
+        $cppFlags = @('-W', '-Wall', '-Wextra', '-std=c++11')
+        if ($g) {
+            $cppFlags += '-DWAH_DEBUG', '-g'
+        } else {
+            $cppFlags += '-DWAH_ASSERT=assert'
+        }
+
+        Write-Host "## Using C++ compiler: $cxx"
+        Write-Host "## Compiling wah_impl$objExt..."
+        $wahImplCflags = $cflags + '-O1'
+        & $compiler @wahImplCflags -c $wahImplSrc -o $wahImplObj
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        Write-Host '## Compiling test_cpp.cpp...'
+        & $cxx @cppFlags -c $cppSrc -o $cppObj
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+        & $cxx $cppObj $wahImplObj -o $cppExe
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
+
+    Write-Host '## Running test_cpp.cpp...'
+    $saved = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    & $cppExe
+    $testExit = $LASTEXITCODE
+    $ErrorActionPreference = $saved
+    Remove-Item $cppExe -ErrorAction SilentlyContinue
+    Remove-Item $cppObj -ErrorAction SilentlyContinue
+    Remove-Item ($cppObj -replace '\.[^.\\/:]+$', '.pdb') -ErrorAction SilentlyContinue
+    if ($testExit -ne 0) {
+        Write-Host ''
+        Write-Host '## test_cpp.cpp failed.'
+        exit $testExit
+    }
+    Write-Host ''
+    Write-Host '## All tests passed. (1 tests)'
+    exit 0
+}
+
 $testFiles = Get-ChildItem "$projDir\tests\test_$filter*.c" | Sort-Object Name
 if ($testFiles.Count -eq 0) {
     Write-Host '## No tests found.'
@@ -353,6 +431,18 @@ for ($i = 0; $i -lt $testQueue.Count; $i++) {
 if ($failed) {
     exit 1
 } elseif ($ran -gt 0) {
+    if ($filter -eq '') {
+        $cppArgs = @()
+        if ($g) { $cppArgs += '-g' }
+        if ($clang) { $cppArgs += '-clang' }
+        if ($gcc) { $cppArgs += '-gcc' }
+        if ($msvc) { $cppArgs += '-msvc' }
+        $cppArgs += 'cpp'
+
+        Write-Host '## Running C++ smoke test...'
+        & powershell -ExecutionPolicy Bypass -File $PSCommandPath @cppArgs
+        if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    }
     Write-Host "## All tests passed. ($ran tests)"
 } else {
     Write-Host '## No tests run.'

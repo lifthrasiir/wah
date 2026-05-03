@@ -14,6 +14,10 @@
 #include <math.h>
 #include <stdarg.h>
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 // Macro: WAH_FORCE_PORTABLE [user-definable]
 //   If defined, forces the interpreter to use portable C implementations
 //   instead of platform-specific SIMD instructions.
@@ -89,8 +93,14 @@
 
 // Macro: WAH_ALIGNOF(T)
 //   C99-compatible alias of `_Alignof` or `alignof` operator.
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#if defined(__cplusplus) && __cplusplus >= 201103L
+#define WAH_ALIGNOF(T) alignof(T)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 #define WAH_ALIGNOF(T) _Alignof(T)
+#elif defined(_MSC_VER)
+#define WAH_ALIGNOF(T) __alignof(T)
+#elif defined(__GNUC__) || defined(__clang__)
+#define WAH_ALIGNOF(T) __alignof__(T)
 #else
 #define WAH_ALIGNOF(T) offsetof(struct { char c; T t; }, t)
 #endif
@@ -485,6 +495,16 @@ typedef struct {
     const wah_type_t *param_types;
 } wah_tag_desc_t;
 
+// Union: wah_extern_desc_t
+//   Description of an imported or exported external entity.
+typedef union {
+    wah_func_desc_t func;
+    wah_table_desc_t table;
+    wah_memory_desc_t memory;
+    wah_global_desc_t global;
+    wah_tag_desc_t tag;
+} wah_extern_desc_t;
+
 // Struct: wah_import_desc_t
 //   Describes an imported entity (function, table, memory, global or tag).
 typedef struct {
@@ -508,13 +528,7 @@ typedef struct {
     size_t name_len;
     // Field: u
     //   Contains one of wah_*_desc_t types depending on the `kind`.
-    union wah_extern_desc_u {
-        wah_func_desc_t func;
-        wah_table_desc_t table;
-        wah_memory_desc_t memory;
-        wah_global_desc_t global;
-        wah_tag_desc_t tag;
-    } u;
+    wah_extern_desc_t u;
 } wah_import_desc_t;
 
 // Struct: wah_export_desc_t
@@ -534,7 +548,7 @@ typedef struct {
     size_t name_len;
     // Field: u
     //   Contains one of wah_*_desc_t types depending on the `kind`.
-    union wah_extern_desc_u u;
+    wah_extern_desc_t u;
 } wah_export_desc_t;
 
 // Struct: wah_call_context_t
@@ -1056,9 +1070,11 @@ wah_error_t wah_define_typev(wah_module_t *mod, wah_type_t *out_type, const char
 //   - types [in, borrowed]: Type specification string for the function signature.
 //     Same as what `wah_define_type` accepts for function types, but without `%T`
 //     and `fn` can be omitted as other types are forbidden in this context.
-//   - func [in, consumed]: Function pointer to be called when the exported function is invoked.
-//   - userdata [in, consumed]: User data pointer to be passed to the function on each call.
-//   - finalize [in, consumed, optional]: Called with userdata when the module is freed.
+//   - func [in, consumed on success]: Function pointer to be called when the exported function is invoked.
+//   - userdata [in, consumed on success]: User data pointer to be passed to the function on each call.
+//   - finalize [in, consumed on success, optional]: Called with userdata when the module is freed.
+//
+//   `func`, `userdata` and `finalize` are consumed only on success; they remain caller-owned on failure.
 wah_error_t wah_export_func(wah_module_t *mod, const char *name, const char *types, wah_func_t func, void *userdata, wah_finalize_t finalize);
 
 // Function: wah_export_typed_func
@@ -1066,9 +1082,11 @@ wah_error_t wah_export_func(wah_module_t *mod, const char *name, const char *typ
 //
 //   - name [in, borrowed]: Zero-terminated name of the export.
 //   - type [in]: Type index for the function signature, must be defined from `wah_define_type*`.
-//   - func [in, consumed]: Function pointer to be called when the exported function is invoked.
-//   - userdata [in, consumed]: User data pointer to be passed to the function on each call.
-//   - finalize [in, consumed, optional]: Called with userdata when the module is freed.
+//   - func [in, consumed on success]: Function pointer to be called when the exported function is invoked.
+//   - userdata [in, consumed on success]: User data pointer to be passed to the function on each call.
+//   - finalize [in, consumed on success, optional]: Called with userdata when the module is freed.
+//
+//   `func`, `userdata` and `finalize` are consumed only on success; they remain caller-owned on failure.
 wah_error_t wah_export_typed_func(wah_module_t *mod, const char *name, wah_type_t type, wah_func_t func, void *userdata, wah_finalize_t finalize);
 
 // Function: wah_export_memory
@@ -1083,13 +1101,13 @@ wah_error_t wah_export_memory(wah_module_t *mod, const char *name, uint64_t min_
 //   Exports a new global variable from the module.
 //
 //   - name [in, borrowed]: Zero-terminated name of the export.
-//   - mutable [in]: True if the global variable should be mutable, false if immutable.
+//   - is_mutable [in]: True if the global variable should be mutable, false if immutable.
 //   - init_value [in]: Initial value of the global variable.
-wah_error_t wah_export_global_i32(wah_module_t *mod, const char *name, bool mutable, int32_t init_value);  // Exports an i32 global variable
-wah_error_t wah_export_global_i64(wah_module_t *mod, const char *name, bool mutable, int64_t init_value);  // Exports an i64 global variable
-wah_error_t wah_export_global_f32(wah_module_t *mod, const char *name, bool mutable, float init_value);    // Exports an f32 global variable
-wah_error_t wah_export_global_f64(wah_module_t *mod, const char *name, bool mutable, double init_value);   // Exports an f64 global variable
-wah_error_t wah_export_global_v128(wah_module_t *mod, const char *name, bool mutable, const wah_v128_t *init_value); // Exports a v128 global variable
+wah_error_t wah_export_global_i32(wah_module_t *mod, const char *name, bool is_mutable, int32_t init_value);  // Exports an i32 global variable
+wah_error_t wah_export_global_i64(wah_module_t *mod, const char *name, bool is_mutable, int64_t init_value);  // Exports an i64 global variable
+wah_error_t wah_export_global_f32(wah_module_t *mod, const char *name, bool is_mutable, float init_value);    // Exports an f32 global variable
+wah_error_t wah_export_global_f64(wah_module_t *mod, const char *name, bool is_mutable, double init_value);   // Exports an f64 global variable
+wah_error_t wah_export_global_v128(wah_module_t *mod, const char *name, bool is_mutable, const wah_v128_t *init_value); // Exports a v128 global variable
 
 // --- Call context for host functions ---
 
@@ -1285,9 +1303,17 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 
 ////////////////////////////////////////////////////////////////////////////////
 
+#ifdef __cplusplus
+} // extern "C"
+#endif
+
 // Macro: WAH_IMPLEMENTATION [user-definable]
 //   Define this in exactly one C file that includes this header file.
 #ifdef WAH_IMPLEMENTATION
+
+#ifdef __cplusplus
+#error "WAH_IMPLEMENTATION is C-only; include wah.h without WAH_IMPLEMENTATION from C++."
+#else
 
 #include <string.h> // For memcpy, memset
 #include <stdlib.h> // For malloc, free
@@ -15951,7 +15977,7 @@ wah_error_t wah_module_tag(const wah_module_t *module, uint32_t tagidx, wah_tag_
     return WAH_OK;
 }
 
-static wah_error_t wah_module_extern_desc(int8_t kind, const wah_module_t *module, uint32_t idx, union wah_extern_desc_u *out) {
+static wah_error_t wah_module_extern_desc(int8_t kind, const wah_module_t *module, uint32_t idx, wah_extern_desc_t *out) {
     switch (kind) {
         case WAH_KIND_FUNCTION: return wah_module_function(module, idx, &out->func);
         case WAH_KIND_TABLE: return wah_module_table(module, idx, &out->table);
@@ -16007,5 +16033,6 @@ wah_error_t wah_export_by_name_len(const wah_module_t *module, const char *name,
 
 ////////////////////////////////////////////////////////////////////////////////
 
+#endif // !__cplusplus
 #endif // WAH_IMPLEMENTATION
 #endif // WAH_H
