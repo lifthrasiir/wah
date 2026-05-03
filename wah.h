@@ -365,6 +365,17 @@ typedef uint64_t wah_features_t;
 #define WAH_BULK_ITEMS_PER_FUEL 4096
 #endif
 
+// Macro: WAH_NO_THREADS [user-definable]
+//   If defined before including wah.h in the implementation translation unit, disables
+//   threaded features. Currently this affects only the deadline timer: configuring
+//   `wah_rlimits_t::deadline_us` will then fail with WAH_ERROR_DISABLED_FEATURE.
+//
+//   Auto-defined on platforms without Win32 or pthreads support. Define explicitly to
+//   force a single-threaded build on platforms that would otherwise have threads.
+#if !defined(WAH_NO_THREADS) && !defined(_WIN32) && !defined(__unix__) && !defined(__APPLE__) && !defined(_POSIX_THREADS)
+#define WAH_NO_THREADS
+#endif
+
 // Enum: wah_comp_type_kind_t
 //   The kind of a component type (function, struct or array).
 typedef enum {
@@ -1343,12 +1354,10 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 #define NOUSER
 #define NOGDI
 #include <windows.h>
-#elif defined(__unix__) || defined(__APPLE__) || defined(_POSIX_THREADS)
+#else
 #define WAH_HAS_THREADS 1
 #include <pthread.h>
 #include <time.h>
-#else
-#define WAH_NO_THREADS
 #endif
 #endif
 
@@ -9960,10 +9969,15 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
 
     exec_ctx->module = module;
     exec_ctx->enabled_features = module->enabled_features;
-    exec_ctx->fuel = limits->fuel != 0 && limits->fuel <= INT64_MAX ? (int64_t)limits->fuel : INT64_MAX;
-    exec_ctx->deadline_us = limits->deadline_us;
-    if (exec_ctx->deadline_us > 0) {
+    if (limits->fuel != 0) {
+        WAH_ENSURE_GOTO(module->fuel_metering, WAH_ERROR_DISABLED_FEATURE, cleanup);
+        exec_ctx->fuel = limits->fuel <= INT64_MAX ? (int64_t)limits->fuel : INT64_MAX;
+    } else {
+        exec_ctx->fuel = INT64_MAX;
+    }
+    if (limits->deadline_us > 0) {
         WAH_CHECK_GOTO(wah_new_timer(exec_ctx), cleanup);
+        exec_ctx->deadline_us = limits->deadline_us;
     }
 
     uint32_t total_memories = wah_memory_index_limit(module);
@@ -10121,12 +10135,13 @@ wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_rlimits_t *li
     }
 
     if (limits->fuel != 0) {
+        WAH_ENSURE(exec_ctx->module->fuel_metering, WAH_ERROR_DISABLED_FEATURE);
         exec_ctx->fuel = limits->fuel <= INT64_MAX ? (int64_t)limits->fuel : INT64_MAX;
     }
 
     if (limits->deadline_us != 0) {
-        exec_ctx->deadline_us = limits->deadline_us;
         WAH_CHECK(wah_new_timer(exec_ctx));
+        exec_ctx->deadline_us = limits->deadline_us;
     }
 
     return WAH_OK;

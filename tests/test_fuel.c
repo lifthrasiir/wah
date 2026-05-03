@@ -80,7 +80,18 @@ static void test_no_metering_when_disabled(void) {
     assert_ok(wah_call(&ctx, 0, params, 2, &result));
     assert_eq_i32(result.i32, 12);
 
+    // Setting fuel via wah_set_limits when metering is disabled must be rejected.
+    wah_rlimits_t lim = {0};
+    lim.fuel = 1000;
+    assert_err(wah_set_limits(&ctx, &lim), WAH_ERROR_DISABLED_FEATURE);
+
     wah_free_exec_context(&ctx);
+
+    // Same check on the wah_new_exec_context entry point.
+    wah_exec_options_t opts = { .limits = { .fuel = 1000 } };
+    wah_exec_context_t ctx2 = {0};
+    assert_err(wah_new_exec_context(&ctx2, &mod, &opts), WAH_ERROR_DISABLED_FEATURE);
+
     wah_free_module(&mod);
 }
 
