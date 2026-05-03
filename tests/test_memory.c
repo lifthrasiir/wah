@@ -47,7 +47,7 @@ void wah_test_data_and_bulk_memory_ops() {
     assert_true(wah_debug_module_has_data_count_section(&module));
 
     // Test 2: Create and instantiate execution context
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_true(wah_debug_memory_data(&ctx, 0) != NULL);
     assert_eq_u64(wah_debug_memory_size(&ctx, 0), wah_debug_wasm_page_size());
     assert_ok(wah_instantiate(&ctx));
@@ -135,7 +135,7 @@ void wah_test_data_and_bulk_memory_ops() {
     assert_err(wah_call(&ctx, 2, params, 3, NULL), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
 
     // Final Cleanup
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -168,7 +168,7 @@ void test_memory_api() {
     { wah_memory_desc_t md; assert_ok(wah_module_memory(&module, 0, &md)); assert_eq_u64(md.min_pages, 1); }
 
     // Test 2: Create execution context
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_true(wah_debug_memory_data(&ctx, 0) != NULL);
     assert_eq_u64(wah_debug_memory_size(&ctx, 0), wah_debug_wasm_page_size());
 
@@ -220,7 +220,7 @@ void test_memory_api() {
     assert_err(wah_call(&ctx, 1, params, 1, &result), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
 
     // Cleanup for first module
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -258,7 +258,7 @@ void test_memory_ops() {
       assert_eq_u64(md.min_pages, 1); assert_eq_u64(md.max_pages, 2); }
 
     // Test 9: Create execution context for memory operations
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_true(wah_debug_memory_data(&ctx, 0) != NULL);
     assert_eq_u64(wah_debug_memory_size(&ctx, 0), wah_debug_wasm_page_size());
 
@@ -305,7 +305,7 @@ void test_memory_ops() {
     assert_err(wah_call(&ctx, 2, params, 3, NULL), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
 
     // Final Cleanup
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -354,7 +354,7 @@ void test_multiple_memories() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
     assert_eq_u32(wah_module_memory_count(&module), 2);
 
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_true(wah_debug_memory_data(&ctx, 0) != NULL);
     assert_true(wah_debug_memory_data(&ctx, 1) != NULL);
     assert_eq_u32(wah_debug_exec_memory_count(&ctx), 2);
@@ -421,7 +421,7 @@ void test_multiple_memories() {
     params[0].i32 = 2 * wah_debug_wasm_page_size() - 2; params[1].i32 = 0;
     assert_err(wah_call(&ctx, 2, params, 2, NULL), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -459,7 +459,7 @@ void test_multiple_memories_data_segment() {
     assert_eq_u32(wah_module_memory_count(&module), 2);
     assert_eq_u32(wah_debug_module_data_segment_count(&module), 2);
 
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // Active data segment 0 should be in memory 0
@@ -478,7 +478,7 @@ void test_multiple_memories_data_segment() {
     assert_ok(wah_call(&ctx, 1, params, 1, &result));
     assert_eq_i32(result.i32, 0x0A);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -502,7 +502,7 @@ void test_memory_no_max_is_unbounded() {
     { wah_memory_desc_t md; assert_ok(wah_module_memory(&module, 0, &md));
       assert_eq_u64(md.min_pages, 1); assert_eq_u64(md.max_pages, UINT64_MAX); }
 
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     // Growing by 3 from min=1 must succeed (no max limit)
     params[0].i32 = 3;
@@ -510,7 +510,7 @@ void test_memory_no_max_is_unbounded() {
     assert_eq_i32(result.i32, 1);  // returns old size in pages
     assert_eq_u64(wah_debug_memory_size(&ctx, 0), 4 * (uint64_t)wah_debug_wasm_page_size());
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -551,7 +551,7 @@ static void test_data_drop() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // Call func 0: init + drop
@@ -565,7 +565,7 @@ static void test_data_drop() {
     // Call func 1: memory.init with size 1 after drop should trap
     assert_err(wah_call(&ctx, 1, NULL, 0, NULL), WAH_ERROR_TRAP);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -584,7 +584,7 @@ static void test_memory_grow_max_pages() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params[1], result;
@@ -604,7 +604,7 @@ static void test_memory_grow_max_pages() {
     assert_ok(wah_call(&ctx, 0, params, 1, &result));
     assert_eq_i32(result.i32, 2);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 

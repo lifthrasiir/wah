@@ -22,14 +22,14 @@ void test_start_section() {
     printf("Testing Start Section...\n");
     assert_ok(wah_parse_module_from_spec(&module, start_section_wasm_spec));
 
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     // Start function runs during instantiation (after globals/imports/elements are ready).
     assert_ok(wah_instantiate(&ctx));
 
     // Verify that the global variable was set by the start function
     assert_eq_i32(wah_debug_global_value(&ctx, &module, 0).i32, 42);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -49,7 +49,7 @@ void test_zero_return_functions() {
     wah_exec_context_t ctx;
 
     assert_ok(wah_parse_module_from_spec(&module, wasm_binary_spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     // Test wah_call with zero return function
     wah_value_t result;
@@ -68,7 +68,7 @@ void test_zero_return_functions() {
     assert_ok(wah_call_multi(&ctx, 0, NULL, 0, results, 1, &actual_results));
     assert_eq_u32(actual_results, 0);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -86,7 +86,7 @@ void test_single_return_functions() {
     wah_exec_context_t ctx;
 
     assert_ok(wah_parse_module_from_spec(&module, wasm_binary_spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     // Test wah_call with single return function
     wah_value_t result;
@@ -100,7 +100,7 @@ void test_single_return_functions() {
     assert_eq_u32(actual_results, 1);
     assert_eq_i32(results[0].i32, 42);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -131,7 +131,7 @@ void test_multiple_return_with_existing_functions() {
     wah_exec_context_t ctx;
 
     assert_ok(wah_parse_module_from_spec(&module, wasm_binary_spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     // Test function 0: get_i64 with wah_call_multi (should return WAH_OK)
     wah_value_t results[1];
@@ -145,7 +145,7 @@ void test_multiple_return_with_existing_functions() {
     assert_eq_u32(f32_actual_results, 1);
     assert_eq_f32(f32_results[0].f32, 1.5f, 0);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -177,7 +177,7 @@ void test_multi_return_buffer_validation() {
     wah_exec_context_t ctx;
 
     assert_ok(wah_parse_module_from_spec(&module, wasm_binary_spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     // Test with max_results=0: function executes, actual_results reports true count
     wah_value_t results[1];
@@ -185,7 +185,7 @@ void test_multi_return_buffer_validation() {
     assert_ok(wah_call_multi(&ctx, 0, NULL, 0, results, 0, &actual_results));
     assert_eq_u32(actual_results, 1);
     
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 

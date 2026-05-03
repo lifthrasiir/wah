@@ -161,17 +161,17 @@ static wah_error_t run_coremark(uint8_t *wasm, size_t wasm_size, wah_value_t *re
 
     wah_module_t env = {0};
     wah_new_module(&env, NULL);
-    wah_module_export_func(&env, "clock_ms", "() -> i32", clock_ms_host, NULL, NULL);
+    wah_export_func(&env, "clock_ms", "() -> i32", clock_ms_host, NULL, NULL);
 
     wah_exec_context_t ctx = {0};
-    wah_exec_context_create(&ctx, &mod, NULL);
+    wah_new_exec_context(&ctx, &mod, NULL);
     wah_link_module(&ctx, "env", &env);
 
     err = wah_instantiate(&ctx);
     if (err) { fprintf(stderr, "Instantiate error: %s\n", wah_strerror(err)); goto cleanup; }
 
     wah_export_desc_t run_entry;
-    err = wah_module_export_by_name(&mod, "run", &run_entry);
+    err = wah_export_by_name(&mod, "run", &run_entry);
     if (err) { fprintf(stderr, "Cannot find 'run' export: %s\n", wah_strerror(err)); goto cleanup; }
 
 #ifdef WAH_BENCH_KPC_CLOCK
@@ -190,7 +190,7 @@ static wah_error_t run_coremark(uint8_t *wasm, size_t wasm_size, wah_value_t *re
     if (err) { fprintf(stderr, "Call error: %s\n", wah_strerror(err)); goto cleanup; }
 
 cleanup:
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&env);
     wah_free_module(&mod);
     return err;

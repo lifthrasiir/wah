@@ -387,7 +387,7 @@ static int action_export(spectest_instance_t *instance,
         snprintf(error_buf, error_buf_size, "no current instance");
         return 0;
     }
-    err = wah_module_export_by_name_len(instance->def ? &instance->def->module : wah_debug_exec_module(&instance->exec), field_name, field_name_len, entry);
+    err = wah_export_by_name_len(instance->def ? &instance->def->module : wah_debug_exec_module(&instance->exec), field_name, field_name_len, entry);
     if (err != WAH_OK) {
         snprintf(error_buf, error_buf_size, "export \"%s\" not found (%s)", field_name, wah_strerror(err));
         return 0;
@@ -550,20 +550,20 @@ static int setup_spectest_host(spectest_env_t *env) {
         return 1;
     }
     if (wah_new_module(&env->spectest_host, NULL) != WAH_OK) return 0;
-    if (wah_module_export_global_i32(&env->spectest_host, "global_i32", 0, 666) != WAH_OK) return 0;
-    if (wah_module_export_global_i64(&env->spectest_host, "global_i64", 0, 666) != WAH_OK) return 0;
-    if (wah_module_export_global_f32(&env->spectest_host, "global_f32", 0, 666.6f) != WAH_OK) return 0;
-    if (wah_module_export_global_f64(&env->spectest_host, "global_f64", 0, 666.6) != WAH_OK) return 0;
-    if (wah_module_export_memory(&env->spectest_host, "memory", 1, 2) != WAH_OK) return 0;
+    if (wah_export_global_i32(&env->spectest_host, "global_i32", 0, 666) != WAH_OK) return 0;
+    if (wah_export_global_i64(&env->spectest_host, "global_i64", 0, 666) != WAH_OK) return 0;
+    if (wah_export_global_f32(&env->spectest_host, "global_f32", 0, 666.6f) != WAH_OK) return 0;
+    if (wah_export_global_f64(&env->spectest_host, "global_f64", 0, 666.6) != WAH_OK) return 0;
+    if (wah_export_memory(&env->spectest_host, "memory", 1, 2) != WAH_OK) return 0;
     if (!add_table_export_ex(&env->spectest_host, "table", 10, 20, WAH_TYPE_I32)) return 0;
     if (!add_table_export_ex(&env->spectest_host, "table64", 10, 20, WAH_TYPE_I64)) return 0;
-    if (wah_module_export_func(&env->spectest_host, "print", "()", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
-    if (wah_module_export_func(&env->spectest_host, "print_i32", "(i32)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
-    if (wah_module_export_func(&env->spectest_host, "print_i64", "(i64)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
-    if (wah_module_export_func(&env->spectest_host, "print_f32", "(f32)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
-    if (wah_module_export_func(&env->spectest_host, "print_f64", "(f64)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
-    if (wah_module_export_func(&env->spectest_host, "print_i32_f32", "(i32, f32)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
-    if (wah_module_export_func(&env->spectest_host, "print_f64_f64", "(f64, f64)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
+    if (wah_export_func(&env->spectest_host, "print", "()", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
+    if (wah_export_func(&env->spectest_host, "print_i32", "(i32)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
+    if (wah_export_func(&env->spectest_host, "print_i64", "(i64)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
+    if (wah_export_func(&env->spectest_host, "print_f32", "(f32)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
+    if (wah_export_func(&env->spectest_host, "print_f64", "(f64)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
+    if (wah_export_func(&env->spectest_host, "print_i32_f32", "(i32, f32)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
+    if (wah_export_func(&env->spectest_host, "print_f64_f64", "(f64, f64)", no_op_host_func, NULL, NULL) != WAH_OK) return 0;
     env->host_ready = 1;
     return 1;
 }
@@ -649,7 +649,7 @@ static void discard_last_instance(spectest_env_t *env, spectest_instance_t *inst
         instance != &env->instances[env->instance_count - 1]) {
         return;
     }
-    wah_exec_context_destroy(&instance->exec);
+    wah_free_exec_context(&instance->exec);
     free(instance->name);
     memset(instance, 0, sizeof(*instance));
     env->instance_count--;
@@ -678,7 +678,7 @@ static wah_error_t instantiate_def_into_instance(spectest_env_t *env, spectest_m
     if (!setup_spectest_host(env)) {
         return WAH_ERROR_OUT_OF_MEMORY;
     }
-    err = wah_exec_context_create(&instance->exec, &def->module, NULL);
+    err = wah_new_exec_context(&instance->exec, &def->module, NULL);
     if (err != WAH_OK) {
         return err;
     }
@@ -914,13 +914,13 @@ static int handle_module_instance(const wast_node_t *node, spectest_env_t *env, 
     if (expect_failure_kind == 1) {
         if (expect_unlinkable(err)) {
             if (instance == &tmp) {
-                wah_exec_context_destroy(&tmp.exec);
+                wah_free_exec_context(&tmp.exec);
             }
             pass_check(env);
             return 1;
         }
         if (instance == &tmp) {
-            wah_exec_context_destroy(&tmp.exec);
+            wah_free_exec_context(&tmp.exec);
         }
         fail_check(env, "expected unlinkable, got %s", wah_strerror(err));
         return 0;
@@ -1050,7 +1050,7 @@ static void free_env(spectest_env_t *env) {
     size_t i;
     for (i = 0; i < env->instance_count; ++i) {
         if (env->instances[i].live) {
-            wah_exec_context_destroy(&env->instances[i].exec);
+            wah_free_exec_context(&env->instances[i].exec);
         }
         free(env->instances[i].name);
     }

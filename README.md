@@ -25,7 +25,7 @@ int main(int argc, char *argv[]) {
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
     wah_parse_module(&mod, buf, size, NULL);
-    wah_exec_context_create(&ctx, &mod, NULL);
+    wah_new_exec_context(&ctx, &mod, NULL);
     free(buf);
 
     // Call an exported function by name
@@ -38,8 +38,8 @@ int main(int argc, char *argv[]) {
     }
     printf("add(3, 4) = %d\n", result.i32); // 7
 
-    wah_exec_context_destroy(&ctx);
-    wah_module_destroy(&mod);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
     return 0;
 }
 ```

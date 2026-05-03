@@ -83,13 +83,13 @@ int main(void) {
     assert_ok(wah_parse_module_from_spec(&module, globals_wasm));
 
     // Create execution context
-    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&exec_ctx, &module, NULL));
 
     test_i64_global(&exec_ctx);
     test_f32_global(&exec_ctx);
 
     // Cleanup for regular globals test
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
     wah_free_module(&module);
 
     printf("--- Globals Test Passed ---\n");

@@ -26,7 +26,7 @@ static void compare_and_print_v128_result(const char* test_name, const wah_v128_
 static void wah_test_setup_contextv(const char* test_name, const char *spec, wah_module_t* out_module, wah_exec_context_t* out_ctx, va_list args) {
     printf("Testing %s...\n", test_name);
     assert_ok(wah_parse_module_from_specv(out_module, spec, args));
-    assert_ok(wah_exec_context_create(out_ctx, out_module, NULL));
+    assert_ok(wah_new_exec_context(out_ctx, out_module, NULL));
 }
 
 static void wah_test_setup_context(const char* test_name, const char *spec, wah_module_t* out_module, wah_exec_context_t* out_ctx, ...) {
@@ -73,7 +73,7 @@ void run_simd_v128_op_test(const char* test_name, const wah_v128_t* expected_val
     wah_test_execute_function(&ctx, &result);
     compare_and_print_v128_result(test_name, &result.v128, (const wah_v128_t*)expected_val);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -121,7 +121,7 @@ void run_simd_extract_lane_test(const char* test_name, const char* spec, const w
         default: abort();
     }
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -372,14 +372,14 @@ static void run_v128_lane_store_test(const char *name, const char *spec, uint32_
     (void)memidx;
     printf("Testing %s...\n", name);
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 141); // 4 + (5+6) + (5+6+7+8) + (9+10+11+12+13+14+15+16)
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -549,7 +549,7 @@ void run_simd_any_true_test(const char* test_name, const char* spec, const wah_v
     wah_test_execute_function(&ctx, &result);
     assert_eq_i32(result.i32, expected_val);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -1482,7 +1482,7 @@ void test_v128_multi_memory() {
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -1490,7 +1490,7 @@ void test_v128_multi_memory() {
     wah_v128_t expected = {{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10}};
     compare_and_print_v128_result("v128 multi-memory load/store", &result.v128, &expected);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 

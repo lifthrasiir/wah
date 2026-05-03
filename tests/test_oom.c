@@ -173,10 +173,10 @@ static wah_error_t op_define_type(oom_alloc_t *state, void *userdata) {
     wah_error_t err = wah_new_module(&c->module, &alloc);
     wah_type_t first, second;
     if (err != WAH_OK) return err;
-    err = wah_module_define_type(&c->module, &first,
+    err = wah_define_type(&c->module, &first,
         "fresh struct { i64, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, mut funcref, externref }");
     if (err != WAH_OK) return err;
-    return wah_module_define_type(&c->module, &second,
+    return wah_define_type(&c->module, &second,
         "fresh struct { i64, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, i8, mut funcref, externref }");
 }
 
@@ -187,7 +187,7 @@ typedef struct {
 
 static void cleanup_context_case(void *userdata) {
     context_case_t *c = (context_case_t *)userdata;
-    wah_exec_context_destroy(&c->ctx);
+    wah_free_exec_context(&c->ctx);
     c->ctx = (wah_exec_context_t){0};
 }
 
@@ -195,7 +195,7 @@ static wah_error_t op_context_create_deadline(oom_alloc_t *state, void *userdata
     context_case_t *c = (context_case_t *)userdata;
     wah_alloc_t alloc = make_oom_alloc(state);
     wah_exec_options_t opts = { .alloc = &alloc, .limits = { .deadline_us = 1000000 } };
-    return wah_exec_context_create(&c->ctx, &c->module, &opts);
+    return wah_new_exec_context(&c->ctx, &c->module, &opts);
 }
 
 typedef struct {
@@ -206,7 +206,7 @@ typedef struct {
 
 static void cleanup_instantiate_case(void *userdata) {
     instantiate_case_t *c = (instantiate_case_t *)userdata;
-    wah_exec_context_destroy(&c->ctx);
+    wah_free_exec_context(&c->ctx);
     c->ctx = (wah_exec_context_t){0};
 }
 
@@ -214,7 +214,7 @@ static wah_error_t op_instantiate_linked(oom_alloc_t *state, void *userdata) {
     instantiate_case_t *c = (instantiate_case_t *)userdata;
     wah_alloc_t alloc = make_oom_alloc(state);
     wah_exec_options_t opts = { .alloc = &alloc };
-    wah_error_t err = wah_exec_context_create(&c->ctx, &c->consumer, &opts);
+    wah_error_t err = wah_new_exec_context(&c->ctx, &c->consumer, &opts);
     if (err != WAH_OK) return err;
     err = wah_link_module(&c->ctx, "provider", &c->provider);
     if (err != WAH_OK) return err;
@@ -229,21 +229,21 @@ static wah_error_t op_host_builder(oom_alloc_t *state, void *userdata) {
     wah_error_t err = wah_new_module(&c->module, &alloc);
     wah_v128_t v = {{0}};
     if (err != WAH_OK) return err;
-    err = wah_module_export_func(&c->module, "id",
+    err = wah_export_func(&c->module, "id",
                                  "(i32, i64, f32, f64, funcref, externref, v128, i32, i64) -> (i32, i64, funcref)",
                                  host_id, NULL, NULL);
     if (err != WAH_OK) return err;
-    err = wah_module_export_memory(&c->module, "memory", 1, 1);
+    err = wah_export_memory(&c->module, "memory", 1, 1);
     if (err != WAH_OK) return err;
-    err = wah_module_export_global_i32(&c->module, "g_i32", true, 7);
+    err = wah_export_global_i32(&c->module, "g_i32", true, 7);
     if (err != WAH_OK) return err;
-    err = wah_module_export_global_i64(&c->module, "g_i64", false, 8);
+    err = wah_export_global_i64(&c->module, "g_i64", false, 8);
     if (err != WAH_OK) return err;
-    err = wah_module_export_global_f32(&c->module, "g_f32", false, 1.25f);
+    err = wah_export_global_f32(&c->module, "g_f32", false, 1.25f);
     if (err != WAH_OK) return err;
-    err = wah_module_export_global_f64(&c->module, "g_f64", false, 2.5);
+    err = wah_export_global_f64(&c->module, "g_f64", false, 2.5);
     if (err != WAH_OK) return err;
-    return wah_module_export_global_v128(&c->module, "g_v128", false, &v);
+    return wah_export_global_v128(&c->module, "g_v128", false, &v);
 }
 
 typedef struct {
@@ -336,7 +336,7 @@ static void prepare_runtime_case(runtime_case_t *c) {
             end \
         end } ]}";
     assert_ok(wah_parse_module_from_spec(&c->module, spec));
-    assert_ok(wah_exec_context_create(&c->ctx, &c->module, NULL));
+    assert_ok(wah_new_exec_context(&c->ctx, &c->module, NULL));
     assert_ok(wah_instantiate(&c->ctx));
     c->saved_alloc = wah_debug_exec_alloc(&c->ctx);
 }
@@ -364,7 +364,7 @@ static void prepare_runtime_throw_ref_case(runtime_case_t *c) {
             end \
         end } ]}";
     assert_ok(wah_parse_module_from_spec(&c->module, spec));
-    assert_ok(wah_exec_context_create(&c->ctx, &c->module, NULL));
+    assert_ok(wah_new_exec_context(&c->ctx, &c->module, NULL));
     assert_ok(wah_instantiate(&c->ctx));
     c->saved_alloc = wah_debug_exec_alloc(&c->ctx);
 }
@@ -374,11 +374,11 @@ int main(void) {
     run_oom_loop("wah_parse_module", op_parse_complex_module, cleanup_module_case, &parse_case);
 
     module_case_t define_case = {0};
-    run_oom_loop("wah_module_define_type", op_define_type, cleanup_module_case, &define_case);
+    run_oom_loop("wah_define_type", op_define_type, cleanup_module_case, &define_case);
 
     context_case_t context_case = {0};
     prepare_context_case(&context_case);
-    run_oom_loop("wah_exec_context_create deadline", op_context_create_deadline, cleanup_context_case, &context_case);
+    run_oom_loop("wah_new_exec_context deadline", op_context_create_deadline, cleanup_context_case, &context_case);
     wah_free_module(&context_case.module);
 
     instantiate_case_t instantiate_case = {0};
@@ -393,13 +393,13 @@ int main(void) {
     runtime_case_t runtime_case = {0};
     prepare_runtime_case(&runtime_case);
     run_oom_loop("runtime throw", op_runtime_throw, cleanup_runtime_call, &runtime_case);
-    wah_exec_context_destroy(&runtime_case.ctx);
+    wah_free_exec_context(&runtime_case.ctx);
     wah_free_module(&runtime_case.module);
 
     runtime_case_t runtime_throw_ref_case = {0};
     prepare_runtime_throw_ref_case(&runtime_throw_ref_case);
     run_oom_loop("runtime throw_ref", op_runtime_throw, cleanup_runtime_call, &runtime_throw_ref_case);
-    wah_exec_context_destroy(&runtime_throw_ref_case.ctx);
+    wah_free_exec_context(&runtime_throw_ref_case.ctx);
     wah_free_module(&runtime_throw_ref_case.module);
 
     printf("\n--- ALL OOM TESTS PASSED ---\n");

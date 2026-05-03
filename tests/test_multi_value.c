@@ -21,7 +21,7 @@ static void test_multi_return_i32_pair() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     wah_value_t results[2];
     uint32_t actual_count;
@@ -30,7 +30,7 @@ static void test_multi_return_i32_pair() {
     assert_eq_i32(results[0].i32, 42);
     assert_eq_i32(results[1].i32, 99);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -51,7 +51,7 @@ static void test_multi_return_three_values() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     wah_value_t params[3];
     params[0].i32 = 10;
@@ -66,7 +66,7 @@ static void test_multi_return_three_values() {
     assert_eq_i32(results[1].i32, 20);
     assert_eq_i32(results[2].i32, 30);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -86,7 +86,7 @@ static void test_multi_return_mixed_types() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     wah_value_t params[2];
     params[0].i32 = 42;
@@ -99,7 +99,7 @@ static void test_multi_return_mixed_types() {
     assert_eq_i32(results[0].i32, 42);
     assert_eq_f64(results[1].f64, 3.14, 0.0001);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -120,7 +120,7 @@ static void test_multi_return_with_explicit_return() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     wah_value_t results[2];
     uint32_t actual_count;
@@ -129,7 +129,7 @@ static void test_multi_return_with_explicit_return() {
     assert_eq_i32(results[0].i32, 100);
     assert_eq_i32(results[1].i32, 200);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -160,7 +160,7 @@ static void test_call_function_with_multi_return() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     // Test function 0 directly via wah_call_multi
     wah_value_t results[2];
@@ -176,7 +176,7 @@ static void test_call_function_with_multi_return() {
     // func 1: calls func 0, gets (5, 6), adds them = 11
     assert_eq_i32(result.i32, 11);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -240,7 +240,7 @@ static void test_multi_return_four_values() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     wah_value_t results[4];
     uint32_t actual_count;
@@ -251,7 +251,7 @@ static void test_multi_return_four_values() {
     assert_eq_i32(results[2].i32, 3);
     assert_eq_i32(results[3].i32, 4);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -271,12 +271,12 @@ static void test_wah_call_multi_return_error() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     wah_value_t result;
     assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_MULTI_RETURN);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -300,7 +300,7 @@ static void test_wah_call_multi_return_no_execution() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -316,7 +316,7 @@ static void test_wah_call_multi_return_no_execution() {
     assert_eq_i32(result.i32, 10);
     assert_eq_i32(wah_debug_global_value(&ctx, &module, 0).i32, 42);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -340,7 +340,7 @@ static void test_multi_return_with_locals() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     wah_value_t param;
     param.i32 = 21;
@@ -352,7 +352,7 @@ static void test_multi_return_with_locals() {
     assert_eq_i32(results[0].i32, 21);
     assert_eq_i32(results[1].i32, 42);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -369,10 +369,10 @@ static void test_host_multi_return_truncation() {
 
     wah_module_t mod;
     assert_ok(wah_new_module(&mod, NULL));
-    assert_ok(wah_module_export_func(&mod, "f", "() -> (i32, i32, i32)", host_return_three, NULL, NULL));
+    assert_ok(wah_export_func(&mod, "f", "() -> (i32, i32, i32)", host_return_three, NULL, NULL));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
     // wah_call rejects multi-return host function without executing
     wah_value_t r;
@@ -397,7 +397,7 @@ static void test_host_multi_return_truncation() {
     assert_ok(wah_call_multi(&ctx, 0, NULL, 0, NULL, 0, &actual));
     assert_eq_u32(actual, 3);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 

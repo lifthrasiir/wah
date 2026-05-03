@@ -12,7 +12,7 @@ static void run_simd_test(const char *name, const char *spec_str, const wah_v128
     va_end(args);
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -26,7 +26,7 @@ static void run_simd_test(const char *name, const char *spec_str, const wah_v128
         exit(1);
     }
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -40,13 +40,13 @@ static int32_t run_simd_i32_test(const char *name, const char *spec_str, ...) {
     va_end(args);
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
     return result.i32;
 }

@@ -701,9 +701,9 @@ static void test_deep_const_expr_stack_instantiation() {
     wah_module_t module = {0};
     wah_exec_context_t ctx = {0};
     assert_ok(wah_parse_module(&module, wasm, sizeof(wasm), NULL));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -836,7 +836,7 @@ static void test_reject_huge_memory_min_with_exec_limit() {
         }
     };
     assert_ok(wah_parse_module(&module, wasm, sizeof(wasm), NULL));
-    assert_err(wah_exec_context_create(&ctx, &module, &options), WAH_ERROR_TOO_LARGE);
+    assert_err(wah_new_exec_context(&ctx, &module, &options), WAH_ERROR_TOO_LARGE);
     wah_free_module(&module);
 }
 

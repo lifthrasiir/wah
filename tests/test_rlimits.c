@@ -15,10 +15,10 @@ static void test_create_with_limits(void) {
 
     // Create with default limits
     wah_exec_options_t options = { .limits = {0} };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_rlimits_t out;
-    wah_exec_context_get_limits(&ctx, &out);
+    wah_get_limits(&ctx, &out);
     assert_true(out.max_stack_bytes > 0);
 
     wah_value_t params[2] = { {.i32 = 10}, {.i32 = 20} };
@@ -26,7 +26,7 @@ static void test_create_with_limits(void) {
     assert_ok(wah_call(&ctx, 0, params, 2, &result));
     assert_eq_i32(result.i32, 30);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -38,16 +38,16 @@ static void test_set_limits(void) {
     assert_ok(wah_parse_module_from_spec(&mod,
         "wasm types {[fn [] []]} funcs {[0]} "
         "code {[{[] end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
     wah_rlimits_t lim = { .max_stack_bytes = 4096 };
-    assert_ok(wah_exec_context_set_limits(&ctx, &lim));
+    assert_ok(wah_set_limits(&ctx, &lim));
 
     wah_rlimits_t out;
-    wah_exec_context_get_limits(&ctx, &out);
+    wah_get_limits(&ctx, &out);
     assert_eq_u64(out.max_stack_bytes, 4096);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -60,7 +60,7 @@ static void test_set_limits_rejects_while_suspended(void) {
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32]]} funcs {[0]} \
         code {[{[] i32.const 42 end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
     // wah_start sets up the frame; context is now SUSPENDED
     assert_ok(wah_start(&ctx, 0, NULL, 0));
@@ -68,10 +68,10 @@ static void test_set_limits_rejects_while_suspended(void) {
 
     // set_limits should fail because state != READY
     wah_rlimits_t lim = { .max_stack_bytes = 4096 };
-    assert_err(wah_exec_context_set_limits(&ctx, &lim), WAH_ERROR_MISUSE);
+    assert_err(wah_set_limits(&ctx, &lim), WAH_ERROR_MISUSE);
 
     wah_cancel(&ctx);
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -88,11 +88,11 @@ static void test_deep_recursion_overflow(void) {
 
     // Small stack: ~4KB. Each frame is ~96 bytes (64-bit), so ~40 frames max.
     wah_exec_options_t options = { .limits = { .max_stack_bytes = 4096 } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     assert_err(wah_call(&ctx, 0, NULL, 0, NULL), WAH_ERROR_STACK_OVERFLOW);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -105,12 +105,12 @@ static void test_deep_recursion_default_stack(void) {
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] []]} funcs {[0]} \
         code {[{[] call 0 end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
     assert_err(wah_call(&ctx, 0, NULL, 0, NULL), WAH_ERROR_STACK_OVERFLOW);
 
     // Context should be usable after overflow
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -138,21 +138,21 @@ static void test_wide_operand_stack_preflight(void) {
     // Need 1 frame (~96 bytes) + 16 value slots (256 bytes) = ~352 bytes min.
     // Use 256 bytes: not enough.
     wah_exec_options_t options = { .limits = { .max_stack_bytes = 256 } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_value_t result;
     assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_STACK_OVERFLOW);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
 
     // With enough stack, it should succeed.
     options.limits.max_stack_bytes = 4096;
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 16);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -178,7 +178,7 @@ static void test_mixed_recursion_and_locals(void) {
 
     // Large enough stack for moderate depth
     wah_exec_options_t options = { .limits = { .max_stack_bytes = 16384 } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_value_t params = { .i32 = 5 };
     wah_value_t result;
@@ -189,7 +189,7 @@ static void test_mixed_recursion_and_locals(void) {
     params.i32 = 10000;
     assert_err(wah_call(&ctx, 0, &params, 1, &result), WAH_ERROR_STACK_OVERFLOW);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -211,7 +211,7 @@ static void test_recovery_after_overflow(void) {
         end}]}"));
 
     wah_exec_options_t options = { .limits = { .max_stack_bytes = 8192 } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     // Overflow
     wah_value_t params = { .i32 = 100000 };
@@ -223,7 +223,7 @@ static void test_recovery_after_overflow(void) {
     assert_ok(wah_call(&ctx, 0, &params, 1, &result));
     assert_eq_i32(result.i32, 42);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -242,16 +242,16 @@ static void test_memory_budget_initial_reject(void) {
         code {[{[] memory.size 0 end}]}"));
 
     wah_exec_options_t options = { .limits = { .max_memory_bytes = PAGE_SIZE - 1 } };
-    assert_err(wah_exec_context_create(&ctx, &mod, &options), WAH_ERROR_TOO_LARGE);
+    assert_err(wah_new_exec_context(&ctx, &mod, &options), WAH_ERROR_TOO_LARGE);
 
     options.limits.max_memory_bytes = PAGE_SIZE;
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 1);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -268,16 +268,16 @@ static void test_memory_budget_table_initial(void) {
     uint64_t table_bytes = 10 * sizeof(wah_value_t);
 
     wah_exec_options_t options = { .limits = { .max_memory_bytes = table_bytes - 1 } };
-    assert_err(wah_exec_context_create(&ctx, &mod, &options), WAH_ERROR_TOO_LARGE);
+    assert_err(wah_new_exec_context(&ctx, &mod, &options), WAH_ERROR_TOO_LARGE);
 
     options.limits.max_memory_bytes = table_bytes;
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 10);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -296,12 +296,12 @@ static void test_memory_budget_combined(void) {
     uint64_t total_needed = PAGE_SIZE + table_bytes;
 
     wah_exec_options_t options = { .limits = { .max_memory_bytes = PAGE_SIZE } };
-    assert_err(wah_exec_context_create(&ctx, &mod, &options), WAH_ERROR_TOO_LARGE);
+    assert_err(wah_new_exec_context(&ctx, &mod, &options), WAH_ERROR_TOO_LARGE);
 
     options.limits.max_memory_bytes = total_needed;
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -320,7 +320,7 @@ static void test_memory_grow_budget(void) {
         ]}"));
 
     wah_exec_options_t options = { .limits = { .max_memory_bytes = 2 * PAGE_SIZE } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_value_t params, result;
 
@@ -335,7 +335,7 @@ static void test_memory_grow_budget(void) {
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 2);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -357,7 +357,7 @@ static void test_table_grow_budget(void) {
     uint64_t grow_bytes = 3 * sizeof(wah_value_t);
 
     wah_exec_options_t options = { .limits = { .max_memory_bytes = init_bytes + grow_bytes } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_value_t params, result;
 
@@ -372,7 +372,7 @@ static void test_table_grow_budget(void) {
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 5);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -387,13 +387,13 @@ static void test_memory_grow_returns_neg1_not_trap(void) {
         code {[{[] i32.const 5 memory.grow 0 end}]}"));
 
     wah_exec_options_t options = { .limits = { .max_memory_bytes = PAGE_SIZE } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, -1);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -409,14 +409,14 @@ static void test_no_memory_bytes(void) {
         code {[{[] local.get 0 memory.grow 0 end}]}"));
 
     wah_exec_options_t options = { .limits = { .no_memory_bytes = true } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_value_t params = { .i32 = 1 };
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, &params, 1, &result));
     assert_eq_i32(result.i32, -1);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -430,7 +430,7 @@ static void test_no_memory_bytes_rejects_with_max(void) {
         code {[{[] end}]}"));
 
     wah_exec_options_t options = { .limits = { .no_memory_bytes = true, .max_memory_bytes = 100 } };
-    assert_err(wah_exec_context_create(&ctx, &mod, &options), WAH_ERROR_MISUSE);
+    assert_err(wah_new_exec_context(&ctx, &mod, &options), WAH_ERROR_MISUSE);
 
     wah_free_module(&mod);
 }
@@ -446,7 +446,7 @@ static void test_no_memory_bytes_rejects_initial(void) {
         code {[{[] end}]}"));
 
     wah_exec_options_t options = { .limits = { .no_memory_bytes = true } };
-    assert_err(wah_exec_context_create(&ctx, &mod, &options), WAH_ERROR_TOO_LARGE);
+    assert_err(wah_new_exec_context(&ctx, &mod, &options), WAH_ERROR_TOO_LARGE);
 
     wah_free_module(&mod);
 }
@@ -461,14 +461,14 @@ static void test_zero_budget_default(void) {
         memories {[limits.i32/2 1 100]} \
         code {[{[] local.get 0 memory.grow 0 end}]}"));
 
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
     wah_value_t params = { .i32 = 10 };
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, &params, 1, &result));
     assert_eq_i32(result.i32, 1);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -482,10 +482,10 @@ static void test_set_limits_memory_budget(void) {
         memories {[limits.i32/2 1 10]} \
         code {[{[] local.get 0 memory.grow 0 end}]}"));
 
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
     wah_rlimits_t lim = { .max_memory_bytes = 2 * PAGE_SIZE };
-    assert_ok(wah_exec_context_set_limits(&ctx, &lim));
+    assert_ok(wah_set_limits(&ctx, &lim));
 
     wah_value_t params, result;
 
@@ -497,7 +497,7 @@ static void test_set_limits_memory_budget(void) {
     assert_ok(wah_call(&ctx, 0, &params, 1, &result));
     assert_eq_i32(result.i32, -1);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -511,15 +511,15 @@ static void test_set_limits_rejects_below_committed(void) {
         memories {[limits.i32/2 2 10]} \
         code {[{[] end}]}"));
 
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
     wah_rlimits_t lim = { .max_memory_bytes = PAGE_SIZE };
-    assert_err(wah_exec_context_set_limits(&ctx, &lim), WAH_ERROR_TOO_LARGE);
+    assert_err(wah_set_limits(&ctx, &lim), WAH_ERROR_TOO_LARGE);
 
     lim.max_memory_bytes = 2 * PAGE_SIZE;
-    assert_ok(wah_exec_context_set_limits(&ctx, &lim));
+    assert_ok(wah_set_limits(&ctx, &lim));
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -533,13 +533,13 @@ static void test_get_limits_reports_memory_budget(void) {
         code {[{[] end}]}"));
 
     wah_exec_options_t options = { .limits = { .max_memory_bytes = 1024 * 1024 } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_rlimits_t out;
-    wah_exec_context_get_limits(&ctx, &out);
+    wah_get_limits(&ctx, &out);
     assert_eq_u64(out.max_memory_bytes, 1024 * 1024);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -554,14 +554,14 @@ static void test_zero_page_memory_budget(void) {
         code {[{[] local.get 0 memory.grow 0 end}]}"));
 
     wah_exec_options_t options = { .limits = { .max_memory_bytes = 1 } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_value_t params = { .i32 = 1 };
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, &params, 1, &result));
     assert_eq_i32(result.i32, -1);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -584,10 +584,10 @@ static void test_imported_memory_budget(void) {
         funcs {[0]} \
         code {[{[] local.get 0 memory.grow 0 end}]}"));
 
-    assert_ok(wah_exec_context_create(&pctx, &provider, NULL));
+    assert_ok(wah_new_exec_context(&pctx, &provider, NULL));
 
     wah_exec_options_t options = { .limits = { .max_memory_bytes = 2 * PAGE_SIZE } };
-    assert_ok(wah_exec_context_create(&cctx, &consumer, &options));
+    assert_ok(wah_new_exec_context(&cctx, &consumer, &options));
     assert_ok(wah_link_module(&cctx, "provider", &provider));
     assert_ok(wah_instantiate(&cctx));
 
@@ -601,8 +601,8 @@ static void test_imported_memory_budget(void) {
     assert_ok(wah_call(&cctx, 0, &params, 1, &result));
     assert_eq_i32(result.i32, -1);
 
-    wah_exec_context_destroy(&cctx);
-    wah_exec_context_destroy(&pctx);
+    wah_free_exec_context(&cctx);
+    wah_free_exec_context(&pctx);
     wah_free_module(&consumer);
     wah_free_module(&provider);
 }
@@ -624,7 +624,7 @@ static void test_fuel_via_rlimits(void) {
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
 
     wah_exec_options_t options = { .limits = { .fuel = 100 } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     assert_eq_i64(wah_get_fuel(&ctx), 100);
 
@@ -634,7 +634,7 @@ static void test_fuel_via_rlimits(void) {
     assert_eq_i32(result.i32, 30);
     assert_eq_i64(wah_get_fuel(&ctx), 96);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -648,13 +648,13 @@ static void test_fuel_via_rlimits_exhaustion(void) {
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
 
     wah_exec_options_t options = { .limits = { .fuel = 3 } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_value_t params[2] = { {.i32 = 10}, {.i32 = 20} };
     wah_value_t result;
     assert_err(wah_call(&ctx, 0, params, 2, &result), WAH_STATUS_FUEL_EXHAUSTED);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -668,10 +668,10 @@ static void test_fuel_zero_rlimit_means_default(void) {
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
 
     wah_exec_options_t options = { .limits = { .fuel = 0 } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
     assert_eq_i64(wah_get_fuel(&ctx), INT64_MAX);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -685,7 +685,7 @@ static void test_fuel_refuel_via_set_limits(void) {
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
 
     wah_exec_options_t options = { .limits = { .fuel = 10 } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_value_t params[2] = { {.i32 = 1}, {.i32 = 2} };
     wah_value_t result;
@@ -693,13 +693,13 @@ static void test_fuel_refuel_via_set_limits(void) {
     assert_eq_i64(wah_get_fuel(&ctx), 6);
 
     wah_rlimits_t lim = { .fuel = 100 };
-    assert_ok(wah_exec_context_set_limits(&ctx, &lim));
+    assert_ok(wah_set_limits(&ctx, &lim));
     assert_eq_i64(wah_get_fuel(&ctx), 100);
 
     assert_ok(wah_call(&ctx, 0, params, 2, &result));
     assert_eq_i64(wah_get_fuel(&ctx), 96);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -722,7 +722,7 @@ static void test_fuel_resume_via_rlimits(void) {
         end}]}");
 
     wah_exec_options_t options = { .limits = { .fuel = 5 } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_value_t params[2] = { {.i32 = 0}, {.i32 = 3} };
     assert_ok(wah_start(&ctx, 0, params, 2));
@@ -742,7 +742,7 @@ static void test_fuel_resume_via_rlimits(void) {
 
     printf("  loop(3) completed after %d fuel refills\n", suspensions);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -756,20 +756,20 @@ static void test_get_limits_reports_fuel(void) {
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
 
     wah_exec_options_t options = { .limits = { .fuel = 50 } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_rlimits_t out;
-    wah_exec_context_get_limits(&ctx, &out);
+    wah_get_limits(&ctx, &out);
     assert_eq_u64(out.fuel, 50);
 
     wah_value_t params[2] = { {.i32 = 1}, {.i32 = 2} };
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, params, 2, &result));
 
-    wah_exec_context_get_limits(&ctx, &out);
+    wah_get_limits(&ctx, &out);
     assert_eq_u64(out.fuel, 46);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -784,43 +784,43 @@ static void test_set_limits_partial(void) {
         code {[{[] local.get 0 local.get 1 i32.add end}]}");
 
     wah_exec_options_t options = { .limits = { .max_stack_bytes = 8192, .max_memory_bytes = 4 * PAGE_SIZE, .fuel = 200 } };
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_rlimits_t before;
-    wah_exec_context_get_limits(&ctx, &before);
+    wah_get_limits(&ctx, &before);
     assert_eq_u64(before.max_stack_bytes, 8192);
     assert_eq_u64(before.max_memory_bytes, 4 * PAGE_SIZE);
     assert_eq_u64(before.fuel, 200);
 
     // Set only fuel -- stack and memory should not change
     wah_rlimits_t fuel_only = { .fuel = 500 };
-    assert_ok(wah_exec_context_set_limits(&ctx, &fuel_only));
+    assert_ok(wah_set_limits(&ctx, &fuel_only));
 
     wah_rlimits_t after;
-    wah_exec_context_get_limits(&ctx, &after);
+    wah_get_limits(&ctx, &after);
     assert_eq_u64(after.max_stack_bytes, 8192);
     assert_eq_u64(after.max_memory_bytes, 4 * PAGE_SIZE);
     assert_eq_u64(after.fuel, 500);
 
     // Set only memory -- stack and fuel should not change
     wah_rlimits_t mem_only = { .max_memory_bytes = 2 * PAGE_SIZE };
-    assert_ok(wah_exec_context_set_limits(&ctx, &mem_only));
+    assert_ok(wah_set_limits(&ctx, &mem_only));
 
-    wah_exec_context_get_limits(&ctx, &after);
+    wah_get_limits(&ctx, &after);
     assert_eq_u64(after.max_stack_bytes, 8192);
     assert_eq_u64(after.max_memory_bytes, 2 * PAGE_SIZE);
     assert_eq_u64(after.fuel, 500);
 
     // Set only stack -- memory and fuel should not change
     wah_rlimits_t stack_only = { .max_stack_bytes = 16384 };
-    assert_ok(wah_exec_context_set_limits(&ctx, &stack_only));
+    assert_ok(wah_set_limits(&ctx, &stack_only));
 
-    wah_exec_context_get_limits(&ctx, &after);
+    wah_get_limits(&ctx, &after);
     assert_eq_u64(after.max_stack_bytes, 16384);
     assert_eq_u64(after.max_memory_bytes, 2 * PAGE_SIZE);
     assert_eq_u64(after.fuel, 500);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 

@@ -13,7 +13,7 @@ int main() {
         funcs {[ 0 ]} \
         code {[ {[] local.get 0 local.get 1 i32.add end } ]}";
     assert_ok(wah_parse_module_from_spec(&module, simple_add_wasm));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     uint32_t func_idx = 0;
     wah_value_t params[2];
@@ -32,7 +32,7 @@ int main() {
     assert_ok(wah_call(&ctx, func_idx, params, 2, &result));
     assert_eq_i32(result.i32, 12);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 
     printf("Testing wah_call_by_name...\n");
@@ -48,7 +48,7 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&mod, spec));
 
         wah_exec_context_t ectx;
-        assert_ok(wah_exec_context_create(&ectx, &mod, NULL));
+        assert_ok(wah_new_exec_context(&ectx, &mod, NULL));
 
         wah_value_t p[2] = {{.i32 = 3}, {.i32 = 4}};
         wah_value_t r;
@@ -61,7 +61,7 @@ int main() {
         // non-function export
         assert_err(wah_call_by_name(&ectx, "mem", p, 2, &r), WAH_ERROR_NOT_FOUND);
 
-        wah_exec_context_destroy(&ectx);
+        wah_free_exec_context(&ectx);
         wah_free_module(&mod);
     }
 

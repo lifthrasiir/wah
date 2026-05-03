@@ -17,11 +17,11 @@ static void test_return_call_basic(void) {
     wah_module_t module = {0};
     wah_exec_context_t ctx = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -41,12 +41,12 @@ static void test_return_call_with_params(void) {
     wah_module_t module = {0};
     wah_exec_context_t ctx = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     wah_value_t result;
     wah_value_t params[2] = {{.i32 = 10}, {.i32 = 32}};
     assert_ok(wah_call(&ctx, 0, params, 2, &result));
     assert_eq_i32(result.i32, 42);
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -73,12 +73,12 @@ static void test_return_call_deep_recursion(void) {
     wah_module_t module = {0};
     wah_exec_context_t ctx = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     wah_value_t result;
     wah_value_t params[1] = {{.i32 = 100000}};
     assert_ok(wah_call(&ctx, 0, params, 1, &result));
     assert_eq_i32(result.i32, 0);
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -99,12 +99,12 @@ static void test_return_call_indirect_basic(void) {
     wah_module_t module = {0};
     wah_exec_context_t ctx = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 99);
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -124,12 +124,12 @@ static void test_return_call_indirect_table64(void) {
     wah_module_t module = {0};
     wah_exec_context_t ctx = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 123);
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -158,13 +158,13 @@ static void test_return_call_indirect_deep_recursion(void) {
     wah_module_t module = {0};
     wah_exec_context_t ctx = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
     wah_value_t params[1] = {{.i32 = 100000}};
     assert_ok(wah_call(&ctx, 0, params, 1, &result));
     assert_eq_i32(result.i32, 0);
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -186,12 +186,12 @@ static void test_return_call_ref_basic(void) {
     wah_module_t module = {0};
     wah_exec_context_t ctx = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 77);
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -208,12 +208,12 @@ static void test_return_call_ref_null_trap(void) {
     wah_module_t module = {0};
     wah_exec_context_t ctx = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
     wah_error_t err = wah_call(&ctx, 0, NULL, 0, &result);
     assert(err == WAH_ERROR_TRAP && "expected trap for null call_ref");
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -249,7 +249,7 @@ static void test_mutual_tail_recursion(void) {
     wah_module_t module = {0};
     wah_exec_context_t ctx = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     wah_value_t result;
     wah_value_t params[1];
 
@@ -261,7 +261,7 @@ static void test_mutual_tail_recursion(void) {
     assert_ok(wah_call(&ctx, 0, params, 1, &result));
     assert_eq_i32(result.i32, 0);  // 100001 is odd
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -309,12 +309,12 @@ static void test_return_call_indirect_exception_cleanup(void) {
                 i32.const -1 \
             end} \
         ]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 77);
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -339,12 +339,12 @@ static void test_return_call_ref_exception_cleanup(void) {
                 i32.const -1 \
             end} \
         ]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 88);
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -370,12 +370,12 @@ static void test_return_call_indirect_i64_exception_cleanup(void) {
                 i32.const -1 \
             end} \
         ]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 99);
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 

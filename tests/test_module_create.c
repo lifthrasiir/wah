@@ -34,14 +34,14 @@ int main() {
     assert_ok(wah_new_module(&mod2, NULL));
 
     // Export function with no parameters and no results
-    assert_ok(wah_module_export_func(&mod2, "test_func", "()", test_host_func, NULL, NULL));
-    assert_ok(wah_module_export_func(&mod2, "test_func_explicit", "fn () -> ()", test_host_func, NULL, NULL));
-    assert_err(wah_module_export_func(&mod2, "bad_placeholder", "fn (%T) -> ()", test_host_func, NULL, NULL), WAH_ERROR_BAD_SPEC);
-    assert_err(wah_module_export_func(&mod2, "bad_struct", "struct { i32 }", test_host_func, NULL, NULL), WAH_ERROR_BAD_SPEC);
+    assert_ok(wah_export_func(&mod2, "test_func", "()", test_host_func, NULL, NULL));
+    assert_ok(wah_export_func(&mod2, "test_func_explicit", "fn () -> ()", test_host_func, NULL, NULL));
+    assert_err(wah_export_func(&mod2, "bad_placeholder", "fn (%T) -> ()", test_host_func, NULL, NULL), WAH_ERROR_BAD_SPEC);
+    assert_err(wah_export_func(&mod2, "bad_struct", "struct { i32 }", test_host_func, NULL, NULL), WAH_ERROR_BAD_SPEC);
 
     // Verify export exists
     wah_export_desc_t entry;
-    assert_ok(wah_module_export_by_name(&mod2, "test_func", &entry));
+    assert_ok(wah_export_by_name(&mod2, "test_func", &entry));
 
     // Check it's a function
     assert_eq_i32(entry.kind, WAH_KIND_FUNCTION);
@@ -54,7 +54,7 @@ int main() {
     assert_ok(wah_new_module(&mod3, NULL));
 
     int test_data = 42;
-    assert_ok(wah_module_export_func(&mod3, "test_func2", "()", test_host_func, &test_data, test_cleanup));
+    assert_ok(wah_export_func(&mod3, "test_func2", "()", test_host_func, &test_data, test_cleanup));
 
     cleanup_called = 0;
     wah_free_module(&mod3);
@@ -65,15 +65,15 @@ int main() {
     wah_module_t mod4 = {0};
     assert_ok(wah_new_module(&mod4, NULL));
 
-    assert_ok(wah_module_export_func(&mod4, "func1", "()", test_host_func, NULL, NULL));
-    assert_ok(wah_module_export_func(&mod4, "func2", "()", test_host_func, NULL, NULL));
-    assert_ok(wah_module_export_func(&mod4, "func3", "()", test_host_func, NULL, NULL));
+    assert_ok(wah_export_func(&mod4, "func1", "()", test_host_func, NULL, NULL));
+    assert_ok(wah_export_func(&mod4, "func2", "()", test_host_func, NULL, NULL));
+    assert_ok(wah_export_func(&mod4, "func3", "()", test_host_func, NULL, NULL));
 
     // Verify all exports exist
     for (int i = 1; i <= 3; i++) {
         char name[16];
         snprintf(name, sizeof(name), "func%d", i);
-        assert_ok(wah_module_export_by_name(&mod4, name, &entry));
+        assert_ok(wah_export_by_name(&mod4, name, &entry));
     }
 
     // Check export count

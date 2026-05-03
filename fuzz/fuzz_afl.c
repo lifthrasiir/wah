@@ -73,7 +73,7 @@ int main(void) {
             .fuel = WAH_FUZZ_CALL_FUEL,
         }
     };
-    err = wah_exec_context_create(&exec_ctx, &module, &options);
+    err = wah_new_exec_context(&exec_ctx, &module, &options);
     if (err != WAH_OK) {
         goto cleanup_module;
     }
@@ -115,7 +115,7 @@ int main(void) {
     }
 
 cleanup_exec_ctx:
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
 cleanup_module:
     wah_free_module(&module);
 cleanup_binary:

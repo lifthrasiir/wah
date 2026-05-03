@@ -31,14 +31,14 @@ void wah_test_table_indirect_call() {
     assert_ok(wah_parse_module_from_spec(&module, indirect_call_spec));
 
     wah_exec_context_t exec_ctx;
-    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&exec_ctx, &module, NULL));
 
     // Find the exported function indices by name
     wah_export_desc_t entry;
-    assert_ok(wah_module_export_by_name(&module, "call_indirect_add", &entry));
+    assert_ok(wah_export_by_name(&module, "call_indirect_add", &entry));
     uint32_t call_indirect_add_func_idx = (uint32_t)entry.index;
 
-    assert_ok(wah_module_export_by_name(&module, "call_indirect_sub", &entry));
+    assert_ok(wah_export_by_name(&module, "call_indirect_sub", &entry));
     uint32_t call_indirect_sub_func_idx = (uint32_t)entry.index;
 
     // Test call_indirect_add (calls add_one indirectly)
@@ -54,7 +54,7 @@ void wah_test_table_indirect_call() {
     assert_ok(wah_call(&exec_ctx, call_indirect_sub_func_idx, params_sub, 1, &result_sub));
     assert(result_sub.i32 == 9);
 
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
     wah_free_module(&module);
 }
 
@@ -73,17 +73,17 @@ void wah_test_table_size() {
     assert_ok(wah_parse_module_from_spec(&module, table_size_spec));
 
     wah_exec_context_t exec_ctx;
-    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&exec_ctx, &module, NULL));
 
     wah_export_desc_t entry;
-    assert_ok(wah_module_export_by_name(&module, "get_table_size", &entry));
+    assert_ok(wah_export_by_name(&module, "get_table_size", &entry));
     uint32_t func_idx = (uint32_t)entry.index;
 
     wah_value_t result;
     assert_ok(wah_call(&exec_ctx, func_idx, NULL, 0, &result));
     assert_eq_i32(result.i32, 90); // 10 * 7 + 20 = 90
 
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
     wah_free_module(&module);
 }
 
@@ -102,17 +102,17 @@ void wah_test_table_grow() {
     assert_ok(wah_parse_module_from_spec(&module, table_grow_spec));
 
     wah_exec_context_t exec_ctx;
-    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&exec_ctx, &module, NULL));
 
     wah_export_desc_t entry;
-    assert_ok(wah_module_export_by_name(&module, "grow_table", &entry));
+    assert_ok(wah_export_by_name(&module, "grow_table", &entry));
     uint32_t func_idx = (uint32_t)entry.index;
 
     wah_value_t result;
     assert_ok(wah_call(&exec_ctx, func_idx, NULL, 0, &result));
     assert_eq_i32(result.i32, 10);  // Old size was 10
 
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
     wah_free_module(&module);
 }
 
@@ -136,10 +136,10 @@ void wah_test_table_fill() {
     assert_ok(wah_parse_module_from_spec(&module, table_fill_spec));
 
     wah_exec_context_t exec_ctx;
-    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&exec_ctx, &module, NULL));
 
     wah_export_desc_t entry;
-    assert_ok(wah_module_export_by_name(&module, "test_fill", &entry));
+    assert_ok(wah_export_by_name(&module, "test_fill", &entry));
     uint32_t func_idx = (uint32_t)entry.index;
 
     wah_value_t result;
@@ -147,7 +147,7 @@ void wah_test_table_fill() {
     // Table 0 should have ref.func 0 at index 0, and the rest should be null. Table 1 should be unaffected and all null.
     assert_eq_i32(result.i32, 11);
 
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
     wah_free_module(&module);
 }
 
@@ -173,17 +173,17 @@ void wah_test_table_copy() {
     assert_ok(wah_parse_module_from_spec(&module, table_copy_spec));
 
     wah_exec_context_t exec_ctx;
-    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&exec_ctx, &module, NULL));
 
     wah_export_desc_t entry;
-    assert_ok(wah_module_export_by_name(&module, "test_copy", &entry));
+    assert_ok(wah_export_by_name(&module, "test_copy", &entry));
     uint32_t func_idx = (uint32_t)entry.index;
 
     wah_value_t result;
     assert_ok(wah_call(&exec_ctx, func_idx, NULL, 0, &result));
     assert_eq_i32(result.i32, 10); // After copying, index 5 of table 1 should have the function reference, so not null
 
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
     wah_free_module(&module);
 }
 
@@ -210,17 +210,17 @@ void wah_test_table_init() {
     assert_ok(wah_parse_module_from_spec(&module, table_init_spec));
 
     wah_exec_context_t exec_ctx;
-    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&exec_ctx, &module, NULL));
 
     wah_export_desc_t entry;
-    assert_ok(wah_module_export_by_name(&module, "test_init", &entry));
+    assert_ok(wah_export_by_name(&module, "test_init", &entry));
     uint32_t func_idx = (uint32_t)entry.index;
 
     wah_value_t result;
     assert_ok(wah_call(&exec_ctx, func_idx, NULL, 0, &result));
     assert_eq_i32(result.i32, 1); // Only index 1 of table 1 is uninitialized
 
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
     wah_free_module(&module);
 }
 
@@ -244,16 +244,16 @@ void wah_test_elem_drop() {
     assert_ok(wah_parse_module_from_spec(&module, elem_drop_spec));
 
     wah_exec_context_t exec_ctx;
-    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&exec_ctx, &module, NULL));
 
     wah_export_desc_t entry;
-    assert_ok(wah_module_export_by_name(&module, "test_drop", &entry));
+    assert_ok(wah_export_by_name(&module, "test_drop", &entry));
     uint32_t func_idx = (uint32_t)entry.index;
 
     wah_value_t result;
     assert_err(wah_call(&exec_ctx, func_idx, NULL, 0, &result), WAH_ERROR_TRAP); // Should trap because element segment was dropped
 
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
     wah_free_module(&module);
 }
 
@@ -276,10 +276,10 @@ void wah_test_elem_active_table1() {
     assert_ok(wah_parse_module_from_spec(&module, elem_active_table1_spec));
 
     wah_exec_context_t exec_ctx;
-    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&exec_ctx, &module, NULL));
 
     wah_export_desc_t entry;
-    assert_ok(wah_module_export_by_name(&module, "test_call", &entry));
+    assert_ok(wah_export_by_name(&module, "test_call", &entry));
     uint32_t func_idx = (uint32_t)entry.index;
 
     // Test calling function from table#1
@@ -288,7 +288,7 @@ void wah_test_elem_active_table1() {
     assert_ok(wah_call(&exec_ctx, func_idx, params, 1, &result));
     assert_eq_i32(result.i32, 11); // Should call add_one (func 0) from table#1
 
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
     wah_free_module(&module);
 }
 
@@ -329,16 +329,16 @@ void wah_test_elem_import_index_drift() {
     wah_module_t host_mod;
     assert_ok(wah_new_module(&host_mod, NULL));
 
-    assert_ok(wah_module_export_func(&host_mod, "add_one", "(i32) -> i32", host_add_one, NULL, NULL));
-    assert_ok(wah_module_export_func(&host_mod, "sub_one", "(i32) -> i32", host_sub_one, NULL, NULL));
+    assert_ok(wah_export_func(&host_mod, "add_one", "(i32) -> i32", host_add_one, NULL, NULL));
+    assert_ok(wah_export_func(&host_mod, "sub_one", "(i32) -> i32", host_sub_one, NULL, NULL));
 
     wah_exec_context_t exec_ctx;
-    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&exec_ctx, &module, NULL));
     assert_ok(wah_link_module(&exec_ctx, "mod", &host_mod));
     assert_ok(wah_instantiate(&exec_ctx));
 
     wah_export_desc_t entry;
-    assert_ok(wah_module_export_by_name(&module, "test_call", &entry));
+    assert_ok(wah_export_by_name(&module, "test_call", &entry));
     uint32_t func_idx = (uint32_t)entry.index;
 
     // Test calling local function (index 4, which is the second local function after 2 imports)
@@ -347,7 +347,7 @@ void wah_test_elem_import_index_drift() {
     assert_ok(wah_call(&exec_ctx, func_idx, params, 1, &result));
     assert_eq_i32(result.i32, 20); // Should call multiply_by_2 (func 4) which does x*2
 
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
     wah_free_module(&module);
     wah_free_module(&host_mod);
 }
@@ -370,10 +370,10 @@ void wah_test_elem_declarative() {
     assert_ok(wah_parse_module_from_spec(&module, elem_declarative_spec));
 
     wah_exec_context_t exec_ctx;
-    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&exec_ctx, &module, NULL));
 
     wah_export_desc_t entry;
-    assert_ok(wah_module_export_by_name(&module, "test_fn", &entry));
+    assert_ok(wah_export_by_name(&module, "test_fn", &entry));
     uint32_t func_idx = (uint32_t)entry.index;
 
     // Test that the function works correctly
@@ -382,7 +382,7 @@ void wah_test_elem_declarative() {
     assert_ok(wah_call(&exec_ctx, func_idx, params, 1, &result));
     assert_eq_i32(result.i32, 11);
 
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
     wah_free_module(&module);
 }
 
@@ -406,13 +406,13 @@ void wah_test_elem_expr_style() {
     assert_ok(wah_parse_module_from_spec(&module, elem_expr_spec));
 
     wah_exec_context_t exec_ctx;
-    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&exec_ctx, &module, NULL));
 
     wah_export_desc_t entry;
-    assert_ok(wah_module_export_by_name(&module, "call_first", &entry));
+    assert_ok(wah_export_by_name(&module, "call_first", &entry));
     uint32_t first_func_idx = (uint32_t)entry.index;
 
-    assert_ok(wah_module_export_by_name(&module, "call_second", &entry));
+    assert_ok(wah_export_by_name(&module, "call_second", &entry));
     uint32_t second_func_idx = (uint32_t)entry.index;
 
     // Test calling first function via table
@@ -425,7 +425,7 @@ void wah_test_elem_expr_style() {
     assert_ok(wah_call(&exec_ctx, second_func_idx, params, 1, &result));
     assert_eq_i32(result.i32, 12); // add_two
 
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
     wah_free_module(&module);
 }
 
@@ -465,10 +465,10 @@ void wah_test_elem_multiple_segments() {
     assert_ok(wah_parse_module_from_spec(&module, elem_multiple_segments_spec));
 
     wah_exec_context_t exec_ctx;
-    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&exec_ctx, &module, NULL));
 
     wah_export_desc_t entry;
-    assert_ok(wah_module_export_by_name(&module, "test_all", &entry));
+    assert_ok(wah_export_by_name(&module, "test_all", &entry));
     uint32_t func_idx = (uint32_t)entry.index;
 
     // Test calling all functions from table
@@ -479,7 +479,7 @@ void wah_test_elem_multiple_segments() {
     // = 1 + (1+2) + ((1+2)+3) = 1 + 3 + 6 = 10
     assert_eq_i32(result.i32, 10);
 
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
     wah_free_module(&module);
 }
 
@@ -514,15 +514,15 @@ void wah_test_elem_passive_with_imports() {
     wah_module_t host_mod;
     assert_ok(wah_new_module(&host_mod, NULL));
 
-    assert_ok(wah_module_export_func(&host_mod, "imported_fn", "(i32) -> i32", host_imported_fn, NULL, NULL));
+    assert_ok(wah_export_func(&host_mod, "imported_fn", "(i32) -> i32", host_imported_fn, NULL, NULL));
 
     wah_exec_context_t exec_ctx;
-    assert_ok(wah_exec_context_create(&exec_ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&exec_ctx, &module, NULL));
     assert_ok(wah_link_module(&exec_ctx, "mod", &host_mod));
     assert_ok(wah_instantiate(&exec_ctx));
 
     wah_export_desc_t entry;
-    assert_ok(wah_module_export_by_name(&module, "test_init", &entry));
+    assert_ok(wah_export_by_name(&module, "test_init", &entry));
     uint32_t func_idx = (uint32_t)entry.index;
 
     // Test that passive element with index 1 refers to first local function (after import)
@@ -531,7 +531,7 @@ void wah_test_elem_passive_with_imports() {
     assert_ok(wah_call(&exec_ctx, func_idx, params, 1, &result));
     assert_eq_i32(result.i32, 11); // Should call local function (add_one)
 
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
     wah_free_module(&module);
     wah_free_module(&host_mod);
 }
@@ -554,12 +554,12 @@ void wah_test_table_grow_isolated() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx1, ctx2;
-    assert_ok(wah_exec_context_create(&ctx1, &module, NULL));
-    assert_ok(wah_exec_context_create(&ctx2, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx1, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx2, &module, NULL));
 
     wah_export_desc_t grow_entry, size_entry;
-    assert_ok(wah_module_export_by_name(&module, "grow", &grow_entry));
-    assert_ok(wah_module_export_by_name(&module, "size", &size_entry));
+    assert_ok(wah_export_by_name(&module, "grow", &grow_entry));
+    assert_ok(wah_export_by_name(&module, "size", &size_entry));
     uint32_t grow_idx = (uint32_t)grow_entry.index;
     uint32_t size_idx = (uint32_t)size_entry.index;
 
@@ -577,8 +577,8 @@ void wah_test_table_grow_isolated() {
     assert_ok(wah_call(&ctx1, size_idx, NULL, 0, &result));
     assert_eq_i32(result.i32, 6);
 
-    wah_exec_context_destroy(&ctx1);
-    wah_exec_context_destroy(&ctx2);
+    wah_free_exec_context(&ctx1);
+    wah_free_exec_context(&ctx2);
     wah_free_module(&module);
 }
 
@@ -600,7 +600,7 @@ void wah_test_table_no_max_is_unbounded() {
       assert_eq_u32((uint32_t)td.min_elements, 3); assert_eq_u32((uint32_t)td.max_elements, UINT32_MAX); }
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     // Growing by 5 from min=3 yields old_size=3; must succeed (no max limit)
     wah_value_t result;
@@ -608,7 +608,7 @@ void wah_test_table_no_max_is_unbounded() {
     assert_eq_i32(result.i32, 3);  // returns old size
     assert_eq_u64(wah_debug_table_size(&ctx, 0), 8);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -755,13 +755,13 @@ void wah_test_table_init_src_range_overflow_traps() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     wah_export_desc_t entry;
-    assert_ok(wah_module_export_by_name(&module, "f", &entry));
+    assert_ok(wah_export_by_name(&module, "f", &entry));
     assert_err(wah_call(&ctx, (uint32_t)entry.index, NULL, 0, NULL), WAH_ERROR_TRAP);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -814,7 +814,7 @@ void wah_test_table_init_expr() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // call_indirect on table[1] should find func 0 (from init expr)
@@ -822,7 +822,7 @@ void wah_test_table_init_expr() {
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -851,13 +851,13 @@ void wah_test_active_elem_dropped_after_init() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // table.init with size 1 from dropped segment should trap
     assert_err(wah_call(&ctx, 0, NULL, 0, NULL), WAH_ERROR_TRAP);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -877,10 +877,10 @@ void wah_test_active_elem_oob_trap() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_err(wah_instantiate(&ctx), WAH_ERROR_TRAP);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 
     // Positive control: 1 element in 1-slot table at offset 0 is fine
@@ -894,9 +894,9 @@ void wah_test_active_elem_oob_trap() {
     wah_module_t good = {0};
     assert_ok(wah_parse_module_from_spec(&good, good_spec));
     wah_exec_context_t ctx2 = {0};
-    assert_ok(wah_exec_context_create(&ctx2, &good, NULL));
+    assert_ok(wah_new_exec_context(&ctx2, &good, NULL));
     assert_ok(wah_instantiate(&ctx2));
-    wah_exec_context_destroy(&ctx2);
+    wah_free_exec_context(&ctx2);
     wah_free_module(&good);
 }
 

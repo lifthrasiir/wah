@@ -25,7 +25,7 @@ static void test_bulk_memory_fill_interrupt(void) {
     wah_exec_context_t ctx = {0};
 
     assert_ok(wah_new_module(&env, NULL));
-    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+    assert_ok(wah_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32], fn [] []]} \
         imports {[{'env'} {'interrupt'} fn# 1]} \
@@ -36,7 +36,7 @@ static void test_bulk_memory_fill_interrupt(void) {
             i32.const 0 i32.const 0xAB i32.const 128 memory.fill 0 \
             i32.const 127 i32.load8_u 0 0 \
         end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &env));
     assert_ok(wah_instantiate(&ctx));
 
@@ -53,7 +53,7 @@ static void test_bulk_memory_fill_interrupt(void) {
     assert_ok(wah_finish(&ctx, &result, 1, &actual));
     assert_eq_i32(result.i32, 0xAB);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
     wah_free_module(&env);
 }
@@ -65,7 +65,7 @@ static void test_bulk_memory_copy_interrupt(void) {
     wah_exec_context_t ctx = {0};
 
     assert_ok(wah_new_module(&env, NULL));
-    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+    assert_ok(wah_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32], fn [] []]} \
         imports {[{'env'} {'interrupt'} fn# 1]} \
@@ -76,7 +76,7 @@ static void test_bulk_memory_copy_interrupt(void) {
             i32.const 256 i32.const 0 i32.const 128 memory.copy 0 0 \
             i32.const 383 i32.load8_u 0 0 \
         end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &env));
     assert_ok(wah_instantiate(&ctx));
     memset(ctx.memory_base, 0xCD, 128);
@@ -94,7 +94,7 @@ static void test_bulk_memory_copy_interrupt(void) {
     assert_ok(wah_finish(&ctx, &result, 1, &actual));
     assert_eq_i32(result.i32, 0xCD);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
     wah_free_module(&env);
 }
@@ -106,7 +106,7 @@ static void test_bulk_memory_copy_backward_interrupt(void) {
     wah_exec_context_t ctx = {0};
 
     assert_ok(wah_new_module(&env, NULL));
-    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+    assert_ok(wah_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32], fn [] []]} \
         imports {[{'env'} {'interrupt'} fn# 1]} \
@@ -117,7 +117,7 @@ static void test_bulk_memory_copy_backward_interrupt(void) {
             i32.const 32 i32.const 0 i32.const 128 memory.copy 0 0 \
             i32.const 32 i32.load8_u 0 0 \
         end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &env));
     assert_ok(wah_instantiate(&ctx));
     memset(ctx.memory_base, 0xA1, 64);
@@ -135,7 +135,7 @@ static void test_bulk_memory_copy_backward_interrupt(void) {
     assert_ok(wah_finish(&ctx, &result, 1, &actual));
     assert_eq_i32(result.i32, 0xA1);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
     wah_free_module(&env);
 }
@@ -147,7 +147,7 @@ static void test_bulk_memory_init_interrupt(void) {
     wah_exec_context_t ctx = {0};
 
     assert_ok(wah_new_module(&env, NULL));
-    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+    assert_ok(wah_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32], fn [] []]} \
         imports {[{'env'} {'interrupt'} fn# 1]} \
@@ -160,7 +160,7 @@ static void test_bulk_memory_init_interrupt(void) {
             i32.const 127 i32.load8_u 0 0 \
         end}]} \
         data {[data.passive {%'" REP128("5A") "'}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &env));
     assert_ok(wah_instantiate(&ctx));
 
@@ -177,7 +177,7 @@ static void test_bulk_memory_init_interrupt(void) {
     assert_ok(wah_finish(&ctx, &result, 1, &actual));
     assert_eq_i32(result.i32, 0x5A);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
     wah_free_module(&env);
 }
@@ -189,7 +189,7 @@ static void test_bulk_memory64_copy_interrupt(void) {
     wah_exec_context_t ctx = {0};
 
     assert_ok(wah_new_module(&env, NULL));
-    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+    assert_ok(wah_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32], fn [] []]} \
         imports {[{'env'} {'interrupt'} fn# 1]} \
@@ -200,7 +200,7 @@ static void test_bulk_memory64_copy_interrupt(void) {
             i64.const 256 i64.const 0 i64.const 128 memory.copy 0 0 \
             i64.const 383 i32.load8_u 0 0 \
         end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &env));
     assert_ok(wah_instantiate(&ctx));
     memset(ctx.memory_base, 0xD4, 128);
@@ -218,7 +218,7 @@ static void test_bulk_memory64_copy_interrupt(void) {
     assert_ok(wah_finish(&ctx, &result, 1, &actual));
     assert_eq_i32(result.i32, 0xD4);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
     wah_free_module(&env);
 }
@@ -232,7 +232,7 @@ static void test_bulk_table_copy_interrupt(void) {
     wah_exec_context_t ctx = {0};
 
     assert_ok(wah_new_module(&env, NULL));
-    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+    assert_ok(wah_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32], fn [] []]} \
         imports {[{'env'} {'interrupt'} fn# 1]} \
@@ -245,7 +245,7 @@ static void test_bulk_table_copy_interrupt(void) {
             i32.const 128 i32.const 0 i32.const 128 table.copy 0 0 \
             i32.const 255 table.get 0 ref.is_null \
         end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &env));
     assert_ok(wah_instantiate(&ctx));
 
@@ -262,7 +262,7 @@ static void test_bulk_table_copy_interrupt(void) {
     assert_ok(wah_finish(&ctx, &result, 1, &actual));
     assert_eq_i32(result.i32, 0);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
     wah_free_module(&env);
 }
@@ -274,7 +274,7 @@ static void test_bulk_table_copy_backward_interrupt(void) {
     wah_exec_context_t ctx = {0};
 
     assert_ok(wah_new_module(&env, NULL));
-    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+    assert_ok(wah_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32], fn [] []]} \
         imports {[{'env'} {'interrupt'} fn# 1]} \
@@ -287,7 +287,7 @@ static void test_bulk_table_copy_backward_interrupt(void) {
             i32.const 32 i32.const 0 i32.const 128 table.copy 0 0 \
             i32.const 32 table.get 0 ref.is_null \
         end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &env));
     assert_ok(wah_instantiate(&ctx));
 
@@ -303,7 +303,7 @@ static void test_bulk_table_copy_backward_interrupt(void) {
     assert_ok(wah_finish(&ctx, &result, 1, &actual));
     assert_eq_i32(result.i32, 0);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
     wah_free_module(&env);
 }
@@ -315,7 +315,7 @@ static void test_bulk_table_init_interrupt(void) {
     wah_exec_context_t ctx = {0};
 
     assert_ok(wah_new_module(&env, NULL));
-    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+    assert_ok(wah_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32], fn [] []]} \
         imports {[{'env'} {'interrupt'} fn# 1]} \
@@ -327,7 +327,7 @@ static void test_bulk_table_init_interrupt(void) {
             i32.const 0 i32.const 0 i32.const 128 table.init 0 0 \
             i32.const 127 table.get 0 ref.is_null \
         end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &env));
     assert_ok(wah_instantiate(&ctx));
 
@@ -344,7 +344,7 @@ static void test_bulk_table_init_interrupt(void) {
     assert_ok(wah_finish(&ctx, &result, 1, &actual));
     assert_eq_i32(result.i32, 0);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
     wah_free_module(&env);
 }
@@ -356,7 +356,7 @@ static void test_bulk_table64_copy_interrupt(void) {
     wah_exec_context_t ctx = {0};
 
     assert_ok(wah_new_module(&env, NULL));
-    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+    assert_ok(wah_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32], fn [] []]} \
         imports {[{'env'} {'interrupt'} fn# 1]} \
@@ -369,7 +369,7 @@ static void test_bulk_table64_copy_interrupt(void) {
             i64.const 128 i64.const 0 i64.const 128 table.copy 0 0 \
             i64.const 255 table.get 0 ref.is_null \
         end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &env));
     assert_ok(wah_instantiate(&ctx));
 
@@ -386,7 +386,7 @@ static void test_bulk_table64_copy_interrupt(void) {
     assert_ok(wah_finish(&ctx, &result, 1, &actual));
     assert_eq_i32(result.i32, 0);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
     wah_free_module(&env);
 }
@@ -398,7 +398,7 @@ static void test_bulk_table64_init_interrupt(void) {
     wah_exec_context_t ctx = {0};
 
     assert_ok(wah_new_module(&env, NULL));
-    assert_ok(wah_module_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
+    assert_ok(wah_export_func(&env, "interrupt", "()", host_request_interrupt, NULL, NULL));
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32], fn [] []]} \
         imports {[{'env'} {'interrupt'} fn# 1]} \
@@ -410,7 +410,7 @@ static void test_bulk_table64_init_interrupt(void) {
             i64.const 0 i32.const 0 i32.const 128 table.init 0 0 \
             i64.const 127 table.get 0 ref.is_null \
         end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_link_module(&ctx, "env", &env));
     assert_ok(wah_instantiate(&ctx));
 
@@ -427,7 +427,7 @@ static void test_bulk_table64_init_interrupt(void) {
     assert_ok(wah_finish(&ctx, &result, 1, &actual));
     assert_eq_i32(result.i32, 0);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
     wah_free_module(&env);
 }

@@ -31,7 +31,7 @@ static void test_interrupt_without_gc(void) {
     assert_ok(wah_parse_module_from_spec_ex(&mod, &fuel_opts, "wasm \
         types {[fn [] []]} funcs {[0]} \
         code {[{[] loop void br 0 end end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_start(&ctx, 0, NULL, 0));
 
     assert_false(wah_is_interrupted(&ctx));
@@ -42,7 +42,7 @@ static void test_interrupt_without_gc(void) {
     assert_true(wah_is_suspended(&ctx));
 
     wah_cancel(&ctx);
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -59,8 +59,8 @@ static void test_is_interrupted_in_host_function(void) {
     wah_value_t result = {0};
 
     assert_ok(wah_new_module(&mod, NULL));
-    assert_ok(wah_module_export_func(&mod, "observe", "() -> i32", host_observe_interrupt, NULL, NULL));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_export_func(&mod, "observe", "() -> i32", host_observe_interrupt, NULL, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_request_interrupt(&ctx);
@@ -69,7 +69,7 @@ static void test_is_interrupted_in_host_function(void) {
     assert_true(wah_is_interrupted(&ctx));
     wah_cancel(&ctx);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -82,14 +82,14 @@ static void test_cancel_consumes_interrupt(void) {
     assert_ok(wah_parse_module_from_spec_ex(&mod, &fuel_opts, "wasm \
         types {[fn [] []]} funcs {[0]} \
         code {[{[] loop void br 0 end end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_start(&ctx, 0, NULL, 0));
     wah_request_interrupt(&ctx);
     assert_true(wah_is_interrupted(&ctx));
     wah_cancel(&ctx);
     assert_false(wah_is_interrupted(&ctx));
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -102,7 +102,7 @@ static void test_interrupt_and_fuel_priority(void) {
     assert_ok(wah_parse_module_from_spec_ex(&mod, &fuel_opts, "wasm \
         types {[fn [] []]} funcs {[0]} \
         code {[{[] nop end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_start(&ctx, 0, NULL, 0));
     wah_set_fuel(&ctx, 0);
     wah_request_interrupt(&ctx);
@@ -110,7 +110,7 @@ static void test_interrupt_and_fuel_priority(void) {
     assert_true(wah_is_interrupted(&ctx));
     wah_cancel(&ctx);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -125,14 +125,14 @@ static void test_short_deadline_yields_and_rearms(void) {
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] []]} funcs {[0]} \
         code {[{[] loop void br 0 end end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
     assert_ok(wah_start(&ctx, 0, NULL, 0));
     assert_err(wah_resume(&ctx), WAH_STATUS_YIELDED);
     assert_true(wah_is_suspended(&ctx));
     assert_err(wah_resume(&ctx), WAH_STATUS_YIELDED);
     wah_cancel(&ctx);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -147,7 +147,7 @@ static void test_fast_call_disarms_deadline(void) {
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32]]} funcs {[0]} \
         code {[{[] i32.const 42 end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
     wah_value_t result = {0};
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
@@ -158,7 +158,7 @@ static void test_fast_call_disarms_deadline(void) {
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -173,9 +173,9 @@ static void test_destroy_while_deadline_armed(void) {
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] []]} funcs {[0]} \
         code {[{[] loop void br 0 end end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, &options));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
     assert_ok(wah_start(&ctx, 0, NULL, 0));
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 

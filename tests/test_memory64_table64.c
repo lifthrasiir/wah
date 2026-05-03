@@ -18,7 +18,7 @@ static void test_memory_grow_clamp() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // Grow by 0 should return current size (1)
@@ -37,7 +37,7 @@ static void test_memory_grow_clamp() {
     assert_ok(wah_call(&ctx, 0, params, 1, &result));
     assert_eq_i32(result.i32, 1);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -83,7 +83,7 @@ static void test_table64_basic() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
@@ -100,7 +100,7 @@ static void test_table64_basic() {
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i64(result.i64, 5);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -211,7 +211,7 @@ static void test_memory64_basic() {
       assert_ok(wah_module_memory(&module, 0, &md));
       assert_true(md.addr_type == WAH_TYPE_I64); assert_eq_u64(md.min_pages, 1); }
 
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_true(wah_debug_memory_data(&ctx, 0) != NULL);
 
     params[0].i64 = 1024LL;
@@ -229,7 +229,7 @@ static void test_memory64_basic() {
     params[1].i32 = 0x12345678;
     assert_err(wah_call(&ctx, 0, params, 2, NULL), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -272,7 +272,7 @@ static void test_memory64_nonzero_memory_scalar_load_store() {
         end } ]}";
 
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i64(result.i64, 42);
@@ -293,7 +293,7 @@ static void test_memory64_nonzero_memory_scalar_load_store() {
     assert_eq_u32(mem[50], 0x00);
     assert_eq_u32(mem[51], 0x80);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -326,7 +326,7 @@ static void test_memory64_size_grow() {
       assert_ok(wah_module_memory(&module, 0, &md));
       assert_true(md.addr_type == WAH_TYPE_I64); assert_eq_u64(md.min_pages, 1); assert_eq_u64(md.max_pages, 2); }
 
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i64(result.i64, 1);
@@ -342,7 +342,7 @@ static void test_memory64_size_grow() {
     assert_ok(wah_call(&ctx, 1, params, 1, &result));
     assert_eq_i64(result.i64, -1);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -369,7 +369,7 @@ static void test_memory64_data_segment() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
     assert_eq_u32(wah_debug_module_data_segment_count(&module), 1);
 
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     assert_eq_u32(wah_debug_memory_data(&ctx, 0)[0], 0x01);
@@ -385,7 +385,7 @@ static void test_memory64_data_segment() {
     assert_ok(wah_call(&ctx, 0, params, 1, &result));
     assert_eq_i32(result.i32, 0x03);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -402,10 +402,10 @@ static void test_memory64_data_segment_negative_offset() {
     wah_module_t module = {0};
     wah_exec_context_t ctx = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_err(wah_instantiate(&ctx), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -479,7 +479,7 @@ static void test_memory64_grow_negative_pages() {
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params[1], result;
@@ -496,7 +496,7 @@ static void test_memory64_grow_negative_pages() {
     assert_ok(wah_call(&ctx, 0, params, 1, &result));
     assert_eq_i64(result.i64, 1);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -522,11 +522,11 @@ static void test_memory64_grow_propagation() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
     wah_exec_context_t pctx = {0};
-    assert_ok(wah_exec_context_create(&pctx, &provider, NULL));
+    assert_ok(wah_new_exec_context(&pctx, &provider, NULL));
     assert_ok(wah_instantiate(&pctx));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &consumer, NULL));
     assert_ok(wah_link_context(&ctx, "provider", &pctx));
     assert_ok(wah_instantiate(&ctx));
 
@@ -540,8 +540,8 @@ static void test_memory64_grow_propagation() {
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i64(result.i64, 3);
 
-    wah_exec_context_destroy(&ctx);
-    wah_exec_context_destroy(&pctx);
+    wah_free_exec_context(&ctx);
+    wah_free_exec_context(&pctx);
     wah_free_module(&consumer);
     wah_free_module(&provider);
 }
@@ -561,7 +561,7 @@ static void test_table64_grow_negative_delta() {
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params[1], result;
@@ -573,7 +573,7 @@ static void test_table64_grow_negative_delta() {
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i64(result.i64, 2);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -603,11 +603,11 @@ static void test_table64_grow_propagation() {
     assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
 
     wah_exec_context_t pctx = {0};
-    assert_ok(wah_exec_context_create(&pctx, &provider, NULL));
+    assert_ok(wah_new_exec_context(&pctx, &provider, NULL));
     assert_ok(wah_instantiate(&pctx));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &consumer, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &consumer, NULL));
     assert_ok(wah_link_context(&ctx, "provider", &pctx));
     assert_ok(wah_instantiate(&ctx));
 
@@ -621,8 +621,8 @@ static void test_table64_grow_propagation() {
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i64(result.i64, 5);
 
-    wah_exec_context_destroy(&ctx);
-    wah_exec_context_destroy(&pctx);
+    wah_free_exec_context(&ctx);
+    wah_free_exec_context(&pctx);
     wah_free_module(&consumer);
     wah_free_module(&provider);
 }
@@ -657,7 +657,7 @@ static void test_memory_copy_i32_to_i64(void) {
             {[] local.get 0 i32.load align=4.mem# 1 offset=0 end}, \
             {[] local.get 0 local.get 1 local.get 2 memory.copy 1 0 end} \
         ]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // Write 0xCAFEBABE to mem 0 at offset 100
@@ -674,7 +674,7 @@ static void test_memory_copy_i32_to_i64(void) {
     assert_ok(wah_call(&ctx, 1, p_load, 1, &result));
     assert_eq_i32(result.i32, (int32_t)0xCAFEBABE);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -699,7 +699,7 @@ static void test_memory_copy_i64_to_i32(void) {
             {[] local.get 0 i32.load align=4.mem# 1 offset=0 end}, \
             {[] local.get 0 local.get 1 local.get 2 memory.copy 1 0 end} \
         ]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // Write 0xDEADBEEF to mem 0 at offset 300
@@ -716,7 +716,7 @@ static void test_memory_copy_i64_to_i32(void) {
     assert_ok(wah_call(&ctx, 1, p_load, 1, &result));
     assert_eq_i32(result.i32, (int32_t)0xDEADBEEF);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -738,7 +738,7 @@ static void test_memory_copy_i64_to_i64(void) {
             {[] local.get 0 i32.load align=4.mem# 1 offset=0 end}, \
             {[] local.get 0 local.get 1 local.get 2 memory.copy 1 0 end} \
         ]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t p_store[] = { {.i64 = 500}, {.i32 = 0x12345678} };
@@ -752,7 +752,7 @@ static void test_memory_copy_i64_to_i64(void) {
     assert_ok(wah_call(&ctx, 1, p_load, 1, &result));
     assert_eq_i32(result.i32, 0x12345678);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -779,14 +779,14 @@ static void test_table_copy_i32_to_i64(void) {
                 i64.const 1 call_indirect 0 1 \
             end} \
         ]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -811,14 +811,14 @@ static void test_table_copy_i64_to_i32(void) {
                 i32.const 2 call_indirect 0 1 \
             end} \
         ]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 77);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -842,14 +842,14 @@ static void test_table_copy_i64_to_i64(void) {
                 i64.const 3 call_indirect 0 1 \
             end} \
         ]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 99);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -867,7 +867,7 @@ static void test_memory_copy_bounds_overflow(void) {
         funcs {[0]} \
         memories {[limits.i64/1 1]} \
         code {[{[] local.get 0 local.get 1 local.get 2 memory.copy 0 0 end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // dest=1, src=0, size=UINT64_MAX -> dest+size overflows u64
@@ -886,7 +886,7 @@ static void test_memory_copy_bounds_overflow(void) {
     wah_value_t p4[] = { {.i64 = 0}, {.i64 = 0}, {.i64 = 0} };
     assert_ok(wah_call(&ctx, 0, p4, 3, NULL));
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -903,7 +903,7 @@ static void test_memory_fill_bounds_overflow(void) {
         funcs {[0]} \
         memories {[limits.i64/1 1]} \
         code {[{[] local.get 0 local.get 1 local.get 2 memory.fill 0 end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t p[] = { {.i64 = 1}, {.i32 = 0}, {.i64 = (int64_t)UINT64_MAX} };
@@ -912,7 +912,7 @@ static void test_memory_fill_bounds_overflow(void) {
     wah_value_t p2[] = { {.i64 = (int64_t)UINT64_MAX}, {.i32 = 0}, {.i64 = 1} };
     assert_err(wah_call(&ctx, 0, p2, 3, NULL), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -929,7 +929,7 @@ static void test_table_copy_bounds_overflow(void) {
         funcs {[0]} \
         tables {[funcref limits.i64/1 4]} \
         code {[{[] local.get 0 local.get 1 local.get 2 table.copy 0 0 end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t p[] = { {.i64 = 1}, {.i64 = 0}, {.i64 = (int64_t)UINT64_MAX} };
@@ -938,7 +938,7 @@ static void test_table_copy_bounds_overflow(void) {
     wah_value_t p2[] = { {.i64 = (int64_t)UINT64_MAX}, {.i64 = 0}, {.i64 = 1} };
     assert_err(wah_call(&ctx, 0, p2, 3, NULL), WAH_ERROR_TRAP);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -955,13 +955,13 @@ static void test_table_fill_bounds_overflow(void) {
         funcs {[0]} \
         tables {[funcref limits.i64/1 4]} \
         code {[{[] local.get 0 ref.null funcref local.get 1 table.fill 0 end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t p[] = { {.i64 = 1}, {.i64 = (int64_t)UINT64_MAX} };
     assert_err(wah_call(&ctx, 0, p, 2, NULL), WAH_ERROR_TRAP);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -993,14 +993,14 @@ static void test_table64_set_get(void) {
                 end \
             end} \
         ]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 55);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -1021,7 +1021,7 @@ static void test_memory64_fill_runtime(void) {
             {[] local.get 0 local.get 1 local.get 2 memory.fill 0 end}, \
             {[] local.get 0 i32.load8_u align=1 offset=0 end} \
         ]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // Fill 1000 bytes at offset 100 with 0xBB
@@ -1047,7 +1047,7 @@ static void test_memory64_fill_runtime(void) {
     assert_ok(wah_call(&ctx, 1, ld, 1, &r));
     assert_eq_i32(r.i32, 0);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -1070,7 +1070,7 @@ static void test_memory64_init_runtime(void) {
             {[] local.get 0 i32.load8_u align=1 offset=0 end} \
         ]} \
         data {[data.passive {%'AABBCCDD'}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // Init 4 bytes from data segment to memory at offset 200
@@ -1086,7 +1086,7 @@ static void test_memory64_init_runtime(void) {
     assert_ok(wah_call(&ctx, 1, ld, 1, &r));
     assert_eq_i32(r.i32, 0xDD);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 

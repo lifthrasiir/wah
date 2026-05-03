@@ -151,7 +151,7 @@ static void test_placeholders(void) {
     assert_err(wah_debug_parse_export_func_type_spec(&mod, &spec, "fn (ref %T)"), WAH_ERROR_BAD_SPEC);
 
     assert_err(wah_debug_parse_define_type_spec(&mod, &spec, "fn (%T)", WAH_TYPE_FROM_IDX(0, false)), WAH_ERROR_BAD_SPEC);
-    assert_ok(wah_module_define_type(&mod, &struct_type, "struct { i32 }"));
+    assert_ok(wah_define_type(&mod, &struct_type, "struct { i32 }"));
     assert_ok(wah_debug_parse_define_type_spec(&mod, &spec, "fn (%T) -> ref null %T", struct_type, struct_type));
     assert_func_counts(&spec, 1, 1);
     assert_eq_i32(spec.param_types[0], struct_type);
@@ -168,51 +168,51 @@ static void test_type_reuse(void) {
     assert_ok(wah_new_module(&mod, NULL));
 
     // Same function type should reuse
-    assert_ok(wah_module_define_type(&mod, &t1, "fn (i32, i32) -> (i32)"));
-    assert_ok(wah_module_define_type(&mod, &t2, "fn (i32, i32) -> (i32)"));
+    assert_ok(wah_define_type(&mod, &t1, "fn (i32, i32) -> (i32)"));
+    assert_ok(wah_define_type(&mod, &t2, "fn (i32, i32) -> (i32)"));
     assert_eq_i32(t1, t2);
 
     // Different function type should not reuse
-    assert_ok(wah_module_define_type(&mod, &t3, "fn (i32) -> (i32)"));
+    assert_ok(wah_define_type(&mod, &t3, "fn (i32) -> (i32)"));
     assert_true(t1 != t3);
 
     // fresh should always create a new type
-    assert_ok(wah_module_define_type(&mod, &t4, "fresh fn (i32, i32) -> (i32)"));
+    assert_ok(wah_define_type(&mod, &t4, "fresh fn (i32, i32) -> (i32)"));
     assert_true(t1 != t4);
 
     // Reuse should still find t1, not t4, since t1 comes first
     wah_type_t t5;
-    assert_ok(wah_module_define_type(&mod, &t5, "fn (i32, i32) -> (i32)"));
+    assert_ok(wah_define_type(&mod, &t5, "fn (i32, i32) -> (i32)"));
     assert_eq_i32(t1, t5);
 
     // fresh struct
     wah_type_t s1, s2, s3;
-    assert_ok(wah_module_define_type(&mod, &s1, "struct { i32, i64 }"));
-    assert_ok(wah_module_define_type(&mod, &s2, "struct { i32, i64 }"));
+    assert_ok(wah_define_type(&mod, &s1, "struct { i32, i64 }"));
+    assert_ok(wah_define_type(&mod, &s2, "struct { i32, i64 }"));
     assert_eq_i32(s1, s2);
-    assert_ok(wah_module_define_type(&mod, &s3, "fresh struct { i32, i64 }"));
+    assert_ok(wah_define_type(&mod, &s3, "fresh struct { i32, i64 }"));
     assert_true(s1 != s3);
 
     // Struct with different mutability should not reuse
     wah_type_t s4;
-    assert_ok(wah_module_define_type(&mod, &s4, "struct { mut i32, i64 }"));
+    assert_ok(wah_define_type(&mod, &s4, "struct { mut i32, i64 }"));
     assert_true(s1 != s4);
 
     // fresh array
     wah_type_t a1, a2, a3;
-    assert_ok(wah_module_define_type(&mod, &a1, "array i32"));
-    assert_ok(wah_module_define_type(&mod, &a2, "array i32"));
+    assert_ok(wah_define_type(&mod, &a1, "array i32"));
+    assert_ok(wah_define_type(&mod, &a2, "array i32"));
     assert_eq_i32(a1, a2);
-    assert_ok(wah_module_define_type(&mod, &a3, "fresh array i32"));
+    assert_ok(wah_define_type(&mod, &a3, "fresh array i32"));
     assert_true(a1 != a3);
 
     // Type referring to another type via %T should reuse correctly
     wah_type_t r1, r2, r3;
-    assert_ok(wah_module_define_type(&mod, &r1, "fn (ref %T) -> ()", s1));
-    assert_ok(wah_module_define_type(&mod, &r2, "fn (ref %T) -> ()", s1));
+    assert_ok(wah_define_type(&mod, &r1, "fn (ref %T) -> ()", s1));
+    assert_ok(wah_define_type(&mod, &r2, "fn (ref %T) -> ()", s1));
     assert_eq_i32(r1, r2);
     // Same shape but different referenced type should not reuse
-    assert_ok(wah_module_define_type(&mod, &r3, "fn (ref %T) -> ()", s3));
+    assert_ok(wah_define_type(&mod, &r3, "fn (ref %T) -> ()", s3));
     assert_true(r1 != r3);
 
     wah_free_module(&mod);

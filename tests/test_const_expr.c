@@ -19,7 +19,7 @@ void test_simple_const(void) {
     assert_ok(wah_parse_module_from_spec(&module, wasm_simple_const_spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     assert_ok(wah_instantiate(&ctx));
 
@@ -27,7 +27,7 @@ void test_simple_const(void) {
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -48,7 +48,7 @@ void test_binary_op(void) {
     assert_ok(wah_parse_module_from_spec(&module, wasm_binary_op_spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     assert_ok(wah_instantiate(&ctx));
 
@@ -57,7 +57,7 @@ void test_binary_op(void) {
     assert_eq_i32(wah_debug_global_value(&ctx, &module, 1).i32, 32);
     assert_eq_i32(wah_debug_global_value(&ctx, &module, 2).i32, 50);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -77,7 +77,7 @@ void test_global_get(void) {
     assert_ok(wah_parse_module_from_spec(&module, wasm_global_get_spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     assert_ok(wah_instantiate(&ctx));
 
@@ -89,7 +89,7 @@ void test_global_get(void) {
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 100);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -110,7 +110,7 @@ void test_complex_const_expr(void) {
     assert_ok(wah_parse_module_from_spec(&module, wasm_complex_spec));
 
     wah_exec_context_t ctx;
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
 
     assert_ok(wah_instantiate(&ctx));
 
@@ -123,7 +123,7 @@ void test_complex_const_expr(void) {
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -176,14 +176,14 @@ static void test_v128_const_in_global() {
     assert_ok(wah_parse_module_from_spec(&module, spec, (const uint8_t *)bytes));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_true(memcmp(&result.v128, bytes, 16) == 0);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -202,14 +202,14 @@ static void test_ref_null_const_expr() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_null(result.ref);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 
     // Also test with externref
@@ -223,14 +223,14 @@ static void test_ref_null_const_expr() {
     assert_ok(wah_parse_module_from_spec(&module2, spec2));
 
     wah_exec_context_t ctx2 = {0};
-    assert_ok(wah_exec_context_create(&ctx2, &module2, NULL));
+    assert_ok(wah_new_exec_context(&ctx2, &module2, NULL));
     assert_ok(wah_instantiate(&ctx2));
 
     wah_value_t result2;
     assert_ok(wah_call(&ctx2, 0, NULL, 0, &result2));
     assert_null(result2.ref);
 
-    wah_exec_context_destroy(&ctx2);
+    wah_free_exec_context(&ctx2);
     wah_free_module(&module2);
 }
 

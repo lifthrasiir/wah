@@ -41,7 +41,7 @@ static void test_memory_fill_fuel(void) {
         types {[fn [i32, i32, i32] []]} funcs {[0]} \
         memories {[limits.i32/1 1]} \
         code {[{[] local.get 0 local.get 1 local.get 2 memory.fill 0 end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // Small fill: 16 bytes. Cost = ceil(16/16) = 1 fuel for bulk + instruction fuel.
@@ -65,7 +65,7 @@ static void test_memory_fill_fuel(void) {
     assert_eq_u32(ctx.memory_base[0], 0xBB);
     assert_eq_u32(ctx.memory_base[255], 0xBB);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -81,7 +81,7 @@ static void test_memory_fill_fuel_resume(void) {
         types {[fn [i32, i32, i32] []]} funcs {[0]} \
         memories {[limits.i32/1 1]} \
         code {[{[] local.get 0 local.get 1 local.get 2 memory.fill 0 end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     memset(ctx.memory_base, 0, 512);
@@ -117,7 +117,7 @@ static void test_memory_fill_fuel_resume(void) {
 
     printf("  fill(256) resumed %d times with fuel=5/step\n", suspensions);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -134,7 +134,7 @@ static void test_memory_copy_fuel_resume(void) {
         types {[fn [i32, i32, i32] []]} funcs {[0]} \
         memories {[limits.i32/1 1]} \
         code {[{[] local.get 0 local.get 1 local.get 2 memory.copy 0 0 end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // Fill source region with pattern
@@ -154,7 +154,7 @@ static void test_memory_copy_fuel_resume(void) {
 
     printf("  copy(256) total fuel=%lld\n", (long long)total);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -170,7 +170,7 @@ static void test_memory_copy_backward_fuel_resume(void) {
         types {[fn [i32, i32, i32] []]} funcs {[0]} \
         memories {[limits.i32/1 1]} \
         code {[{[] local.get 0 local.get 1 local.get 2 memory.copy 0 0 end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // Pattern: bytes 0..127 = 0xA0..0xFF-ish
@@ -189,7 +189,7 @@ static void test_memory_copy_backward_fuel_resume(void) {
 
     printf("  backward copy verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -208,7 +208,7 @@ static void test_memory_init_fuel_resume(void) {
         datacount {1} \
         code {[{[] local.get 0 local.get 1 local.get 2 memory.init 0 0 end}]} \
         data {[data.passive {%'" REP128("AA") "'}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     memset(ctx.memory_base, 0, 256);
@@ -226,7 +226,7 @@ static void test_memory_init_fuel_resume(void) {
 
     printf("  memory.init(128) verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -247,7 +247,7 @@ static void test_table_fill_fuel_resume(void) {
             local.get 0 ref.null funcref local.get 1 table.fill 0 \
             local.get 0 table.get 0 ref.is_null \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // Fill 200 entries
@@ -261,7 +261,7 @@ static void test_table_fill_fuel_resume(void) {
 
     printf("  table.fill(200) fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -281,7 +281,7 @@ static void test_table_copy_fuel_resume(void) {
         code {[ \
             {[] local.get 0 local.get 1 local.get 2 table.copy 0 0 end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // Copy 100 null entries from table[0..100] to table[100..200]
@@ -294,7 +294,7 @@ static void test_table_copy_fuel_resume(void) {
 
     printf("  table.copy(100) fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -314,7 +314,7 @@ static void test_table_copy_backward_fuel_resume(void) {
         code {[ \
             {[] local.get 0 local.get 1 local.get 2 table.copy 0 0 end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // Overlapping copy: dst=16, src=0, size=64 (backward because dst > src and overlaps)
@@ -327,7 +327,7 @@ static void test_table_copy_backward_fuel_resume(void) {
 
     printf("  table.copy backward fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -350,7 +350,7 @@ static void test_table_init_fuel_resume(void) {
             {[] local.get 0 local.get 1 local.get 2 table.init 0 0 \
                 local.get 0 table.get 0 ref.is_null end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t p[] = { {.i32 = 10}, {.i32 = 0}, {.i32 = 64} };
@@ -363,7 +363,7 @@ static void test_table_init_fuel_resume(void) {
 
     printf("  table.init(80) fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -385,7 +385,7 @@ static void test_array_fill_fuel_resume(void) {
             local.get 0 i32.const 0 i32.const 42 i32.const 200 array.fill 0 \
             local.get 0 i32.const 100 array.get 0 \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_gc_start(&ctx));
     assert_ok(wah_instantiate(&ctx));
 
@@ -399,7 +399,7 @@ static void test_array_fill_fuel_resume(void) {
 
     printf("  array.fill(200) fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -421,7 +421,7 @@ static void test_array_copy_fuel_resume(void) {
             local.get 1 i32.const 0 local.get 0 i32.const 0 i32.const 200 array.copy 0 0 \
             local.get 1 i32.const 150 array.get 0 \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_gc_start(&ctx));
     assert_ok(wah_instantiate(&ctx));
 
@@ -434,7 +434,7 @@ static void test_array_copy_fuel_resume(void) {
 
     printf("  array.copy(200) fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -458,7 +458,7 @@ static void test_array_init_data_fuel_resume(void) {
             local.get 0 i32.const 127 array.get_u 0 i32.add \
         end}]} \
         data {[data.passive {%'" REP128("BB") "'}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_gc_start(&ctx));
     assert_ok(wah_instantiate(&ctx));
 
@@ -471,7 +471,7 @@ static void test_array_init_data_fuel_resume(void) {
 
     printf("  array.init_data(128) fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -493,7 +493,7 @@ static void test_array_init_elem_fuel_resume(void) {
             local.get 0 i32.const 0 i32.const 0 i32.const 64 array.init_elem 0 0 \
             local.get 0 i32.const 32 array.get 0 ref.is_null \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_gc_start(&ctx));
     assert_ok(wah_instantiate(&ctx));
 
@@ -506,7 +506,7 @@ static void test_array_init_elem_fuel_resume(void) {
 
     printf("  array.init_elem(64) fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -522,7 +522,7 @@ static void test_bulk_fuel_proportional(void) {
         types {[fn [i32, i32, i32] []]} funcs {[0]} \
         memories {[limits.i32/1 1]} \
         code {[{[] local.get 0 local.get 1 local.get 2 memory.fill 0 end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // fill(0) should be cheapest (bulk cost = 0)
@@ -558,7 +558,7 @@ static void test_bulk_fuel_proportional(void) {
     assert_eq_i64(cost16, cost0 + 1); // exactly 16 bytes -> 1
     assert_eq_i64(cost160, cost0 + 10); // exactly 160 bytes -> 10
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -575,7 +575,7 @@ static void test_bulk_no_metering(void) {
         types {[fn [i32, i32, i32] []]} funcs {[0]} \
         memories {[limits.i32/1 1]} \
         code {[{[] local.get 0 local.get 1 local.get 2 memory.fill 0 end}]}"));
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // Even with fuel set, no METER/TICK opcodes, so fuel won't change
@@ -584,7 +584,7 @@ static void test_bulk_no_metering(void) {
     assert_ok(wah_call(&ctx, 0, p, 3, NULL));
     assert_eq_i64(wah_get_fuel(&ctx), 100); // unchanged
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -603,7 +603,7 @@ static void test_table64_fill_fuel_resume(void) {
             local.get 0 ref.null funcref local.get 1 table.fill 0 \
             local.get 0 table.get 0 ref.is_null \
         end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t p[] = { {.i64 = 0}, {.i64 = 150} };
@@ -616,7 +616,7 @@ static void test_table64_fill_fuel_resume(void) {
 
     printf("  table64.fill(150) fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -632,7 +632,7 @@ static void test_table64_copy_fuel_resume(void) {
         types {[fn [i64, i64, i64] []]} funcs {[0]} \
         tables {[funcref limits.i64/2 200 200]} \
         code {[{[] local.get 0 local.get 1 local.get 2 table.copy 0 0 end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t p[] = { {.i64 = 100}, {.i64 = 0}, {.i64 = 100} };
@@ -644,7 +644,7 @@ static void test_table64_copy_fuel_resume(void) {
 
     printf("  table64.copy(100) fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -657,7 +657,7 @@ static void test_table64_copy_backward_fuel_resume(void) {
         types {[fn [i64, i64, i64] []]} funcs {[0]} \
         tables {[funcref limits.i64/2 200 200]} \
         code {[{[] local.get 0 local.get 1 local.get 2 table.copy 0 0 end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t p[] = { {.i64 = 16}, {.i64 = 0}, {.i64 = 100} };
@@ -669,7 +669,7 @@ static void test_table64_copy_backward_fuel_resume(void) {
 
     printf("  table64.copy backward fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -691,7 +691,7 @@ static void test_table_copy_i32_to_i64_fuel_resume(void) {
                 local.get 0 table.get 0 ref.is_null \
             end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t p[] = { {.i64 = 20}, {.i32 = 0}, {.i32 = 64} };
@@ -704,7 +704,7 @@ static void test_table_copy_i32_to_i64_fuel_resume(void) {
 
     printf("  mixed-address table.copy i32_to_i64 fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -726,7 +726,7 @@ static void test_table_copy_i64_to_i32_fuel_resume(void) {
                 local.get 0 table.get 0 ref.is_null \
             end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t p[] = { {.i32 = 20}, {.i64 = 0}, {.i32 = 64} };
@@ -739,7 +739,7 @@ static void test_table_copy_i64_to_i32_fuel_resume(void) {
 
     printf("  mixed-address table.copy i64_to_i32 fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -761,7 +761,7 @@ static void test_table64_init_fuel_resume(void) {
             {[] local.get 0 local.get 1 local.get 2 table.init 0 0 \
                 local.get 0 table.get 0 ref.is_null end} \
         ]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t p[] = { {.i64 = 10}, {.i32 = 0}, {.i32 = 64} };
@@ -774,7 +774,7 @@ static void test_table64_init_fuel_resume(void) {
 
     printf("  table64.init(80) fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -790,7 +790,7 @@ static void test_memory64_fill_fuel_resume(void) {
         types {[fn [i64, i32, i64] []]} funcs {[0]} \
         memories {[limits.i64/2 1 1]} \
         code {[{[] local.get 0 local.get 1 local.get 2 memory.fill 0 end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t p[] = { {.i64 = 0}, {.i32 = 0xEE}, {.i64 = 256} };
@@ -805,7 +805,7 @@ static void test_memory64_fill_fuel_resume(void) {
 
     printf("  memory64.fill(256) fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 
@@ -821,7 +821,7 @@ static void test_memory64_copy_backward_fuel_resume(void) {
         types {[fn [i64, i64, i64] []]} funcs {[0]} \
         memories {[limits.i64/2 1 1]} \
         code {[{[] local.get 0 local.get 1 local.get 2 memory.copy 0 0 end}]}");
-    assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     for (int i = 0; i < 128; i++) ctx.memory_base[i] = (uint8_t)(0xA0 + i);
@@ -839,7 +839,7 @@ static void test_memory64_copy_backward_fuel_resume(void) {
 
     printf("  memory64.copy backward fuel resume verified\n");
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&mod);
 }
 

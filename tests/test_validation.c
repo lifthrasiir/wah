@@ -25,14 +25,14 @@ static void test_block_type_not_skipped() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 30);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 
     // Negative: wrong stack shape - block expects (i32, i32) but only one i32 on stack
@@ -75,14 +75,14 @@ static void test_if_complex_block_type() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 10);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -107,14 +107,14 @@ static void test_if_no_else_complex_block_type() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 43);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 
     // Negative: if (i32) -> (i64) without else - param != result type
@@ -166,7 +166,7 @@ static void test_loop_complex_block_type() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params[1] = {{.i32 = 5}};
@@ -174,7 +174,7 @@ static void test_loop_complex_block_type() {
     assert_ok(wah_call(&ctx, 0, params, 1, &result));
     assert_eq_i32(result.i32, 0);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 
     // Multi-value loop: loop (i32, i32) -> (i32)
@@ -194,14 +194,14 @@ static void test_loop_complex_block_type() {
     assert_ok(wah_parse_module_from_spec(&module2, spec2));
 
     wah_exec_context_t ctx2 = {0};
-    assert_ok(wah_exec_context_create(&ctx2, &module2, NULL));
+    assert_ok(wah_new_exec_context(&ctx2, &module2, NULL));
     assert_ok(wah_instantiate(&ctx2));
 
     wah_value_t result2;
     assert_ok(wah_call(&ctx2, 0, NULL, 0, &result2));
     assert_eq_i32(result2.i32, 7);
 
-    wah_exec_context_destroy(&ctx2);
+    wah_free_exec_context(&ctx2);
     wah_free_module(&module2);
 }
 
@@ -223,12 +223,12 @@ static void test_block_value_types() {
     wah_module_t m1 = {0};
     assert_ok(wah_parse_module_from_spec(&m1, spec_funcref));
     wah_exec_context_t c1 = {0};
-    assert_ok(wah_exec_context_create(&c1, &m1, NULL));
+    assert_ok(wah_new_exec_context(&c1, &m1, NULL));
     assert_ok(wah_instantiate(&c1));
     wah_value_t r1;
     assert_ok(wah_call(&c1, 0, NULL, 0, &r1));
     assert_null(r1.ref);
-    wah_exec_context_destroy(&c1);
+    wah_free_exec_context(&c1);
     wah_free_module(&m1);
 
     // block -> externref
@@ -244,12 +244,12 @@ static void test_block_value_types() {
     wah_module_t m2 = {0};
     assert_ok(wah_parse_module_from_spec(&m2, spec_externref));
     wah_exec_context_t c2 = {0};
-    assert_ok(wah_exec_context_create(&c2, &m2, NULL));
+    assert_ok(wah_new_exec_context(&c2, &m2, NULL));
     assert_ok(wah_instantiate(&c2));
     wah_value_t r2;
     assert_ok(wah_call(&c2, 0, NULL, 0, &r2));
     assert_null(r2.ref);
-    wah_exec_context_destroy(&c2);
+    wah_free_exec_context(&c2);
     wah_free_module(&m2);
 
     // Negative: block -> funcref but body produces i32
@@ -447,14 +447,14 @@ static void test_br_block_floor() {
     assert_ok(wah_parse_module_from_spec(&good, good_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &good, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &good, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&good);
 }
 
@@ -508,11 +508,11 @@ static void test_function_end_with_results() {
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 
     // Negative: function returns i32 but stack has two i32s at END
@@ -549,12 +549,12 @@ static void test_ref_test_concrete_heap_type() {
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 0); // null ref fails ref.test
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -572,12 +572,12 @@ static void test_nullref_subtype_check() {
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec(&module, spec));
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 0);
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 

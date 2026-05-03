@@ -15,7 +15,7 @@ int main(void) {
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] []]} funcs {[0]} \
         code {[{[] end}]}"));
-    assert_err(wah_exec_context_create(&ctx, &mod, &options), WAH_ERROR_DISABLED_FEATURE);
+    assert_err(wah_new_exec_context(&ctx, &mod, &options), WAH_ERROR_DISABLED_FEATURE);
     wah_free_module(&mod);
 
     printf("\n=== deadline no-thread test passed ===\n");

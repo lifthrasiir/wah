@@ -1,4 +1,4 @@
-// Test for wah_module_export_memory and wah_module_export_global_* functions
+// Test for wah_export_memory and wah_export_global_* functions
 
 #include "../wah.h"
 #include "wah_impl.h"
@@ -23,15 +23,15 @@ static void check_flags_host(wah_call_context_t *ctx, void *userdata) {
 
 int main(void) {
     // Test 1: Export memory
-    printf("Testing wah_module_export_memory...\n");
+    printf("Testing wah_export_memory...\n");
     {
         wah_module_t mod = {0};
         assert_ok(wah_new_module(&mod, NULL));
-        assert_ok(wah_module_export_memory(&mod, "memory", 1, 10));
+        assert_ok(wah_export_memory(&mod, "memory", 1, 10));
 
         // Verify export
         wah_export_desc_t entry = {0};
-        assert_ok(wah_module_export_by_name(&mod, "memory", &entry));
+        assert_ok(wah_export_by_name(&mod, "memory", &entry));
         assert_eq_i32(entry.kind, WAH_KIND_MEMORY);
         wah_memory_desc_t memory;
         assert_ok(wah_module_memory(&mod, 0, &memory));
@@ -42,15 +42,15 @@ int main(void) {
     }
 
     // Test 2: Export immutable i32 global
-    printf("Testing wah_module_export_global_i32 (immutable)...\n");
+    printf("Testing wah_export_global_i32 (immutable)...\n");
     {
         wah_module_t mod = {0};
         assert_ok(wah_new_module(&mod, NULL));
-        assert_ok(wah_module_export_global_i32(&mod, "const_i32", false, 42));
+        assert_ok(wah_export_global_i32(&mod, "const_i32", false, 42));
 
         // Verify export
         wah_export_desc_t entry = {0};
-        assert_ok(wah_module_export_by_name(&mod, "const_i32", &entry));
+        assert_ok(wah_export_by_name(&mod, "const_i32", &entry));
         assert_eq_i32(entry.kind, WAH_KIND_GLOBAL);
         assert_eq_i32(entry.u.global.type, WAH_TYPE_I32);
         wah_global_desc_t global;
@@ -60,21 +60,21 @@ int main(void) {
 
         // Verify initial value through execution context
         wah_exec_context_t ctx;
-        assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
         assert_ok(wah_instantiate(&ctx));
         assert_eq_i32(wah_debug_global_value(&ctx, &mod, 0).i32, 42);
 
-        wah_exec_context_destroy(&ctx);
+        wah_free_exec_context(&ctx);
         wah_free_module(&mod);
     }
 
     // Test 3: Export mutable i32 global
-    printf("Testing wah_module_export_global_i32 (mutable)...\n");
+    printf("Testing wah_export_global_i32 (mutable)...\n");
     {
         wah_module_t mod = {0};
         assert_ok(wah_new_module(&mod, NULL));
-        assert_ok(wah_module_export_global_i32(&mod, "mut_i32", true, -100));
+        assert_ok(wah_export_global_i32(&mod, "mut_i32", true, -100));
 
         wah_global_desc_t global;
         assert_ok(wah_module_global(&mod, 0, &global));
@@ -82,46 +82,46 @@ int main(void) {
 
         // Verify initial value through execution context
         wah_exec_context_t ctx;
-        assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
         assert_ok(wah_instantiate(&ctx));
         assert_eq_i32(wah_debug_global_value(&ctx, &mod, 0).i32, -100);
 
-        wah_exec_context_destroy(&ctx);
+        wah_free_exec_context(&ctx);
         wah_free_module(&mod);
     }
 
     // Test 4: Export i64 global
-    printf("Testing wah_module_export_global_i64...\n");
+    printf("Testing wah_export_global_i64...\n");
     {
         wah_module_t mod = {0};
         assert_ok(wah_new_module(&mod, NULL));
 
         int64_t test_value = 0x123456789ABCDEF0LL;
-        assert_ok(wah_module_export_global_i64(&mod, "const_i64", false, test_value));
+        assert_ok(wah_export_global_i64(&mod, "const_i64", false, test_value));
         wah_global_desc_t global;
         assert_ok(wah_module_global(&mod, 0, &global));
         assert_eq_i32(global.type, WAH_TYPE_I64);
 
         // Verify initial value through execution context
         wah_exec_context_t ctx;
-        assert_ok(wah_exec_context_create(&ctx, &mod, NULL));
+        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
         assert_ok(wah_instantiate(&ctx));
         assert_eq_i64(wah_debug_global_value(&ctx, &mod, 0).i64, test_value);
 
-        wah_exec_context_destroy(&ctx);
+        wah_free_exec_context(&ctx);
         wah_free_module(&mod);
     }
 
     // Test 5: Export f32 global
-    printf("Testing wah_module_export_global_f32...\n");
+    printf("Testing wah_export_global_f32...\n");
     {
         wah_module_t mod = {0};
         assert_ok(wah_new_module(&mod, NULL));
 
         float test_value = 3.14159f;
-        assert_ok(wah_module_export_global_f32(&mod, "const_f32", false, test_value));
+        assert_ok(wah_export_global_f32(&mod, "const_f32", false, test_value));
         wah_global_desc_t global;
         assert_ok(wah_module_global(&mod, 0, &global));
         assert_eq_i32(global.type, WAH_TYPE_F32);
@@ -130,13 +130,13 @@ int main(void) {
     }
 
     // Test 6: Export f64 global
-    printf("Testing wah_module_export_global_f64...\n");
+    printf("Testing wah_export_global_f64...\n");
     {
         wah_module_t mod = {0};
         assert_ok(wah_new_module(&mod, NULL));
 
         double test_value = 2.718281828459045;
-        assert_ok(wah_module_export_global_f64(&mod, "const_f64", false, test_value));
+        assert_ok(wah_export_global_f64(&mod, "const_f64", false, test_value));
         wah_global_desc_t global;
         assert_ok(wah_module_global(&mod, 0, &global));
         assert_eq_i32(global.type, WAH_TYPE_F64);
@@ -145,13 +145,13 @@ int main(void) {
     }
 
     // Test 7: Export v128 global
-    printf("Testing wah_module_export_global_v128...\n");
+    printf("Testing wah_export_global_v128...\n");
     {
         wah_module_t mod = {0};
         assert_ok(wah_new_module(&mod, NULL));
 
         wah_v128_t test_value = {{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16}};
-        assert_ok(wah_module_export_global_v128(&mod, "const_v128", false, &test_value));
+        assert_ok(wah_export_global_v128(&mod, "const_v128", false, &test_value));
         wah_global_desc_t global;
         assert_ok(wah_module_global(&mod, 0, &global));
         assert_eq_i32(global.type, WAH_TYPE_V128);
@@ -165,9 +165,9 @@ int main(void) {
         wah_module_t mod = {0};
         assert_ok(wah_new_module(&mod, NULL));
 
-        assert_ok(wah_module_export_memory(&mod, "mem1", 1, 1));
-        assert_ok(wah_module_export_global_i32(&mod, "g1", false, 1));
-        assert_ok(wah_module_export_global_i64(&mod, "g2", true, 2));
+        assert_ok(wah_export_memory(&mod, "mem1", 1, 1));
+        assert_ok(wah_export_global_i32(&mod, "g1", false, 1));
+        assert_ok(wah_export_global_i64(&mod, "g2", true, 2));
 
         assert_eq_u32(wah_module_export_count(&mod), 3);
         assert_eq_u32(wah_module_memory_count(&mod), 1);
@@ -182,8 +182,8 @@ int main(void) {
         wah_module_t mod = {0};
         assert_ok(wah_new_module(&mod, NULL));
 
-        assert_ok(wah_module_export_global_i32(&mod, "dup", false, 1));
-        assert_err(wah_module_export_global_i32(&mod, "dup", false, 2), WAH_ERROR_VALIDATION_FAILED);
+        assert_ok(wah_export_global_i32(&mod, "dup", false, 1));
+        assert_err(wah_export_global_i32(&mod, "dup", false, 2), WAH_ERROR_VALIDATION_FAILED);
 
         wah_free_module(&mod);
     }
@@ -193,12 +193,12 @@ int main(void) {
     {
         wah_module_t host_mod = {0};
         assert_ok(wah_new_module(&host_mod, NULL));
-        assert_ok(wah_module_export_func(&host_mod, "check", "(funcref, i32) -> i32",
+        assert_ok(wah_export_func(&host_mod, "check", "(funcref, i32) -> i32",
                                          check_flags_host, NULL, NULL));
 
         // Verify flags through wah_export_desc_t
         wah_export_desc_t entry;
-        assert_ok(wah_module_export_by_name(&host_mod, "check", &entry));
+        assert_ok(wah_export_by_name(&host_mod, "check", &entry));
         assert_true(WAH_TYPE_IS_NULLABLE(entry.u.func.param_types[0]));
         assert_true(!WAH_TYPE_IS_NULLABLE(entry.u.func.param_types[1]));
         assert_true(!WAH_TYPE_IS_NULLABLE(entry.u.func.result_types[0]));
@@ -214,7 +214,7 @@ int main(void) {
         assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
 
         wah_exec_context_t ctx = {0};
-        assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
+        assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
         assert_ok(wah_link_module(&ctx, "env", &host_mod));
         assert_ok(wah_instantiate(&ctx));
 
@@ -223,7 +223,7 @@ int main(void) {
         assert_eq_i32(result.i32, 1);
         assert_true(flags_checked);
 
-        wah_exec_context_destroy(&ctx);
+        wah_free_exec_context(&ctx);
         wah_free_module(&wasm_mod);
         wah_free_module(&host_mod);
     }
@@ -248,15 +248,15 @@ int main(void) {
         wah_free_module(NULL);
     }
 
-    printf("Testing wah_module_export_by_name for host function...\n");
+    printf("Testing wah_export_by_name for host function...\n");
     {
         wah_module_t mod = {0};
         assert_ok(wah_new_module(&mod, NULL));
-        assert_ok(wah_module_export_func(&mod, "hfunc", "(i32) -> i32",
+        assert_ok(wah_export_func(&mod, "hfunc", "(i32) -> i32",
             check_flags_host, NULL, NULL));
 
         wah_export_desc_t entry;
-        assert_ok(wah_module_export_by_name(&mod, "hfunc", &entry));
+        assert_ok(wah_export_by_name(&mod, "hfunc", &entry));
         assert_eq_i32(entry.kind, WAH_KIND_FUNCTION);
         assert_true(entry.u.func.is_host);
         assert_eq_u32(entry.u.func.param_count, 1);
@@ -267,17 +267,17 @@ int main(void) {
         wah_free_module(&mod);
     }
 
-    printf("Testing wah_module_export_typed_func...\n");
+    printf("Testing wah_export_typed_func...\n");
     {
         wah_module_t host_mod = {0};
         assert_ok(wah_new_module(&host_mod, NULL));
 
         wah_type_t ft;
-        assert_ok(wah_module_define_type(&host_mod, &ft, "fn (i32, i32) -> (i32)"));
-        assert_ok(wah_module_export_typed_func(&host_mod, "add", ft, add_i32_host, NULL, NULL));
+        assert_ok(wah_define_type(&host_mod, &ft, "fn (i32, i32) -> (i32)"));
+        assert_ok(wah_export_typed_func(&host_mod, "add", ft, add_i32_host, NULL, NULL));
 
         wah_export_desc_t entry;
-        assert_ok(wah_module_export_by_name(&host_mod, "add", &entry));
+        assert_ok(wah_export_by_name(&host_mod, "add", &entry));
         assert_eq_i32(entry.kind, WAH_KIND_FUNCTION);
         assert_true(entry.u.func.is_host);
         assert_eq_u32(entry.u.func.param_count, 2);
@@ -297,7 +297,7 @@ int main(void) {
         assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
 
         wah_exec_context_t ctx = {0};
-        assert_ok(wah_exec_context_create(&ctx, &wasm_mod, NULL));
+        assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
         assert_ok(wah_link_module(&ctx, "env", &host_mod));
         assert_ok(wah_instantiate(&ctx));
 
@@ -306,19 +306,19 @@ int main(void) {
         assert_ok(wah_call(&ctx, 1, args, 2, &result));
         assert_eq_i32(result.i32, 42);
 
-        wah_exec_context_destroy(&ctx);
+        wah_free_exec_context(&ctx);
         wah_free_module(&wasm_mod);
         wah_free_module(&host_mod);
     }
 
-    printf("Testing wah_module_export_typed_func with non-func type...\n");
+    printf("Testing wah_export_typed_func with non-func type...\n");
     {
         wah_module_t mod = {0};
         assert_ok(wah_new_module(&mod, NULL));
 
         wah_type_t st;
-        assert_ok(wah_module_define_type(&mod, &st, "struct {i32}"));
-        assert_err(wah_module_export_typed_func(&mod, "bad", st, add_i32_host, NULL, NULL),
+        assert_ok(wah_define_type(&mod, &st, "struct {i32}"));
+        assert_err(wah_export_typed_func(&mod, "bad", st, add_i32_host, NULL, NULL),
                    WAH_ERROR_MISUSE);
 
         wah_free_module(&mod);

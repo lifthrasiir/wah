@@ -32,7 +32,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
             .fuel = WAH_FUZZ_CALL_FUEL,
         }
     };
-    err = wah_exec_context_create(&exec_ctx, &module, &options);
+    err = wah_new_exec_context(&exec_ctx, &module, &options);
     if (err != WAH_OK) {
         wah_free_module(&module);
         return 0;
@@ -74,7 +74,7 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size) {
     }
 
 cleanup:
-    wah_exec_context_destroy(&exec_ctx);
+    wah_free_exec_context(&exec_ctx);
     wah_free_module(&module);
     return 0;
 }

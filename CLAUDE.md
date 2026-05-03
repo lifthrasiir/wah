@@ -96,7 +96,7 @@ WAH supports linking multiple WebAssembly modules together:
 
 - **Linking API:** Use `wah_link_module()` to link additional modules to the primary execution context before instantiation.
 - **Import Resolution:** During `wah_instantiate()`, the interpreter resolves imports by matching import declarations to exports from linked modules.
-- **Host Functions:** Linking also works with host functions exported via `wah_module_export_func*()`.
+- **Host Functions:** Linking also works with host functions exported via `wah_export_func*()`.
 
 **Usage Pattern:**
 ```c
@@ -105,11 +105,11 @@ wah_module_t linked = {0};
 // ... parse or create modules ...
 
 wah_exec_context_t ctx = {0};
-wah_exec_context_create(&ctx, &primary, NULL);
+wah_new_exec_context(&ctx, &primary, NULL);
 wah_link_module(&ctx, "linkedModuleName", &linked);
 wah_instantiate(&ctx);  // Resolves imports from linked modules
 // ... call functions ...
-wah_exec_context_destroy(&ctx);
+wah_free_exec_context(&ctx);
 ```
 
 ## Error Handling
@@ -172,7 +172,7 @@ Keep in mind that this DSL is very basic and you are required to produce a corre
 
 ### Type Spec DSL
 
-`wah_module_define_type()` and `wah_module_export_func()` accept human-readable type strings:
+`wah_define_type()` and `wah_export_func()` accept human-readable type strings:
 
 - Function types: `"(i32, i64) -> (f64)"`, `"() -> ()"`
 - Reference types: `"ref (struct %T)"`, `"ref null func"`
@@ -189,4 +189,4 @@ Keep in mind that this DSL is very basic and you are required to produce a corre
 
 - **Exception Handling:** Uses `try_table` with a fixed-depth exception handler stack (`WAH_MAX_EXCEPTION_HANDLER_DEPTH = 64`). `wah_exception_t` carries tag ID, values, and types. `throw` sets `pending_exception` and unwinds the call stack looking for matching handlers.
 
-- **Host Function Integration:** `wah_module_export_func()` accepts a function type string DSL (e.g., `"(i32, i32) -> i32"`). Host functions receive a `wah_call_context_t` with typed param/result accessors. GC references in params are valid only for the call duration; host must not retain pointers.
+- **Host Function Integration:** `wah_export_func()` accepts a function type string DSL (e.g., `"(i32, i32) -> i32"`). Host functions receive a `wah_call_context_t` with typed param/result accessors. GC references in params are valid only for the call duration; host must not retain pointers.

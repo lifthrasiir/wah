@@ -112,7 +112,7 @@ typedef enum {
     WAH_ERROR_MEMORY_OUT_OF_BOUNDS = -10,  // Accessed memory out of bounds
     WAH_ERROR_NOT_FOUND = -11,             // Import or export not found
     WAH_ERROR_MISUSE = -12,                // API misuse detected
-    WAH_ERROR_BAD_SPEC = -13,              // Bad type specification in `wah_module_define_type` etc.
+    WAH_ERROR_BAD_SPEC = -13,              // Bad type specification in `wah_define_type` etc.
     WAH_ERROR_LINK_FAILED = -14,           // Link failed due to missing or incompatible module etc.
     WAH_ERROR_EXCEPTION = -15,             // Uncaught exception
     WAH_ERROR_DISABLED_FEATURE = -16,      // Used a feature not in WAH_COMPILED_FEATURES
@@ -702,7 +702,7 @@ private:
 
     int64_t fuel;
     uint64_t deadline_us;
-    struct wah_deadline_timer_s *deadline_timer;
+    struct wah_timer_s *timer;
 
     uint64_t max_memory_bytes;      // WAH_RLIMIT_UNLIMITED = no limit; 0 is a valid limit
     uint64_t memory_bytes_committed; // current total: linear mem + tables + GC heap
@@ -788,20 +788,20 @@ wah_error_t wah_module_tag(const wah_module_t *module, uint32_t idx, wah_tag_des
 wah_error_t wah_module_import(const wah_module_t *module, uint32_t idx, wah_import_desc_t *out);  // An import by index
 wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_export_desc_t *out);    // An export by index
 
-// Functions: wah_module_export_by_name
+// Functions: wah_export_by_name
 //   Get the description of an exported entity by name.
 //
 //   - name [in, borrowed]: Zero-terminated name of the export to query.
 //   - out [out, borrowed]: Pointer to a description struct to be filled in.
-wah_error_t wah_module_export_by_name(const wah_module_t *module, const char *name, wah_export_desc_t *out);
+wah_error_t wah_export_by_name(const wah_module_t *module, const char *name, wah_export_desc_t *out);
 
-// Functions: wah_module_export_by_name_len
+// Functions: wah_export_by_name_len
 //   Get the description of an exported entity by name with a specified length.
 //
 //   - name [in, borrowed]: Name of the export to query. Can have embedded null bytes.
 //   - name_len [in]: Length of the name.
 //   - out [out, borrowed]: Pointer to a description struct to be filled in.
-wah_error_t wah_module_export_by_name_len(const wah_module_t *module, const char *name, size_t name_len, wah_export_desc_t *out);
+wah_error_t wah_export_by_name_len(const wah_module_t *module, const char *name, size_t name_len, wah_export_desc_t *out);
 
 // --- Resource Limits ---
 #define WAH_RLIMIT_UNLIMITED UINT64_MAX
@@ -833,7 +833,7 @@ typedef struct wah_rlimits_s {
 //   Options for running WebAssembly modules.
 typedef struct {
     // Field: limits
-    //   Initial resource limits for execution. Can be set by `wah_exec_context_set_limits` later.
+    //   Initial resource limits for execution. Can be set by `wah_set_limits` later.
     wah_rlimits_t limits;
     // Field: alloc
     //   Custom allocator to be used for execution. The standard allocator is used if NULL is given.
@@ -841,30 +841,30 @@ typedef struct {
     const wah_alloc_t *alloc;
 } wah_exec_options_t;
 
-// Function: wah_exec_context_create
+// Function: wah_new_exec_context
 //   Creates and initializes an execution context.
 //
 //   - exec_ctx [out, owned]: Pointer to an uninitialized `wah_exec_context_t` struct.
 //   - module [in, borrowed]: Pointer to a parsed `wah_module_t` to execute.
 //   - options [in, borrowed, optional]: Execution options. Can be NULL for defaults (all zeroed).
-wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_exec_options_t *options);
+wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_exec_options_t *options);
 
-// Function: wah_exec_context_set_limits
+// Function: wah_set_limits
 //   Updates resource limits of an execution context.
 //
 //   - limits [in, borrowed]: Pointer to a `wah_rlimits_t` struct containing the new limits.
 //     Any zero or false field is ignored (i.e. the corresponding limit is unchanged).
-wah_error_t wah_exec_context_set_limits(wah_exec_context_t *exec_ctx, const wah_rlimits_t *limits);
+wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_rlimits_t *limits);
 
-// Function: wah_exec_context_get_limits
+// Function: wah_get_limits
 //   Retrieves the current resource limits of an execution context.
 //
 //   - out [out, borrowed]: Pointer to a `wah_rlimits_t` struct to be filled in with the current limits.
-void wah_exec_context_get_limits(const wah_exec_context_t *exec_ctx, wah_rlimits_t *out);
+void wah_get_limits(const wah_exec_context_t *exec_ctx, wah_rlimits_t *out);
 
-// Function: wah_exec_context_destroy
-//   Destroys and frees resources of an execution context.
-void wah_exec_context_destroy(wah_exec_context_t *exec_ctx);
+// Function: wah_free_exec_context
+//   Frees resources of an execution context.
+void wah_free_exec_context(wah_exec_context_t *exec_ctx);
 
 // Function: wah_call
 //   Calls a WebAssembly function by index.
@@ -968,7 +968,7 @@ void wah_free_module(wah_module_t *module);
 //     The standard allocator is used if NULL is given.
 wah_error_t wah_new_module(wah_module_t *mod, const wah_alloc_t *alloc);
 
-// Function: wah_module_define_type
+// Function: wah_define_type
 //   Defines a new type in the module based on a type specification string and arguments.
 //
 //   The type specification is as follows:
@@ -994,53 +994,53 @@ wah_error_t wah_new_module(wah_module_t *mod, const wah_alloc_t *alloc);
 //
 //   You can enable `WAH_DEBUG` if you receive `WAH_ERROR_BAD_SPEC`
 //   to get more detailed error message via `WAH_LOG`.
-wah_error_t wah_module_define_type(wah_module_t *mod, wah_type_t *out_type, const char *spec, ...);
+wah_error_t wah_define_type(wah_module_t *mod, wah_type_t *out_type, const char *spec, ...);
 
-// Function: wah_module_define_typev
-//   Same as `wah_module_define_type` but with a `va_list` for arguments.
-wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, const char *spec, va_list *args);
+// Function: wah_define_typev
+//   Same as `wah_define_type` but with a `va_list` for arguments.
+wah_error_t wah_define_typev(wah_module_t *mod, wah_type_t *out_type, const char *spec, va_list *args);
 
-// Function: wah_module_export_func
+// Function: wah_export_func
 //   Exports a host function from the module.
 //
 //   - name [in, borrowed]: Zero-terminated name of the export.
 //   - types [in, borrowed]: Type specification string for the function signature.
-//     Same as what `wah_module_define_type` accepts for function types, but without `%T`
+//     Same as what `wah_define_type` accepts for function types, but without `%T`
 //     and `fn` can be omitted as other types are forbidden in this context.
 //   - func [in, consumed]: Function pointer to be called when the exported function is invoked.
 //   - userdata [in, consumed]: User data pointer to be passed to the function on each call.
 //   - finalize [in, consumed, optional]: Called with userdata when the module is freed.
-wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const char *types, wah_func_t func, void *userdata, wah_finalize_t finalize);
+wah_error_t wah_export_func(wah_module_t *mod, const char *name, const char *types, wah_func_t func, void *userdata, wah_finalize_t finalize);
 
-// Function: wah_module_export_typed_func
-//   Same as `wah_module_export_func` but with an explicit `wah_type_t` defined from `wah_module_define_type`.
+// Function: wah_export_typed_func
+//   Same as `wah_export_func` but with an explicit `wah_type_t` defined from `wah_define_type`.
 //
 //   - name [in, borrowed]: Zero-terminated name of the export.
-//   - type [in]: Type index for the function signature, must be defined from `wah_module_define_type*`.
+//   - type [in]: Type index for the function signature, must be defined from `wah_define_type*`.
 //   - func [in, consumed]: Function pointer to be called when the exported function is invoked.
 //   - userdata [in, consumed]: User data pointer to be passed to the function on each call.
 //   - finalize [in, consumed, optional]: Called with userdata when the module is freed.
-wah_error_t wah_module_export_typed_func(wah_module_t *mod, const char *name, wah_type_t type, wah_func_t func, void *userdata, wah_finalize_t finalize);
+wah_error_t wah_export_typed_func(wah_module_t *mod, const char *name, wah_type_t type, wah_func_t func, void *userdata, wah_finalize_t finalize);
 
-// Function: wah_module_export_memory
+// Function: wah_export_memory
 //   Exports a new memory from the module.
 //
 //   - name [in, borrowed]: Zero-terminated name of the export.
 //   - min_pages [in]: Initial memory size in WebAssembly pages (64KiB each).
 //   - max_pages [in]: Optional maximum memory size in pages. Use UINT64_MAX for no maximum.
-wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages);
+wah_error_t wah_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages);
 
-// Function: wah_module_export_global_*
+// Function: wah_export_global_*
 //   Exports a new global variable from the module.
 //
 //   - name [in, borrowed]: Zero-terminated name of the export.
 //   - mutable [in]: True if the global variable should be mutable, false if immutable.
 //   - init_value [in]: Initial value of the global variable.
-wah_error_t wah_module_export_global_i32(wah_module_t *mod, const char *name, bool mutable, int32_t init_value);  // Exports an i32 global variable
-wah_error_t wah_module_export_global_i64(wah_module_t *mod, const char *name, bool mutable, int64_t init_value);  // Exports an i64 global variable
-wah_error_t wah_module_export_global_f32(wah_module_t *mod, const char *name, bool mutable, float init_value);    // Exports an f32 global variable
-wah_error_t wah_module_export_global_f64(wah_module_t *mod, const char *name, bool mutable, double init_value);   // Exports an f64 global variable
-wah_error_t wah_module_export_global_v128(wah_module_t *mod, const char *name, bool mutable, const wah_v128_t *init_value); // Exports a v128 global variable
+wah_error_t wah_export_global_i32(wah_module_t *mod, const char *name, bool mutable, int32_t init_value);  // Exports an i32 global variable
+wah_error_t wah_export_global_i64(wah_module_t *mod, const char *name, bool mutable, int64_t init_value);  // Exports an i64 global variable
+wah_error_t wah_export_global_f32(wah_module_t *mod, const char *name, bool mutable, float init_value);    // Exports an f32 global variable
+wah_error_t wah_export_global_f64(wah_module_t *mod, const char *name, bool mutable, double init_value);   // Exports an f64 global variable
+wah_error_t wah_export_global_v128(wah_module_t *mod, const char *name, bool mutable, const wah_v128_t *init_value); // Exports a v128 global variable
 
 // --- Call context for host functions ---
 
@@ -9007,7 +9007,7 @@ wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t
     if (uses_mut_import) WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_MUTABLE_GLOBALS), cleanup_parse);
 
     // Build the unified functions[] array for the WASM functions.
-    // Host functions may be appended later via wah_module_export_func().
+    // Host functions may be appended later via wah_export_func().
     if (module->wasm_function_count > 0) {
         WAH_MALLOC_ARRAY_GOTO(module->functions, module->wasm_function_count, cleanup_parse);
         for (uint32_t i = 0; i < module->wasm_function_count; i++) {
@@ -9121,16 +9121,7 @@ wah_error_t wah_gc_start(wah_exec_context_t *ctx) {
     return WAH_OK;
 }
 
-void wah_gc_reset(wah_exec_context_t *ctx) {
-    if (!ctx->gc) return;
-    wah_budget_release(ctx, ctx->gc->allocated_bytes);
-    wah_gc_free_all_objects(ctx, ctx->gc);
-    ctx->gc->phase = WAH_GC_PHASE_IDLE;
-    ctx->gc->gc_pending = false;
-    wah_recompute_poll_flag(ctx);
-}
-
-void wah_gc_destroy(wah_exec_context_t *ctx) {
+static void wah_gc_end(wah_exec_context_t *ctx) {
     if (!ctx->gc) return;
     wah_budget_release(ctx, ctx->gc->allocated_bytes);
     wah_gc_free_all_objects(ctx, ctx->gc);
@@ -9451,7 +9442,7 @@ static void wah_gc_step_sweep(wah_exec_context_t *ctx) {
     }
 }
 
-void wah_gc_step(wah_exec_context_t *ctx) {
+static void wah_gc_step(wah_exec_context_t *ctx) {
     wah_gc_state_t *gc = ctx->gc;
     if (!gc) return;
 
@@ -9522,9 +9513,8 @@ bool wah_gc_verify_heap(const wah_exec_context_t *ctx) {
 #else // !WAH_FEATURE_GC
 
 wah_error_t wah_gc_start(wah_exec_context_t *ctx) { (void)ctx; return WAH_OK; }
-void wah_gc_reset(wah_exec_context_t *ctx) { (void)ctx; }
-void wah_gc_destroy(wah_exec_context_t *ctx) { (void)ctx; }
-void wah_gc_step(wah_exec_context_t *ctx) { (void)ctx; }
+static void wah_gc_end(wah_exec_context_t *ctx) { (void)ctx; }
+static void wah_gc_step(wah_exec_context_t *ctx) { (void)ctx; }
 void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats) {
     (void)ctx; *stats = (wah_gc_heap_stats_t){0};
 }
@@ -9546,7 +9536,7 @@ static inline void wah_ref_store_table(wah_exec_context_t *ctx, uint32_t table_i
 #endif // WAH_FEATURE_GC
 
 ////////////////////////////////////////////////////////////////////////////////
-// Deadline timer //////////////////////////////////////////////////////////////
+// Timer thread ////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
 static inline void wah_recompute_poll_flag(wah_exec_context_t *ctx) {
@@ -9571,7 +9561,7 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx) {
 }
 
 #ifndef WAH_NO_THREADS
-typedef struct wah_deadline_timer_s {
+typedef struct wah_timer_s {
     wah_exec_context_t *ctx;
     uint64_t deadline_us;
     wah_poll_flag_t cancelled;
@@ -9585,15 +9575,15 @@ typedef struct wah_deadline_timer_s {
     pthread_mutex_t mutex;
     pthread_cond_t cond;
 #endif
-} wah_deadline_timer_t;
+} wah_timer_t;
 
-static void wah_deadline_timer_fire(wah_deadline_timer_t *timer) {
+static void wah_timer_fire(wah_timer_t *timer) {
     wah_request_interrupt(timer->ctx);
 }
 
 #if defined(_WIN32)
-static DWORD WINAPI wah_deadline_timer_main(LPVOID arg) {
-    wah_deadline_timer_t *timer = (wah_deadline_timer_t *)arg;
+static DWORD WINAPI wah_timer_main(LPVOID arg) {
+    wah_timer_t *timer = (wah_timer_t *)arg;
     for (;;) {
         WaitForSingleObject(timer->event, INFINITE);
         ResetEvent(timer->event);
@@ -9606,7 +9596,7 @@ static DWORD WINAPI wah_deadline_timer_main(LPVOID arg) {
         due_time.QuadPart = -(LONGLONG)ticks_100ns;
         if (!SetWaitableTimer(timer->timer, &due_time, 0, NULL, NULL, FALSE)) {
             WAH_POLL_FLAG_STORE(timer->armed, 0);
-            wah_deadline_timer_fire(timer);
+            wah_timer_fire(timer);
             continue;
         }
 
@@ -9620,22 +9610,22 @@ static DWORD WINAPI wah_deadline_timer_main(LPVOID arg) {
         }
         if (rc == WAIT_OBJECT_0 + 1 && WAH_POLL_FLAG_LOAD(timer->armed)) {
             WAH_POLL_FLAG_STORE(timer->armed, 0);
-            wah_deadline_timer_fire(timer);
+            wah_timer_fire(timer);
         }
     }
     return 0;
 }
 #else
 #if defined(__APPLE__)
-static uint64_t wah_deadline_timer_now_us(void) {
+static uint64_t wah_timer_now_us(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
 #endif
 
-static void *wah_deadline_timer_main(void *arg) {
-    wah_deadline_timer_t *timer = (wah_deadline_timer_t *)arg;
+static void *wah_timer_main(void *arg) {
+    wah_timer_t *timer = (wah_timer_t *)arg;
     pthread_mutex_lock(&timer->mutex);
     for (;;) {
         while (!WAH_POLL_FLAG_LOAD(timer->cancelled) && !WAH_POLL_FLAG_LOAD(timer->armed)) {
@@ -9644,11 +9634,11 @@ static void *wah_deadline_timer_main(void *arg) {
         if (WAH_POLL_FLAG_LOAD(timer->cancelled)) break;
 
 #if defined(__APPLE__)
-        uint64_t start_us = wah_deadline_timer_now_us();
+        uint64_t start_us = wah_timer_now_us();
         uint64_t deadline_us = timer->deadline_us;
         int rc = 0;
         while (!WAH_POLL_FLAG_LOAD(timer->cancelled) && WAH_POLL_FLAG_LOAD(timer->armed) && rc != ETIMEDOUT) {
-            uint64_t now_us = wah_deadline_timer_now_us();
+            uint64_t now_us = wah_timer_now_us();
             uint64_t elapsed_us = now_us - start_us;
             if (elapsed_us >= deadline_us) {
                 rc = ETIMEDOUT;
@@ -9677,7 +9667,7 @@ static void *wah_deadline_timer_main(void *arg) {
         if (WAH_POLL_FLAG_LOAD(timer->armed) && rc == ETIMEDOUT) {
             WAH_POLL_FLAG_STORE(timer->armed, 0);
             pthread_mutex_unlock(&timer->mutex);
-            wah_deadline_timer_fire(timer);
+            wah_timer_fire(timer);
             pthread_mutex_lock(&timer->mutex);
         }
     }
@@ -9686,20 +9676,20 @@ static void *wah_deadline_timer_main(void *arg) {
 }
 #endif
 
-static wah_error_t wah_deadline_timer_create(wah_exec_context_t *ctx) {
-    if (ctx->deadline_timer) return WAH_OK;
+static wah_error_t wah_new_timer(wah_exec_context_t *ctx) {
+    if (ctx->timer) return WAH_OK;
     const wah_alloc_t *alloc = &ctx->alloc;
-    wah_deadline_timer_t *timer = NULL;
+    wah_timer_t *timer = NULL;
     WAH_CHECK(wah_malloc(alloc, 1, sizeof(*timer), (void **)&timer));
-    *timer = (wah_deadline_timer_t){ .ctx = ctx, .deadline_us = ctx->deadline_us };
+    *timer = (wah_timer_t){ .ctx = ctx, .deadline_us = ctx->deadline_us };
 #if defined(_WIN32)
     timer->event = CreateEventA(NULL, TRUE, FALSE, NULL);
     if (!timer->event) goto cleanup;
     timer->timer = CreateWaitableTimerA(NULL, TRUE, NULL);
     if (!timer->timer) goto cleanup_event;
-    timer->thread = CreateThread(NULL, 0, wah_deadline_timer_main, timer, 0, NULL);
+    timer->thread = CreateThread(NULL, 0, wah_timer_main, timer, 0, NULL);
     if (!timer->thread) goto cleanup_timer;
-    ctx->deadline_timer = timer;
+    ctx->timer = timer;
     return WAH_OK;
 cleanup_timer:
     CloseHandle(timer->timer);
@@ -9717,8 +9707,8 @@ cleanup:
 #endif
     if (pthread_cond_init(&timer->cond, &attr) != 0) goto cleanup_attr;
     pthread_condattr_destroy(&attr);
-    if (pthread_create(&timer->thread, NULL, wah_deadline_timer_main, timer) != 0) goto cleanup_cond;
-    ctx->deadline_timer = timer;
+    if (pthread_create(&timer->thread, NULL, wah_timer_main, timer) != 0) goto cleanup_cond;
+    ctx->timer = timer;
     return WAH_OK;
 cleanup_cond:
     pthread_cond_destroy(&timer->cond);
@@ -9733,8 +9723,8 @@ cleanup:
 #endif
 }
 
-static void wah_deadline_timer_set_armed(wah_exec_context_t *ctx, bool armed) {
-    wah_deadline_timer_t *timer = ctx->deadline_timer;
+static void wah_timer_set_armed(wah_exec_context_t *ctx, bool armed) {
+    wah_timer_t *timer = ctx->timer;
     if (!timer) return;
     if (armed && ctx->deadline_us == 0) return;
 #if defined(_WIN32)
@@ -9751,8 +9741,8 @@ static void wah_deadline_timer_set_armed(wah_exec_context_t *ctx, bool armed) {
 #endif
 }
 
-static void wah_deadline_timer_destroy(wah_exec_context_t *ctx) {
-    wah_deadline_timer_t *timer = ctx->deadline_timer;
+static void wah_free_timer(wah_exec_context_t *ctx) {
+    wah_timer_t *timer = ctx->timer;
     if (!timer) return;
 #if defined(_WIN32)
     WAH_POLL_FLAG_STORE(timer->cancelled, 1);
@@ -9771,12 +9761,12 @@ static void wah_deadline_timer_destroy(wah_exec_context_t *ctx) {
     pthread_mutex_destroy(&timer->mutex);
 #endif
     wah_free(&ctx->alloc, timer);
-    ctx->deadline_timer = NULL;
+    ctx->timer = NULL;
 }
 #else
-static wah_error_t wah_deadline_timer_create(wah_exec_context_t *ctx) { (void)ctx; return WAH_ERROR_DISABLED_FEATURE; }
-static void wah_deadline_timer_set_armed(wah_exec_context_t *ctx, bool armed) { (void)ctx; (void)armed; }
-static void wah_deadline_timer_destroy(wah_exec_context_t *ctx) { (void)ctx; }
+static wah_error_t wah_new_timer(wah_exec_context_t *ctx) { (void)ctx; return WAH_ERROR_DISABLED_FEATURE; }
+static void wah_timer_set_armed(wah_exec_context_t *ctx, bool armed) { (void)ctx; (void)armed; }
+static void wah_free_timer(wah_exec_context_t *ctx) { (void)ctx; }
 #endif
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -9799,7 +9789,7 @@ static wah_error_t wah_alloc_unified_stack(wah_exec_context_t *exec_ctx, uint64_
     return WAH_OK;
 }
 
-wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_exec_options_t *options) {
+wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_exec_options_t *options) {
     wah_rlimits_t default_limits = {0};
     const wah_rlimits_t *limits = options ? &options->limits : &default_limits;
     *exec_ctx = (wah_exec_context_t){ .is_instantiated = false, .alloc = wah_resolve_alloc(options ? options->alloc : NULL) };
@@ -9835,7 +9825,7 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
     exec_ctx->fuel = (limits->fuel != 0) ? (int64_t)limits->fuel : INT64_MAX;
     exec_ctx->deadline_us = limits->deadline_us;
     if (exec_ctx->deadline_us > 0) {
-        WAH_CHECK_GOTO(wah_deadline_timer_create(exec_ctx), cleanup);
+        WAH_CHECK_GOTO(wah_new_timer(exec_ctx), cleanup);
     }
 
     uint32_t total_memories = wah_memory_index_limit(module);
@@ -9938,11 +9928,11 @@ wah_error_t wah_exec_context_create(wah_exec_context_t *exec_ctx, const wah_modu
     return WAH_OK;
 
 cleanup:
-    if (err != WAH_OK) wah_exec_context_destroy(exec_ctx);
+    if (err != WAH_OK) wah_free_exec_context(exec_ctx);
     return err;
 }
 
-wah_error_t wah_exec_context_set_limits(wah_exec_context_t *exec_ctx, const wah_rlimits_t *limits) {
+wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_rlimits_t *limits) {
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
     const wah_alloc_t *alloc = &exec_ctx->alloc;
     WAH_ENSURE(exec_ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
@@ -9978,13 +9968,13 @@ wah_error_t wah_exec_context_set_limits(wah_exec_context_t *exec_ctx, const wah_
 
     if (limits->deadline_us != 0) {
         exec_ctx->deadline_us = limits->deadline_us;
-        WAH_CHECK(wah_deadline_timer_create(exec_ctx));
+        WAH_CHECK(wah_new_timer(exec_ctx));
     }
 
     return WAH_OK;
 }
 
-void wah_exec_context_get_limits(const wah_exec_context_t *exec_ctx, wah_rlimits_t *out) {
+void wah_get_limits(const wah_exec_context_t *exec_ctx, wah_rlimits_t *out) {
     uint64_t mm = exec_ctx->max_memory_bytes;
     *out = (wah_rlimits_t){
         .max_stack_bytes = exec_ctx->stack_buffer_size,
@@ -9995,11 +9985,11 @@ void wah_exec_context_get_limits(const wah_exec_context_t *exec_ctx, wah_rlimits
     };
 }
 
-void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
+void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     if (!exec_ctx) return;
     wah_alloc_t alloc_storage = wah_resolve_alloc(&exec_ctx->alloc);
     const wah_alloc_t *alloc = &alloc_storage;
-    wah_deadline_timer_destroy(exec_ctx);
+    wah_free_timer(exec_ctx);
     exec_ctx->lifecycle = (struct wah_exec_lifecycle_s){0};
     wah_free(alloc, exec_ctx->stack_buffer);
     wah_free(alloc, exec_ctx->exception_handlers);
@@ -10040,7 +10030,7 @@ void wah_exec_context_destroy(wah_exec_context_t *exec_ctx) {
         wah_free(alloc, exec_ctx->linked_modules);
     }
 
-    wah_gc_destroy(exec_ctx);
+    wah_gc_end(exec_ctx);
 
     *exec_ctx = (wah_exec_context_t){0};
 }
@@ -14311,7 +14301,7 @@ cleanup:
 ////////////////////////////////////////////////////////////////////////////////
 
 static void wah_cancel_internal(wah_exec_context_t *ctx) {
-    wah_deadline_timer_set_armed(ctx, false);
+    wah_timer_set_armed(ctx, false);
     WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0);
     wah_recompute_poll_flag(ctx);
     if (ctx->lifecycle.state == WAH_EXEC_READY) return;
@@ -14395,7 +14385,7 @@ static wah_error_t wah_start_internal(
 static wah_error_t wah_resume_internal(wah_exec_context_t *ctx) {
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_SUSPENDED, WAH_ERROR_MISUSE);
     ctx->lifecycle.state = WAH_EXEC_RUNNING;
-    wah_deadline_timer_set_armed(ctx, true);
+    wah_timer_set_armed(ctx, true);
     wah_error_t err;
     if (ctx->lifecycle.entry_host_fn) {
         const wah_function_t *fn = ctx->lifecycle.entry_host_fn;
@@ -14408,7 +14398,7 @@ static wah_error_t wah_resume_internal(wah_exec_context_t *ctx) {
     } else {
         err = wah_run_interpreter(ctx);
     }
-    wah_deadline_timer_set_armed(ctx, false);
+    wah_timer_set_armed(ctx, false);
     if (err == WAH_OK) {
         ctx->lifecycle.state = WAH_EXEC_FINISHED;
     } else if (err > 0) {
@@ -14544,7 +14534,7 @@ wah_error_t wah_call_by_name(wah_exec_context_t *exec_ctx, const char *name, con
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(exec_ctx->module, WAH_ERROR_MISUSE);
     wah_export_desc_t desc;
-    WAH_CHECK(wah_module_export_by_name(exec_ctx->module, name, &desc));
+    WAH_CHECK(wah_export_by_name(exec_ctx->module, name, &desc));
     WAH_ENSURE(desc.kind == WAH_KIND_FUNCTION, WAH_ERROR_NOT_FOUND);
     return wah_call(exec_ctx, desc.index, params, param_count, result);
 }
@@ -14715,7 +14705,7 @@ static bool wah_define_type_matches(const wah_module_t *mod, uint32_t i, const w
     return true;
 }
 
-wah_error_t wah_module_define_typev(wah_module_t *mod, wah_type_t *out_type, const char *spec, va_list *args) {
+wah_error_t wah_define_typev(wah_module_t *mod, wah_type_t *out_type, const char *spec, va_list *args) {
     wah_error_t err;
     wah_type_spec_parser_t p;
     wah_func_type_t ft = {0};
@@ -14806,11 +14796,11 @@ cleanup:
     return err == WAH_OK ? WAH_ERROR_BAD_SPEC : err;
 }
 
-wah_error_t wah_module_define_type(wah_module_t *mod, wah_type_t *out_type, const char *spec, ...) {
+wah_error_t wah_define_type(wah_module_t *mod, wah_type_t *out_type, const char *spec, ...) {
     wah_error_t err;
     va_list args;
     va_start(args, spec);
-    err = wah_module_define_typev(mod, out_type, spec, &args);
+    err = wah_define_typev(mod, out_type, spec, &args);
     va_end(args);
     return err;
 }
@@ -14873,8 +14863,8 @@ cleanup:
     return err;
 }
 
-wah_error_t wah_module_export_func(wah_module_t *mod, const char *name, const char *types,
-                                   wah_func_t func, void *userdata, wah_finalize_t finalize) {
+wah_error_t wah_export_func(wah_module_t *mod, const char *name, const char *types,
+                            wah_func_t func, void *userdata, wah_finalize_t finalize) {
     wah_error_t err;
     wah_type_spec_parser_t p;
     wah_func_type_t ft = {0};
@@ -14901,8 +14891,8 @@ cleanup:
     return err;
 }
 
-wah_error_t wah_module_export_typed_func(wah_module_t *mod, const char *name, wah_type_t type,
-                                         wah_func_t func, void *userdata, wah_finalize_t finalize) {
+wah_error_t wah_export_typed_func(wah_module_t *mod, const char *name, wah_type_t type,
+                                  wah_func_t func, void *userdata, wah_finalize_t finalize) {
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(func, WAH_ERROR_MISUSE);
@@ -14914,7 +14904,7 @@ wah_error_t wah_module_export_typed_func(wah_module_t *mod, const char *name, wa
 }
 
 // Helper to create a preparsed const expression from a simple constant value
-static wah_error_t wah_create_const_expr(wah_type_t type, const wah_value_t *value, wah_parsed_code_t *parsed_code, const wah_alloc_t *alloc) {
+static wah_error_t wah_new_const_expr(wah_type_t type, const wah_value_t *value, wah_parsed_code_t *parsed_code, const wah_alloc_t *alloc) {
     uint16_t opcode;
     const void *payload;
     uint32_t payload_size;
@@ -14943,8 +14933,7 @@ static wah_error_t wah_create_const_expr(wah_type_t type, const wah_value_t *val
 }
 
 // Internal helper for exporting globals
-static wah_error_t wah_module_export_global_internal(wah_module_t *mod, const char *name, wah_type_t type,
-                                                     bool is_mutable, const wah_value_t *init_value) {
+static wah_error_t wah_export_global_internal(wah_module_t *mod, const char *name, wah_type_t type, bool is_mutable, const wah_value_t *init_value) {
     wah_error_t err;
     char *name_copy = NULL;
 
@@ -14960,7 +14949,7 @@ static wah_error_t wah_module_export_global_internal(wah_module_t *mod, const ch
     WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
 
     mod->globals[mod->global_count] = (wah_global_t){ .type = type, .is_mutable = is_mutable };
-    WAH_CHECK_GOTO(wah_create_const_expr(type, init_value, &mod->globals[mod->global_count].init_expr, alloc), cleanup);
+    WAH_CHECK_GOTO(wah_new_const_expr(type, init_value, &mod->globals[mod->global_count].init_expr, alloc), cleanup);
     mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
                                                         .kind = WAH_KIND_GLOBAL, .index = mod->global_count };
     mod->global_count++;
@@ -14971,7 +14960,7 @@ cleanup:
     return err;
 }
 
-wah_error_t wah_module_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages) {
+wah_error_t wah_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages) {
     wah_error_t err;
     const wah_alloc_t *alloc = &mod->alloc;
     char *name_copy = NULL;
@@ -14999,29 +14988,29 @@ cleanup:
     return err;
 }
 
-wah_error_t wah_module_export_global_i32(wah_module_t *mod, const char *name, bool is_mutable, int32_t init_value) {
+wah_error_t wah_export_global_i32(wah_module_t *mod, const char *name, bool is_mutable, int32_t init_value) {
     wah_value_t val = { .i32 = init_value };
-    return wah_module_export_global_internal(mod, name, WAH_TYPE_I32, is_mutable, &val);
+    return wah_export_global_internal(mod, name, WAH_TYPE_I32, is_mutable, &val);
 }
 
-wah_error_t wah_module_export_global_i64(wah_module_t *mod, const char *name, bool is_mutable, int64_t init_value) {
+wah_error_t wah_export_global_i64(wah_module_t *mod, const char *name, bool is_mutable, int64_t init_value) {
     wah_value_t val = { .i64 = init_value };
-    return wah_module_export_global_internal(mod, name, WAH_TYPE_I64, is_mutable, &val);
+    return wah_export_global_internal(mod, name, WAH_TYPE_I64, is_mutable, &val);
 }
 
-wah_error_t wah_module_export_global_f32(wah_module_t *mod, const char *name, bool is_mutable, float init_value) {
+wah_error_t wah_export_global_f32(wah_module_t *mod, const char *name, bool is_mutable, float init_value) {
     wah_value_t val = { .f32 = init_value };
-    return wah_module_export_global_internal(mod, name, WAH_TYPE_F32, is_mutable, &val);
+    return wah_export_global_internal(mod, name, WAH_TYPE_F32, is_mutable, &val);
 }
 
-wah_error_t wah_module_export_global_f64(wah_module_t *mod, const char *name, bool is_mutable, double init_value) {
+wah_error_t wah_export_global_f64(wah_module_t *mod, const char *name, bool is_mutable, double init_value) {
     wah_value_t val = { .f64 = init_value };
-    return wah_module_export_global_internal(mod, name, WAH_TYPE_F64, is_mutable, &val);
+    return wah_export_global_internal(mod, name, WAH_TYPE_F64, is_mutable, &val);
 }
 
-wah_error_t wah_module_export_global_v128(wah_module_t *mod, const char *name, bool is_mutable, const wah_v128_t *init_value) {
+wah_error_t wah_export_global_v128(wah_module_t *mod, const char *name, bool is_mutable, const wah_v128_t *init_value) {
     wah_value_t val = { .v128 = *init_value };
-    return wah_module_export_global_internal(mod, name, WAH_TYPE_V128, is_mutable, &val);
+    return wah_export_global_internal(mod, name, WAH_TYPE_V128, is_mutable, &val);
 }
 
 // --- Call Context Implementation ---
@@ -15868,12 +15857,12 @@ wah_error_t wah_module_export(const wah_module_t *module, size_t idx, wah_export
     return wah_module_extern_desc(export_entry->kind, module, export_entry->index, &out->u);
 }
 
-wah_error_t wah_module_export_by_name(const wah_module_t *module, const char *name, wah_export_desc_t *out) {
+wah_error_t wah_export_by_name(const wah_module_t *module, const char *name, wah_export_desc_t *out) {
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
-    return wah_module_export_by_name_len(module, name, strlen(name), out);
+    return wah_export_by_name_len(module, name, strlen(name), out);
 }
 
-wah_error_t wah_module_export_by_name_len(const wah_module_t *module, const char *name, size_t name_len, wah_export_desc_t *out) {
+wah_error_t wah_export_by_name_len(const wah_module_t *module, const char *name, size_t name_len, wah_export_desc_t *out) {
     WAH_ENSURE(module, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(out, WAH_ERROR_MISUSE);

@@ -18,7 +18,7 @@ void run_test_##T(const char* test_name, const char *spec, \
     wah_value_t result; \
     \
     assert_ok(wah_parse_module_from_spec(&module, spec)); \
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL)); \
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL)); \
     \
     if (expect_trap) { \
         assert_err(wah_call(&ctx, 0, params, param_count, &result), WAH_ERROR_TRAP); \
@@ -30,7 +30,7 @@ void run_test_##T(const char* test_name, const char *spec, \
         } \
     } \
     \
-    wah_exec_context_destroy(&ctx); \
+    wah_free_exec_context(&ctx); \
     wah_free_module(&module); \
 }
 

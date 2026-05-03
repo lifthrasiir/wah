@@ -38,7 +38,7 @@ static void test_local_tag_introspection(void) {
     assert_eq_i32(export_desc.u.tag.param_types[1], WAH_TYPE_FUNCREF);
 
     wah_export_desc_t named_export = {0};
-    assert_ok(wah_module_export_by_name(&module, "tag", &named_export));
+    assert_ok(wah_export_by_name(&module, "tag", &named_export));
     assert_eq_i32(named_export.kind, WAH_KIND_TAG);
     assert_eq_u32(named_export.u.tag.type_index, 0);
 
@@ -86,14 +86,14 @@ static void test_imported_and_local_tag_introspection(void) {
     assert_eq_i32(local_tag.param_types[0], WAH_TYPE_I64);
 
     wah_export_desc_t imported_export = {0};
-    assert_ok(wah_module_export_by_name(&module, "imported", &imported_export));
+    assert_ok(wah_export_by_name(&module, "imported", &imported_export));
     assert_eq_i32(imported_export.kind, WAH_KIND_TAG);
     assert_eq_u32(imported_export.index, 0);
     assert_eq_u32(imported_export.u.tag.type_index, 0);
     assert_eq_i32(imported_export.u.tag.param_types[0], WAH_TYPE_I32);
 
     wah_export_desc_t local_export = {0};
-    assert_ok(wah_module_export_by_name(&module, "local", &local_export));
+    assert_ok(wah_export_by_name(&module, "local", &local_export));
     assert_eq_i32(local_export.kind, WAH_KIND_TAG);
     assert_eq_u32(local_export.index, 1);
     assert_eq_u32(local_export.u.tag.type_index, 1);

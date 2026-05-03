@@ -25,7 +25,7 @@ static void test_typed_select_funcref() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params[1], result;
@@ -38,7 +38,7 @@ static void test_typed_select_funcref() {
     assert_ok(wah_call(&ctx, 0, params, 1, &result));
     assert_eq_i32(result.i32, 1);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -61,7 +61,7 @@ static void test_typed_select_i32() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t params[1], result;
@@ -74,7 +74,7 @@ static void test_typed_select_i32() {
     assert_ok(wah_call(&ctx, 0, params, 1, &result));
     assert_eq_i32(result.i32, 99);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 }
 
@@ -115,14 +115,14 @@ static void test_untyped_select_rejects_refs() {
     assert_ok(wah_parse_module_from_spec(&good_module, good_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &good_module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &good_module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_not_null(result.ref);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&good_module);
 }
 
@@ -214,7 +214,7 @@ static void test_br_on_null_label_types() {
     assert_ok(wah_parse_module_from_spec(&good, good_spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &good, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &good, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     // null input -> branches, returns 1
@@ -223,7 +223,7 @@ static void test_br_on_null_label_types() {
     assert_ok(wah_call(&ctx, 0, params, 1, &result));
     assert_eq_i32(result.i32, 1);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&good);
 
     // Negative: br_on_null targeting label with wrong result types
@@ -265,14 +265,14 @@ static void test_call_ref() {
     assert_ok(wah_parse_module_from_spec(&module, spec));
 
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_exec_context_create(&ctx, &module, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
 
-    wah_exec_context_destroy(&ctx);
+    wah_free_exec_context(&ctx);
     wah_free_module(&module);
 
     // Null call_ref should trap
@@ -286,12 +286,12 @@ static void test_call_ref() {
     assert_ok(wah_parse_module_from_spec(&null_mod, null_spec));
 
     wah_exec_context_t ctx2 = {0};
-    assert_ok(wah_exec_context_create(&ctx2, &null_mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx2, &null_mod, NULL));
     assert_ok(wah_instantiate(&ctx2));
 
     assert_err(wah_call(&ctx2, 0, NULL, 0, &result), WAH_ERROR_TRAP);
 
-    wah_exec_context_destroy(&ctx2);
+    wah_free_exec_context(&ctx2);
     wah_free_module(&null_mod);
 }
 
