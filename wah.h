@@ -757,6 +757,15 @@ private:
 
     struct wah_type_check_cache_entry_s *type_check_cache;
 
+    // Per-instance "dropped" state for element/data segments. The module is read-only
+    // after parse, so segments cannot record dropped state on themselves -- otherwise
+    // a single module reused across multiple instances would leak runtime state across
+    // instances. These bitsets are sized to module->element_segment_count and
+    // module->data_segment_count respectively. Declarative element segments are
+    // pre-set during wah_instantiate().
+    uint8_t *dropped_elem_segments;
+    uint8_t *dropped_data_segments;
+
     wah_alloc_t alloc;
     wah_features_t enabled_features;
 
@@ -2551,7 +2560,7 @@ typedef struct wah_code_body_s {
 // --- WebAssembly Element Segment Structure ---
 typedef struct wah_element_segment_s {
     bool is_active;           // true for active (flags&3 == 0 or 2), false for passive
-    bool is_dropped;          // true if declarative (dropped after validation) or dropped via elem.drop
+    bool is_declarative;      // true for declarative segments (dropped at parse time, no elem data stored)
     uint32_t table_idx;       // For active modes
     uint32_t num_elems;
     bool is_expr_elem;        // true if elem* are expressions, false if func indices
@@ -2741,6 +2750,37 @@ static inline bool wah_global_is_mutable(const wah_module_t *m, uint32_t idx) {
 static inline uint32_t wah_tag_type_index(const wah_module_t *m, uint32_t idx) {
     if (idx < m->import_tag_count) return m->tag_imports[idx].type_index;
     return m->tags[idx - m->import_tag_count].type_index;
+}
+
+// Per-instance segment-dropped helpers. The bitsets live on the exec context
+// (sized to module->element_segment_count / module->data_segment_count) so the
+// module itself stays read-only after parse and can be reused across instances.
+static inline bool wah_elem_seg_is_dropped(const wah_exec_context_t *ctx, uint32_t idx) {
+    return ctx->dropped_elem_segments != NULL &&
+           (ctx->dropped_elem_segments[idx >> 3] & (uint8_t)(1u << (idx & 7))) != 0;
+}
+static inline void wah_elem_seg_mark_dropped(wah_exec_context_t *ctx, uint32_t idx) {
+    if (ctx->dropped_elem_segments) {
+        ctx->dropped_elem_segments[idx >> 3] |= (uint8_t)(1u << (idx & 7));
+    }
+}
+static inline bool wah_data_seg_is_dropped(const wah_exec_context_t *ctx, uint32_t idx) {
+    return ctx->dropped_data_segments != NULL &&
+           (ctx->dropped_data_segments[idx >> 3] & (uint8_t)(1u << (idx & 7))) != 0;
+}
+static inline void wah_data_seg_mark_dropped(wah_exec_context_t *ctx, uint32_t idx) {
+    if (ctx->dropped_data_segments) {
+        ctx->dropped_data_segments[idx >> 3] |= (uint8_t)(1u << (idx & 7));
+    }
+}
+// Effective length helpers (return 0 if dropped, else the segment's full length).
+static inline uint32_t wah_elem_seg_num_elems(const wah_exec_context_t *ctx, uint32_t idx) {
+    if (wah_elem_seg_is_dropped(ctx, idx)) return 0;
+    return ctx->module->element_segments[idx].num_elems;
+}
+static inline uint32_t wah_data_seg_data_len(const wah_exec_context_t *ctx, uint32_t idx) {
+    if (wah_data_seg_is_dropped(ctx, idx)) return 0;
+    return ctx->module->data_segments[idx].data_len;
 }
 
 // Helper function to duplicate a string
@@ -8787,7 +8827,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
                 WAH_ENSURE(segment->table_idx < wah_table_index_limit(module), WAH_ERROR_VALIDATION_FAILED);
             } else { // mode == 3
                 // Declarative: elemkind/reftype, elem* (dropped after validation)
-                segment->is_dropped = true;
+                segment->is_declarative = true;
             }
 
             // For active modes, parse offset_expr
@@ -8825,8 +8865,8 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
             uint32_t num_elems;
             WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &num_elems, 1));
 
-            // If declarative, validate and skip elem* and mark as dropped
-            if (segment->is_dropped) {
+            // If declarative, validate and skip elem* (no elem data is stored).
+            if (segment->is_declarative) {
                 for (uint32_t j = 0; j < num_elems; ++j) {
                     if (is_expr_elem) {
                         WAH_CHECK(wah_compile_const_expr(ptr, section_end, segment->elem_type, module,
@@ -9062,10 +9102,19 @@ wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t
 
     // Build the unified functions[] array for the WASM functions.
     // Host functions may be appended later via wah_export_func().
+    // local_idx, global_idx, and fn_module are determined entirely by the module
+    // and are set here at parse time so that module->functions[] is read-only after
+    // parse. This allows a single wah_module_t to be safely reused across multiple
+    // wah_exec_context_t instances. fn_ctx remains 0 (filled in lazily per-instance).
     if (module->wasm_function_count > 0) {
         WAH_MALLOC_ARRAY_GOTO(module->functions, module->wasm_function_count, cleanup_parse);
         for (uint32_t i = 0; i < module->wasm_function_count; i++) {
-            module->functions[i] = (wah_function_t){ .fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER };
+            module->functions[i] = (wah_function_t){
+                .fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER,
+                .local_idx = i,
+                .global_idx = module->import_function_count + i,
+                .fn_module = module,
+            };
         }
         module->functions_cap = module->wasm_function_count;
     }
@@ -9958,6 +10007,11 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
 
     // Build the runtime function_table (global index space: imports + locals + hosts).
     // Import slots are zero-initialized here; wah_instantiate() fills them in.
+    // Local/host slots are shallow copies of module->functions[]; module->functions[]
+    // is fully initialized at parse time (local_idx, global_idx, fn_module), so the
+    // copy needs only one per-instance fixup: fn_ctx for non-host wasm functions, so
+    // funcrefs into this table dispatch correctly even when handled by a third-party
+    // context that has not directly linked us.
     uint32_t import_count = module->import_function_count;
     uint32_t table_size = import_count + module->local_function_count;
     exec_ctx->function_table_count = table_size;
@@ -9969,14 +10023,29 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
         }
         // Copy local/host functions at offset import_count
         for (uint32_t i = 0; i < module->local_function_count; i++) {
-            if (!module->functions[i].is_host) {
-                module->functions[i].local_idx = i;
-            }
             exec_ctx->function_table[import_count + i] = module->functions[i];
             if (!module->functions[i].is_host) {
-                exec_ctx->function_table[import_count + i].fn_module = NULL; // = ctx->module
+                exec_ctx->function_table[import_count + i].fn_ctx = exec_ctx;
             }
         }
+    }
+
+    // Per-instance segment-dropped bitsets. Pre-mark declarative element segments
+    // as dropped so runtime readers don't need to check is_declarative separately.
+    if (module->element_segment_count > 0) {
+        size_t bytes = (module->element_segment_count + 7) / 8;
+        WAH_MALLOC_ARRAY_GOTO(exec_ctx->dropped_elem_segments, bytes, cleanup);
+        memset(exec_ctx->dropped_elem_segments, 0, bytes);
+        for (uint32_t i = 0; i < module->element_segment_count; ++i) {
+            if (module->element_segments[i].is_declarative) {
+                wah_elem_seg_mark_dropped(exec_ctx, i);
+            }
+        }
+    }
+    if (module->data_segment_count > 0) {
+        size_t bytes = (module->data_segment_count + 7) / 8;
+        WAH_MALLOC_ARRAY_GOTO(exec_ctx->dropped_data_segments, bytes, cleanup);
+        memset(exec_ctx->dropped_data_segments, 0, bytes);
     }
 
     return WAH_OK;
@@ -10048,6 +10117,8 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     wah_free(alloc, exec_ctx->stack_buffer);
     wah_free(alloc, exec_ctx->exception_handlers);
     wah_free(alloc, exec_ctx->type_check_cache);
+    wah_free(alloc, exec_ctx->dropped_elem_segments);
+    wah_free(alloc, exec_ctx->dropped_data_segments);
     wah_free(alloc, exec_ctx->globals);
     if (exec_ctx->memories) {
         for (uint32_t i = 0; i < exec_ctx->memory_count; ++i) {
@@ -10205,7 +10276,17 @@ static inline void wah_bind_frame_module(
             }
             offset += ctx->linked_modules[i].module->global_count;
         }
-        WAH_ASSERT(found && "call to unknown linked module");
+        if (!found) {
+            // Cross-context funcref to a module not directly linked into ctx (e.g.,
+            // a funcref reached through a chain of imported tables). Fall back to
+            // ctx's own resources -- the function body executes with the caller's
+            // globals/tables, matching the legacy "fn_module unknown -> use caller"
+            // semantics that predate parse-time fn_module assignment.
+            frame->frame_globals = ctx->globals;
+            frame->frame_function_table = ctx->function_table;
+            frame->frame_function_table_count = ctx->function_table_count;
+            frame->frame_ctx = ctx;
+        }
     }
 }
 
@@ -10434,7 +10515,7 @@ static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, uint32_t table_idx,
                 uint32_t gfi = segment->u.func_indices[src_offset + i];
                 WAH_ASSERT(gfi < ctx->function_table_count);
                 wah_function_t *fn = &ctx->function_table[gfi];
-                if (!fn->is_host && fn->fn_module == NULL) { fn->fn_module = ctx->module; fn->fn_ctx = ctx; }
+                if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
                 store_val.ref = wah_func_to_ref(fn);
             } else {
                 wah_value_t elem_val;
@@ -10446,7 +10527,7 @@ static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, uint32_t table_idx,
                     uint32_t gfi = elem_val._prefuncref.func_idx;
                     WAH_ASSERT(gfi < ctx->function_table_count);
                     wah_function_t *fn = &ctx->function_table[gfi];
-                    if (!fn->is_host && fn->fn_module == NULL) { fn->fn_module = ctx->module; fn->fn_ctx = ctx; }
+                    if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
                     store_val.ref = wah_func_to_ref(fn);
                 } else {
                     store_val = elem_val;
@@ -11416,7 +11497,8 @@ WAH_RUN(ARRAY_NEW_DATA) {
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     uint32_t esz = info->size;
-    WAH_ENSURE_GOTO((uint64_t)offset + (uint64_t)size * esz <= seg->data_len, WAH_ERROR_TRAP, cleanup);
+    uint32_t seg_len = wah_data_seg_data_len(fctx, dataidx);
+    WAH_ENSURE_GOTO((uint64_t)offset + (uint64_t)size * esz <= seg_len, WAH_ERROR_TRAP, cleanup);
     void *obj = wah_gc_alloc_array(ctx, repr_id, info, size);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
     uint8_t *elems = (uint8_t *)obj + sizeof(wah_gc_array_body_t);
@@ -11433,7 +11515,7 @@ WAH_RUN(ARRAY_NEW_ELEM) {
     uint32_t offset = (uint32_t)(--sp)->i32;
     WAH_ASSERT(elemidx < fctx->module->element_segment_count);
     const wah_element_segment_t *seg = &fctx->module->element_segments[elemidx];
-    WAH_ENSURE_GOTO(!seg->is_dropped, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(!wah_elem_seg_is_dropped(fctx, elemidx), WAH_ERROR_TRAP, cleanup);
     WAH_ENSURE_GOTO((uint64_t)offset + size <= seg->num_elems, WAH_ERROR_TRAP, cleanup);
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
@@ -11559,7 +11641,8 @@ WAH_RUN(ARRAY_INIT_DATA) {
     WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= body->length, WAH_ERROR_TRAP, cleanup);
     const wah_repr_info_t *info = fctx->module->repr_infos[fctx->module->typeidx_to_repr[typeidx]];
     uint32_t esz = info->size;
-    WAH_ENSURE_GOTO((uint64_t)src_offset + (uint64_t)size * esz <= seg->data_len, WAH_ERROR_TRAP, cleanup);
+    uint32_t seg_len = wah_data_seg_data_len(fctx, dataidx);
+    WAH_ENSURE_GOTO((uint64_t)src_offset + (uint64_t)size * esz <= seg_len, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
     size_t byte_size = (size_t)size * esz;
     for (size_t done = 0; done < byte_size; ) {
@@ -11593,7 +11676,7 @@ WAH_RUN(ARRAY_INIT_ELEM) {
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup);
     WAH_ASSERT(elemidx < fctx->module->element_segment_count);
     const wah_element_segment_t *seg = &fctx->module->element_segments[elemidx];
-    uint32_t seg_len = seg->is_dropped ? 0 : seg->num_elems;
+    uint32_t seg_len = wah_elem_seg_num_elems(fctx, elemidx);
     wah_gc_array_body_t *body = (wah_gc_array_body_t *)obj;
     WAH_ENSURE_GOTO((uint64_t)dst_offset + size <= body->length, WAH_ERROR_TRAP, cleanup);
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= seg_len, WAH_ERROR_TRAP, cleanup);
@@ -11790,7 +11873,7 @@ WAH_RUN(GLOBAL_SET) {
     WAH_ASSERT(elem_idx < ctx->module->element_segment_count && "validation didn't catch out-of-bound element segment index"); \
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
     const wah_element_segment_t *segment = &ctx->module->element_segments[elem_idx]; \
-    if (segment->is_dropped) { \
+    if (wah_elem_seg_is_dropped(ctx, elem_idx)) { \
         WAH_ENSURE_GOTO(size == 0 && src_offset == 0, WAH_ERROR_TRAP, cleanup); \
         WAH_ENSURE_GOTO(dst_offset <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
         WAH_NEXT(); \
@@ -11835,14 +11918,9 @@ WAH_RUN(ELEM_DROP) {
     bytecode_ip += sizeof(uint32_t);
     WAH_ASSERT(elem_idx < ctx->module->element_segment_count && "validation didn't catch out-of-bound element segment index");
 
-    wah_element_segment_t *segment = &ctx->module->element_segments[elem_idx];
-
-    // Free element data
-    wah_free_element_segment_data(segment, &ctx->module->alloc);
-
-    // Mark as dropped
-    segment->is_dropped = true;
-    segment->num_elems = 0;
+    // Mark as dropped on this instance only. The module's element data stays alive
+    // until wah_free_module() so other instances of the same module can still see it.
+    wah_elem_seg_mark_dropped(ctx, elem_idx);
     WAH_NEXT();
 }
 
@@ -12530,10 +12608,11 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
     uint64_t dest_offset = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     \
     const wah_data_segment_t *segment = &ctx->module->data_segments[data_idx]; \
+    uint32_t _seg_len = wah_data_seg_data_len(ctx, data_idx); \
     \
     WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dest_offset, size, fctx->memories[mem_idx].size), WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup); \
-    WAH_ENSURE_GOTO((uint64_t)src_offset + size <= segment->data_len, WAH_ERROR_TRAP, cleanup); \
-    WAH_ENSURE_GOTO(size <= segment->data_len, WAH_ERROR_TRAP, cleanup); \
+    WAH_ENSURE_GOTO((uint64_t)src_offset + size <= _seg_len, WAH_ERROR_TRAP, cleanup); \
+    WAH_ENSURE_GOTO(size <= _seg_len, WAH_ERROR_TRAP, cleanup); \
     \
     uint32_t done = (uint32_t)wah_memory_init_internal(ctx, fctx->memories[mem_idx].data, dest_offset, \
                                                        segment->data, src_offset, size); \
@@ -12593,10 +12672,9 @@ WAH_RUN(DATA_DROP) {
     bytecode_ip += sizeof(uint32_t);
     WAH_ASSERT(data_idx < ctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index");
 
-    wah_data_segment_t *segment = &ctx->module->data_segments[data_idx];
-    wah_free(&ctx->module->alloc, (void *)segment->data);
-    segment->data = NULL;
-    segment->data_len = 0;
+    // Mark as dropped on this instance only. The module's data buffer stays alive
+    // until wah_free_module() so other instances of the same module can still use it.
+    wah_data_seg_mark_dropped(ctx, data_idx);
     WAH_NEXT();
 }
 
@@ -14899,6 +14977,7 @@ static wah_error_t wah_module_register_host_func(
     uint32_t new_func_idx = mod->local_function_count;
     mod->functions[new_func_idx] = (wah_function_t){
         .fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER, .is_host = true,
+        .global_idx = mod->import_function_count + new_func_idx,
         .name = name_copy, .func = func, .userdata = userdata, .finalize = finalize,
         .nparams = ft->param_count, .param_types = param_types_copy,
         .nresults = ft->result_count, .result_types = result_types_copy,
@@ -15285,7 +15364,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         wah_func_import_t *fi = &module->func_imports[i];
 
         const wah_module_t *linked = NULL;
-        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &fi->name, &linked, NULL, NULL), WAH_ERROR_LINK_FAILED, cleanup);
+        wah_exec_context_t *fi_linked_ctx = NULL;
+        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &fi->name, &linked, &fi_linked_ctx, NULL), WAH_ERROR_LINK_FAILED, cleanup);
 
         const wah_export_t *exp = wah_find_export(linked, 0, &fi->name);
         WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
@@ -15328,6 +15408,9 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         if (!src->is_host) {
             ctx->function_table[i].fn_module = linked;
             ctx->function_table[i].local_idx = linked_local_idx;
+            // Cache the providing context so funcrefs into this slot can be dispatched
+            // from a third-party context that did not directly link to `linked`.
+            ctx->function_table[i].fn_ctx = fi_linked_ctx;
         }
     }
 
@@ -15459,7 +15542,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             uint32_t fidx = ctx->globals[slot]._prefuncref.func_idx;
             WAH_ENSURE_GOTO(fidx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
             wah_function_t *fn = &ctx->function_table[fidx];
-            if (!fn->is_host && fn->fn_module == NULL) { fn->fn_module = module; fn->fn_ctx = ctx; }
+            if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
             ctx->globals[slot].ref = wah_func_to_ref(fn);
         }
     }
@@ -15580,30 +15663,13 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         }
     }
 
-    // Set global_idx for all functions in module->functions array
-    // Local functions have global indices starting from import_count
-    // Host functions come after local functions
-    for (uint32_t i = 0; i < module->wasm_function_count; i++) {
-        module->functions[i].global_idx = import_count + i;
-        // Also update function_table since it's a shallow copy
-        ctx->function_table[import_count + i].global_idx = import_count + i;
-    }
-
-    // Set local_idx and fn_module on linked module local functions so that funcref
-    // globals resolved to them can be dispatched correctly via call_indirect.
-    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
-        const wah_module_t *linked = ctx->linked_modules[j].module;
-        for (uint32_t k = 0; k < linked->wasm_function_count; k++) {
-            if (!linked->functions[k].is_host) {
-                linked->functions[k].local_idx = k;
-                linked->functions[k].fn_module = linked;
-            }
-        }
-    }
+    // module->functions[] is fully initialized at parse time, including local_idx,
+    // global_idx, and fn_module for both the primary and any linked modules. No
+    // per-instance fixup of those fields is needed here. (fn_ctx is per-instance and
+    // resolved lazily; see wah_bind_frame_module() and the funcref-creation sites.)
 
     // Convert funcref globals for linked modules from prefuncref to real pointers.
-    // Primary module globals were converted above (after their own eval loop);
-    // linked module globals are handled here, after local_idx/fn_module are set.
+    // Primary module globals were converted above (after their own eval loop).
     uint32_t lg_offset = wah_global_index_limit(module);
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
         const wah_module_t *linked = ctx->linked_modules[j].module;
@@ -15673,8 +15739,10 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     for (uint32_t i = 0; i < module->element_segment_count; ++i) {
         const wah_element_segment_t *segment = &module->element_segments[i];
 
-        // Skip passive and dropped segments
-        if (!segment->is_active || segment->is_dropped) {
+        // Skip passive and declarative segments. (We don't need to check the
+        // per-instance dropped bitset: it's only set by the loop below or by
+        // elem.drop, and we run before any user code.)
+        if (!segment->is_active || segment->is_declarative) {
             continue;
         }
 
@@ -15699,7 +15767,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 uint32_t global_func_idx = segment->u.func_indices[j];
                 WAH_ENSURE_GOTO(global_func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
                 wah_function_t *fn = &ctx->function_table[global_func_idx];
-                if (!fn->is_host && fn->fn_module == NULL) { fn->fn_module = module; fn->fn_ctx = ctx; }
+                if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
                 ctx->tables[segment->table_idx].entries[offset + j].ref = wah_func_to_ref(fn);
             } else {
                 wah_value_t elem_val;
@@ -15711,7 +15779,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     uint32_t global_func_idx = elem_val._prefuncref.func_idx;
                     WAH_ENSURE_GOTO(global_func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
                     wah_function_t *fn = &ctx->function_table[global_func_idx];
-                    if (!fn->is_host && fn->fn_module == NULL) { fn->fn_module = module; fn->fn_ctx = ctx; }
+                    if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
                     ctx->tables[segment->table_idx].entries[offset + j].ref = wah_func_to_ref(fn);
                 } else {
                     ctx->tables[segment->table_idx].entries[offset + j] = elem_val;
@@ -15719,8 +15787,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             }
         }
 
-        // Active element segments are dropped after instantiation per spec
-        module->element_segments[i].is_dropped = true;
+        // Active element segments are dropped (per-instance) after init per spec.
+        wah_elem_seg_mark_dropped(ctx, i);
     }
 
     // Initialize active data segments (after element segments per spec)
