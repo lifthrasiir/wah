@@ -4,7 +4,7 @@ This project implements a WebAssembly (WASM) interpreter entirely within a singl
 
 ## File Structure
 
-- `wah.h` (~16,000 lines): The entire interpreter. Lines 1-1326 are the public API (before `#ifdef WAH_IMPLEMENTATION` on line 1326). Everything after is implementation. The public portion is C++11-compatible.
+- `wah.h` (~16,000 lines): The entire interpreter. Lines 1-1326 are the public API (before `#ifdef WAH_IMPLEMENTATION` on line 1326). Everything after is implementation. The public portion is C++11-compatible. `WAH_VERSION` exposes the API version.
 - `tests/common.c` / `tests/common.h`: DSL-based test utility for constructing WASM modules from spec strings (see "Test DSL" below).
 - `tests/test_*.c`: Individual test files, each is a standalone program that includes `common.c` (which includes `wah.h`). `test_cpp.cpp` exercises the C++ surface.
 - `tests/spectest.c` / `tests/wast.c`: WebAssembly spec test runner infrastructure.

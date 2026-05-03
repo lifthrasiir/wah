@@ -1,4 +1,6 @@
-// WebAssembly interpreter in a Header file (WAH)
+// ()  ()   ()   ()  ()  WebAssembly interpreter in a Header file (WAH)
+// ()()() ()()() ()()()  Kang Seonghoon, version 2630 (2026-05), Public Domain
+//  ()()  ()  () ()  ()  https://github.com/lifthrasiir/wah
 
 #ifndef WAH_H
 #define WAH_H
@@ -17,6 +19,11 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+// Macro: WAH_VERSION
+//   The version of the WAH API. Incremented on any change to the API, including bug fixes.
+//   Based on (fractional Gregorian year - 2000) * 100, with a liberal rounding.
+#define WAH_VERSION 2630
 
 // Macro: WAH_FORCE_PORTABLE [user-definable]
 //   If defined, forces the interpreter to use portable C implementations

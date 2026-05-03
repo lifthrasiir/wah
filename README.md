@@ -95,8 +95,6 @@ wah_set_limits(&ctx, &lim);
 
 Fuel exhaustion and deadline expiration surface as `WAH_STATUS_FUEL_EXHAUSTED` / `WAH_STATUS_YIELDED` from the resumable API (`wah_start` / `wah_resume` / `wah_finish`), so cooperative multitasking and watchdog-style cancellation both fall out naturally.
 
-## Features
-
 ## Platform Support
 
 | Platform | Compilers | SIMD |
@@ -125,6 +123,10 @@ WAH passes all currently included files in the official WebAssembly spectest cor
 Under the deterministic profile, all `[!DET]`-excluded nondeterminism is eliminated: generated NaN values are canonical and positive, and relaxed SIMD instructions have fixed deterministic behavior. Spec-allowed nondeterminism (`memory.grow`/`table.grow` failure due to resource exhaustion) remains.
 
 Beyond the spec corpus, WAH carries an extensive battery of unit tests covering every major feature, the resumable / fuel / deadline / memory-limit surfaces, OOM injection, GC root marking, cross-module linkage, and host-function lifecycle. The codebase is regularly run under ASAN, UBSAN, and LSAN, and is fuzzed with both libFuzzer and AFL harnesses (`fuzz/`).
+
+## Versioning
+
+The `WAH_VERSION` macro identifies the API revision, incremented on any change to the public surface including bug fixes. Public type sizes and alignments are pinned by static asserts so that a bumped `WAH_VERSION` never silently breaks ABI on consumers that link against a precompiled `WAH_IMPLEMENTATION` translation unit.
 
 ## License
 
