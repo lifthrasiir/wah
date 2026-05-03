@@ -17,7 +17,7 @@ static void test_create_with_limits(void) {
     wah_exec_options_t options = { .limits = {0} };
     assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
-    wah_rlimits_t out;
+    wah_limits_t out;
     wah_get_limits(&ctx, &out);
     assert_true(out.max_stack_bytes > 0);
 
@@ -40,10 +40,10 @@ static void test_set_limits(void) {
         "code {[{[] end}]}"));
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
-    wah_rlimits_t lim = { .max_stack_bytes = 4096 };
+    wah_limits_t lim = { .max_stack_bytes = 4096 };
     assert_ok(wah_set_limits(&ctx, &lim));
 
-    wah_rlimits_t out;
+    wah_limits_t out;
     wah_get_limits(&ctx, &out);
     assert_eq_u64(out.max_stack_bytes, 4096);
 
@@ -67,7 +67,7 @@ static void test_set_limits_rejects_while_suspended(void) {
     assert_true(wah_is_suspended(&ctx));
 
     // set_limits should fail because state != READY
-    wah_rlimits_t lim = { .max_stack_bytes = 4096 };
+    wah_limits_t lim = { .max_stack_bytes = 4096 };
     assert_err(wah_set_limits(&ctx, &lim), WAH_ERROR_MISUSE);
 
     wah_cancel(&ctx);
@@ -484,7 +484,7 @@ static void test_set_limits_memory_budget(void) {
 
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
-    wah_rlimits_t lim = { .max_memory_bytes = 2 * PAGE_SIZE };
+    wah_limits_t lim = { .max_memory_bytes = 2 * PAGE_SIZE };
     assert_ok(wah_set_limits(&ctx, &lim));
 
     wah_value_t params, result;
@@ -513,7 +513,7 @@ static void test_set_limits_rejects_below_committed(void) {
 
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
-    wah_rlimits_t lim = { .max_memory_bytes = PAGE_SIZE };
+    wah_limits_t lim = { .max_memory_bytes = PAGE_SIZE };
     assert_err(wah_set_limits(&ctx, &lim), WAH_ERROR_TOO_LARGE);
 
     lim.max_memory_bytes = 2 * PAGE_SIZE;
@@ -535,7 +535,7 @@ static void test_get_limits_reports_memory_budget(void) {
     wah_exec_options_t options = { .limits = { .max_memory_bytes = 1024 * 1024 } };
     assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
-    wah_rlimits_t out;
+    wah_limits_t out;
     wah_get_limits(&ctx, &out);
     assert_eq_u64(out.max_memory_bytes, 1024 * 1024);
 
@@ -614,8 +614,8 @@ static const wah_parse_options_t fuel_opts = { .features = WAH_FEATURE_ALL, .ena
 #define PARSE_FUEL(mod, spec) \
     assert_ok(wah_parse_module_from_spec_ex((mod), &fuel_opts, (spec)))
 
-static void test_fuel_via_rlimits(void) {
-    printf("Testing fuel set through rlimits...\n");
+static void test_fuel_via_limits(void) {
+    printf("Testing fuel set through limits...\n");
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
 
@@ -638,8 +638,8 @@ static void test_fuel_via_rlimits(void) {
     wah_free_module(&mod);
 }
 
-static void test_fuel_via_rlimits_exhaustion(void) {
-    printf("Testing fuel exhaustion via rlimits...\n");
+static void test_fuel_via_limits_exhaustion(void) {
+    printf("Testing fuel exhaustion via limits...\n");
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
 
@@ -658,8 +658,8 @@ static void test_fuel_via_rlimits_exhaustion(void) {
     wah_free_module(&mod);
 }
 
-static void test_fuel_zero_rlimit_means_default(void) {
-    printf("Testing fuel=0 in rlimits means default (no limit)...\n");
+static void test_fuel_zero_limit_means_default(void) {
+    printf("Testing fuel=0 in limits means default (no limit)...\n");
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
 
@@ -692,7 +692,7 @@ static void test_fuel_refuel_via_set_limits(void) {
     assert_ok(wah_call(&ctx, 0, params, 2, &result));
     assert_eq_i64(wah_get_fuel(&ctx), 6);
 
-    wah_rlimits_t lim = { .fuel = 100 };
+    wah_limits_t lim = { .fuel = 100 };
     assert_ok(wah_set_limits(&ctx, &lim));
     assert_eq_i64(wah_get_fuel(&ctx), 100);
 
@@ -703,8 +703,8 @@ static void test_fuel_refuel_via_set_limits(void) {
     wah_free_module(&mod);
 }
 
-static void test_fuel_resume_via_rlimits(void) {
-    printf("Testing fuel resume after exhaustion via rlimits refuel...\n");
+static void test_fuel_resume_via_limits(void) {
+    printf("Testing fuel resume after exhaustion via limits refuel...\n");
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
 
@@ -758,7 +758,7 @@ static void test_get_limits_reports_fuel(void) {
     wah_exec_options_t options = { .limits = { .fuel = 50 } };
     assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
-    wah_rlimits_t out;
+    wah_limits_t out;
     wah_get_limits(&ctx, &out);
     assert_eq_u64(out.fuel, 50);
 
@@ -786,24 +786,24 @@ static void test_set_limits_partial(void) {
     wah_exec_options_t options = { .limits = { .max_stack_bytes = 8192, .max_memory_bytes = 4 * PAGE_SIZE, .fuel = 200 } };
     assert_ok(wah_new_exec_context(&ctx, &mod, &options));
 
-    wah_rlimits_t before;
+    wah_limits_t before;
     wah_get_limits(&ctx, &before);
     assert_eq_u64(before.max_stack_bytes, 8192);
     assert_eq_u64(before.max_memory_bytes, 4 * PAGE_SIZE);
     assert_eq_u64(before.fuel, 200);
 
     // Set only fuel -- stack and memory should not change
-    wah_rlimits_t fuel_only = { .fuel = 500 };
+    wah_limits_t fuel_only = { .fuel = 500 };
     assert_ok(wah_set_limits(&ctx, &fuel_only));
 
-    wah_rlimits_t after;
+    wah_limits_t after;
     wah_get_limits(&ctx, &after);
     assert_eq_u64(after.max_stack_bytes, 8192);
     assert_eq_u64(after.max_memory_bytes, 4 * PAGE_SIZE);
     assert_eq_u64(after.fuel, 500);
 
     // Set only memory -- stack and fuel should not change
-    wah_rlimits_t mem_only = { .max_memory_bytes = 2 * PAGE_SIZE };
+    wah_limits_t mem_only = { .max_memory_bytes = 2 * PAGE_SIZE };
     assert_ok(wah_set_limits(&ctx, &mem_only));
 
     wah_get_limits(&ctx, &after);
@@ -812,7 +812,7 @@ static void test_set_limits_partial(void) {
     assert_eq_u64(after.fuel, 500);
 
     // Set only stack -- memory and fuel should not change
-    wah_rlimits_t stack_only = { .max_stack_bytes = 16384 };
+    wah_limits_t stack_only = { .max_stack_bytes = 16384 };
     assert_ok(wah_set_limits(&ctx, &stack_only));
 
     wah_get_limits(&ctx, &after);
@@ -854,13 +854,13 @@ int main(void) {
     test_imported_memory_budget();
 
     // Phase 3: Fuel connection
-    test_fuel_via_rlimits();
-    test_fuel_via_rlimits_exhaustion();
-    test_fuel_zero_rlimit_means_default();
+    test_fuel_via_limits();
+    test_fuel_via_limits_exhaustion();
+    test_fuel_zero_limit_means_default();
     test_fuel_refuel_via_set_limits();
-    test_fuel_resume_via_rlimits();
+    test_fuel_resume_via_limits();
     test_get_limits_reports_fuel();
 
-    printf("\n--- All rlimits tests passed ---\n");
+    printf("\n--- All limits tests passed ---\n");
     return 0;
 }

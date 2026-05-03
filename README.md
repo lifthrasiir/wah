@@ -84,7 +84,7 @@ Three independent limits compose on the same execution context:
 wah_parse_options_t popts = { .enable_fuel_metering = true };
 wah_parse_module(&mod, buf, size, &popts);
 
-wah_rlimits_t lim = {
+wah_limits_t lim = {
     .max_stack_bytes  = 1 << 20,          // 1 MiB unified value/call stack
     .max_memory_bytes = 64 * 1024 * 1024, // linear memory + tables + GC heap
     .fuel             = 100000000,        // basic-block + bulk-op metering

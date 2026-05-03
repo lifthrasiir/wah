@@ -82,7 +82,7 @@ static void test_no_metering_when_disabled(void) {
 
     // Setting fuel via wah_set_fuel / wah_set_limits when metering is disabled must be rejected.
     assert_err(wah_set_fuel(&ctx, 1000), WAH_ERROR_DISABLED_FEATURE);
-    wah_rlimits_t lim = {0};
+    wah_limits_t lim = {0};
     lim.fuel = 1000;
     assert_err(wah_set_limits(&ctx, &lim), WAH_ERROR_DISABLED_FEATURE);
 

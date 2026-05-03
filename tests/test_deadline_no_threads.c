@@ -8,7 +8,7 @@ int main(void) {
     printf("Testing deadline disabled when WAH_NO_THREADS is defined...\n");
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
-    wah_rlimits_t limits = {0};
+    wah_limits_t limits = {0};
     limits.deadline_us = 1;
     wah_exec_options_t options = { .limits = limits };
 
@@ -19,7 +19,7 @@ int main(void) {
 
     // wah_set_limits should reject deadline_us with the same error.
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
-    wah_rlimits_t lim = {0};
+    wah_limits_t lim = {0};
     lim.deadline_us = 1;
     assert_err(wah_set_limits(&ctx, &lim), WAH_ERROR_DISABLED_FEATURE);
     wah_free_exec_context(&ctx);

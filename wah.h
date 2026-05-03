@@ -368,7 +368,7 @@ typedef uint64_t wah_features_t;
 // Macro: WAH_NO_THREADS [user-definable]
 //   If defined before including wah.h in the implementation translation unit, disables
 //   threaded features. Currently this affects only the deadline timer: configuring
-//   `wah_rlimits_t::deadline_us` will then fail with WAH_ERROR_DISABLED_FEATURE.
+//   `wah_limits_t::deadline_us` will then fail with WAH_ERROR_DISABLED_FEATURE.
 //
 //   Auto-defined on platforms without Win32 or pthreads support. Define explicitly to
 //   force a single-threaded build on platforms that would otherwise have threads.
@@ -884,10 +884,10 @@ wah_error_t wah_export_by_name_len(const wah_module_t *module, const char *name,
 
 // --- Resource Limits ---
 
-// Struct: wah_rlimits_t
+// Struct: wah_limits_t
 //   Resource limits for execution. All limits are optional; 0 or false always mean unchanged,
 //   which is the default when being initialized.
-typedef struct wah_rlimits_s {
+typedef struct wah_limits_s {
     // Field: max_stack_bytes [default = see below]
     //   Maximum total bytes for the unified value-call frame stack allocated prior to execution.
     //   The default value (1--2MB) is enough for 1024 nested calls with 64 stack values per each.
@@ -908,14 +908,14 @@ typedef struct wah_rlimits_s {
     // Field: no_memory_bytes [default = false]
     //   If true, enforces a 0-byte limit on all memory. Incompatible with any `max_memory_bytes` > 0.
     bool no_memory_bytes;
-} wah_rlimits_t;
+} wah_limits_t;
 
 // Struct: wah_exec_options_t
 //   Options for running WebAssembly modules.
 typedef struct {
     // Field: limits
     //   Initial resource limits for execution. Can be set by `wah_set_limits` later.
-    wah_rlimits_t limits;
+    wah_limits_t limits;
     // Field: alloc
     //   Custom allocator to be used for execution. The standard allocator is used if NULL is given.
     //   Note that this is distinct from `wah_parse_options_t::alloc` and should be given separately.
@@ -933,17 +933,17 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
 // Function: wah_set_limits
 //   Updates resource limits of an execution context.
 //
-//   - limits [in, borrowed]: Pointer to a `wah_rlimits_t` struct containing the new limits.
+//   - limits [in, borrowed]: Pointer to a `wah_limits_t` struct containing the new limits.
 //     Any zero or false field is ignored (i.e. the corresponding limit is unchanged).
-wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_rlimits_t *limits);
+wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *limits);
 
 // Function: wah_get_limits
 //   Retrieves the current resource limits of an execution context.
 //
-//   - out [out, borrowed]: Pointer to a `wah_rlimits_t` struct to be filled in with the current limits.
+//   - out [out, borrowed]: Pointer to a `wah_limits_t` struct to be filled in with the current limits.
 //     All fields are populated, except that 0 stands in for "unlimited" to match the default
 //     initialization state and to keep get/set round-trips safe.
-void wah_get_limits(const wah_exec_context_t *exec_ctx, wah_rlimits_t *out);
+void wah_get_limits(const wah_exec_context_t *exec_ctx, wah_limits_t *out);
 
 // Function: wah_free_exec_context
 //   Frees resources of an execution context.
@@ -9939,8 +9939,8 @@ static wah_error_t wah_alloc_unified_stack(wah_exec_context_t *exec_ctx, uint64_
 }
 
 wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_exec_options_t *options) {
-    wah_rlimits_t default_limits = {0};
-    const wah_rlimits_t *limits = options ? &options->limits : &default_limits;
+    wah_limits_t default_limits = {0};
+    const wah_limits_t *limits = options ? &options->limits : &default_limits;
     *exec_ctx = (wah_exec_context_t){ .is_instantiated = false, .alloc = wah_resolve_alloc(options ? options->alloc : NULL) };
     wah_error_t err = WAH_OK;
     const wah_alloc_t *alloc = &exec_ctx->alloc;
@@ -10106,7 +10106,7 @@ cleanup:
     return err;
 }
 
-wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_rlimits_t *limits) {
+wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *limits) {
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
     const wah_alloc_t *alloc = &exec_ctx->alloc;
     WAH_ENSURE(exec_ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
@@ -10149,9 +10149,9 @@ wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_rlimits_t *li
     return WAH_OK;
 }
 
-void wah_get_limits(const wah_exec_context_t *exec_ctx, wah_rlimits_t *out) {
+void wah_get_limits(const wah_exec_context_t *exec_ctx, wah_limits_t *out) {
     uint64_t mm = exec_ctx->max_memory_bytes;
-    *out = (wah_rlimits_t){
+    *out = (wah_limits_t){
         .max_stack_bytes = exec_ctx->stack_buffer_size,
         .max_memory_bytes = (mm == UINT64_MAX) ? 0 : mm,
         .no_memory_bytes = (mm == 0),
