@@ -731,7 +731,7 @@ static void test_fuel_resume_via_rlimits(void) {
     wah_error_t err;
     while ((err = wah_resume(&ctx)) == WAH_STATUS_FUEL_EXHAUSTED) {
         suspensions++;
-        wah_set_fuel(&ctx, 5);
+        assert_ok(wah_set_fuel(&ctx, 5));
     }
     assert_ok(err);
     assert_true(suspensions > 0);

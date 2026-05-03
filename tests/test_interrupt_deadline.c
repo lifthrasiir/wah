@@ -104,7 +104,7 @@ static void test_interrupt_and_fuel_priority(void) {
         code {[{[] nop end}]}"));
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_start(&ctx, 0, NULL, 0));
-    wah_set_fuel(&ctx, 0);
+    assert_ok(wah_set_fuel(&ctx, 0));
     wah_request_interrupt(&ctx);
     assert_err(wah_resume(&ctx), WAH_STATUS_FUEL_EXHAUSTED);
     assert_true(wah_is_interrupted(&ctx));

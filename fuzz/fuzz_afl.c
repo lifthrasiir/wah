@@ -103,7 +103,7 @@ int main(void) {
         uint32_t actual_results = 0;
         uint32_t max_results = entry.u.func.result_count <= 16 ? entry.u.func.result_count : 16;
 
-        wah_set_fuel(&exec_ctx, WAH_FUZZ_CALL_FUEL);
+        if ((err = wah_set_fuel(&exec_ctx, WAH_FUZZ_CALL_FUEL)) != WAH_OK) goto cleanup_exec_ctx;
         err = wah_call_multi(&exec_ctx, entry.index, NULL, 0, results, max_results, &actual_results);
         if (err == WAH_STATUS_FUEL_EXHAUSTED) {
             err = WAH_OK;

@@ -26,7 +26,7 @@ static void test_resume_straight_line(void) {
     wah_value_t params[2] = { {.i32 = 10}, {.i32 = 20} };
 
     // Not enough fuel: should suspend
-    wah_set_fuel(&ctx, 2);
+    assert_ok(wah_set_fuel(&ctx, 2));
     assert_ok(wah_start(&ctx, 0, params, 2));
     assert_true(wah_is_suspended(&ctx));
     assert_eq_i32((int32_t)wah_exec_state(&ctx), WAH_EXEC_SUSPENDED);
@@ -36,7 +36,7 @@ static void test_resume_straight_line(void) {
     assert_true(wah_is_suspended(&ctx));
 
     // Refuel and resume to completion
-    wah_set_fuel(&ctx, 100);
+    assert_ok(wah_set_fuel(&ctx, 100));
     err = wah_resume(&ctx);
     assert_eq_i32(err, WAH_OK);
     assert_eq_i32((int32_t)wah_exec_state(&ctx), WAH_EXEC_FINISHED);
@@ -76,12 +76,12 @@ static void test_resume_loop(void) {
     // First, compute with unlimited fuel for reference
     wah_value_t params = { .i32 = 5 };
     wah_value_t ref_result;
-    wah_set_fuel(&ctx, INT64_MAX);
+    assert_ok(wah_set_fuel(&ctx, INT64_MAX));
     assert_ok(wah_call(&ctx, 0, &params, 1, &ref_result));
     assert_eq_i32(ref_result.i32, 15); // 1+2+3+4+5 = 15
 
     // Now resume with limited fuel
-    wah_set_fuel(&ctx, 5);
+    assert_ok(wah_set_fuel(&ctx, 5));
     assert_ok(wah_start(&ctx, 0, &params, 1));
 
     int suspensions = 0;
@@ -89,7 +89,7 @@ static void test_resume_loop(void) {
     while ((err = wah_resume(&ctx)) > 0) {
         assert_eq_i32(err, WAH_STATUS_FUEL_EXHAUSTED);
         suspensions++;
-        wah_set_fuel(&ctx, 5);
+        assert_ok(wah_set_fuel(&ctx, 5));
     }
     assert_eq_i32(err, WAH_OK);
     assert_true(suspensions > 0);
@@ -119,14 +119,14 @@ static void test_resume_multiple_suspensions(void) {
     wah_value_t params[2] = { {.i32 = 3}, {.i32 = 7} };
 
     // Give 1 fuel at a time
-    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_set_fuel(&ctx, 1));
     assert_ok(wah_start(&ctx, 0, params, 2));
 
     int suspensions = 0;
     wah_error_t err;
     while ((err = wah_resume(&ctx)) > 0) {
         suspensions++;
-        wah_set_fuel(&ctx, 1);
+        assert_ok(wah_set_fuel(&ctx, 1));
     }
     assert_eq_i32(err, WAH_OK);
     assert_true(suspensions >= 3);
@@ -160,14 +160,14 @@ static void test_resume_nested_calls(void) {
     wah_value_t params[2] = { {.i32 = 11}, {.i32 = 22} };
 
     // Very limited fuel to force suspension inside the nested call
-    wah_set_fuel(&ctx, 3);
+    assert_ok(wah_set_fuel(&ctx, 3));
     assert_ok(wah_start(&ctx, 1, params, 2));
 
     int suspensions = 0;
     wah_error_t err;
     while ((err = wah_resume(&ctx)) > 0) {
         suspensions++;
-        wah_set_fuel(&ctx, 3);
+        assert_ok(wah_set_fuel(&ctx, 3));
     }
     assert_eq_i32(err, WAH_OK);
     assert_true(suspensions > 0);
@@ -207,7 +207,7 @@ static void test_resume_yield_via_interrupt(void) {
     wah_value_t params = { .i32 = 10 };
 
     // Give enough fuel but request an interrupt
-    wah_set_fuel(&ctx, INT64_MAX);
+    assert_ok(wah_set_fuel(&ctx, INT64_MAX));
     assert_ok(wah_start(&ctx, 0, &params, 1));
 
     wah_request_interrupt(&ctx);
@@ -241,7 +241,7 @@ static void test_cancel_and_reuse(void) {
     wah_value_t params[2] = { {.i32 = 5}, {.i32 = 6} };
 
     // Start with insufficient fuel, then cancel
-    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_set_fuel(&ctx, 1));
     assert_ok(wah_start(&ctx, 0, params, 2));
     wah_error_t err = wah_resume(&ctx);
     assert_eq_i32(err, WAH_STATUS_FUEL_EXHAUSTED);
@@ -252,7 +252,7 @@ static void test_cancel_and_reuse(void) {
     assert_false(wah_is_suspended(&ctx));
 
     // Regular wah_call should work after cancel
-    wah_set_fuel(&ctx, 100);
+    assert_ok(wah_set_fuel(&ctx, 100));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, params, 2, &result));
     assert_eq_i32(result.i32, 11);
@@ -272,7 +272,7 @@ static void test_destroy_while_suspended(void) {
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 1}, {.i32 = 2} };
-    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_set_fuel(&ctx, 1));
     assert_ok(wah_start(&ctx, 0, params, 2));
     wah_resume(&ctx); // fuel exhausted
 
@@ -292,7 +292,7 @@ static void test_misuse_start_while_suspended(void) {
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 1}, {.i32 = 2} };
-    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_set_fuel(&ctx, 1));
     assert_ok(wah_start(&ctx, 0, params, 2));
     wah_resume(&ctx);
     assert_true(wah_is_suspended(&ctx));
@@ -331,7 +331,7 @@ static void test_misuse_finish_while_suspended(void) {
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
     wah_value_t params[2] = { {.i32 = 1}, {.i32 = 2} };
-    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_set_fuel(&ctx, 1));
     assert_ok(wah_start(&ctx, 0, params, 2));
     wah_resume(&ctx);
     assert_true(wah_is_suspended(&ctx));
@@ -359,12 +359,12 @@ static void test_wah_call_backward_compat(void) {
     wah_value_t result;
 
     // wah_call with insufficient fuel returns status and context is READY
-    wah_set_fuel(&ctx, 2);
+    assert_ok(wah_set_fuel(&ctx, 2));
     assert_err(wah_call(&ctx, 0, params, 2, &result), WAH_STATUS_FUEL_EXHAUSTED);
     assert_eq_i32((int32_t)wah_exec_state(&ctx), WAH_EXEC_READY);
 
     // Can call again normally
-    wah_set_fuel(&ctx, 100);
+    assert_ok(wah_set_fuel(&ctx, 100));
     assert_ok(wah_call(&ctx, 0, params, 2, &result));
     assert_eq_i32(result.i32, 10);
 
@@ -382,7 +382,7 @@ static void test_finish_void_function(void) {
         code {[{[] end}]}");
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
-    wah_set_fuel(&ctx, 100);
+    assert_ok(wah_set_fuel(&ctx, 100));
     assert_ok(wah_start(&ctx, 0, NULL, 0));
     wah_error_t err = wah_resume(&ctx);
     assert_eq_i32(err, WAH_OK);
@@ -440,11 +440,11 @@ static void test_resume_br_table(void) {
     int32_t expected[] = {100, 200, 300, 300};
     for (int i = 0; i < 4; i++) {
         wah_value_t params = { .i32 = i };
-        wah_set_fuel(&ctx, 1);
+        assert_ok(wah_set_fuel(&ctx, 1));
         assert_ok(wah_start(&ctx, 0, &params, 1));
         wah_error_t err;
         while ((err = wah_resume(&ctx)) > 0) {
-            wah_set_fuel(&ctx, 1);
+            assert_ok(wah_set_fuel(&ctx, 1));
         }
         assert_eq_i32(err, WAH_OK);
         wah_value_t result;
@@ -480,19 +480,19 @@ static void test_resume_tail_call_deep(void) {
     wah_value_t params[2] = { {.i32 = 100}, {.i32 = 0} };
 
     // Reference result with unlimited fuel
-    wah_set_fuel(&ctx, INT64_MAX);
+    assert_ok(wah_set_fuel(&ctx, INT64_MAX));
     wah_value_t ref;
     assert_ok(wah_call(&ctx, 0, params, 2, &ref));
     assert_eq_i32(ref.i32, 5050); // 1+2+...+100
 
     // Resume with small fuel chunks
-    wah_set_fuel(&ctx, 3);
+    assert_ok(wah_set_fuel(&ctx, 3));
     assert_ok(wah_start(&ctx, 0, params, 2));
     int suspensions = 0;
     wah_error_t err;
     while ((err = wah_resume(&ctx)) > 0) {
         suspensions++;
-        wah_set_fuel(&ctx, 3);
+        assert_ok(wah_set_fuel(&ctx, 3));
     }
     assert_eq_i32(err, WAH_OK);
     assert_true(suspensions > 0);
@@ -530,11 +530,11 @@ static void test_resume_return_call_indirect(void) {
 
     for (int target = 0; target < 2; target++) {
         wah_value_t params = { .i32 = target };
-        wah_set_fuel(&ctx, 1);
+        assert_ok(wah_set_fuel(&ctx, 1));
         assert_ok(wah_start(&ctx, 0, &params, 1));
         wah_error_t err;
         while ((err = wah_resume(&ctx)) > 0) {
-            wah_set_fuel(&ctx, 1);
+            assert_ok(wah_set_fuel(&ctx, 1));
         }
         assert_eq_i32(err, WAH_OK);
         wah_value_t result;
@@ -571,13 +571,13 @@ static void test_resume_exception_catch(void) {
 
     wah_value_t params = { .i32 = 77 };
 
-    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_set_fuel(&ctx, 1));
     assert_ok(wah_start(&ctx, 0, &params, 1));
     int suspensions = 0;
     wah_error_t err;
     while ((err = wah_resume(&ctx)) > 0) {
         suspensions++;
-        wah_set_fuel(&ctx, 1);
+        assert_ok(wah_set_fuel(&ctx, 1));
     }
     assert_eq_i32(err, WAH_OK);
     assert_true(suspensions > 0);
@@ -608,13 +608,13 @@ static void test_resume_multi_value(void) {
 
     wah_value_t params[2] = { {.i32 = 7}, {.i32 = 3} };
 
-    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_set_fuel(&ctx, 1));
     assert_ok(wah_start(&ctx, 0, params, 2));
     int suspensions = 0;
     wah_error_t err;
     while ((err = wah_resume(&ctx)) > 0) {
         suspensions++;
-        wah_set_fuel(&ctx, 1);
+        assert_ok(wah_set_fuel(&ctx, 1));
     }
     assert_eq_i32(err, WAH_OK);
     assert_true(suspensions > 0);
@@ -650,7 +650,7 @@ static void test_resume_gc_funcref_on_stack(void) {
         end}]}");
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
-    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_set_fuel(&ctx, 1));
     assert_ok(wah_start(&ctx, 0, NULL, 0));
     int suspensions = 0;
     wah_error_t err;
@@ -658,7 +658,7 @@ static void test_resume_gc_funcref_on_stack(void) {
         suspensions++;
         wah_debug_gc_step(&ctx);
         assert_true(wah_gc_verify_heap(&ctx));
-        wah_set_fuel(&ctx, 1);
+        assert_ok(wah_set_fuel(&ctx, 1));
     }
     assert_eq_i32(err, WAH_OK);
     assert_true(suspensions > 0);
@@ -697,7 +697,7 @@ static void test_resume_gc_ref_across_calls(void) {
         ]}");
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
-    wah_set_fuel(&ctx, 2);
+    assert_ok(wah_set_fuel(&ctx, 2));
     assert_ok(wah_start(&ctx, 0, NULL, 0));
     int suspensions = 0;
     wah_error_t err;
@@ -705,7 +705,7 @@ static void test_resume_gc_ref_across_calls(void) {
         suspensions++;
         wah_debug_gc_step(&ctx);
         assert_true(wah_gc_verify_heap(&ctx));
-        wah_set_fuel(&ctx, 2);
+        assert_ok(wah_set_fuel(&ctx, 2));
     }
     assert_eq_i32(err, WAH_OK);
     assert_true(suspensions > 0);
@@ -736,7 +736,7 @@ static void test_cancel_with_live_refs(void) {
         end}]}");
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
-    wah_set_fuel(&ctx, 2);
+    assert_ok(wah_set_fuel(&ctx, 2));
     assert_ok(wah_start(&ctx, 0, NULL, 0));
     wah_error_t err = wah_resume(&ctx);
     assert_eq_i32(err, WAH_STATUS_FUEL_EXHAUSTED);
@@ -751,7 +751,7 @@ static void test_cancel_with_live_refs(void) {
     assert_true(wah_gc_verify_heap(&ctx));
 
     // Context should be reusable
-    wah_set_fuel(&ctx, 100);
+    assert_ok(wah_set_fuel(&ctx, 100));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 0);
@@ -775,7 +775,7 @@ static void test_destroy_with_live_refs(void) {
         end}]}");
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
-    wah_set_fuel(&ctx, 2);
+    assert_ok(wah_set_fuel(&ctx, 2));
     assert_ok(wah_start(&ctx, 0, NULL, 0));
     wah_resume(&ctx); // fuel exhausted, funcref live in locals
     assert_true(wah_is_suspended(&ctx));
@@ -821,7 +821,7 @@ static void test_cancel_with_pending_exception(void) {
     assert_ok(wah_instantiate(&ctx));
 
     // Suspend inside func 1 before the throw executes
-    wah_set_fuel(&ctx, 3);
+    assert_ok(wah_set_fuel(&ctx, 3));
     assert_ok(wah_start(&ctx, 0, NULL, 0));
     wah_error_t err = wah_resume(&ctx);
     // Might be suspended or completed depending on fuel accounting
@@ -833,7 +833,7 @@ static void test_cancel_with_pending_exception(void) {
     }
 
     // Verify context is clean and reusable
-    wah_set_fuel(&ctx, 10000);
+    assert_ok(wah_set_fuel(&ctx, 10000));
     wah_value_t result;
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, -1);
@@ -861,7 +861,7 @@ static void test_resume_gc_ref_global(void) {
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
-    wah_set_fuel(&ctx, 1);
+    assert_ok(wah_set_fuel(&ctx, 1));
     assert_ok(wah_start(&ctx, 0, NULL, 0));
     int suspensions = 0;
     wah_error_t err;
@@ -869,7 +869,7 @@ static void test_resume_gc_ref_global(void) {
         suspensions++;
         wah_debug_gc_step(&ctx);
         assert_true(wah_gc_verify_heap(&ctx));
-        wah_set_fuel(&ctx, 1);
+        assert_ok(wah_set_fuel(&ctx, 1));
     }
     assert_eq_i32(err, WAH_OK);
     assert_true(suspensions > 0);

@@ -16,13 +16,13 @@ static const wah_parse_options_t fuel_opts = { .features = WAH_FEATURE_ALL, .ena
 static int64_t run_resume(wah_exec_context_t *ctx, uint32_t func, wah_value_t *params, uint32_t nparams,
                           int64_t fuel_per_step) {
     int64_t total_fuel = 0;
-    wah_set_fuel(ctx, fuel_per_step);
+    assert_ok(wah_set_fuel(ctx, fuel_per_step));
     total_fuel += fuel_per_step;
     assert_ok(wah_start(ctx, func, params, nparams));
     wah_error_t err;
     while ((err = wah_resume(ctx)) > 0) {
         total_fuel += fuel_per_step;
-        wah_set_fuel(ctx, fuel_per_step);
+        assert_ok(wah_set_fuel(ctx, fuel_per_step));
     }
     assert_ok(err);
     return total_fuel;
@@ -46,13 +46,13 @@ static void test_memory_fill_fuel(void) {
 
     // Small fill: 16 bytes. Cost = ceil(16/16) = 1 fuel for bulk + instruction fuel.
     wah_value_t p1[] = { {.i32 = 0}, {.i32 = 0xAA}, {.i32 = 16} };
-    wah_set_fuel(&ctx, 10000);
+    assert_ok(wah_set_fuel(&ctx, 10000));
     assert_ok(wah_call(&ctx, 0, p1, 3, NULL));
     int64_t small_cost = 10000 - wah_get_fuel(&ctx);
 
     // Large fill: 256 bytes. Cost = ceil(256/16) = 16 fuel for bulk.
     wah_value_t p2[] = { {.i32 = 0}, {.i32 = 0xBB}, {.i32 = 256} };
-    wah_set_fuel(&ctx, 10000);
+    assert_ok(wah_set_fuel(&ctx, 10000));
     assert_ok(wah_call(&ctx, 0, p2, 3, NULL));
     int64_t large_cost = 10000 - wah_get_fuel(&ctx);
 
@@ -88,7 +88,7 @@ static void test_memory_fill_fuel_resume(void) {
 
     // Fill 256 bytes with fuel=5 per step. Each step covers 5*16=80 bytes.
     wah_value_t p[] = { {.i32 = 0}, {.i32 = 0xCD}, {.i32 = 256} };
-    wah_set_fuel(&ctx, 5);
+    assert_ok(wah_set_fuel(&ctx, 5));
     assert_ok(wah_start(&ctx, 0, p, 3));
 
     int suspensions = 0;
@@ -102,7 +102,7 @@ static void test_memory_fill_fuel_resume(void) {
             if (ctx.memory_base[i] == 0xCD) { some_filled = true; break; }
         }
         if (suspensions > 1) assert_true(some_filled);
-        wah_set_fuel(&ctx, 5);
+        assert_ok(wah_set_fuel(&ctx, 5));
     }
     assert_eq_i32(err, WAH_OK);
     assert_true(suspensions > 0);
@@ -527,25 +527,25 @@ static void test_bulk_fuel_proportional(void) {
 
     // fill(0) should be cheapest (bulk cost = 0)
     wah_value_t p0[] = { {.i32 = 0}, {.i32 = 0}, {.i32 = 0} };
-    wah_set_fuel(&ctx, 10000);
+    assert_ok(wah_set_fuel(&ctx, 10000));
     assert_ok(wah_call(&ctx, 0, p0, 3, NULL));
     int64_t cost0 = 10000 - wah_get_fuel(&ctx);
 
     // fill(1) should cost 1 more than fill(0)
     wah_value_t p1[] = { {.i32 = 0}, {.i32 = 0}, {.i32 = 1} };
-    wah_set_fuel(&ctx, 10000);
+    assert_ok(wah_set_fuel(&ctx, 10000));
     assert_ok(wah_call(&ctx, 0, p1, 3, NULL));
     int64_t cost1 = 10000 - wah_get_fuel(&ctx);
 
     // fill(WAH_BULK_ITEMS_PER_FUEL) = 16 bytes, should cost 1 bulk fuel
     wah_value_t p16[] = { {.i32 = 0}, {.i32 = 0}, {.i32 = WAH_BULK_ITEMS_PER_FUEL} };
-    wah_set_fuel(&ctx, 10000);
+    assert_ok(wah_set_fuel(&ctx, 10000));
     assert_ok(wah_call(&ctx, 0, p16, 3, NULL));
     int64_t cost16 = 10000 - wah_get_fuel(&ctx);
 
     // fill(WAH_BULK_ITEMS_PER_FUEL * 10) = 160 bytes, 10 bulk fuel
     wah_value_t p160[] = { {.i32 = 0}, {.i32 = 0}, {.i32 = WAH_BULK_ITEMS_PER_FUEL * 10} };
-    wah_set_fuel(&ctx, 10000);
+    assert_ok(wah_set_fuel(&ctx, 10000));
     assert_ok(wah_call(&ctx, 0, p160, 3, NULL));
     int64_t cost160 = 10000 - wah_get_fuel(&ctx);
 
@@ -578,11 +578,15 @@ static void test_bulk_no_metering(void) {
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
-    // Even with fuel set, no METER/TICK opcodes, so fuel won't change
-    wah_set_fuel(&ctx, 100);
+    // wah_set_fuel itself is rejected when metering is disabled.
+    assert_err(wah_set_fuel(&ctx, 100), WAH_ERROR_DISABLED_FEATURE);
+
+    // The bulk op runs to completion regardless, and the internal fuel counter
+    // stays at its INT64_MAX initial value (no METER/TICK opcodes were emitted).
+    int64_t before = wah_get_fuel(&ctx);
     wah_value_t p[] = { {.i32 = 0}, {.i32 = 0xAA}, {.i32 = 1000} };
     assert_ok(wah_call(&ctx, 0, p, 3, NULL));
-    assert_eq_i64(wah_get_fuel(&ctx), 100); // unchanged
+    assert_eq_i64(wah_get_fuel(&ctx), before); // unchanged
 
     wah_free_exec_context(&ctx);
     wah_free_module(&mod);

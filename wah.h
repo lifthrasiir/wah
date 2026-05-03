@@ -993,9 +993,11 @@ wah_error_t wah_call_by_name(wah_exec_context_t *exec_ctx, const char *name, con
 // Function: wah_set_fuel
 //   Resets the available fuel for execution.
 //
-//   - fuel [in]: New fuel value. Only meaningful when fuel metering is enabled for the module.
-//     Can be set to INT64_MAX to effectively disable fuel exhaustion.
-void wah_set_fuel(wah_exec_context_t *ctx, int64_t fuel);
+//   - fuel [in]: New fuel value. Can be set to INT64_MAX to effectively disable fuel exhaustion.
+//
+//   Returns WAH_ERROR_DISABLED_FEATURE if fuel metering is not enabled for the module
+//   (`wah_parse_options_t::enable_fuel_metering` was false at parse time).
+wah_error_t wah_set_fuel(wah_exec_context_t *ctx, int64_t fuel);
 
 // Function: wah_get_fuel
 //   Returns the remaining fuel for execution.
@@ -10210,8 +10212,10 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     *exec_ctx = (wah_exec_context_t){0};
 }
 
-void wah_set_fuel(wah_exec_context_t *ctx, int64_t fuel) {
+wah_error_t wah_set_fuel(wah_exec_context_t *ctx, int64_t fuel) {
+    WAH_ENSURE(ctx->module->fuel_metering, WAH_ERROR_DISABLED_FEATURE);
     ctx->fuel = fuel;
+    return WAH_OK;
 }
 
 int64_t wah_get_fuel(const wah_exec_context_t *ctx) {
