@@ -6829,8 +6829,9 @@ cleanup_block:
 
             uint32_t br_result_count;
             const wah_type_t *br_result_types;
+            uint32_t br_stack_height;
             wah_validation_resolve_br_target(vctx, label_idx,
-                &br_result_count, &br_result_types, NULL);
+                &br_result_count, &br_result_types, &br_stack_height);
 
             uint32_t prefix_result_count = br_result_count;
             if (opcode_val == WAH_OP_BR_ON_NON_NULL) {
@@ -6841,6 +6842,13 @@ cleanup_block:
                 prefix_result_count--;
             }
 
+            uint32_t adj_keep = 0, adj_drop = 0;
+            if (!vctx->is_unreachable) {
+                WAH_ENSURE(vctx->current_stack_depth >= br_stack_height + prefix_result_count, WAH_ERROR_VALIDATION_FAILED);
+                adj_keep = br_result_count;
+                adj_drop = vctx->current_stack_depth - br_stack_height - prefix_result_count;
+            }
+
             for (int32_t i = (int32_t)prefix_result_count - 1; i >= 0; --i) POP(_(br_result_types[i]));
             for (uint32_t i = 0; i < prefix_result_count; ++i) PUSH(_(br_result_types[i]));
             if (opcode_val == WAH_OP_BR_ON_NULL) {
@@ -6848,7 +6856,7 @@ cleanup_block:
             }
             EMIT_INSTR_EX(opcode_val,
                 _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0;
-                _di->imm.branch.keep = 0; _di->imm.branch.drop = 0);
+                _di->imm.branch.keep = adj_keep; _di->imm.branch.drop = adj_drop);
             break;
         }
 
@@ -6893,7 +6901,8 @@ cleanup_block:
 
             uint32_t br_result_count;
             const wah_type_t *br_result_types;
-            wah_validation_resolve_br_target(vctx, label_idx, &br_result_count, &br_result_types, NULL);
+            uint32_t br_stack_height;
+            wah_validation_resolve_br_target(vctx, label_idx, &br_result_count, &br_result_types, &br_stack_height);
             WAH_ENSURE(br_result_count >= 1, WAH_ERROR_VALIDATION_FAILED);
 
             wah_type_t br_type;
@@ -6904,12 +6913,18 @@ cleanup_block:
             }
             WAH_CHECK(wah_validate_type_match(br_type, br_result_types[br_result_count - 1], vctx->module));
 
-            if (!vctx->is_unreachable && br_result_count > 1) {
-                WAH_ENSURE(vctx->current_stack_depth >= br_result_count - 1, WAH_ERROR_VALIDATION_FAILED);
-                for (uint32_t k = 0; k < br_result_count - 1; ++k) {
-                    uint32_t stack_pos = vctx->type_stack.sp - 1 - k;
-                    WAH_ENSURE(vctx->type_stack.data[stack_pos] == br_result_types[br_result_count - 2 - k],
-                                WAH_ERROR_VALIDATION_FAILED);
+            uint32_t prefix_result_count = br_result_count - 1;
+            uint32_t adj_keep = 0, adj_drop = 0;
+            if (!vctx->is_unreachable) {
+                WAH_ENSURE(vctx->current_stack_depth >= br_stack_height + prefix_result_count, WAH_ERROR_VALIDATION_FAILED);
+                adj_keep = br_result_count;
+                adj_drop = vctx->current_stack_depth - br_stack_height - prefix_result_count;
+                if (br_result_count > 1) {
+                    for (uint32_t k = 0; k < prefix_result_count; ++k) {
+                        uint32_t stack_pos = vctx->type_stack.sp - 1 - k;
+                        WAH_ENSURE(vctx->type_stack.data[stack_pos] == br_result_types[prefix_result_count - 1 - k],
+                                   WAH_ERROR_VALIDATION_FAILED);
+                    }
                 }
             }
 
@@ -6922,7 +6937,7 @@ cleanup_block:
                 _di->imm.br_on_cast.cast_flags = cast_flags; _di->imm.br_on_cast.target_symbol = label_idx;
                 _di->imm.br_on_cast.src_type = ht1; _di->imm.br_on_cast.dst_type = ht2;
                 _di->imm.br_on_cast.dst_heap_type = (int32_t)ht2;
-                _di->imm.br_on_cast.keep = 0; _di->imm.br_on_cast.drop = 0);
+                _di->imm.br_on_cast.keep = adj_keep; _di->imm.br_on_cast.drop = adj_drop);
             break;
         }
 
@@ -7539,12 +7554,12 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                 case WAH_OP_BR_ON_CAST: case WAH_OP_BR_ON_CAST_FAIL: {
                     uint8_t flags = instr->imm.br_on_cast.cast_flags;
                     uint32_t relative_depth = instr->imm.br_on_cast.target_symbol;
-                    wah_type_t ht1 = instr->imm.br_on_cast.src_type;
                     wah_type_t ht2 = instr->imm.br_on_cast.dst_type;
                     WAH_LOWER_U8(flags);
                     WAH_LOWER_RESOLVE_BRANCH(relative_depth);
                     WAH_LOWER_U32((uint32_t)ht2);
-                    WAH_LOWER_U32((uint32_t)ht1);
+                    WAH_LOWER_U32(instr->imm.br_on_cast.keep);
+                    WAH_LOWER_U32(instr->imm.br_on_cast.drop);
                     break;
                 }
                 case WAH_OP_BR_TABLE: {
@@ -11415,7 +11430,8 @@ WAH_RUN(BR_ON_CAST) {
     uint8_t cast_flags = *bytecode_ip++;
     uint32_t offset = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     wah_type_t target_ht = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(int32_t);
-    bytecode_ip += sizeof(int32_t); // skip source ht
+    uint32_t keep = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t drop = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     wah_value_t ref_val = sp[-1];
     bool matches;
     if (ref_val.ref == NULL) {
@@ -11424,16 +11440,19 @@ WAH_RUN(BR_ON_CAST) {
         matches = wah_ref_test_heap_type(fctx, ref_val, target_ht);
     }
     if (matches) {
+        WAH_DROP_KEEP(keep, drop);
         bytecode_ip = bytecode_base + offset;
     }
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(BR_ON_CAST_FAIL) {
     uint8_t cast_flags = *bytecode_ip++;
     uint32_t offset = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     wah_type_t target_ht = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(int32_t);
-    bytecode_ip += sizeof(int32_t); // skip source ht
+    uint32_t keep = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t drop = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     wah_value_t ref_val = sp[-1];
     bool matches;
     if (ref_val.ref == NULL) {
@@ -11442,9 +11461,11 @@ WAH_RUN(BR_ON_CAST_FAIL) {
         matches = wah_ref_test_heap_type(fctx, ref_val, target_ht);
     }
     if (!matches) {
+        WAH_DROP_KEEP(keep, drop);
         bytecode_ip = bytecode_base + offset;
     }
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(STRUCT_NEW) {

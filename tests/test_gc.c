@@ -1547,6 +1547,47 @@ int main() {
         wah_free_module(&wasm_mod);
     }
 
+    // Regression: br_on_null missing DROP_KEEP causes unbounded stack growth.
+    // Each iteration pushes an extra i32 via br_on_null that should be dropped.
+    printf("Testing br_on_null DROP_KEEP in loop (stack growth regression)...\n");
+    {
+        wah_module_t wasm_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, "wasm \
+            types {[ fn [i32] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ {[1 i32] \
+                loop void \
+                    local.get 0 i32.const 0 i32.gt_s \
+                    if void \
+                        local.get 0 i32.const 1 i32.sub local.set 0 \
+                        local.get 1 i32.const 1 i32.add local.set 1 \
+                        i32.const 999 \
+                        ref.null structref \
+                        br_on_null 1 \
+                        drop \
+                        drop \
+                    end \
+                end \
+                local.get 1 \
+            end } ]}"));
+
+        wah_exec_options_t opts = {0};
+        opts.limits.max_stack_bytes = 1024;
+        wah_exec_context_t ctx2 = {0};
+        assert_ok(wah_new_exec_context(&ctx2, &wasm_mod, &opts));
+        assert_ok(wah_instantiate(&ctx2));
+
+        wah_value_t param = { .i32 = 100 };
+        wah_value_t result;
+        wah_error_t err = wah_call(&ctx2, 0, &param, 1, &result);
+        assert_ok(err);
+        assert_eq_i32(result.i32, 100);
+
+        wah_free_exec_context(&ctx2);
+        wah_free_module(&wasm_mod);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }
