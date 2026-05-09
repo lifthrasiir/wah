@@ -12036,13 +12036,16 @@ WAH_RUN(ELEM_DROP) {
 #define WAH_REF_BODY(actual_fn, CALL_HOST, CALL_WASM) \
     const wah_func_type_t *expected_func_type = &fctx->module->types[type_idx]; \
     if ((actual_fn)->is_host) { \
-        WAH_ASSERT(expected_func_type->param_count == (actual_fn)->nparams && expected_func_type->result_count == (actual_fn)->nresults && "type mismatch (param/result count)"); \
+        WAH_ENSURE_GOTO(expected_func_type->param_count == (actual_fn)->nparams && \
+                        expected_func_type->result_count == (actual_fn)->nresults, WAH_ERROR_TRAP, cleanup); \
+        { bool _types_ok = true; \
         for (uint32_t i = 0; i < expected_func_type->param_count; ++i) { \
-            WAH_ASSERT(expected_func_type->param_types[i] == (actual_fn)->param_types[i] && "type mismatch (param type)"); \
+            if (expected_func_type->param_types[i] != (actual_fn)->param_types[i]) { _types_ok = false; break; } \
         } \
-        for (uint32_t i = 0; i < expected_func_type->result_count; ++i) { \
-            WAH_ASSERT(expected_func_type->result_types[i] == (actual_fn)->result_types[i] && "type mismatch (result type)"); \
+        for (uint32_t i = 0; _types_ok && i < expected_func_type->result_count; ++i) { \
+            if (expected_func_type->result_types[i] != (actual_fn)->result_types[i]) { _types_ok = false; break; } \
         } \
+        WAH_ENSURE_GOTO(_types_ok, WAH_ERROR_TRAP, cleanup); } \
         CALL_HOST; \
     } else { \
         const wah_module_t *fn_module = (actual_fn)->fn_module ? (actual_fn)->fn_module : fctx->module; \

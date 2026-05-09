@@ -667,6 +667,42 @@ int main() {
         wah_free_module(&provider);
     }
 
+    // Regression: call_indirect on host function with mismatched type must trap,
+    // not bypass type checks via assert-only guards in WAH_REF_BODY.
+    printf("Test: Host function call_indirect type mismatch traps\n");
+    {
+        wah_module_t host_mod = {0};
+        assert_ok(wah_new_module(&host_mod, NULL));
+        assert_ok(wah_export_func(&host_mod, "hostFn", "(i32) -> i32", simple_host_func, NULL, NULL));
+
+        // Consumer imports hostFn, stores it in table[0], then call_indirect with
+        // type 0 = fn [] [i32] (no params), which mismatches (i32) -> i32.
+        const char *spec = "wasm \
+            types {[ fn [] [i32], fn [i32] [i32] ]} \
+            imports {[ {'host'} {'hostFn'} fn# 1 ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            globals {[ funcref mut ref.func 0 end ]} \
+            exports {[ {'test'} fn# 1 ]} \
+            code {[ {[] i32.const 0 global.get 0 table.set 0 \
+                        i32.const 0 call_indirect 0 0 end} ]}";
+
+        wah_module_t consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&consumer, spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &consumer, NULL));
+        assert_ok(wah_link_module(&ctx, "host", &host_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_err(wah_call(&ctx, 1, NULL, 0, &result), WAH_ERROR_TRAP);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&consumer);
+        wah_free_module(&host_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
