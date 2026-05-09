@@ -15530,18 +15530,22 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             } else {
                 ctx->globals = new_globals + offset;
                 ctx->global_count = linked->global_count;
+                const wah_module_t *saved_module = ctx->module;
+                ctx->module = linked;
                 for (uint32_t k = 0; k < linked->global_count; k++) {
                     err = wah_eval_const_expr(ctx,
                                               linked->globals[k].init_expr.bytecode,
                                               linked->globals[k].init_expr.bytecode_size,
                                               &new_globals[offset + k]);
                     if (err != WAH_OK) {
+                        ctx->module = saved_module;
                         ctx->globals = saved_globals;
                         ctx->global_count = saved_global_count;
                         wah_free(alloc, new_globals);
                         goto cleanup;
                     }
                 }
+                ctx->module = saved_module;
             }
             offset += linked->global_count;
         }

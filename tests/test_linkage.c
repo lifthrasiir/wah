@@ -1031,6 +1031,50 @@ int main() {
         wah_free_module(&mod_exp);
     }
 
+    // Bug: wah_eval_const_expr used ctx->module (primary) when evaluating
+    // linked module global init expressions, so global.get in a linked module's
+    // init expr could reference the wrong module's global index space.
+    printf("Test: linked module const expr uses correct module context\n");
+    {
+        // lib: global 0 = 200, global 1 = global.get 0 (should be 200)
+        // main: global 0 = 999, imports lib.getg1
+        // If wah_eval_const_expr uses main's module, global.get 0 in lib's
+        // init expr would still work (globals are swapped), but ctx->module
+        // must be restored after the loop to avoid corrupting later steps.
+        wah_module_t lib = {0};
+        assert_ok(wah_parse_module_from_spec(&lib, "wasm \
+            types {[fn [] [i32]]} \
+            funcs {[0]} \
+            globals {[ \
+                i32 immut i32.const 200 end, \
+                i32 immut global.get 0 end \
+            ]} \
+            exports {[{'getg1'} fn# 0]} \
+            code {[{[] global.get 1 end}]}"));
+
+        wah_module_t main_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&main_mod, "wasm \
+            types {[fn [] [i32]]} \
+            imports {[{'lib'} {'getg1'} fn# 0]} \
+            funcs {[0]} \
+            globals {[i32 immut i32.const 999 end]} \
+            exports {[{'run'} fn# 1]} \
+            code {[{[] call 0 end}]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &main_mod, NULL));
+        wah_link_module(&ctx, "lib", &lib);
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 200);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&main_mod);
+        wah_free_module(&lib);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
