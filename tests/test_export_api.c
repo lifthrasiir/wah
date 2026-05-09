@@ -324,6 +324,24 @@ int main(void) {
         wah_free_module(&mod);
     }
 
+    // Regression: func_idx > UINT32_MAX silently truncated in wah_call/wah_call_multi.
+    printf("Testing wah_call with func_idx > UINT32_MAX...\n");
+    {
+        wah_module_t mod = {0};
+        assert_ok(wah_new_module(&mod, NULL));
+        assert_ok(wah_export_func(&mod, "f", "() -> i32", add_i32_host, NULL, NULL));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+        assert_ok(wah_instantiate(&ctx));
+
+        assert_err(wah_call(&ctx, (uint64_t)UINT32_MAX + 1, NULL, 0, NULL), WAH_ERROR_NOT_FOUND);
+        assert_err(wah_start(&ctx, (uint64_t)UINT32_MAX + 1, NULL, 0), WAH_ERROR_NOT_FOUND);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod);
+    }
+
     printf("\n--- ALL TESTS PASSED ---\n");
     return 0;
 }

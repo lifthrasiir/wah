@@ -14675,6 +14675,7 @@ wah_error_t wah_start(wah_exec_context_t *ctx, uint64_t func_idx, const wah_valu
     if (!ctx->is_instantiated) {
         WAH_CHECK(wah_instantiate(ctx));
     }
+    WAH_ENSURE(func_idx <= UINT32_MAX, WAH_ERROR_NOT_FOUND);
     return wah_start_internal(ctx, (uint32_t)func_idx, params, param_count);
 }
 
@@ -14743,7 +14744,7 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_
         WAH_CHECK(wah_instantiate(exec_ctx));
     }
 
-    // func_idx is always uint32_t for functions.
+    WAH_ENSURE(func_idx <= UINT32_MAX, WAH_ERROR_NOT_FOUND);
     return wah_call_module(exec_ctx, (uint32_t)func_idx, params, param_count, result);
 }
 
@@ -14758,7 +14759,7 @@ wah_error_t wah_call_multi(
         WAH_CHECK(wah_instantiate(exec_ctx));
     }
 
-    // func_idx is always uint32_t for functions.
+    WAH_ENSURE(func_idx <= UINT32_MAX, WAH_ERROR_NOT_FOUND);
     return wah_call_module_multi(exec_ctx, (uint32_t)func_idx, params, param_count, results, max_result_count, actual_result_count);
 }
 
