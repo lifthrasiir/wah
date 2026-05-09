@@ -598,7 +598,7 @@ void test_trunc_trap_saves_frame_state() {
 
     // First: trap with NaN via resumable API
     wah_value_t params[1];
-    params[0].f64 = 0.0 / 0.0; // NaN
+    params[0].f64 = NAN;
     assert_ok(wah_start(&ctx, 0, params, 1));
     wah_error_t err = wah_resume(&ctx);
     assert_err(err, WAH_ERROR_TRAP);
