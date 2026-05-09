@@ -2885,8 +2885,12 @@ static void *wah_stdc_malloc(size_t size, void *userdata) { (void)userdata; retu
 static void *wah_stdc_realloc(void *ptr, size_t size, void *userdata) { (void)userdata; return realloc(ptr, size); }
 static void wah_stdc_free(void *ptr, void *userdata) { (void)userdata; free(ptr); }
 
+static inline bool wah_alloc_valid(const wah_alloc_t *a) {
+    return !a || (a->malloc && a->realloc && a->free);
+}
+
 static inline wah_alloc_t wah_resolve_alloc(const wah_alloc_t *a) {
-    if (a) return *a;
+    if (a && a->malloc && a->realloc && a->free) return *a;
     return (wah_alloc_t){ wah_stdc_malloc, wah_stdc_realloc, wah_stdc_free, NULL };
 }
 
@@ -9058,6 +9062,7 @@ static const struct wah_section_handler_s {
 wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t binary_size, const wah_parse_options_t *options) {
     wah_error_t err = WAH_OK;
     WAH_ENSURE(binary && module && binary_size >= 8, WAH_ERROR_UNEXPECTED_EOF);
+    WAH_ENSURE(wah_alloc_valid(options ? options->alloc : NULL), WAH_ERROR_MISUSE);
 
     *module = (wah_module_t){0}; // Initialize module struct
     module->alloc = wah_resolve_alloc(options ? options->alloc : NULL);
@@ -9981,6 +9986,7 @@ static wah_error_t wah_alloc_unified_stack(wah_exec_context_t *exec_ctx, uint64_
 wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_exec_options_t *options) {
     wah_limits_t default_limits = {0};
     const wah_limits_t *limits = options ? &options->limits : &default_limits;
+    WAH_ENSURE(wah_alloc_valid(options ? options->alloc : NULL), WAH_ERROR_MISUSE);
     *exec_ctx = (wah_exec_context_t){ .is_instantiated = false, .alloc = wah_resolve_alloc(options ? options->alloc : NULL) };
     wah_error_t err = WAH_OK;
     const wah_alloc_t *alloc = &exec_ctx->alloc;
@@ -14901,6 +14907,7 @@ void wah_free_module(wah_module_t *module) {
 
 wah_error_t wah_new_module(wah_module_t *mod, const wah_alloc_t *alloc_arg) {
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
+    WAH_ENSURE(wah_alloc_valid(alloc_arg), WAH_ERROR_MISUSE);
 
     *mod = (wah_module_t){ .functions_cap = 16, .local_function_count = 0, .exports_cap = 16,
                            .alloc = wah_resolve_alloc(alloc_arg) };

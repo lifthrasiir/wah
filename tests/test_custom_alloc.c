@@ -119,6 +119,14 @@ int main(void) {
         return 1;
     }
 
+    // Regression: partial allocator (missing function pointer) caused NULL call.
+    printf("Testing partial allocator validation...\n");
+    {
+        wah_alloc_t bad = { tracking_malloc, NULL, tracking_free, NULL };
+        wah_module_t m = {0};
+        assert_err(wah_new_module(&m, &bad), WAH_ERROR_MISUSE);
+    }
+
     printf("custom allocator API tests passed\n");
     return 0;
 }
