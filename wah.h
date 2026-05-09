@@ -4410,7 +4410,7 @@ static inline wah_error_t wah_repr_set_resize(wah_repr_set_t *set, uint32_t repr
 static inline void wah_repr_set_add(wah_repr_set_t *set, wah_repr_t repr_id) {
     if (!set || repr_id < 0) return;
     uint32_t word = (uint32_t)repr_id / 64;
-    WAH_ASSERT(word < set->word_count);
+    if (word >= set->word_count || !set->bits) return;
     set->bits[word] |= UINT64_C(1) << ((uint32_t)repr_id & 63);
 }
 
