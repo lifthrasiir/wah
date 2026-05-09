@@ -4467,7 +4467,7 @@ static inline bool wah_type_is_subtype(wah_type_t sub, wah_type_t sup, const wah
     if (sub >= 0) {
         wah_comp_type_kind_t kind = wah_type_def_kind(module, sub);
         switch (sup) {
-            case WAH_TYPE_ANY:    return kind == WAH_COMP_STRUCT || kind == WAH_COMP_ARRAY || kind == WAH_COMP_FUNC;
+            case WAH_TYPE_ANY:    return kind == WAH_COMP_STRUCT || kind == WAH_COMP_ARRAY;
             case WAH_TYPE_EQ:     return kind == WAH_COMP_STRUCT || kind == WAH_COMP_ARRAY;
             case WAH_TYPE_STRUCT: return kind == WAH_COMP_STRUCT;
             case WAH_TYPE_ARRAY:  return kind == WAH_COMP_ARRAY;
@@ -4491,7 +4491,8 @@ static inline bool wah_type_is_subtype(wah_type_t sub, wah_type_t sup, const wah
 
     switch (sup) {
         case WAH_TYPE_ANY:
-            return sub != WAH_TYPE_EXTERN && sub != WAH_TYPE_EXN && sub != WAH_TYPE_NOEXTERN && sub != WAH_TYPE_NOEXN;
+            return sub != WAH_TYPE_EXTERN && sub != WAH_TYPE_EXN && sub != WAH_TYPE_NOEXTERN && sub != WAH_TYPE_NOEXN
+                && sub != WAH_TYPE_FUNC && sub != WAH_TYPE_NOFUNC;
         case WAH_TYPE_EQ:
             return sub == WAH_TYPE_I31 || sub == WAH_TYPE_STRUCT || sub == WAH_TYPE_ARRAY || sub == WAH_TYPE_NONE;
         case WAH_TYPE_STRUCT:
