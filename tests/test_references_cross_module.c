@@ -102,9 +102,58 @@ static void test_cross_module_ref_test_abstract_array_oob() {
     wah_free_module(&provider);
 }
 
+// Regression test for wah_bind_frame_module falling back to the consumer's
+// exec context when the linked module has no internal ctx (no tags).
+// fctx->module then points to the wrong module, causing OOB accesses on
+// typeidx_to_repr / repr_infos / type_defs when executing provider code.
+static void test_link_module_frame_ctx_wrong_module() {
+    printf("Testing wah_link_module frame_ctx uses correct module (security regression)...\n");
+
+    // Provider: struct type + factory function returning anyref.
+    // type 0 = struct [i32 mut]
+    // type 1 = fn [] -> [anyref]
+    const char *provider_spec = "wasm \
+        types {[ struct [i32 mut], fn [] [anyref] ]} \
+        funcs {[ 1 ]} \
+        exports {[ {'make'} fn# 0 ]} \
+        code {[ {[] struct.new_default 0 end } ]}";
+
+    // Consumer: NO struct types — different type layout from provider.
+    // type 0 = fn [] -> [anyref]  (import signature)
+    // type 1 = fn [] -> [i32]     (local function)
+    // Provider's struct.new_default uses typeidx 0, but consumer's type 0 is
+    // a func type. If fctx->module wrongly points to consumer, the typeidx
+    // lookup hits the wrong type table.
+    const char *consumer_spec = "wasm \
+        types {[ fn [] [anyref], fn [] [i32] ]} \
+        imports {[ {'p'} {'make'} fn# 0 ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] call 0 ref.is_null end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &consumer, NULL));
+    assert_ok(wah_link_module(&ctx, "p", &provider));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    // Should return 0 (non-null struct ref → ref.is_null = 0).
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 0);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
 int main() {
     test_cross_module_ref_test_abstract_struct_oob();
     test_cross_module_ref_test_abstract_array_oob();
-    printf("All cross-module ref.test security tests passed!\n");
+    test_link_module_frame_ctx_wrong_module();
+    printf("All cross-module reference security tests passed!\n");
     return 0;
 }

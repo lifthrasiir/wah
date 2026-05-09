@@ -15942,6 +15942,29 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         }
     }
 
+    // Ensure all wah_link_module-linked modules have an internal ctx so that
+    // cross-module calls use the correct module pointer for type lookups.
+    // This runs after all import resolution so memories/tables/globals are final.
+    uint32_t go = wah_global_index_limit(module);
+    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+        const wah_module_t *lmod = ctx->linked_modules[j].module;
+        if (ctx->linked_modules[j].ctx == NULL) {
+            wah_exec_context_t *ictx = NULL;
+            WAH_CHECK_GOTO(wah_malloc(alloc, 1, sizeof(wah_exec_context_t), (void **)&ictx), cleanup);
+            *ictx = (wah_exec_context_t){
+                .alloc = ctx->alloc, .module = lmod, .memories = ctx->memories, .memory_count = ctx->memory_count,
+                .tables = ctx->tables, .table_count = ctx->table_count,
+                .globals = go ? ctx->globals + go : ctx->globals, .global_count = lmod->global_count,
+                .function_table = ctx->function_table, .function_table_count = ctx->function_table_count,
+                .memory_base = ctx->memory_base, .memory_size = ctx->memory_size, .gc = ctx->gc,
+            };
+            ctx->linked_modules[j].ctx = ictx;
+            ctx->linked_modules[j].owns_ctx = true;
+            ictx->is_instantiated = true;
+        }
+        go += lmod->global_count;
+    }
+
     // If a start function is defined, call it after all imports/globals/elements are ready.
     if (module->has_start_function) {
         WAH_CHECK_GOTO(wah_call_module(ctx, module->start_function_idx, NULL, 0, NULL), cleanup);
