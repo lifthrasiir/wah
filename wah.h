@@ -23,7 +23,7 @@ extern "C" {
 // Macro: WAH_VERSION
 //   The version of the WAH API. Incremented on any change to the API, including bug fixes.
 //   Based on (fractional Gregorian year - 2000) * 100, with a liberal rounding.
-#define WAH_VERSION 2630
+#define WAH_VERSION -2630
 
 // Macro: WAH_FORCE_PORTABLE [user-definable]
 //   If defined, forces the interpreter to use portable C implementations
@@ -11044,7 +11044,7 @@ WAH_RUN(BR_TABLE) {
 WAH_RUN(TRY_TABLE) {
     uint32_t catch_count_val = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    WAH_ASSERT(ctx->exception_handler_depth < WAH_MAX_EXCEPTION_HANDLER_DEPTH);
+    WAH_ENSURE_GOTO(ctx->exception_handler_depth < WAH_MAX_EXCEPTION_HANDLER_DEPTH, WAH_ERROR_STACK_OVERFLOW, cleanup);
     wah_exception_handler_t *handler = &ctx->exception_handlers[ctx->exception_handler_depth++];
     handler->call_depth = ctx->call_depth;
     handler->sp_base = sp;
@@ -11059,6 +11059,7 @@ WAH_RUN(TRY_TABLE) {
         bytecode_ip += sizeof(uint32_t); // offset
     }
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(END_TRY_TABLE) {

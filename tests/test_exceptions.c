@@ -532,6 +532,32 @@ static void test_end_inside_try_table() {
     wah_free_module(&module);
 }
 
+// Regression: 65+ nested try_table blocks overflow exception_handlers array
+// because WAH_MAX_EXCEPTION_HANDLER_DEPTH (64) < WAH_MAX_CONTROL_DEPTH (256).
+static void test_try_table_handler_overflow() {
+    printf("Testing try_table exception handler overflow...\n");
+
+    #define REP8(x) x x x x x x x x
+    #define REP65(x) REP8(REP8(x)) x
+    char *spec = "wasm \
+        types {[fn [] []]} \
+        funcs {[0]} \
+        code {[{[] " REP65("try_table void [] ") REP65("end ") "end}]}";
+
+    wah_module_t mod = {0};
+    assert_ok(wah_parse_module_from_spec(&mod, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_STACK_OVERFLOW);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 int main() {
     test_try_table_catch_label_types();
     test_catch_all();
@@ -545,6 +571,7 @@ int main() {
     test_link_module_tag_mismatch();
     test_return_inside_try_table();
     test_end_inside_try_table();
+    test_try_table_handler_overflow();
     printf("All exception tests passed!\n");
     return 0;
 }
