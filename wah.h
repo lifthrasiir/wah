@@ -10626,8 +10626,8 @@ static uint64_t wah_bulk_table_copy(wah_exec_context_t *ctx,
 
 // Returns elements processed. Sets *out_err on trap (negative). If WAH_OK and returned < size, stopped.
 static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, uint32_t table_idx, uint64_t dst_offset,
-                                    uint32_t elem_idx, uint32_t src_offset, uint32_t size, wah_error_t *out_err) {
-    const wah_element_segment_t *segment = &ctx->module->element_segments[elem_idx];
+                                    const wah_element_segment_t *segment,
+                                    uint32_t src_offset, uint32_t size, wah_error_t *out_err) {
     *out_err = WAH_OK;
     for (uint32_t done = 0; done < size; ) {
         uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
@@ -12001,10 +12001,10 @@ WAH_RUN(GLOBAL_SET) {
     uint32_t size = (*--sp).i32; \
     uint32_t src_offset = (*--sp).i32; \
     uint64_t dst_offset = (uint64_t)(uint##N##_t)(*--sp).i##N; \
-    WAH_ASSERT(elem_idx < ctx->module->element_segment_count && "validation didn't catch out-of-bound element segment index"); \
+    WAH_ASSERT(elem_idx < fctx->module->element_segment_count && "validation didn't catch out-of-bound element segment index"); \
     WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    const wah_element_segment_t *segment = &ctx->module->element_segments[elem_idx]; \
-    if (wah_elem_seg_is_dropped(ctx, elem_idx)) { \
+    const wah_element_segment_t *segment = &fctx->module->element_segments[elem_idx]; \
+    if (wah_elem_seg_is_dropped(fctx, elem_idx)) { \
         WAH_ENSURE_GOTO(size == 0 && src_offset == 0, WAH_ERROR_TRAP, cleanup); \
         WAH_ENSURE_GOTO(dst_offset <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
         WAH_NEXT(); \
@@ -12012,7 +12012,7 @@ WAH_RUN(GLOBAL_SET) {
     WAH_ENSURE_GOTO(wah_u64_range_in_bounds(src_offset, size, segment->num_elems), WAH_ERROR_TRAP, cleanup); \
     WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dst_offset, size, ctx->tables[table_idx].size), WAH_ERROR_TRAP, cleanup); \
     wah_error_t init_err; \
-    uint32_t done = wah_bulk_table_init(ctx, table_idx, dst_offset, elem_idx, src_offset, size, &init_err); \
+    uint32_t done = wah_bulk_table_init(ctx, table_idx, dst_offset, segment, src_offset, size, &init_err); \
     if (init_err != WAH_OK) { err = init_err; goto cleanup; } \
     if (done < size) { \
         (*sp++).i##N = (int##N##_t)(dst_offset + done); \
@@ -12047,11 +12047,9 @@ WAH_RUN(TABLE_INIT_i64) WAH_TABLE_INIT_IMPL(64)
 WAH_RUN(ELEM_DROP) {
     uint32_t elem_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    WAH_ASSERT(elem_idx < ctx->module->element_segment_count && "validation didn't catch out-of-bound element segment index");
+    WAH_ASSERT(elem_idx < fctx->module->element_segment_count && "validation didn't catch out-of-bound element segment index");
 
-    // Mark as dropped on this instance only. The module's element data stays alive
-    // until wah_free_module() so other instances of the same module can still see it.
-    wah_elem_seg_mark_dropped(ctx, elem_idx);
+    wah_elem_seg_mark_dropped(fctx, elem_idx);
     WAH_NEXT();
 }
 
@@ -12735,14 +12733,14 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
     bytecode_ip += sizeof(uint32_t); \
     \
     WAH_ASSERT(mem_idx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
-    WAH_ASSERT(data_idx < ctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index"); \
+    WAH_ASSERT(data_idx < fctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index"); \
     \
     uint32_t size = (uint32_t)(*--sp).i32; \
     uint32_t src_offset = (uint32_t)(*--sp).i32; \
     uint64_t dest_offset = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     \
-    const wah_data_segment_t *segment = &ctx->module->data_segments[data_idx]; \
-    uint32_t _seg_len = wah_data_seg_data_len(ctx, data_idx); \
+    const wah_data_segment_t *segment = &fctx->module->data_segments[data_idx]; \
+    uint32_t _seg_len = wah_data_seg_data_len(fctx, data_idx); \
     \
     WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dest_offset, size, fctx->memories[mem_idx].size), WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup); \
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= _seg_len, WAH_ERROR_TRAP, cleanup); \
@@ -12804,11 +12802,9 @@ WAH_RUN(MEMORY_COPY) WAH_MEMORY_COPY_IMPL(32,32,32)
 WAH_RUN(DATA_DROP) {
     uint32_t data_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
-    WAH_ASSERT(data_idx < ctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index");
+    WAH_ASSERT(data_idx < fctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index");
 
-    // Mark as dropped on this instance only. The module's data buffer stays alive
-    // until wah_free_module() so other instances of the same module can still use it.
-    wah_data_seg_mark_dropped(ctx, data_idx);
+    wah_data_seg_mark_dropped(fctx, data_idx);
     WAH_NEXT();
 }
 
@@ -15972,6 +15968,22 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             ctx->linked_modules[j].ctx = ictx;
             ctx->linked_modules[j].owns_ctx = true;
             ictx->is_instantiated = true;
+        }
+        wah_exec_context_t *ictx = ctx->linked_modules[j].ctx;
+        if (ictx && !ictx->dropped_elem_segments && lmod->element_segment_count > 0) {
+            size_t bytes = (lmod->element_segment_count + 7) / 8;
+            WAH_MALLOC_ARRAY_GOTO(ictx->dropped_elem_segments, bytes, cleanup);
+            memset(ictx->dropped_elem_segments, 0, bytes);
+            for (uint32_t i = 0; i < lmod->element_segment_count; ++i) {
+                if (lmod->element_segments[i].is_declarative) {
+                    wah_elem_seg_mark_dropped(ictx, i);
+                }
+            }
+        }
+        if (ictx && !ictx->dropped_data_segments && lmod->data_segment_count > 0) {
+            size_t bytes = (lmod->data_segment_count + 7) / 8;
+            WAH_MALLOC_ARRAY_GOTO(ictx->dropped_data_segments, bytes, cleanup);
+            memset(ictx->dropped_data_segments, 0, bytes);
         }
         go += lmod->global_count;
     }

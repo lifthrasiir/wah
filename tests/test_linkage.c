@@ -713,6 +713,79 @@ int main() {
         assert_err(wah_link_context(NULL, "x", &dummy_ctx), WAH_ERROR_MISUSE);
     }
 
+    // Cross-module data.drop: linked module's function does data.drop on its own
+    // data segment. Primary module has 0 data segments. If the interpreter uses
+    // ctx->module (primary) instead of fctx->module (linked), data_idx 0 is OOB.
+    printf("Testing cross-module data.drop uses linked module's segments...\n");
+    {
+        wah_module_t linked_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&linked_mod, "wasm \
+            types {[fn [] []]} \
+            funcs {[0]} \
+            memories {[limits.i32/1 1]} \
+            exports {[{'do_drop'} fn# 0, {'mem'} mem# 0]} \
+            datacount {1} \
+            code {[{[] data.drop 0 end}]} \
+            data {[data.passive {%'AABB'}]}"));
+
+        wah_module_t primary_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&primary_mod, "wasm \
+            types {[fn [] []]} \
+            imports {[{'linked'} {'do_drop'} fn# 0, {'linked'} {'mem'} mem# limits.i32/1 1]} \
+            funcs {[0]} \
+            exports {[{'run'} fn# 1]} \
+            code {[{[] call 0 end}]}"));
+
+        wah_exec_context_t ectx = {0};
+        assert_ok(wah_new_exec_context(&ectx, &primary_mod, NULL));
+        assert_ok(wah_link_module(&ectx, "linked", &linked_mod));
+        assert_ok(wah_instantiate(&ectx));
+
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ectx, "run", NULL, 0, &result));
+
+        wah_free_exec_context(&ectx);
+        wah_free_module(&primary_mod);
+        wah_free_module(&linked_mod);
+    }
+
+    // Cross-module elem.drop: linked module's function does elem.drop on its own
+    // element segment. Primary module has 0 element segments.
+    printf("Testing cross-module elem.drop uses linked module's segments...\n");
+    {
+        wah_module_t linked_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&linked_mod, "wasm \
+            types {[fn [] []]} \
+            funcs {[0, 0]} \
+            tables {[funcref limits.i32/2 10 10]} \
+            exports {[{'do_drop'} fn# 0]} \
+            elements {[elem.passive elem.funcref [0]]} \
+            code {[\
+              {[] elem.drop 0 end}, \
+              {[] end} \
+            ]}"));
+
+        wah_module_t primary_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&primary_mod, "wasm \
+            types {[fn [] []]} \
+            imports {[{'linked'} {'do_drop'} fn# 0]} \
+            funcs {[0]} \
+            exports {[{'run'} fn# 1]} \
+            code {[{[] call 0 end}]}"));
+
+        wah_exec_context_t ectx = {0};
+        assert_ok(wah_new_exec_context(&ectx, &primary_mod, NULL));
+        assert_ok(wah_link_module(&ectx, "linked", &linked_mod));
+        assert_ok(wah_instantiate(&ectx));
+
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ectx, "run", NULL, 0, &result));
+
+        wah_free_exec_context(&ectx);
+        wah_free_module(&primary_mod);
+        wah_free_module(&linked_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
