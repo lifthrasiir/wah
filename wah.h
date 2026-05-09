@@ -5994,6 +5994,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(mem_idx < wah_memory_index_limit(vctx->module), WAH_ERROR_VALIDATION_FAILED);
             wah_type_t addr_type = wah_memory_type(vctx->module, mem_idx)->addr_type;
             POP(I32); POP(I32); POP(_(addr_type));
+            WAH_ENSURE(data_idx < UINT32_MAX, WAH_ERROR_VALIDATION_FAILED);
             if (data_idx + 1 > vctx->module->min_data_segment_count_required) {
                 vctx->module->min_data_segment_count_required = data_idx + 1;
             }
@@ -6003,6 +6004,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_DATA_DROP: {
             uint32_t data_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &data_idx));
+            WAH_ENSURE(data_idx < UINT32_MAX, WAH_ERROR_VALIDATION_FAILED);
             if (data_idx + 1 > vctx->module->min_data_segment_count_required) {
                 vctx->module->min_data_segment_count_required = data_idx + 1;
             }

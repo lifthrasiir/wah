@@ -129,6 +129,22 @@ int main(void) {
         ]}";
     assert_err(wah_parse_module_from_spec(&module, i32_mem_offset_overflow_spec), WAH_ERROR_VALIDATION_FAILED);
 
+    // data_idx + 1 overflow: when data_idx = UINT32_MAX, data_idx + 1 wraps
+    // to 0 and bypasses min_data_segment_count_required. The module has no
+    // data segments, so data_idx = UINT32_MAX must be rejected.
+    printf("12. Testing data.drop with data_idx=UINT32_MAX (overflow)...\n");
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        types {[fn [] []]} funcs {[0]} \
+        code {[{[] data.drop 0xffffffff end}]}"),
+        WAH_ERROR_VALIDATION_FAILED);
+
+    printf("13. Testing memory.init with data_idx=UINT32_MAX (overflow)...\n");
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        types {[fn [] []]} funcs {[0]} \
+        memories {[limits.i32/1 1]} \
+        code {[{[] i32.const 0 i32.const 0 i32.const 0 memory.init 0xffffffff 0 end}]}"),
+        WAH_ERROR_VALIDATION_FAILED);
+
     printf("--- All Overflow Tests Passed ---\n");
     return 0;
 }
