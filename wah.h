@@ -10585,13 +10585,13 @@ static wah_error_t wah_call_host_function_internal(
 // --- Chunked bulk-op helpers for bounded interruption ---
 // Each returns the number of elements processed. If < size, interrupted.
 
-static uint64_t wah_bulk_table_fill(wah_exec_context_t *ctx, uint32_t table_idx,
+static uint64_t wah_bulk_table_fill(wah_exec_context_t *ctx, wah_exec_context_t *fctx, uint32_t table_idx,
                                     uint64_t offset, wah_value_t val, uint64_t size) {
     for (uint64_t done = 0; done < size; ) {
         uint64_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
         chunk = wah_bulk_fuel_limit(ctx, chunk);
         for (uint64_t i = 0; i < chunk; ++i)
-            wah_ref_store_table(ctx, table_idx, offset + done + i, val);
+            wah_ref_store_table(fctx, table_idx, offset + done + i, val);
         done += chunk;
         wah_bulk_fuel_charge(ctx, chunk);
         if (done < size && wah_bulk_should_stop(ctx)) return done;
@@ -10599,7 +10599,7 @@ static uint64_t wah_bulk_table_fill(wah_exec_context_t *ctx, uint32_t table_idx,
     return size;
 }
 
-static uint64_t wah_bulk_table_copy(wah_exec_context_t *ctx,
+static uint64_t wah_bulk_table_copy(wah_exec_context_t *ctx, wah_exec_context_t *fctx,
                                     uint32_t dst_table_idx, uint64_t dst_offset,
                                     uint32_t src_table_idx, uint64_t src_offset, uint64_t size) {
     if (src_table_idx == dst_table_idx && dst_offset == src_offset) return size;
@@ -10610,12 +10610,12 @@ static uint64_t wah_bulk_table_copy(wah_exec_context_t *ctx,
         if (backward) {
             uint64_t tail = size - done;
             for (uint64_t j = 0; j < chunk; ++j)
-                wah_ref_store_table(ctx, dst_table_idx, dst_offset + tail - 1 - j,
-                                    ctx->tables[src_table_idx].entries[src_offset + tail - 1 - j]);
+                wah_ref_store_table(fctx, dst_table_idx, dst_offset + tail - 1 - j,
+                                    fctx->tables[src_table_idx].entries[src_offset + tail - 1 - j]);
         } else {
             for (uint64_t j = 0; j < chunk; ++j)
-                wah_ref_store_table(ctx, dst_table_idx, dst_offset + done + j,
-                                    ctx->tables[src_table_idx].entries[src_offset + done + j]);
+                wah_ref_store_table(fctx, dst_table_idx, dst_offset + done + j,
+                                    fctx->tables[src_table_idx].entries[src_offset + done + j]);
         }
         done += chunk;
         wah_bulk_fuel_charge(ctx, chunk);
@@ -10625,7 +10625,7 @@ static uint64_t wah_bulk_table_copy(wah_exec_context_t *ctx,
 }
 
 // Returns elements processed. Sets *out_err on trap (negative). If WAH_OK and returned < size, stopped.
-static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, uint32_t table_idx, uint64_t dst_offset,
+static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, wah_exec_context_t *fctx, uint32_t table_idx, uint64_t dst_offset,
                                     const wah_element_segment_t *segment,
                                     uint32_t src_offset, uint32_t size, wah_error_t *out_err) {
     *out_err = WAH_OK;
@@ -10637,27 +10637,27 @@ static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, uint32_t table_idx,
             wah_value_t store_val;
             if (!segment->is_expr_elem) {
                 uint32_t gfi = segment->u.func_indices[src_offset + i];
-                WAH_ASSERT(gfi < ctx->function_table_count);
-                wah_function_t *fn = &ctx->function_table[gfi];
-                if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
+                WAH_ASSERT(gfi < fctx->function_table_count);
+                wah_function_t *fn = &fctx->function_table[gfi];
+                if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == fctx->module) fn->fn_ctx = fctx;
                 store_val.ref = wah_func_to_ref(fn);
             } else {
                 wah_value_t elem_val;
                 if (src_offset + i >= segment->num_elems) { *out_err = WAH_ERROR_TRAP; return done + j; }
-                wah_error_t e = wah_eval_const_expr(ctx, segment->u.expr.bytecodes[src_offset + i],
+                wah_error_t e = wah_eval_const_expr(fctx, segment->u.expr.bytecodes[src_offset + i],
                                                     segment->u.expr.bytecode_sizes[src_offset + i], &elem_val);
                 if (e != WAH_OK) { *out_err = e; return done + j; }
                 if (elem_val.ref == wah_func_to_ref(wah_funcref_sentinel)) {
                     uint32_t gfi = elem_val._prefuncref.func_idx;
-                    WAH_ASSERT(gfi < ctx->function_table_count);
-                    wah_function_t *fn = &ctx->function_table[gfi];
-                    if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
+                    WAH_ASSERT(gfi < fctx->function_table_count);
+                    wah_function_t *fn = &fctx->function_table[gfi];
+                    if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == fctx->module) fn->fn_ctx = fctx;
                     store_val.ref = wah_func_to_ref(fn);
                 } else {
                     store_val = elem_val;
                 }
             }
-            wah_ref_store_table(ctx, table_idx, dst_offset + i, store_val);
+            wah_ref_store_table(fctx, table_idx, dst_offset + i, store_val);
         }
         done += chunk;
         wah_bulk_fuel_charge(ctx, chunk);
@@ -10757,14 +10757,14 @@ static uint64_t wah_memory_copy_internal(wah_exec_context_t *ctx,
 }
 
 static wah_error_t wah_table_grow_internal(
-    wah_exec_context_t *ctx, uint32_t table_idx, uint64_t delta, wah_value_t init_val,
+    wah_exec_context_t *ctx, wah_exec_context_t *fctx, uint32_t table_idx, uint64_t delta, wah_value_t init_val,
     uint64_t *old_size, bool *grew
 ) {
     *grew = false;
-    *old_size = ctx->tables[table_idx].size;
+    *old_size = fctx->tables[table_idx].size;
 
     uint64_t new_size = *old_size + delta;
-    if (new_size < *old_size || new_size > ctx->tables[table_idx].max_size) {
+    if (new_size < *old_size || new_size > fctx->tables[table_idx].max_size) {
         return WAH_OK;
     }
 
@@ -10775,35 +10775,35 @@ static wah_error_t wah_table_grow_internal(
     if (!wah_budget_check(ctx, delta_bytes)) {
         return WAH_OK;
     }
-    if (ctx->tables[table_idx].import_ctx && ctx->tables[table_idx].is_imported) {
-        if (!wah_budget_check(ctx->tables[table_idx].import_ctx, delta_bytes)) {
+    if (fctx->tables[table_idx].import_ctx && fctx->tables[table_idx].is_imported) {
+        if (!wah_budget_check(fctx->tables[table_idx].import_ctx, delta_bytes)) {
             return WAH_OK;
         }
     }
 
-    wah_exec_context_t *owner = (ctx->tables[table_idx].is_imported && ctx->tables[table_idx].import_ctx)
-        ? ctx->tables[table_idx].import_ctx : ctx;
+    wah_exec_context_t *owner = (fctx->tables[table_idx].is_imported && fctx->tables[table_idx].import_ctx)
+        ? fctx->tables[table_idx].import_ctx : ctx;
     const wah_alloc_t *grow_alloc = &owner->alloc;
     wah_value_t *new_table = NULL;
     wah_error_t err = wah_malloc(grow_alloc, (size_t)new_size, sizeof(wah_value_t), (void **)&new_table);
     if (err != WAH_OK) return err;
 
     if (*old_size > 0) {
-        memcpy(new_table, ctx->tables[table_idx].entries, sizeof(wah_value_t) * *old_size);
+        memcpy(new_table, fctx->tables[table_idx].entries, sizeof(wah_value_t) * *old_size);
     }
     for (uint64_t i = *old_size; i < new_size; ++i) {
         new_table[i] = init_val;
     }
 
-    wah_value_t *old_entries = ctx->tables[table_idx].entries;
-    ctx->tables[table_idx].entries = new_table;
-    ctx->tables[table_idx].size = new_size;
+    wah_value_t *old_entries = fctx->tables[table_idx].entries;
+    fctx->tables[table_idx].entries = new_table;
+    fctx->tables[table_idx].size = new_size;
     wah_budget_charge(ctx, delta_bytes);
 
-    if (ctx->tables[table_idx].import_ctx) {
-        wah_exec_context_t *src = ctx->tables[table_idx].import_ctx;
-        uint32_t src_idx = ctx->tables[table_idx].import_idx;
-        if (ctx->tables[table_idx].is_imported) {
+    if (fctx->tables[table_idx].import_ctx) {
+        wah_exec_context_t *src = fctx->tables[table_idx].import_ctx;
+        uint32_t src_idx = fctx->tables[table_idx].import_idx;
+        if (fctx->tables[table_idx].is_imported) {
             wah_budget_charge(src, delta_bytes);
             src->tables[src_idx].is_imported = true;
         }
@@ -10811,7 +10811,7 @@ static wah_error_t wah_table_grow_internal(
         src->tables[src_idx].size = new_size;
     }
     wah_free(grow_alloc, old_entries);
-    if (ctx->tables) ctx->tables[table_idx].is_imported = false;
+    fctx->tables[table_idx].is_imported = false;
 
     *grew = true;
     return WAH_OK;
@@ -10824,7 +10824,7 @@ static bool wah_memory_grow_internal(
     *old_pages = fctx->memories[mem_idx].size / WAH_WASM_PAGE_SIZE;
     uint64_t new_pages = *old_pages + pages_to_grow;
 
-    if (new_pages < *old_pages || new_pages > ctx->memories[mem_idx].max_pages || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
+    if (new_pages < *old_pages || new_pages > fctx->memories[mem_idx].max_pages || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
         return false;
     }
 
@@ -10833,8 +10833,8 @@ static bool wah_memory_grow_internal(
     if (!wah_budget_check(ctx, delta_bytes)) {
         return false;
     }
-    if (ctx->memories[mem_idx].import_ctx && ctx->memories[mem_idx].is_imported) {
-        if (!wah_budget_check(ctx->memories[mem_idx].import_ctx, delta_bytes)) {
+    if (fctx->memories[mem_idx].import_ctx && fctx->memories[mem_idx].is_imported) {
+        if (!wah_budget_check(fctx->memories[mem_idx].import_ctx, delta_bytes)) {
             return false;
         }
     }
@@ -10853,10 +10853,10 @@ static bool wah_memory_grow_internal(
 
     wah_budget_charge(ctx, delta_bytes);
     fctx->memories[mem_idx].size = (uint64_t)new_memory_size;
-    if (ctx->memories[mem_idx].import_ctx) {
-        wah_exec_context_t *src = ctx->memories[mem_idx].import_ctx;
-        uint32_t src_idx = ctx->memories[mem_idx].import_idx;
-        if (ctx->memories[mem_idx].is_imported) {
+    if (fctx->memories[mem_idx].import_ctx) {
+        wah_exec_context_t *src = fctx->memories[mem_idx].import_ctx;
+        uint32_t src_idx = fctx->memories[mem_idx].import_idx;
+        if (fctx->memories[mem_idx].is_imported) {
             wah_budget_charge(src, delta_bytes);
             src->memories[src_idx].is_imported = true;
         }
@@ -10867,7 +10867,7 @@ static bool wah_memory_grow_internal(
             src->memory_size = src->memories[0].size;
         }
     }
-    if (ctx->memories) ctx->memories[mem_idx].is_imported = false;
+    fctx->memories[mem_idx].is_imported = false;
     if (mem_idx == 0) {
         fctx->memory_base = fctx->memories[0].data;
         fctx->memory_size = fctx->memories[0].size;
@@ -11896,9 +11896,9 @@ WAH_RUN(GLOBAL_SET) {
     uint32_t table_idx = wah_read_u32_le(bytecode_ip); \
     bytecode_ip += sizeof(uint32_t); \
     uint64_t elem_idx = (uint64_t)(uint##N##_t)(*--sp).i##N; \
-    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    WAH_ENSURE_GOTO(elem_idx < ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
-    *sp++ = ctx->tables[table_idx].entries[elem_idx]; \
+    WAH_ASSERT(table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
+    WAH_ENSURE_GOTO(elem_idx < fctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
+    *sp++ = fctx->tables[table_idx].entries[elem_idx]; \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -11908,9 +11908,9 @@ WAH_RUN(GLOBAL_SET) {
     bytecode_ip += sizeof(uint32_t); \
     wah_value_t val = *--sp; \
     uint64_t elem_idx = (uint64_t)(uint##N##_t)(*--sp).i##N; \
-    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    WAH_ENSURE_GOTO(elem_idx < ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
-    wah_ref_store_table(ctx, table_idx, elem_idx, val); \
+    WAH_ASSERT(table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
+    WAH_ENSURE_GOTO(elem_idx < fctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
+    wah_ref_store_table(fctx, table_idx, elem_idx, val); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -11918,8 +11918,8 @@ WAH_RUN(GLOBAL_SET) {
 #define WAH_TABLE_SIZE_IMPL(N) { \
     uint32_t table_idx = wah_read_u32_le(bytecode_ip); \
     bytecode_ip += sizeof(uint32_t); \
-    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    (*sp++).i##N = (int##N##_t)ctx->tables[table_idx].size; \
+    WAH_ASSERT(table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
+    (*sp++).i##N = (int##N##_t)fctx->tables[table_idx].size; \
     WAH_NEXT(); \
 }
 
@@ -11928,14 +11928,14 @@ WAH_RUN(GLOBAL_SET) {
     bytecode_ip += sizeof(uint32_t); \
     int64_t delta = (int64_t)(*--sp).i##N; \
     wah_value_t init_val = *--sp; \
-    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
+    WAH_ASSERT(table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
     \
     if (delta < 0) { \
         (*sp++).i##N = -1; \
     } else { \
         uint64_t old_size; \
         bool grew; \
-        WAH_CHECK_GOTO(wah_table_grow_internal(ctx, table_idx, (uint64_t)delta, init_val, &old_size, &grew), cleanup); \
+        WAH_CHECK_GOTO(wah_table_grow_internal(ctx, fctx, table_idx, (uint64_t)delta, init_val, &old_size, &grew), cleanup); \
         (*sp++).i##N = grew ? (int##N##_t)old_size : -1; \
     } \
     WAH_NEXT(); \
@@ -11949,9 +11949,9 @@ WAH_RUN(GLOBAL_SET) {
     uint64_t size = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     wah_value_t val = *--sp; \
     uint64_t offset = (uint64_t)(uint##N##_t)(*--sp).i##N; \
-    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(offset, size, ctx->tables[table_idx].size), WAH_ERROR_TRAP, cleanup); \
-    uint64_t done = wah_bulk_table_fill(ctx, table_idx, offset, val, size); \
+    WAH_ASSERT(table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
+    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(offset, size, fctx->tables[table_idx].size), WAH_ERROR_TRAP, cleanup); \
+    uint64_t done = wah_bulk_table_fill(ctx, fctx, table_idx, offset, val, size); \
     if (done < size) { \
         (*sp++).i##N = (int##N##_t)(offset + done); \
         *sp++ = val; \
@@ -11971,11 +11971,11 @@ WAH_RUN(GLOBAL_SET) {
     uint64_t size = (uint64_t)(uint##Z##_t)(*--sp).i##Z; \
     uint64_t src_offset = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     uint64_t dst_offset = (uint64_t)(uint##M##_t)(*--sp).i##M; \
-    WAH_ASSERT(src_table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    WAH_ASSERT(dst_table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
-    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(src_offset, size, ctx->tables[src_table_idx].size), WAH_ERROR_TRAP, cleanup); \
-    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dst_offset, size, ctx->tables[dst_table_idx].size), WAH_ERROR_TRAP, cleanup); \
-    uint64_t done = wah_bulk_table_copy(ctx, dst_table_idx, dst_offset, src_table_idx, src_offset, size); \
+    WAH_ASSERT(src_table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
+    WAH_ASSERT(dst_table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
+    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(src_offset, size, fctx->tables[src_table_idx].size), WAH_ERROR_TRAP, cleanup); \
+    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dst_offset, size, fctx->tables[dst_table_idx].size), WAH_ERROR_TRAP, cleanup); \
+    uint64_t done = wah_bulk_table_copy(ctx, fctx, dst_table_idx, dst_offset, src_table_idx, src_offset, size); \
     if (done < size) { \
         bool backward = (src_table_idx == dst_table_idx && dst_offset > src_offset && dst_offset < src_offset + size); \
         if (backward) { \
@@ -12002,17 +12002,17 @@ WAH_RUN(GLOBAL_SET) {
     uint32_t src_offset = (*--sp).i32; \
     uint64_t dst_offset = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     WAH_ASSERT(elem_idx < fctx->module->element_segment_count && "validation didn't catch out-of-bound element segment index"); \
-    WAH_ASSERT(table_idx < ctx->table_count && "validation didn't catch out-of-bound table index"); \
+    WAH_ASSERT(table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
     const wah_element_segment_t *segment = &fctx->module->element_segments[elem_idx]; \
     if (wah_elem_seg_is_dropped(fctx, elem_idx)) { \
         WAH_ENSURE_GOTO(size == 0 && src_offset == 0, WAH_ERROR_TRAP, cleanup); \
-        WAH_ENSURE_GOTO(dst_offset <= ctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
+        WAH_ENSURE_GOTO(dst_offset <= fctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
         WAH_NEXT(); \
     } \
     WAH_ENSURE_GOTO(wah_u64_range_in_bounds(src_offset, size, segment->num_elems), WAH_ERROR_TRAP, cleanup); \
-    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dst_offset, size, ctx->tables[table_idx].size), WAH_ERROR_TRAP, cleanup); \
+    WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dst_offset, size, fctx->tables[table_idx].size), WAH_ERROR_TRAP, cleanup); \
     wah_error_t init_err; \
-    uint32_t done = wah_bulk_table_init(ctx, table_idx, dst_offset, segment, src_offset, size, &init_err); \
+    uint32_t done = wah_bulk_table_init(ctx, fctx, table_idx, dst_offset, segment, src_offset, size, &init_err); \
     if (init_err != WAH_OK) { err = init_err; goto cleanup; } \
     if (done < size) { \
         (*sp++).i##N = (int##N##_t)(dst_offset + done); \
@@ -12463,7 +12463,7 @@ WAH_RUN(END) { // End of function
     bytecode_ip += sizeof(uint64_t); \
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
-    if (!(mem0)) { WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
+    if (!(mem0)) { WAH_ASSERT(memidx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
     WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, \
         (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr), cleanup); \
     (*sp++).value_field = cast wah_read_##T##_le( \
@@ -12480,7 +12480,7 @@ WAH_RUN(END) { // End of function
     value_type val = (*--sp).value_field; \
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
-    if (!(mem0)) { WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
+    if (!(mem0)) { WAH_ASSERT(memidx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
     WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, \
         (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr), cleanup); \
     wah_write_##T##_le( \
@@ -12678,7 +12678,7 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
 #define WAH_MEMORY_SIZE_IMPL(N) { \
     uint32_t mem_idx = wah_read_u32_le(bytecode_ip); \
     bytecode_ip += sizeof(uint32_t); \
-    WAH_ASSERT(mem_idx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
+    WAH_ASSERT(mem_idx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); \
     (*sp++).i##N = (int##N##_t)(fctx->memories[mem_idx].size / WAH_WASM_PAGE_SIZE); \
     WAH_NEXT(); \
 }
@@ -12686,7 +12686,7 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
 #define WAH_MEMORY_GROW_IMPL(N) { \
     uint32_t mem_idx = wah_read_u32_le(bytecode_ip); \
     bytecode_ip += sizeof(uint32_t); \
-    WAH_ASSERT(mem_idx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
+    WAH_ASSERT(mem_idx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); \
     \
     int##N##_t pages_to_grow = (*--sp).i##N; \
     if (pages_to_grow < 0) { \
@@ -12707,7 +12707,7 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
     uint32_t mem_idx = wah_read_u32_le(bytecode_ip); \
     bytecode_ip += sizeof(uint32_t); \
-    WAH_ASSERT(mem_idx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
+    WAH_ASSERT(mem_idx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); \
     \
     uint64_t size = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     uint8_t val = (uint8_t)(*--sp).i32; \
@@ -12732,7 +12732,7 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
     uint32_t mem_idx = wah_read_u32_le(bytecode_ip); \
     bytecode_ip += sizeof(uint32_t); \
     \
-    WAH_ASSERT(mem_idx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); \
+    WAH_ASSERT(mem_idx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); \
     WAH_ASSERT(data_idx < fctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index"); \
     \
     uint32_t size = (uint32_t)(*--sp).i32; \
@@ -12765,8 +12765,8 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
     uint32_t src_mem_idx = wah_read_u32_le(bytecode_ip); \
     bytecode_ip += sizeof(uint32_t); \
     \
-    WAH_ASSERT(dest_mem_idx < ctx->memory_count); \
-    WAH_ASSERT(src_mem_idx < ctx->memory_count); \
+    WAH_ASSERT(dest_mem_idx < fctx->memory_count); \
+    WAH_ASSERT(src_mem_idx < fctx->memory_count); \
     \
     uint64_t size = (uint64_t)(uint##Z##_t)(*--sp).i##Z; \
     uint64_t src = (uint64_t)(uint##N##_t)(*--sp).i##N; \
@@ -12914,7 +12914,7 @@ WAH_RUN(UNREACHABLE) {
     bytecode_ip += sizeof(uint64_t); \
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
-    if (!(mem0)) { WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
+    if (!(mem0)) { WAH_ASSERT(memidx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
     WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, (read_size), \
         (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr), cleanup); \
     uint8_t *_mem_base = (mem0) ? fctx->memory_base : fctx->memories[memidx].data
@@ -12946,7 +12946,7 @@ WAH_RUN(UNREACHABLE) {
     wah_v128_t val = (*--sp).v128; \
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
-    if (!(mem0)) { WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
+    if (!(mem0)) { WAH_ASSERT(memidx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
     WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, \
         (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr), cleanup); \
     WAH_ASSERT(lane_idx < 128/N && "validation didn't catch out-of-bound lane index"); \
@@ -13044,7 +13044,7 @@ WAH_RUN(V128_LOAD64_LANE_i32_mem0) V128_LOAD_LANE_OP(1, WAH_SP_ADDR_I32, 64)
     wah_v128_t val = (*--sp).v128; \
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
-    if (!(mem0)) { WAH_ASSERT(memidx < ctx->memory_count); } \
+    if (!(mem0)) { WAH_ASSERT(memidx < fctx->memory_count); } \
     WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, \
         (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr), cleanup); \
     WAH_ASSERT(lane_idx < 128/N); \
@@ -13072,7 +13072,7 @@ WAH_RUN(V128_STORE) {
     wah_v128_t val = (*--sp).v128;
     uint32_t addr = (uint32_t)(*--sp).i32;
     uint64_t effective_addr;
-    WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index");
+    WAH_ASSERT(memidx < fctx->memory_count && "validation didn't catch out-of-bound memory index");
     WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memories[memidx].size, &effective_addr), cleanup);
     memcpy(fctx->memories[memidx].data + effective_addr, &val, sizeof(wah_v128_t));
     WAH_NEXT();
@@ -13190,7 +13190,7 @@ WAH_RUN(V128_STORE_i64) {
     wah_v128_t val = (*--sp).v128;
     uint64_t addr = (uint64_t)(*--sp).i64;
     uint64_t effective_addr;
-    WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index");
+    WAH_ASSERT(memidx < fctx->memory_count && "validation didn't catch out-of-bound memory index");
     WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memories[memidx].size, &effective_addr), cleanup);
     memcpy(fctx->memories[memidx].data + effective_addr, &val, sizeof(wah_v128_t));
     WAH_NEXT();

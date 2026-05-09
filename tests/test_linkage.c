@@ -786,6 +786,119 @@ int main() {
         wah_free_module(&linked_mod);
     }
 
+    // Regression: wah_memory_grow_internal used ctx->memories[mem_idx] instead of
+    // fctx->memories[mem_idx] for max_pages / import checks, causing OOB access
+    // when the linked context has memories that the primary context does not.
+    printf("Test: cross-module memory.grow via wah_link_context (security regression)\n");
+    {
+        // Provider: has 1 memory (1 page, max 10 pages), exports grow_and_size.
+        // grow_and_size(pages_to_grow) -> old_page_count
+        const char *provider_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            funcs {[ 0 ]} \
+            memories {[ limits.i32/2 1 10 ]} \
+            exports {[ {'grow'} fn# 0 ]} \
+            code {[ {[] local.get 0 memory.grow 0 end } ]}";
+
+        // Consumer: NO memory, imports grow from provider, re-exports as wrapper.
+        const char *consumer_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            imports {[ {'p'} {'grow'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'call_grow'} fn# 1 ]} \
+            code {[ {[] local.get 0 call 0 end } ]}";
+
+        wah_module_t provider = {0}, consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+        wah_exec_context_t pctx = {0};
+        assert_ok(wah_new_exec_context(&pctx, &provider, NULL));
+        assert_ok(wah_instantiate(&pctx));
+
+        wah_exec_context_t cctx = {0};
+        assert_ok(wah_new_exec_context(&cctx, &consumer, NULL));
+        assert_ok(wah_link_context(&cctx, "p", &pctx));
+        assert_ok(wah_instantiate(&cctx));
+
+        // Grow by 1 page. Should return old page count (1) without OOB access.
+        wah_value_t arg = {.i32 = 1};
+        wah_value_t result;
+        assert_ok(wah_call(&cctx, 0, &arg, 1, &result));
+        assert_eq_i32(result.i32, 1);  // old page count was 1
+
+        // Grow again by 2 pages. Should return 2 (now 2 pages).
+        arg.i32 = 2;
+        assert_ok(wah_call(&cctx, 0, &arg, 1, &result));
+        assert_eq_i32(result.i32, 2);  // old page count was 2
+
+        wah_free_exec_context(&cctx);
+        wah_free_exec_context(&pctx);
+        wah_free_module(&consumer);
+        wah_free_module(&provider);
+    }
+
+    // Regression: TABLE_*_IMPL macros used ctx->tables instead of fctx->tables,
+    // causing wrong-table access when the linked context has its own tables.
+    printf("Test: cross-module table ops via wah_link_context (security regression)\n");
+    {
+        // Provider: has 1 table (funcref, min 2, max 10), exports table.size and table.grow.
+        // size() -> i32 via table.size
+        // grow(delta) -> old_size via table.grow
+        const char *provider_spec = "wasm \
+            types {[ fn [] [i32], fn [i32] [i32] ]} \
+            funcs {[ 0, 1 ]} \
+            tables {[ funcref limits.i32/2 2 10 ]} \
+            exports {[ {'size'} fn# 0, {'grow'} fn# 1 ]} \
+            code {[ \
+                {[] table.size 0 end }, \
+                {[] ref.null funcref local.get 0 table.grow 0 end } \
+            ]}";
+
+        // Consumer: NO table, imports from provider, re-exports as wrappers.
+        const char *consumer_spec = "wasm \
+            types {[ fn [] [i32], fn [i32] [i32] ]} \
+            imports {[ {'p'} {'size'} fn# 0, {'p'} {'grow'} fn# 1 ]} \
+            funcs {[ 0, 1 ]} \
+            exports {[ {'size'} fn# 2, {'grow'} fn# 3 ]} \
+            code {[ \
+                {[] call 0 end }, \
+                {[] local.get 0 call 1 end } \
+            ]}";
+
+        wah_module_t provider = {0}, consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+        wah_exec_context_t pctx = {0};
+        assert_ok(wah_new_exec_context(&pctx, &provider, NULL));
+        assert_ok(wah_instantiate(&pctx));
+
+        wah_exec_context_t cctx = {0};
+        assert_ok(wah_new_exec_context(&cctx, &consumer, NULL));
+        assert_ok(wah_link_context(&cctx, "p", &pctx));
+        assert_ok(wah_instantiate(&cctx));
+
+        // table.size should return 2
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&cctx, "size", NULL, 0, &result));
+        assert_eq_i32(result.i32, 2);
+
+        // table.grow by 3 should return old size (2)
+        wah_value_t grow_arg = {.i32 = 3};
+        assert_ok(wah_call_by_name(&cctx, "grow", &grow_arg, 1, &result));
+        assert_eq_i32(result.i32, 2);
+
+        // table.size should now return 5
+        assert_ok(wah_call_by_name(&cctx, "size", NULL, 0, &result));
+        assert_eq_i32(result.i32, 5);
+
+        wah_free_exec_context(&cctx);
+        wah_free_exec_context(&pctx);
+        wah_free_module(&consumer);
+        wah_free_module(&provider);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
