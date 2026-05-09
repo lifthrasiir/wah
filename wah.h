@@ -6961,8 +6961,7 @@ cleanup_block:
         }
         case WAH_OP_I31_GET_S:
         case WAH_OP_I31_GET_U: {
-            wah_type_t ref_type; POP_INTO(&ref_type);
-            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
+            POP(I31REF);
             PUSH(I32);
             EMIT_SIMPLE();
             break;

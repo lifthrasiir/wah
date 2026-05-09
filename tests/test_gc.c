@@ -1588,6 +1588,53 @@ int main() {
         wah_free_module(&wasm_mod);
     }
 
+    // Regression: i31.get_s/i31.get_u must reject non-i31 ref types at validation.
+    // Previously the validator accepted any reference type, allowing heap pointer leaks.
+    printf("Test: i31.get_s/i31.get_u reject non-i31ref operands...\n");
+    {
+        // structref -> i31.get_s must fail validation
+        wah_module_t m = {0};
+        assert_err(wah_parse_module_from_spec(&m, "wasm \
+            types {[ struct [i32 mut], fn [type.ref 0] [i32] ]} \
+            funcs {[ 1 ]} \
+            code {[ {[] local.get 0 i31.get_s end} ]}"),
+            WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&m);
+
+        // structref -> i31.get_u must fail validation
+        assert_err(wah_parse_module_from_spec(&m, "wasm \
+            types {[ struct [i32 mut], fn [type.ref 0] [i32] ]} \
+            funcs {[ 1 ]} \
+            code {[ {[] local.get 0 i31.get_u end} ]}"),
+            WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&m);
+
+        // funcref -> i31.get_s must fail validation
+        assert_err(wah_parse_module_from_spec(&m, "wasm \
+            types {[ fn [funcref] [i32] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] local.get 0 i31.get_s end} ]}"),
+            WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&m);
+
+        // i31ref -> i31.get_s must pass validation
+        assert_ok(wah_parse_module_from_spec(&m, "wasm \
+            types {[ fn [i31ref] [i32] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] local.get 0 i31.get_s end} ]}"));
+        wah_free_module(&m);
+
+        // anyref -> i31.get_s must fail (anyref is a supertype of i31ref, not subtype)
+        assert_err(wah_parse_module_from_spec(&m, "wasm \
+            types {[ fn [anyref] [i32] ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] local.get 0 i31.get_s end} ]}"),
+            WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&m);
+
+        printf("  PASSED\n");
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }
