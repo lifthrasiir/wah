@@ -6641,6 +6641,11 @@ cleanup_block:
             if (opcode_val == WAH_OP_STRUCT_NEW) {
                 for (uint32_t j = td->field_count; j > 0; --j)
                     WAH_CHECK(wah_validation_pop_field_value(vctx, td->field_types[j - 1]));
+            } else {
+                for (uint32_t j = 0; j < td->field_count; ++j) {
+                    wah_type_t ft = td->field_types[j];
+                    WAH_ENSURE(!WAH_TYPE_IS_REF(ft) || WAH_TYPE_IS_NULLABLE(ft), WAH_ERROR_VALIDATION_FAILED);
+                }
             }
             PUSH(_(WAH_TYPE_FROM_IDX(typeidx, 0)));
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = typeidx);
@@ -6682,8 +6687,12 @@ cleanup_block:
             const wah_type_def_t *td = &vctx->module->type_defs[typeidx];
             WAH_ENSURE(td->kind == WAH_COMP_ARRAY, WAH_ERROR_VALIDATION_FAILED);
             POP(I32);
-            if (opcode_val == WAH_OP_ARRAY_NEW)
+            if (opcode_val == WAH_OP_ARRAY_NEW) {
                 WAH_CHECK(wah_validation_pop_field_value(vctx, td->field_types[0]));
+            } else {
+                wah_type_t ft = td->field_types[0];
+                WAH_ENSURE(!WAH_TYPE_IS_REF(ft) || WAH_TYPE_IS_NULLABLE(ft), WAH_ERROR_VALIDATION_FAILED);
+            }
             PUSH(_(WAH_TYPE_FROM_IDX(typeidx, 0)));
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = typeidx);
             break;

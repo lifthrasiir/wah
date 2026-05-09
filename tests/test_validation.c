@@ -581,6 +581,55 @@ static void test_nullref_subtype_check() {
     wah_free_module(&module);
 }
 
+static void test_struct_new_default_non_defaultable() {
+    printf("Testing struct.new_default rejects non-defaultable fields...\n");
+
+    // struct { (ref 0) } -- non-nullable ref field is NOT defaultable
+    // struct.new_default should be rejected by validation
+    const char *bad_spec = "wasm \
+        types {[ sub [] struct [type.ref 0 mut], fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] struct.new_default 0 ref.is_null end } ]}";
+
+    wah_module_t bad = {0};
+    assert_err(wah_parse_module_from_spec(&bad, bad_spec), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad);
+
+    // struct { (ref null 0) } -- nullable ref field IS defaultable (should pass)
+    const char *good_spec = "wasm \
+        types {[ sub [] struct [type.ref.null 0 mut], fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] struct.new_default 0 ref.is_null end } ]}";
+
+    wah_module_t good = {0};
+    assert_ok(wah_parse_module_from_spec(&good, good_spec));
+    wah_free_module(&good);
+}
+
+static void test_array_new_default_non_defaultable() {
+    printf("Testing array.new_default rejects non-defaultable element type...\n");
+
+    // array (ref 0) -- non-nullable ref element is NOT defaultable
+    const char *bad_spec = "wasm \
+        types {[ sub [] array type.ref 0 mut, fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] i32.const 3 array.new_default 0 ref.is_null end } ]}";
+
+    wah_module_t bad = {0};
+    assert_err(wah_parse_module_from_spec(&bad, bad_spec), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad);
+
+    // array (ref null 0) -- nullable ref element IS defaultable (should pass)
+    const char *good_spec = "wasm \
+        types {[ sub [] array type.ref.null 0 mut, fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] i32.const 3 array.new_default 0 ref.is_null end } ]}";
+
+    wah_module_t good = {0};
+    assert_ok(wah_parse_module_from_spec(&good, good_spec));
+    wah_free_module(&good);
+}
+
 int main() {
     test_block_type_not_skipped();
     test_if_complex_block_type();
@@ -597,6 +646,8 @@ int main() {
     test_unknown_opcode();
     test_ref_test_concrete_heap_type();
     test_nullref_subtype_check();
+    test_struct_new_default_non_defaultable();
+    test_array_new_default_non_defaultable();
     printf("All validation tests passed!\n");
     return 0;
 }
