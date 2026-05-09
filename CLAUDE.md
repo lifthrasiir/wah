@@ -158,8 +158,9 @@ OOM and leak hygiene are tested explicitly (`tests/test_oom.c` injects allocatio
     - Uses `gcc` compiler. Set `DEBUG=1` for debug builds. Sanitizer flags (ASAN/UBSAN) are wired in via the Makefile.
 - **Exit Codes:** Tests return 0 only on success, non-zero on any failure.
 - **Regression Tests:** Always add a failing regression test before fixing bugs to demonstrate the fix.
+- **Spec tests:** `tests/spectest/foo.bin.wast` was compiled from `foo.wast` in the original test suite. Those original files are available in `https://raw.githubusercontent.com/WebAssembly/spec/c840c58c21304946f009808b9e5e686b1734d8f0/test/core/foo.wast`; some later tests are alternatively in `/core/{exceptions,gc,multi-memory,relaxed-simd,simd}` directories.
 - **Test split:** Tests that `#define WAH_IMPLEMENTATION` compile standalone (link with `common.o` only). Tests without it are API-only and link with the precompiled `wah_impl.o + common.o`. This split is the key build optimization.
-- **Fuzzing:** `fuzz/fuzz_libfuzzer.c` (libFuzzer) and `fuzz/fuzz_afl.c` (AFL) drive `wah_parse_module` + instantiation + execution under fuel and memory caps; corpora live under `fuzz/corpus*`.
+- **Fuzzing:** `fuzz/fuzz_libfuzzer.c` (libFuzzer) and `fuzz/fuzz_afl.c` (AFL) drive `wah_parse_module` + instantiation + execution under fuel and memory caps; corpora live under `fuzz/*.tar.gz`.
 - **CI:** 8 configurations: Linux (gcc/clang on x86-64 + aarch64), macOS (clang), Windows (msvc/gcc/clang). Windows GCC/Clang use MSYS2.
 
 ### Build Gotcha
@@ -168,7 +169,7 @@ OOM and leak hygiene are tested explicitly (`tests/test_oom.c` injects allocatio
 
 ### Performance Tips
 
-Prefer `-msvc` on Windows for initial runs, as it is much faster than GCC and Clang. Also consider using `-j#` for parallel building on POSIX, but do not try to use all available cores at once (that hurts interactivity).
+Prefer `-msvc` on Windows for initial runs, as it is much faster than GCC and Clang. Also consider using `-j` for parallel building on POSIX; `-jN` should also work but only when you know the exact number of cores available for use.
 
 ### Test DSL (`tests/common.c`)
 
