@@ -356,6 +356,26 @@ static void test_subtype_validation() {
     wah_free_module(&good_mod);
 }
 
+// Regression: supertype cycle within a rec group caused infinite loops in chain walks.
+// Validate that supertype index must be strictly less than current type index.
+static void test_supertype_cycle() {
+    printf("Testing supertype cycle rejection...\n");
+
+    // Type 1 declares supertype 1 (self-reference)
+    const char *self_ref = "wasm \
+        types {[ sub [] fn [] [], sub [1] fn [] [] ]}";
+    wah_module_t bad1 = {0};
+    assert_err(wah_parse_module_from_spec(&bad1, self_ref), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad1);
+
+    // Within a rec group: type 0 declares supertype 1, type 1 declares supertype 0
+    const char *cycle = "wasm \
+        types {[ rec [ sub [1] fn [] [], sub [0] fn [] [] ] ]}";
+    wah_module_t bad2 = {0};
+    assert_err(wah_parse_module_from_spec(&bad2, cycle), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad2);
+}
+
 // 5922606: Validate type reference scope: reject forward refs across rec groups.
 static void test_forward_ref_across_rec_groups() {
     printf("Testing forward ref across rec groups (5922606)...\n");
@@ -549,6 +569,7 @@ int main() {
     test_call_ref();
     test_uninit_local_tracking();
     test_subtype_validation();
+    test_supertype_cycle();
     test_forward_ref_across_rec_groups();
     test_gc_mutability_check();
     test_gc_array_numeric_operands();

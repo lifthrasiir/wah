@@ -8163,7 +8163,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
         for (uint32_t j = 0; j < ft->result_count; ++j) WAH_VALIDATE_HEAP_TYPE_IDX(ft->result_types[j]);
         wah_type_def_t *td = &module->type_defs[i];
         if (td->supertype != WAH_NO_SUPERTYPE) {
-            WAH_ENSURE(td->supertype < module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(td->supertype < i, WAH_ERROR_VALIDATION_FAILED);
             const wah_type_def_t *super_td = &module->type_defs[td->supertype];
             WAH_ENSURE(!super_td->is_final, WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(td->kind == super_td->kind, WAH_ERROR_VALIDATION_FAILED);
