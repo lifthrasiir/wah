@@ -899,6 +899,70 @@ int main() {
         wah_free_module(&provider);
     }
 
+    // Regression: wah_bind_frame_module falls back to caller's context when
+    // a transitive module (linked into a linked context) is not found in
+    // the primary context's linked_modules. The function then executes with
+    // wrong globals.
+    printf("Test: transitive cross-module call uses correct globals (security regression)\n");
+    {
+        // Module C: global g=100, exports getG() -> i32 = global.get 0
+        const char *spec_c = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            globals {[ i32 immut i32.const 100 end ]} \
+            exports {[ {'getG'} fn# 0 ]} \
+            code {[ {[] global.get 0 end } ]}";
+
+        // Module B: imports getG from C, exports wrapG() -> i32 = call getG
+        // B has its own global b=200 to verify offset computation.
+        const char *spec_b = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'C'} {'getG'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            globals {[ i32 immut i32.const 200 end ]} \
+            exports {[ {'wrapG'} fn# 1 ]} \
+            code {[ {[] call 0 end } ]}";
+
+        // Module A: imports wrapG from B, has its own global a=999.
+        // Exports run() -> i32 = call wrapG
+        const char *spec_a = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'B'} {'wrapG'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            globals {[ i32 immut i32.const 999 end ]} \
+            exports {[ {'run'} fn# 1 ]} \
+            code {[ {[] call 0 end } ]}";
+
+        wah_module_t mod_c = {0}, mod_b = {0}, mod_a = {0};
+        assert_ok(wah_parse_module_from_spec(&mod_c, spec_c));
+        assert_ok(wah_parse_module_from_spec(&mod_b, spec_b));
+        assert_ok(wah_parse_module_from_spec(&mod_a, spec_a));
+
+        // B instantiated with C linked via wah_link_module.
+        wah_exec_context_t bctx = {0};
+        assert_ok(wah_new_exec_context(&bctx, &mod_b, NULL));
+        assert_ok(wah_link_module(&bctx, "C", &mod_c));
+        assert_ok(wah_instantiate(&bctx));
+
+        // A links B_ctx via wah_link_context (B is already instantiated).
+        wah_exec_context_t actx = {0};
+        assert_ok(wah_new_exec_context(&actx, &mod_a, NULL));
+        assert_ok(wah_link_context(&actx, "B", &bctx));
+        assert_ok(wah_instantiate(&actx));
+
+        // run() -> wrapG() -> getG() should return 100 (C's global).
+        // Before fix: returns 999 (A's global) or crashes due to wrong context.
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&actx, "run", NULL, 0, &result));
+        assert_eq_i32(result.i32, 100);
+
+        wah_free_exec_context(&actx);
+        wah_free_exec_context(&bctx);
+        wah_free_module(&mod_a);
+        wah_free_module(&mod_b);
+        wah_free_module(&mod_c);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

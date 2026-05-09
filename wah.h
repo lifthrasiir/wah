@@ -10396,11 +10396,31 @@ static inline void wah_bind_frame_module(
             offset += ctx->linked_modules[i].module->global_count;
         }
         if (!found) {
-            // Cross-context funcref to a module not directly linked into ctx (e.g.,
-            // a funcref reached through a chain of imported tables). Fall back to
-            // ctx's own resources -- the function body executes with the caller's
-            // globals/tables, matching the legacy "fn_module unknown -> use caller"
-            // semantics that predate parse-time fn_module assignment.
+            for (uint32_t i = 0; i < ctx->linked_module_count && !found; i++) {
+                wah_exec_context_t *lctx = ctx->linked_modules[i].ctx;
+                if (!lctx) continue;
+                uint32_t loffset = wah_global_index_limit(lctx->module);
+                for (uint32_t j = 0; j < lctx->linked_module_count; j++) {
+                    if (lctx->linked_modules[j].module == fn_module) {
+                        if (lctx->linked_modules[j].ctx) {
+                            frame->frame_globals = lctx->linked_modules[j].ctx->globals;
+                            frame->frame_function_table = lctx->linked_modules[j].ctx->function_table;
+                            frame->frame_function_table_count = lctx->linked_modules[j].ctx->function_table_count;
+                            frame->frame_ctx = lctx->linked_modules[j].ctx;
+                        } else {
+                            frame->frame_globals = lctx->globals + loffset;
+                            frame->frame_function_table = lctx->function_table;
+                            frame->frame_function_table_count = lctx->function_table_count;
+                            frame->frame_ctx = lctx;
+                        }
+                        found = true;
+                        break;
+                    }
+                    loffset += lctx->linked_modules[j].module->global_count;
+                }
+            }
+        }
+        if (!found) {
             frame->frame_globals = ctx->globals;
             frame->frame_function_table = ctx->function_table;
             frame->frame_function_table_count = ctx->function_table_count;
@@ -12152,7 +12172,7 @@ WAH_RUN(CALL) {
         if (!fn_module) fn_module = frame->module;
         uint32_t local_idx = called_fn->local_idx;
         const wah_func_type_t *called_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
-        WAH_CALL_WASM_INLINE(fn_module, local_idx, called_func_type, NULL);
+        WAH_CALL_WASM_INLINE(fn_module, local_idx, called_func_type, called_fn->fn_ctx);
     }
 
     WAH_NEXT();
