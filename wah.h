@@ -10762,10 +10762,13 @@ static wah_error_t wah_table_grow_internal(
     *old_size = ctx->tables[table_idx].size;
 
     uint64_t new_size = *old_size + delta;
-    if (new_size > ctx->tables[table_idx].max_size) {
+    if (new_size < *old_size || new_size > ctx->tables[table_idx].max_size) {
         return WAH_OK;
     }
 
+    if (delta > SIZE_MAX / sizeof(wah_value_t)) {
+        return WAH_OK;
+    }
     uint64_t delta_bytes = delta * sizeof(wah_value_t);
     if (!wah_budget_check(ctx, delta_bytes)) {
         return WAH_OK;
@@ -10819,7 +10822,7 @@ static bool wah_memory_grow_internal(
     *old_pages = fctx->memories[mem_idx].size / WAH_WASM_PAGE_SIZE;
     uint64_t new_pages = *old_pages + pages_to_grow;
 
-    if (new_pages > ctx->memories[mem_idx].max_pages || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
+    if (new_pages < *old_pages || new_pages > ctx->memories[mem_idx].max_pages || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
         return false;
     }
 

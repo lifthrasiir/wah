@@ -1138,6 +1138,113 @@ static void test_memory_copy_mixed_validation(void) {
     wah_free_module(&good3);
 }
 
+// Regression: memory64 memory.grow with a large positive delta that causes
+// old_pages + delta to overflow uint64. The overflow check in
+// wah_memory_grow_internal must reject these before reaching realloc.
+static void test_memory64_grow_overflow() {
+    printf("Testing memory64 memory.grow overflow (security regression)...\n");
+
+    // memory64 memory, initial size 1 page, max unbounded.
+    // func 0: memory.grow with i64 delta, returns old size or -1.
+    // func 1: memory.size.
+    const char *spec = "wasm \
+        types {[ fn [i64] [i64], fn [] [i64] ]} \
+        funcs {[ 0, 1 ]} \
+        memories {[ limits.i64/1 1 ]} \
+        code {[ \
+            {[] local.get 0 memory.grow 0 end }, \
+            {[] memory.size 0 end } \
+        ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_options_t opts = {0};
+    wah_limits_t limits = {0};
+    limits.max_memory_bytes = 1024 * 1024;
+    opts.limits = limits;
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &module, &opts));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t params[1], result;
+
+    // delta = UINT64_MAX: old_pages(1) + UINT64_MAX overflows to 0,
+    // which would pass the max_pages check without the overflow guard.
+    params[0].i64 = (int64_t)UINT64_MAX;
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i64(result.i64, -1);
+
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i64(result.i64, 1);
+
+    // delta = UINT64_MAX - 1: old_pages(1) + delta wraps to 0 as well.
+    params[0].i64 = (int64_t)(UINT64_MAX - 1);
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i64(result.i64, -1);
+
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i64(result.i64, 1);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&module);
+}
+
+// Regression: table64 table.grow with a large positive delta that causes
+// old_size + delta to overflow uint64, or delta * sizeof(wah_value_t) to
+// overflow and corrupt the memory budget. The overflow checks in
+// wah_table_grow_internal must reject these before reaching malloc/memcpy.
+static void test_table64_grow_overflow() {
+    printf("Testing table64 table.grow overflow (security regression)...\n");
+
+    // table64 table, initial size 1, max unbounded.
+    // func 0: table.grow with i64 delta, returns old size or -1.
+    // func 1: table.size.
+    const char *spec = "wasm \
+        types {[ fn [i64] [i64], fn [] [i64] ]} \
+        funcs {[ 0, 1 ]} \
+        tables {[ funcref limits.i64/1 1 ]} \
+        code {[ \
+            {[] ref.null funcref local.get 0 table.grow 0 end }, \
+            {[] table.size 0 end } \
+        ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_options_t opts = {0};
+    wah_limits_t limits = {0};
+    limits.max_memory_bytes = 1024 * 1024;
+    opts.limits = limits;
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &module, &opts));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t params[1], result;
+
+    // delta = (1 << 62): positive as int64, but delta * sizeof(wah_value_t)
+    // overflows uint64 to 0, which would bypass the memory budget check.
+    // The overflow check must catch this and return -1.
+    params[0].i64 = (int64_t)(1ULL << 62);
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i64(result.i64, -1);
+
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i64(result.i64, 1);
+
+    // delta = UINT64_MAX / 2: old_size(1) + delta doesn't overflow, but
+    // delta * sizeof(wah_value_t) overflows. Must return -1.
+    params[0].i64 = (int64_t)(UINT64_MAX / 2);
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i64(result.i64, -1);
+
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i64(result.i64, 1);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&module);
+}
+
 int main() {
     test_memory_grow_clamp();
     test_memory64_large_limits_parsing();
@@ -1170,6 +1277,8 @@ int main() {
     test_memory64_fill_runtime();
     test_memory64_init_runtime();
     test_memory_copy_mixed_validation();
+    test_memory64_grow_overflow();
+    test_table64_grow_overflow();
     printf("All memory64/table64 tests passed!\n");
     return 0;
 }
