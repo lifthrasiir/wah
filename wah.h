@@ -12303,7 +12303,6 @@ WAH_RUN(CALL_REF) {
         wah_value_t *tc_result_vals = sp; \
         WAH_ENSURE_GOTO((uint8_t *)(tc_result_vals + tc_nresults) <= (uint8_t *)ctx->frame_ptr, WAH_ERROR_STACK_OVERFLOW, cleanup); \
         memset(tc_result_vals, 0, sizeof(wah_value_t) * tc_nresults); \
-        RELOAD_FRAME(); \
         frame->bytecode_ip = bytecode_ip; \
         ctx->sp = sp; \
         WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, tc_fn, tc_param_vals, (uint32_t)tc_nparams, tc_result_vals), cleanup); \
@@ -12311,6 +12310,7 @@ WAH_RUN(CALL_REF) {
             memmove(tc_param_vals, tc_result_vals, sizeof(wah_value_t) * tc_nresults); \
         } \
         sp = tc_param_vals + tc_nresults; \
+        RELOAD_FRAME(); \
     } while (0)
 
 WAH_RUN(RETURN_CALL) {

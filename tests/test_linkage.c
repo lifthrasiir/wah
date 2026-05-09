@@ -1135,6 +1135,39 @@ int main() {
         wah_free_module(&lib);
     }
 
+    // Bug: return_call to a host function from the outermost wasm frame
+    // (call_depth == 1) caused RELOAD_FRAME to jump to cleanup because
+    // call_depth decremented to 0, silently skipping the host function.
+    printf("Test: return_call to host function from outermost frame\n");
+    {
+        wah_module_t host_mod = {0};
+        assert_ok(wah_new_module(&host_mod, NULL));
+        assert_ok(wah_export_func(&host_mod, "host_fn", "() -> i32", simple_host_func, NULL, NULL));
+
+        wah_module_t wasm_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, "wasm \
+            types {[fn [] [i32]]} \
+            imports {[{'host'} {'host_fn'} fn# 0]} \
+            funcs {[0]} \
+            exports {[{'go'} fn# 1]} \
+            code {[{[] return_call 0 end}]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
+        assert_ok(wah_link_module(&ctx, "host", &host_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        host_func_called = 0;
+        wah_value_t result = {0};
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+        assert_true(host_func_called);
+        assert_eq_i32(result.i32, 42);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&host_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
