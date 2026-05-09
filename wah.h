@@ -12915,8 +12915,8 @@ WAH_RUN(UNREACHABLE) {
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
     if (!(mem0)) { WAH_ASSERT(memidx < ctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
-    WAH_CHECK(wah_check_effective_addr(addr, offset, (read_size), \
-        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr)); \
+    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, (read_size), \
+        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr), cleanup); \
     uint8_t *_mem_base = (mem0) ? fctx->memory_base : fctx->memories[memidx].data
 
 #define V128_LOAD_HALF_OP(mem0, addr_expr, N, elem_ty, cast) { \
@@ -12925,6 +12925,7 @@ WAH_RUN(UNREACHABLE) {
     for (int i = 0; i < 64/N; ++i) \
         v->elem_ty[i] = cast(wah_read_u##N##_le(_mem_base + effective_addr + i * (N/8))); \
     WAH_NEXT(); \
+    WAH_CLEANUP(); \
 }
 
 #define V128_LOAD_SPLAT_OP(mem0, addr_expr, N) { \
@@ -12933,6 +12934,7 @@ WAH_RUN(UNREACHABLE) {
     uint##N##_t val = wah_read_u##N##_le(_mem_base + effective_addr); \
     for (int i = 0; i < 128/N; ++i) v->u##N[i] = val; \
     WAH_NEXT(); \
+    WAH_CLEANUP(); \
 }
 
 #define V128_LOAD_LANE_OP(mem0, addr_expr, N) { \
@@ -12959,12 +12961,14 @@ WAH_RUN(V128_LOAD) {
     V128_LOAD_COMMON(0, sizeof(wah_v128_t), WAH_SP_ADDR_I32);
     memcpy(&(*sp++).v128, _mem_base + effective_addr, sizeof(wah_v128_t));
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(V128_LOAD_i32_mem0) {
     V128_LOAD_COMMON(1, sizeof(wah_v128_t), WAH_SP_ADDR_I32);
     memcpy(&(*sp++).v128, _mem_base + effective_addr, sizeof(wah_v128_t));
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(V128_LOAD8X8_S) V128_LOAD_HALF_OP(0, WAH_SP_ADDR_I32, 8, i16, (int16_t)(int8_t))
@@ -12996,12 +13000,14 @@ WAH_RUN(V128_LOAD32_ZERO) {
     wah_v128_t *v = &(*sp++).v128;
     *v = (wah_v128_t){ .u64 = {wah_read_u32_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 WAH_RUN(V128_LOAD64_ZERO) {
     V128_LOAD_COMMON(0, 8, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
     *v = (wah_v128_t){ .u64 = {wah_read_u64_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(V128_LOAD32_ZERO_i32_mem0) {
@@ -13009,12 +13015,14 @@ WAH_RUN(V128_LOAD32_ZERO_i32_mem0) {
     wah_v128_t *v = &(*sp++).v128;
     *v = (wah_v128_t){ .u64 = {wah_read_u32_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 WAH_RUN(V128_LOAD64_ZERO_i32_mem0) {
     V128_LOAD_COMMON(1, 8, WAH_SP_ADDR_I32);
     wah_v128_t *v = &(*sp++).v128;
     *v = (wah_v128_t){ .u64 = {wah_read_u64_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(V128_LOAD8_LANE) V128_LOAD_LANE_OP(0, WAH_SP_ADDR_I32, 8)
@@ -13090,12 +13098,14 @@ WAH_RUN(V128_LOAD_i64) {
     V128_LOAD_COMMON(0, sizeof(wah_v128_t), WAH_SP_ADDR_I64);
     memcpy(&(*sp++).v128, _mem_base + effective_addr, sizeof(wah_v128_t));
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(V128_LOAD_i64_mem0) {
     V128_LOAD_COMMON(1, sizeof(wah_v128_t), WAH_SP_ADDR_I64);
     memcpy(&(*sp++).v128, _mem_base + effective_addr, sizeof(wah_v128_t));
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(V128_LOAD8X8_S_i64) V128_LOAD_HALF_OP(0, WAH_SP_ADDR_I64, 8, i16, (int16_t)(int8_t))
@@ -13127,12 +13137,14 @@ WAH_RUN(V128_LOAD32_ZERO_i64) {
     wah_v128_t *v = &(*sp++).v128;
     *v = (wah_v128_t){ .u64 = {wah_read_u32_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 WAH_RUN(V128_LOAD64_ZERO_i64) {
     V128_LOAD_COMMON(0, 8, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
     *v = (wah_v128_t){ .u64 = {wah_read_u64_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(V128_LOAD32_ZERO_i64_mem0) {
@@ -13140,12 +13152,14 @@ WAH_RUN(V128_LOAD32_ZERO_i64_mem0) {
     wah_v128_t *v = &(*sp++).v128;
     *v = (wah_v128_t){ .u64 = {wah_read_u32_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 WAH_RUN(V128_LOAD64_ZERO_i64_mem0) {
     V128_LOAD_COMMON(1, 8, WAH_SP_ADDR_I64);
     wah_v128_t *v = &(*sp++).v128;
     *v = (wah_v128_t){ .u64 = {wah_read_u64_le(_mem_base + effective_addr), 0} };
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(V128_LOAD8_LANE_i64) V128_LOAD_LANE_OP(0, WAH_SP_ADDR_I64, 8)
