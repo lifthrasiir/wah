@@ -15710,6 +15710,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         WAH_ENSURE_GOTO(linked_ctx != NULL, WAH_ERROR_LINK_FAILED, cleanup);
         WAH_ENSURE_GOTO(linked_tag_idx < linked_ctx->tag_instance_count, WAH_ERROR_LINK_FAILED, cleanup);
         ctx->tag_instances[i] = linked_ctx->tag_instances[linked_tag_idx];
+        ctx->tag_instances[i].type_index = tgi->type_index;
     }
 
     if (!ctx->gc) {

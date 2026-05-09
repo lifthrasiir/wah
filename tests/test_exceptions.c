@@ -534,6 +534,56 @@ static void test_end_inside_try_table() {
 
 // Regression: 65+ nested try_table blocks overflow exception_handlers array
 // because WAH_MAX_EXCEPTION_HANDLER_DEPTH (64) < WAH_MAX_CONTROL_DEPTH (256).
+// Regression: wah_link_module tag import shallow-copies type_index from the
+// provider module's type space.  If the provider's tag type sits at a higher
+// index than the consumer has types, THROW performs an OOB read on
+// consumer->types[].
+static void test_link_module_tag_type_index_cross_module() {
+    printf("Testing wah_link_module tag type_index cross-module (regression)...\n");
+
+    // Provider has 4 types; the tag uses type index 3 (fn [i32] -> []).
+    // The first three types are dummies so the tag index is high.
+    const char *provider_spec = "wasm \
+        types {[ fn [] [], fn [] [], fn [] [], fn [i32] [] ]} \
+        tags {[ tag.type# 3 ]} \
+        exports {[ {'tag'} export.tag 0 ]}";
+
+    // Consumer has only 2 types.  Tag import maps to local type index 0
+    // (fn [i32] -> []), which is structurally identical to provider's type 3.
+    // After the shallow copy bug, the tag instance keeps type_index=3 from
+    // the provider, causing an OOB read on consumer->types[3] during THROW.
+    const char *consumer_spec = "wasm \
+        types {[ fn [i32] [], fn [] [i32] ]} \
+        imports {[ {'provider'} {'tag'} tag# tag.type# 0 ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] \
+            block i32 \
+                try_table void [catch 0 1] \
+                    i32.const 88 \
+                    throw 0 \
+                end \
+                i32.const -1 \
+            end \
+        end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &consumer, NULL));
+    assert_ok(wah_link_module(&ctx, "provider", &provider));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 88);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
 static void test_try_table_handler_overflow() {
     printf("Testing try_table exception handler overflow...\n");
 
@@ -571,6 +621,7 @@ int main() {
     test_link_module_tag_mismatch();
     test_return_inside_try_table();
     test_end_inside_try_table();
+    test_link_module_tag_type_index_cross_module();
     test_try_table_handler_overflow();
     printf("All exception tests passed!\n");
     return 0;
