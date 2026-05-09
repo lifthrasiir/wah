@@ -15319,8 +15319,8 @@ void wah_trap(wah_call_context_t *ctx, wah_error_t reason) {
 // --- Linkage Implementation ---
 
 wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah_module_t *mod) {
-    const wah_alloc_t *alloc = &ctx->alloc;
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    const wah_alloc_t *alloc = &ctx->alloc;
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
     WAH_ENSURE(!ctx->is_instantiated, WAH_ERROR_MISUSE);
@@ -15346,8 +15346,8 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
 }
 
 wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec_context_t *linked_ctx) {
-    const wah_alloc_t *alloc = &ctx->alloc;
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    const wah_alloc_t *alloc = &ctx->alloc;
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(linked_ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(!ctx->is_instantiated, WAH_ERROR_MISUSE);

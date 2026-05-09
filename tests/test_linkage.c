@@ -703,6 +703,16 @@ int main() {
         wah_free_module(&host_mod);
     }
 
+    // Regression: wah_link_module/wah_link_context dereferenced ctx before NULL check.
+    printf("Test: wah_link_module/wah_link_context NULL ctx returns MISUSE\n");
+    {
+        wah_module_t dummy = {0};
+        assert_err(wah_link_module(NULL, "x", &dummy), WAH_ERROR_MISUSE);
+
+        wah_exec_context_t dummy_ctx = {0};
+        assert_err(wah_link_context(NULL, "x", &dummy_ctx), WAH_ERROR_MISUSE);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
