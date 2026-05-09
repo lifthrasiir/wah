@@ -11288,7 +11288,7 @@ WAH_RUN(THROW_REF) {
 
     wah_exception_t *exc = (wah_exception_t *)exnref_val.ref;
     wah_exception_t *copy;
-    WAH_MALLOC_GOTO(copy, cleanup_ref);
+    WAH_MALLOC_GOTO(copy, cleanup);
     *copy = *exc;
     copy->next = NULL;
     wah_exception_track(ctx, copy);
@@ -11301,8 +11301,6 @@ WAH_RUN(THROW_REF) {
         memcpy(copy->value_types, exc->value_types, sizeof(wah_type_t) * exc->value_count);
     }
 
-    wah_exception_free(ctx, exc);
-
     frame->bytecode_ip = bytecode_ip;
     ctx->sp = sp;
     // copy is no longer owned. Also it returns WAH_THROW_EXCEPTION which should be propagated.
@@ -11314,8 +11312,6 @@ WAH_RUN(THROW_REF) {
 
 cleanup_copy:
     wah_exception_free(ctx, copy);
-cleanup_ref:
-    wah_exception_free(ctx, exc);
     WAH_CLEANUP();
 }
 
@@ -12217,10 +12213,12 @@ WAH_RUN(ELEM_DROP) {
                         expected_func_type->result_count == (actual_fn)->nresults, WAH_ERROR_TRAP, cleanup); \
         { bool _types_ok = true; \
         for (uint32_t i = 0; i < expected_func_type->param_count; ++i) { \
-            if (expected_func_type->param_types[i] != (actual_fn)->param_types[i]) { _types_ok = false; break; } \
+            if (!wah_type_is_subtype(expected_func_type->param_types[i], (actual_fn)->param_types[i], fctx->module)) \
+                { _types_ok = false; break; } \
         } \
         for (uint32_t i = 0; _types_ok && i < expected_func_type->result_count; ++i) { \
-            if (expected_func_type->result_types[i] != (actual_fn)->result_types[i]) { _types_ok = false; break; } \
+            if (!wah_type_is_subtype((actual_fn)->result_types[i], expected_func_type->result_types[i], fctx->module)) \
+                { _types_ok = false; break; } \
         } \
         WAH_ENSURE_GOTO(_types_ok, WAH_ERROR_TRAP, cleanup); } \
         CALL_HOST; \
@@ -14691,17 +14689,18 @@ static void wah_cancel_internal(wah_exec_context_t *ctx) {
     wah_timer_set_armed(ctx, false);
     WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0);
     wah_recompute_poll_flag(ctx);
-    if (ctx->lifecycle.state == WAH_EXEC_READY) return;
-    ctx->sp = ctx->lifecycle.base_sp;
-    ctx->call_depth = ctx->lifecycle.base_call_depth;
-    ctx->frame_ptr = ctx->lifecycle.base_frame_ptr;
-    ctx->exception_handler_depth = ctx->lifecycle.base_handler_depth;
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
     if (ctx->pending_exception) {
         wah_exception_free(ctx, ctx->pending_exception);
         ctx->pending_exception = NULL;
     }
+    wah_exception_free_all(ctx);
 #endif
+    if (ctx->lifecycle.state == WAH_EXEC_READY) return;
+    ctx->sp = ctx->lifecycle.base_sp;
+    ctx->call_depth = ctx->lifecycle.base_call_depth;
+    ctx->frame_ptr = ctx->lifecycle.base_frame_ptr;
+    ctx->exception_handler_depth = ctx->lifecycle.base_handler_depth;
     ctx->lifecycle = (struct wah_exec_lifecycle_s){0};
 }
 
@@ -15652,10 +15651,12 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             WAH_ENSURE_GOTO(import_type->param_count == src->nparams, WAH_ERROR_LINK_FAILED, cleanup);
             WAH_ENSURE_GOTO(import_type->result_count == src->nresults, WAH_ERROR_LINK_FAILED, cleanup);
             for (uint32_t p = 0; p < import_type->param_count; p++) {
-                WAH_ENSURE_GOTO(import_type->param_types[p] == src->param_types[p], WAH_ERROR_LINK_FAILED, cleanup);
+                WAH_ENSURE_GOTO(wah_type_is_subtype(import_type->param_types[p], src->param_types[p], module),
+                                WAH_ERROR_LINK_FAILED, cleanup);
             }
             for (uint32_t r = 0; r < import_type->result_count; r++) {
-                WAH_ENSURE_GOTO(import_type->result_types[r] == src->result_types[r], WAH_ERROR_LINK_FAILED, cleanup);
+                WAH_ENSURE_GOTO(wah_type_is_subtype(src->result_types[r], import_type->result_types[r], module),
+                                WAH_ERROR_LINK_FAILED, cleanup);
             }
         } else {
             uint32_t src_local_fn_idx = linked_local_idx;

@@ -154,6 +154,69 @@ static void test_cross_module_throw_tag_context() {
     wah_free_module(&provider);
 }
 
+static void test_throw_ref_local_use_after_free() {
+    printf("Testing throw_ref does not free exnref still held in a local...\n");
+
+    // Regression: throw_ref used to free the original exception before throwing
+    // a copy. If the exnref was also stored in a local (via local.tee), the local
+    // becomes a dangling pointer. Re-reading the local and using throw_ref on it
+    // triggers a use-after-free (detectable by ASan).
+    //
+    // Structure:
+    //   1. throw 0 with i32=42
+    //   2. catch_ref catches -> delivers (i32, exnref) to INNER block
+    //   3. local.tee 0 saves exnref, throw_ref re-throws (copy)
+    //   4. T_MID catches -> delivers i32 to MID block
+    //   5. local.get 0 reads the (previously dangling) exnref
+    //   6. throw_ref re-throws from the local -> T_OUTER catches
+    //   7. Function returns i32 = 42
+    const char *spec = "wasm \
+        types {[ fn [] [i32], fn [i32] [], fn [] [i32, exnref] ]} \
+        funcs {[ 0 ]} \
+        tags {[ tag.type# 1 ]} \
+        code {[ {[1 exnref] \
+            block i32 \
+              try_table void [catch 0 0] \
+                block i32 \
+                  try_table void [catch 0 0] \
+                    block 2 \
+                      try_table void [catch_ref 0 0] \
+                        i32.const 42 \
+                        throw 0 \
+                      end \
+                      i32.const 0 \
+                      ref.null exnref \
+                    end \
+                    local.tee 0 \
+                    throw_ref \
+                    unreachable \
+                  end \
+                  i32.const -1 \
+                end \
+                drop \
+                local.get 0 \
+                throw_ref \
+                unreachable \
+              end \
+              i32.const -1 \
+            end \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&module);
+}
+
 static void test_catch_ref_and_throw_ref() {
     printf("Testing catch_ref and throw_ref...\n");
 
@@ -612,6 +675,7 @@ int main() {
     test_try_table_catch_label_types();
     test_catch_all();
     test_cross_module_throw_tag_context();
+    test_throw_ref_local_use_after_free();
     test_catch_ref_and_throw_ref();
     test_nested_try_table();
     test_try_table_no_catch_propagates();
