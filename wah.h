@@ -10825,7 +10825,7 @@ static wah_error_t wah_table_grow_internal(
         return WAH_OK;
     }
 
-    if (delta > SIZE_MAX / sizeof(wah_value_t)) {
+    if (delta > SIZE_MAX / sizeof(wah_value_t) || new_size > SIZE_MAX / sizeof(wah_value_t)) {
         return WAH_OK;
     }
     uint64_t delta_bytes = delta * sizeof(wah_value_t);
@@ -15861,6 +15861,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             WAH_ENSURE_GOTO(exp_mt->min_pages >= mi->type.min_pages, WAH_ERROR_LINK_FAILED, cleanup);
             ctx->memories[i].max_pages = exp_mt->max_pages;
             uint64_t min_pages = exp_mt->min_pages;
+            WAH_ENSURE_GOTO(min_pages <= SIZE_MAX / WAH_WASM_PAGE_SIZE, WAH_ERROR_TOO_LARGE, cleanup);
             uint64_t byte_size = min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
             WAH_ENSURE_GOTO(wah_budget_check(ctx, byte_size), WAH_ERROR_TOO_LARGE, cleanup);
             ctx->memories[i].is_imported = false;
