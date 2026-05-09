@@ -6963,13 +6963,17 @@ cleanup_block:
 
         case WAH_OP_ANY_CONVERT_EXTERN: {
             wah_type_t ref_type; POP_INTO(&ref_type);
-            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(ref_type == WAH_TYPE_BOT ||
+                       wah_type_is_subtype(WAH_TYPE_AS_NON_NULL(ref_type), WAH_TYPE_EXTERN, vctx->module),
+                       WAH_ERROR_VALIDATION_FAILED);
             PUSH(_(WAH_TYPE_IS_NULLABLE(ref_type) ? WAH_TYPE_ANYREF : WAH_TYPE_ANY));
             break; // No opcode emitted
         }
         case WAH_OP_EXTERN_CONVERT_ANY: {
             wah_type_t ref_type; POP_INTO(&ref_type);
-            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(ref_type == WAH_TYPE_BOT ||
+                       wah_type_is_subtype(WAH_TYPE_AS_NON_NULL(ref_type), WAH_TYPE_ANY, vctx->module),
+                       WAH_ERROR_VALIDATION_FAILED);
             PUSH(_(WAH_TYPE_IS_NULLABLE(ref_type) ? WAH_TYPE_EXTERNREF : WAH_TYPE_EXTERN));
             break; // No opcode emitted
         }

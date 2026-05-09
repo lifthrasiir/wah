@@ -344,6 +344,36 @@ static void test_extern_convert_validation() {
     wah_module_t m3 = {0};
     assert_err(wah_parse_module_from_spec(&m3, malformed), WAH_ERROR_MALFORMED);
     wah_free_module(&m3);
+
+    // Negative: extern.convert_any on funcref (wrong hierarchy)
+    const char *bad_func = "wasm \
+        types {[ fn [] [externref] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] ref.null funcref extern.convert_any end } ]}";
+
+    wah_module_t m4 = {0};
+    assert_err(wah_parse_module_from_spec(&m4, bad_func), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m4);
+
+    // Negative: any.convert_extern on funcref (wrong hierarchy)
+    const char *bad_func2 = "wasm \
+        types {[ fn [] [anyref] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] ref.null funcref any.convert_extern end } ]}";
+
+    wah_module_t m5 = {0};
+    assert_err(wah_parse_module_from_spec(&m5, bad_func2), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m5);
+
+    // Positive: any.convert_extern on externref (correct hierarchy)
+    const char *good_extern = "wasm \
+        types {[ fn [] [anyref] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] ref.null externref any.convert_extern end } ]}";
+
+    wah_module_t m6 = {0};
+    assert_ok(wah_parse_module_from_spec(&m6, good_extern));
+    wah_free_module(&m6);
 }
 
 // --- Tests moved from test_references.c ---
@@ -921,7 +951,7 @@ static void test_array_new_huge_i8_length_oom() {
         funcs {[ 1 ]} \
         code {[ {[] \
             i32.const 7 i32.const -12 array.new 0 \
-            i32.const 1 array.get 0 \
+            i32.const 1 array.get_u 0 \
         end } ]}";
 
     wah_module_t module = {0};
