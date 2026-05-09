@@ -5636,7 +5636,7 @@ static inline wah_error_t wah_validation_pop_and_match_type(wah_validation_conte
 }
 
 static inline wah_error_t wah_validation_pop_field_value(wah_validation_context_t *vctx, wah_type_t field_type) {
-    wah_type_t ut = WAH_TYPE_IS_PACKED(field_type) ? WAH_TYPE_I32 : WAH_TYPE_AS_NULLABLE(field_type);
+    wah_type_t ut = WAH_TYPE_IS_PACKED(field_type) ? WAH_TYPE_I32 : field_type;
     return wah_validation_pop_and_match_type(vctx, ut);
 }
 

@@ -630,6 +630,67 @@ static void test_array_new_default_non_defaultable() {
     wah_free_module(&good);
 }
 
+static void test_non_nullable_field_store_validation() {
+    printf("Testing struct.set/array.set reject nullable value for non-nullable field...\n");
+
+    // struct { mut (ref 0) } -- non-nullable field
+    // struct.set with ref.null should be rejected
+    const char *bad_struct_set = "wasm \
+        types {[ sub [] struct [type.ref 0 mut], fn [type.ref.null 0] [] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] \
+            local.get 0 \
+            ref.null 0 \
+            struct.set 0 0 \
+        end } ]}";
+
+    wah_module_t bad1 = {0};
+    assert_err(wah_parse_module_from_spec(&bad1, bad_struct_set), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad1);
+
+    // struct.new with ref.null for non-nullable field should also be rejected
+    const char *bad_struct_new = "wasm \
+        types {[ sub [] struct [type.ref 0 mut], fn [] [type.ref.null 0] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] \
+            ref.null 0 \
+            struct.new 0 \
+        end } ]}";
+
+    wah_module_t bad2 = {0};
+    assert_err(wah_parse_module_from_spec(&bad2, bad_struct_new), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad2);
+
+    // array.set with ref.null for non-nullable element should be rejected
+    const char *bad_array_set = "wasm \
+        types {[ sub [] array type.ref 0 mut, fn [type.ref.null 0] [] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] \
+            local.get 0 \
+            i32.const 0 \
+            ref.null 0 \
+            array.set 0 \
+        end } ]}";
+
+    wah_module_t bad3 = {0};
+    assert_err(wah_parse_module_from_spec(&bad3, bad_array_set), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad3);
+
+    // Positive: struct.set with non-nullable value for non-nullable field (should pass)
+    const char *good_struct_set = "wasm \
+        types {[ sub [] struct [type.ref 0 mut], fn [type.ref 0] [] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] \
+            local.get 0 \
+            local.get 0 \
+            struct.set 0 0 \
+        end } ]}";
+
+    wah_module_t good = {0};
+    assert_ok(wah_parse_module_from_spec(&good, good_struct_set));
+    wah_free_module(&good);
+}
+
 int main() {
     test_block_type_not_skipped();
     test_if_complex_block_type();
@@ -648,6 +709,7 @@ int main() {
     test_nullref_subtype_check();
     test_struct_new_default_non_defaultable();
     test_array_new_default_non_defaultable();
+    test_non_nullable_field_store_validation();
     printf("All validation tests passed!\n");
     return 0;
 }
