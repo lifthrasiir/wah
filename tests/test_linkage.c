@@ -963,6 +963,38 @@ int main() {
         wah_free_module(&mod_c);
     }
 
+    // Bug: global import subtype check uses wah_type_is_subtype with the linked
+    // module only, so the importer's concrete type index is resolved in the
+    // wrong module.  struct{i32} vs struct{i64} at the same type index passes.
+    printf("Test: cross-module global import rejects incompatible GC types\n");
+    {
+        // exporter: type 0 = struct{i32 mut}, mutable global of type (ref null 0)
+        wah_module_t mod_exp = {0};
+        assert_ok(wah_parse_module_from_spec(&mod_exp, "wasm \
+            types {[struct [i32 mut]]} \
+            globals {[type.ref.null 0 mut ref.null 0 end]} \
+            exports {[{'g'} global# 0]}"));
+
+        // importer: type 0 = struct{i64 mut}, imports mutable global of type (ref null 0)
+        wah_module_t mod_imp = {0};
+        assert_ok(wah_parse_module_from_spec(&mod_imp, "wasm \
+            types {[struct [i64 mut], fn [] []]} \
+            imports {[{'E'} {'g'} export.global type.ref.null 0 mut]} \
+            funcs {[1]} \
+            exports {[{'run'} fn# 0]} \
+            code {[{[] end}]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &mod_imp, NULL));
+        wah_link_module(&ctx, "E", &mod_exp);
+        wah_error_t err = wah_instantiate(&ctx);
+        assert_err(err, WAH_ERROR_LINK_FAILED);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod_imp);
+        wah_free_module(&mod_exp);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

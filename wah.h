@@ -4686,14 +4686,21 @@ static bool wah_cross_module_type_ref_eq(const wah_module_t *ma, wah_type_t ta,
 static bool wah_cross_module_subtype(const wah_module_t *sub_m, wah_type_t sub_t,
                                      const wah_module_t *sup_m, wah_type_t sup_t) {
     if (sub_t == sup_t && sub_m == sup_m) return true;
+    if (WAH_TYPE_IS_NULLABLE(sub_t) && !WAH_TYPE_IS_NULLABLE(sup_t)) return false;
     if (wah_cross_module_type_ref_eq(sub_m, sub_t, sup_m, sup_t)) return true;
     if (sub_t < 0 || sup_t < 0) return wah_type_is_subtype(sub_t, sup_t, sub_m);
+    // Strip nullability for structural comparison (non-null <: nullable is valid)
+    wah_type_t sub_nn = WAH_TYPE_AS_NON_NULL(sub_t);
+    wah_type_t sup_nn = WAH_TYPE_AS_NON_NULL(sup_t);
+    if (sub_nn != sub_t || sup_nn != sup_t) {
+        if (wah_cross_module_type_ref_eq(sub_m, sub_nn, sup_m, sup_nn)) return true;
+    }
     // Walk supertype chain of sub_t
     uint32_t t = WAH_TYIDX(sub_t);
     while (t != WAH_NO_SUPERTYPE) {
         if (sub_m->type_defs[t].supertype == WAH_NO_SUPERTYPE) break;
         t = sub_m->type_defs[t].supertype;
-        if (wah_cross_module_type_ref_eq(sub_m, WAH_TYPE_FROM_IDX(t, WAH_TYPE_IS_NULLABLE(sub_t)), sup_m, sup_t)) return true;
+        if (wah_cross_module_type_ref_eq(sub_m, WAH_TYPE_FROM_IDX(t, 0), sup_m, sup_nn)) return true;
     }
     return false;
 }
@@ -15623,18 +15630,12 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         WAH_ENSURE_GOTO(linked_global_idx >= linked->import_global_count, WAH_ERROR_LINK_FAILED, cleanup);
         uint32_t linked_local_global_idx = linked_global_idx - linked->import_global_count;
 
-        // Verify global type compatibility
+        // Verify global type compatibility: (mut1? vt1) <: (mut2? vt2) iff
+        //   vt1 <: vt2 && (both immut || (both mut && vt2 <: vt1))
         const wah_global_t *exported_global = &linked->globals[linked_local_global_idx];
-        WAH_ENSURE_GOTO(gi->is_mutable == exported_global->is_mutable, WAH_ERROR_LINK_FAILED, cleanup);
-        if (gi->is_mutable) {
-            WAH_ENSURE_GOTO(gi->type == exported_global->type, WAH_ERROR_LINK_FAILED, cleanup);
-        } else {
-            bool type_ok = wah_type_is_subtype(exported_global->type, gi->type, linked);
-            if (!type_ok && exported_global->type == gi->type) {
-                type_ok = true;
-            }
-            WAH_ENSURE_GOTO(type_ok, WAH_ERROR_LINK_FAILED, cleanup);
-        }
+        wah_type_t vt1 = exported_global->type, vt2 = gi->type;
+        WAH_ENSURE_GOTO(wah_cross_module_subtype(linked, vt1, module, vt2) && exported_global->is_mutable == gi->is_mutable
+                     && (!gi->is_mutable || wah_cross_module_subtype(module, vt2, linked, vt1)), WAH_ERROR_LINK_FAILED, cleanup);
 
         if (gi->is_mutable) {
             if (gi_linked_ctx) {
