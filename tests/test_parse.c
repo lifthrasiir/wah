@@ -840,6 +840,26 @@ static void test_reject_huge_memory_min_with_exec_limit() {
     wah_free_module(&module);
 }
 
+static void test_reject_huge_rec_group_count() {
+    printf("Running test_reject_huge_rec_group_count...\n");
+
+    // Type section with rec group (0x4E) declaring group_count=1000000 but
+    // only a few bytes of actual data. Should fail quickly without excessive
+    // allocation.
+    // Bytes: magic+version, type section (id=1, size=6), rec_count=1,
+    //        0x4E (rec marker), group_count=1000000 (LEB128: C0 84 3D)
+    const uint8_t wasm[] = {
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+        0x01, 0x06, 0x01, 0x4e, 0xc0, 0x84, 0x3d, 0x60
+    };
+
+    wah_parse_options_t opts = { .features = WAH_FEATURE_ALL };
+    wah_module_t module = {0};
+    wah_error_t err = wah_parse_module(&module, wasm, sizeof(wasm), &opts);
+    assert_true(err != WAH_OK);
+    wah_free_module(&module);
+}
+
 static void test_unreachable_array_new_fixed_huge_length() {
     printf("Running test_unreachable_array_new_fixed_huge_length...\n");
 
@@ -1076,6 +1096,7 @@ int main(void) {
     test_reject_huge_memory_min_with_exec_limit();
     test_unreachable_array_new_fixed_huge_length();
 
+    test_reject_huge_rec_group_count();
     test_overlong_sleb128_i64();
     test_start_function_type();
     test_elem_oob_table_idx();

@@ -8131,7 +8131,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
             WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_GC));
             (*ptr)++;
             uint32_t group_count;
-            WAH_CHECK(wah_decode_uleb128(ptr, section_end, &group_count));
+            WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &group_count, 1));
             uint32_t group_start = module->type_count;
             for (uint32_t g = 0; g < group_count; ++g) {
                 uint32_t idx = module->type_count;
