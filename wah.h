@@ -6659,8 +6659,13 @@ cleanup_block:
             const wah_type_def_t *td = &vctx->module->type_defs[typeidx];
             WAH_ENSURE(td->kind == WAH_COMP_STRUCT, WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(fieldidx < td->field_count, WAH_ERROR_VALIDATION_FAILED);
-            POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(typeidx, 0))));
             wah_type_t ft = td->field_types[fieldidx];
+            if (opcode_val == WAH_OP_STRUCT_GET) {
+                WAH_ENSURE(!WAH_TYPE_IS_PACKED(ft), WAH_ERROR_VALIDATION_FAILED);
+            } else {
+                WAH_ENSURE(WAH_TYPE_IS_PACKED(ft), WAH_ERROR_VALIDATION_FAILED);
+            }
+            POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(typeidx, 0))));
             PUSH(_(WAH_TYPE_IS_PACKED(ft) ? WAH_TYPE_I32 : ft));
             EMIT_INSTR_EX(opcode_val, _di->imm.type_field.type_idx = typeidx; _di->imm.type_field.field_idx = fieldidx);
             break;
@@ -6720,8 +6725,13 @@ cleanup_block:
             WAH_ENSURE(typeidx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
             const wah_type_def_t *td = &vctx->module->type_defs[typeidx];
             WAH_ENSURE(td->kind == WAH_COMP_ARRAY, WAH_ERROR_VALIDATION_FAILED);
-            POP(I32); POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(typeidx, 0))));
             wah_type_t et = td->field_types[0];
+            if (opcode_val == WAH_OP_ARRAY_GET) {
+                WAH_ENSURE(!WAH_TYPE_IS_PACKED(et), WAH_ERROR_VALIDATION_FAILED);
+            } else {
+                WAH_ENSURE(WAH_TYPE_IS_PACKED(et), WAH_ERROR_VALIDATION_FAILED);
+            }
+            POP(I32); POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(typeidx, 0))));
             PUSH(_(WAH_TYPE_IS_PACKED(et) ? WAH_TYPE_I32 : et));
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = typeidx);
             break;

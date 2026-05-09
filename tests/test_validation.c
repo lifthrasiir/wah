@@ -691,6 +691,61 @@ static void test_non_nullable_field_store_validation() {
     wah_free_module(&good);
 }
 
+static void test_packed_field_get_validation() {
+    printf("Testing struct.get_s/get_u require packed fields...\n");
+
+    // struct.get_s on non-packed i32 field should be rejected
+    const char *bad_get_s = "wasm \
+        types {[ sub [] struct [i32 mut], fn [type.ref.null 0] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] local.get 0 struct.get_s 0 0 end } ]}";
+
+    wah_module_t m1 = {0};
+    assert_err(wah_parse_module_from_spec(&m1, bad_get_s), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m1);
+
+    // struct.get_u on non-packed i32 field should be rejected
+    const char *bad_get_u = "wasm \
+        types {[ sub [] struct [i32 mut], fn [type.ref.null 0] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] local.get 0 struct.get_u 0 0 end } ]}";
+
+    wah_module_t m2 = {0};
+    assert_err(wah_parse_module_from_spec(&m2, bad_get_u), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m2);
+
+    // struct.get on packed i8 field should be rejected
+    // struct { i8 mut }
+    const char *bad_get_packed = "wasm \
+        types {[ sub [] struct [i8 mut], fn [type.ref.null 0] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] local.get 0 struct.get 0 0 end } ]}";
+
+    wah_module_t m3 = {0};
+    assert_err(wah_parse_module_from_spec(&m3, bad_get_packed), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m3);
+
+    // Positive: struct.get_s on packed i8 field should pass
+    const char *good_get_s = "wasm \
+        types {[ sub [] struct [i8 mut], fn [type.ref.null 0] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] local.get 0 struct.get_s 0 0 end } ]}";
+
+    wah_module_t m4 = {0};
+    assert_ok(wah_parse_module_from_spec(&m4, good_get_s));
+    wah_free_module(&m4);
+
+    // array.get_s on non-packed i32 array should be rejected
+    const char *bad_array_get_s = "wasm \
+        types {[ sub [] array i32 mut, fn [type.ref.null 0] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] local.get 0 i32.const 0 array.get_s 0 end } ]}";
+
+    wah_module_t m5 = {0};
+    assert_err(wah_parse_module_from_spec(&m5, bad_array_get_s), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m5);
+}
+
 int main() {
     test_block_type_not_skipped();
     test_if_complex_block_type();
@@ -710,6 +765,7 @@ int main() {
     test_struct_new_default_non_defaultable();
     test_array_new_default_non_defaultable();
     test_non_nullable_field_store_validation();
+    test_packed_field_get_validation();
     printf("All validation tests passed!\n");
     return 0;
 }
