@@ -9486,12 +9486,22 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
     }
 }
 
-static void wah_gc_scan_object(wah_gc_object_t *obj, const wah_module_t *module);
+static inline bool wah_gc_gray(const wah_gc_object_t *obj) {
+    return ((uintptr_t)obj->next_tagged & WAH_GC_TAG_AUX) != 0;
+}
+
+static inline void wah_gc_set_gray(wah_gc_object_t *obj, bool gray) {
+    if (gray)
+        obj->next_tagged = (struct wah_gc_object_s *)((uintptr_t)obj->next_tagged | WAH_GC_TAG_AUX);
+    else
+        obj->next_tagged = (struct wah_gc_object_s *)((uintptr_t)obj->next_tagged & ~WAH_GC_TAG_AUX);
+}
 
 static void wah_gc_mark_object(wah_gc_object_t *obj, const wah_module_t *module) {
+    (void)module;
     if (!obj || wah_gc_marked(obj)) return;
     wah_gc_set_mark(obj, true);
-    wah_gc_scan_object(obj, module);
+    wah_gc_set_gray(obj, true);
 }
 
 static void wah_gc_mark_ref(void *ref, const wah_module_t *module) {
@@ -9526,6 +9536,20 @@ static void wah_gc_scan_object(wah_gc_object_t *obj, const wah_module_t *module)
     }
 }
 
+static void wah_gc_drain_gray(wah_gc_state_t *gc, const wah_module_t *module) {
+    bool found_gray;
+    do {
+        found_gray = false;
+        for (wah_gc_object_t *obj = gc->all_objects; obj; obj = wah_gc_next(obj)) {
+            if (wah_gc_gray(obj)) {
+                wah_gc_set_gray(obj, false);
+                found_gray = true;
+                wah_gc_scan_object(obj, module);
+            }
+        }
+    } while (found_gray);
+}
+
 static void wah_gc_mark_exception(wah_exception_t *exc, const wah_module_t *module) {
     if (!exc || !exc->values || !exc->value_types) return;
     for (uint32_t i = 0; i < exc->value_count; i++) {
@@ -9555,13 +9579,17 @@ static void wah_gc_mark_visitor(wah_value_t *slot, wah_type_t type, void *userda
 static void wah_gc_step_mark(wah_exec_context_t *ctx) {
     wah_gc_state_t *gc = ctx->gc;
 
-    // Clear all marks
+    // Clear all marks and gray bits
     for (wah_gc_object_t *obj = gc->all_objects; obj; obj = wah_gc_next(obj)) {
         wah_gc_set_mark(obj, false);
+        wah_gc_set_gray(obj, false);
     }
 
-    // Mark from roots
+    // Mark from roots (marks objects as gray)
     wah_gc_enumerate_roots(ctx, wah_gc_mark_visitor, (void *)ctx->module);
+
+    // Iteratively scan gray objects until no more remain
+    wah_gc_drain_gray(gc, ctx->module);
 
     gc->phase = WAH_GC_PHASE_SWEEP;
     gc->sweep_cursor = NULL;

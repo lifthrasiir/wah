@@ -1460,6 +1460,44 @@ int main() {
         wah_free_module(&wasm_mod);
     }
 
+    // Regression: deep GC linked list previously caused C stack overflow during mark phase.
+    // Build a chain of 10000 linked-list nodes and verify GC completes without stack overflow.
+    printf("Test: deep GC linked list mark (iterative)...\n");
+    {
+        // struct type 0: { ref null 0 } (linked list node with next pointer)
+        // func type 1: () -> (ref null 0) - builds the chain
+        // The function creates 10000 nodes linked together.
+        const char *spec = "wasm \
+            types {[ sub [] struct [type.ref.null 0 mut], fn [] [type.ref.null 0] ]} \
+            funcs {[ 1 ]} \
+            code {[ {[1 type.ref.null 0, 1 i32] \
+                ref.null 0 local.set 0 \
+                i32.const 0 local.set 1 \
+                loop void \
+                    local.get 0 struct.new 0 local.set 0 \
+                    local.get 1 i32.const 1 i32.add local.set 1 \
+                    local.get 1 i32.const 10000 i32.lt_u br_if 0 \
+                end \
+                local.get 0 \
+            end } ]}";
+
+        wah_module_t deep_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&deep_mod, spec));
+        wah_exec_context_t deep_ctx = {0};
+        assert_ok(wah_new_exec_context(&deep_ctx, &deep_mod, NULL));
+        assert_ok(wah_gc_start(&deep_ctx));
+        assert_ok(wah_instantiate(&deep_ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call(&deep_ctx, 0, NULL, 0, &result));
+
+        wah_gc_step(&deep_ctx);
+        assert_true(deep_ctx.gc->phase == WAH_GC_PHASE_IDLE);
+
+        wah_free_exec_context(&deep_ctx);
+        wah_free_module(&deep_mod);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }
