@@ -107,6 +107,11 @@ void test_trap_func(wah_call_context_t *ctx, void *userdata) {
     printf(" PASS\n");
 }
 
+static void partial_result_host(wah_call_context_t *cctx, void *ud) {
+    (void)ud;
+    wah_result_i32(cctx, 0, 42);
+}
+
 int main() {
     // Test 1: Param accessors
     printf("Test 1: Param accessors\n");
@@ -372,6 +377,34 @@ int main() {
         wah_free_exec_context(&ctx);
         wah_free_module(&wasm_mod);
         wah_free_module(&env_mod);
+    }
+
+    // Regression: host function result slots uninitialized in wah_start_internal.
+    // If a host function omits setting a result via the resumable API, the result
+    // should be zero, not stale stack data.
+    printf("Test: host function unset results are zero via resumable API...\n");
+    {
+        wah_module_t mod = {0};
+        assert_ok(wah_new_module(&mod, NULL));
+        assert_ok(wah_export_func(&mod, "f", "() -> (i32, i32)", partial_result_host, NULL, NULL));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+        assert_ok(wah_instantiate(&ctx));
+
+        assert_ok(wah_start(&ctx, 0, NULL, 0));
+        wah_error_t err = wah_resume(&ctx);
+        assert(err == WAH_OK);
+
+        wah_value_t results[2] = {{ .i32 = -1 }, { .i32 = -1 }};
+        uint32_t actual = 0;
+        assert_ok(wah_finish(&ctx, results, 2, &actual));
+        assert(actual == 2);
+        assert_eq_i32(results[0].i32, 42);
+        assert_eq_i32(results[1].i32, 0);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod);
     }
 
     printf("All tests passed!\n");

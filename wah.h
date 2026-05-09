@@ -14578,6 +14578,9 @@ static wah_error_t wah_start_internal(
         for (uint32_t i = 0; i < param_count; ++i) {
             *ctx->sp++ = params[i];
         }
+        if (result_count > 0) {
+            memset(ctx->sp, 0, sizeof(wah_value_t) * result_count);
+        }
         ctx->sp += result_count;
         ctx->lifecycle.entry_param_count = param_count;
         ctx->lifecycle.entry_result_count = result_count;
