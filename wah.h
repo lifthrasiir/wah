@@ -10521,8 +10521,16 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
 
     if (target >= 0) {
         uint32_t target_idx = WAH_TYIDX(target);
-        if (wah_type_accepts_repr(ctx->module, target_idx, repr_id))
-            return true;
+        const wah_module_t *obj_mod = hdr->module;
+        if (obj_mod == ctx->module || obj_mod == NULL) {
+            if (wah_type_accepts_repr(ctx->module, target_idx, repr_id))
+                return true;
+        } else if (repr_id >= 0) {
+            uint32_t obj_typeidx = wah_repr_info_typeidx(obj_mod, repr_id);
+            if (obj_typeidx != (uint32_t)-1)
+                return wah_cross_module_subtype_cached(ctx, obj_mod, WAH_TYPE_FROM_IDX(obj_typeidx, 0),
+                                                       ctx->module, target);
+        }
         if (repr_id == WAH_TYPE_BOT &&
             ctx->module->type_defs && target_idx < ctx->module->type_count &&
             ctx->module->type_defs[target_idx].kind == WAH_COMP_FUNC) {

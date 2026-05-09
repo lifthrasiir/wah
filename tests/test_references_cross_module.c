@@ -197,11 +197,64 @@ static void test_gc_root_scan_imported_mutable_ref_global() {
     wah_free_module(&provider);
 }
 
+// Regression test for cross-module repr_id type confusion in wah_ref_test_heap_type.
+// repr_ids are per-module, but wah_type_accepts_repr checked the executing module's
+// type_cast_sets with the allocating module's repr_id. When two modules assign the
+// same repr_id to structurally different types, ref.test/ref.cast incorrectly succeeds,
+// enabling type-confused struct.get that reads past the actual object's allocation.
+static void test_cross_module_repr_id_type_confusion() {
+    printf("Testing cross-module repr_id type confusion (security regression)...\n");
+
+    // Provider: type 0 = struct { i32 } (small struct, repr_id 0)
+    // Exports a factory returning anyref.
+    const char *provider_spec = "wasm \
+        types {[ struct [i32 mut], fn [] [anyref] ]} \
+        funcs {[ 1 ]} \
+        exports {[ {'make'} fn# 0 ]} \
+        code {[ {[] i32.const 42 struct.new 0 end } ]}";
+
+    // Consumer: type 0 = struct { i64, i64 } (larger struct, also gets repr_id 0)
+    // Imports make(), does ref.test with its own type 0.
+    // Before fix: ref.test returns 1 (repr_id 0 matches consumer's cast set).
+    // After fix: ref.test returns 0 (cross-module check recognizes type mismatch).
+    const char *consumer_spec = "wasm \
+        types {[ struct [i64 mut, i64 mut], fn [] [anyref], fn [] [i32] ]} \
+        imports {[ {'p'} {'make'} fn# 1 ]} \
+        funcs {[ 2 ]} \
+        code {[ {[] call 0 ref.test 0 end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t provider_ctx = {0};
+    assert_ok(wah_new_exec_context(&provider_ctx, &provider, NULL));
+    assert_ok(wah_gc_start(&provider_ctx));
+    assert_ok(wah_instantiate(&provider_ctx));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &consumer, NULL));
+    assert_ok(wah_link_context(&ctx, "p", &provider_ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    // ref.test should return 0: the object is provider's struct{i32}, NOT
+    // consumer's struct{i64,i64}. A return of 1 means type confusion.
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 0);
+
+    wah_free_exec_context(&ctx);
+    wah_free_exec_context(&provider_ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
 int main() {
     test_cross_module_ref_test_abstract_struct_oob();
     test_cross_module_ref_test_abstract_array_oob();
     test_link_module_frame_ctx_wrong_module();
     test_gc_root_scan_imported_mutable_ref_global();
+    test_cross_module_repr_id_type_confusion();
     printf("All cross-module reference security tests passed!\n");
     return 0;
 }
