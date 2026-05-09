@@ -4508,10 +4508,11 @@ static inline bool wah_type_is_subtype(wah_type_t sub, wah_type_t sup, const wah
     }
 }
 
-static wah_type_t wah_canonicalize_type_ref(wah_type_t t, uint32_t rec_start, uint32_t rec_size, const uint32_t *canonical_map) {
+static wah_type_t wah_canonicalize_type_ref(wah_type_t t, uint32_t rec_start, uint32_t rec_size, const uint32_t *canonical_map, uint32_t type_count) {
     if (t < 0) return t;
     uint32_t idx = WAH_TYIDX(t);
     if (idx >= rec_start && idx < rec_start + rec_size) return t;
+    if (idx >= type_count) return t;
     return WAH_TYPE_FROM_IDX(canonical_map[idx], WAH_TYPE_IS_NULLABLE(t));
 }
 
@@ -4542,8 +4543,8 @@ static bool wah_types_structurally_equal(const wah_module_t *module, uint32_t a,
         if (td_b->supertype != WAH_NO_SUPERTYPE) return false;
     } else {
         if (td_b->supertype == WAH_NO_SUPERTYPE) return false;
-        wah_type_t sa = wah_canonicalize_type_ref(WAH_TYPE_FROM_IDX(td_a->supertype, 0), rg_a_start, rg_a_size, canonical_map);
-        wah_type_t sb = wah_canonicalize_type_ref(WAH_TYPE_FROM_IDX(td_b->supertype, 0), rg_b_start, rg_b_size, canonical_map);
+        wah_type_t sa = wah_canonicalize_type_ref(WAH_TYPE_FROM_IDX(td_a->supertype, 0), rg_a_start, rg_a_size, canonical_map, module->type_count);
+        wah_type_t sb = wah_canonicalize_type_ref(WAH_TYPE_FROM_IDX(td_b->supertype, 0), rg_b_start, rg_b_size, canonical_map, module->type_count);
         if (!wah_canon_ref_eq(sa, rg_a_start, rg_a_size, sb, rg_b_start, rg_b_size)) return false;
     }
 
@@ -4553,20 +4554,20 @@ static bool wah_types_structurally_equal(const wah_module_t *module, uint32_t a,
         if (ft_a->param_count != ft_b->param_count) return false;
         if (ft_a->result_count != ft_b->result_count) return false;
         for (uint32_t j = 0; j < ft_a->param_count; ++j) {
-            wah_type_t ta = wah_canonicalize_type_ref(ft_a->param_types[j], rg_a_start, rg_a_size, canonical_map);
-            wah_type_t tb = wah_canonicalize_type_ref(ft_b->param_types[j], rg_b_start, rg_b_size, canonical_map);
+            wah_type_t ta = wah_canonicalize_type_ref(ft_a->param_types[j], rg_a_start, rg_a_size, canonical_map, module->type_count);
+            wah_type_t tb = wah_canonicalize_type_ref(ft_b->param_types[j], rg_b_start, rg_b_size, canonical_map, module->type_count);
             if (!wah_canon_ref_eq(ta, rg_a_start, rg_a_size, tb, rg_b_start, rg_b_size)) return false;
         }
         for (uint32_t j = 0; j < ft_a->result_count; ++j) {
-            wah_type_t ta = wah_canonicalize_type_ref(ft_a->result_types[j], rg_a_start, rg_a_size, canonical_map);
-            wah_type_t tb = wah_canonicalize_type_ref(ft_b->result_types[j], rg_b_start, rg_b_size, canonical_map);
+            wah_type_t ta = wah_canonicalize_type_ref(ft_a->result_types[j], rg_a_start, rg_a_size, canonical_map, module->type_count);
+            wah_type_t tb = wah_canonicalize_type_ref(ft_b->result_types[j], rg_b_start, rg_b_size, canonical_map, module->type_count);
             if (!wah_canon_ref_eq(ta, rg_a_start, rg_a_size, tb, rg_b_start, rg_b_size)) return false;
         }
     } else {
         if (td_a->field_count != td_b->field_count) return false;
         for (uint32_t j = 0; j < td_a->field_count; ++j) {
-            wah_type_t ta = wah_canonicalize_type_ref(td_a->field_types[j], rg_a_start, rg_a_size, canonical_map);
-            wah_type_t tb = wah_canonicalize_type_ref(td_b->field_types[j], rg_b_start, rg_b_size, canonical_map);
+            wah_type_t ta = wah_canonicalize_type_ref(td_a->field_types[j], rg_a_start, rg_a_size, canonical_map, module->type_count);
+            wah_type_t tb = wah_canonicalize_type_ref(td_b->field_types[j], rg_b_start, rg_b_size, canonical_map, module->type_count);
             if (!wah_canon_ref_eq(ta, rg_a_start, rg_a_size, tb, rg_b_start, rg_b_size)) return false;
             if (td_a->field_mutables[j] != td_b->field_mutables[j]) return false;
         }
