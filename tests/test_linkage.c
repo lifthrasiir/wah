@@ -1031,6 +1031,66 @@ int main() {
         wah_free_module(&mod_exp);
     }
 
+    // Bug: re-exported table imports skip element type checking.
+    // When a linked module re-exports an imported table, the type compatibility
+    // check was only performed for locally-defined tables, allowing type confusion.
+    printf("Test: re-exported table import checks element type\n");
+    {
+        // Module A: imports funcref table from env, re-exports it
+        wah_module_t mod_a = {0};
+        assert_ok(wah_parse_module_from_spec(&mod_a, "wasm \
+            imports {[{'env'} {'t'} table# funcref limits.i32/1 1]} \
+            exports {[{'t'} table# 0]}"));
+
+        // Module B: imports table from A as externref (type mismatch!)
+        wah_module_t mod_b = {0};
+        assert_ok(wah_parse_module_from_spec(&mod_b, "wasm \
+            types {[fn [] [i32]]} \
+            imports {[{'A'} {'t'} table# externref limits.i32/1 1]} \
+            funcs {[0]} \
+            exports {[{'run'} fn# 0]} \
+            code {[{[] i32.const 0 table.get 0 ref.is_null end}]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &mod_b, NULL));
+        assert_ok(wah_link_module(&ctx, "A", &mod_a));
+        wah_error_t err = wah_instantiate(&ctx);
+        assert_err(err, WAH_ERROR_LINK_FAILED);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod_b);
+        wah_free_module(&mod_a);
+    }
+
+    // Bug: re-exported memory imports skip addr_type checking.
+    printf("Test: re-exported memory import checks addr_type\n");
+    {
+        // Module A: imports i32-addressed memory from env, re-exports it
+        wah_module_t mod_a = {0};
+        assert_ok(wah_parse_module_from_spec(&mod_a, "wasm \
+            imports {[{'env'} {'m'} mem# limits.i32/1 1]} \
+            exports {[{'m'} mem# 0]}"));
+
+        // Module B: imports memory from A as memory64 (addr_type mismatch!)
+        wah_module_t mod_b = {0};
+        assert_ok(wah_parse_module_from_spec(&mod_b, "wasm \
+            types {[fn [] [i32]]} \
+            imports {[{'A'} {'m'} mem# limits.i64/1 1]} \
+            funcs {[0]} \
+            exports {[{'run'} fn# 0]} \
+            code {[{[] i32.const 42 end}]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &mod_b, NULL));
+        assert_ok(wah_link_module(&ctx, "A", &mod_a));
+        wah_error_t err = wah_instantiate(&ctx);
+        assert_err(err, WAH_ERROR_LINK_FAILED);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod_b);
+        wah_free_module(&mod_a);
+    }
+
     // Bug: wah_eval_const_expr used ctx->module (primary) when evaluating
     // linked module global init expressions, so global.get in a linked module's
     // init expr could reference the wrong module's global index space.

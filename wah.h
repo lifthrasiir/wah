@@ -15776,16 +15776,17 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         uint32_t local_table_idx;
         wah_table_type_t *exp_tt = NULL;
 
+        const wah_table_type_t *linked_tt = wah_table_type(linked, linked_table_idx);
+        WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(linked, linked_tt->elem_type,
+                                                        module, ti->type.elem_type), WAH_ERROR_LINK_FAILED, cleanup);
+        WAH_ENSURE_GOTO(linked_tt->addr_type == ti->type.addr_type, WAH_ERROR_LINK_FAILED, cleanup);
+        if (ti->type.max_elements != UINT64_MAX) {
+            WAH_ENSURE_GOTO(linked_tt->max_elements != UINT64_MAX, WAH_ERROR_LINK_FAILED, cleanup);
+            WAH_ENSURE_GOTO(linked_tt->max_elements <= ti->type.max_elements, WAH_ERROR_LINK_FAILED, cleanup);
+        }
         if (linked_table_idx >= linked->import_table_count) {
             local_table_idx = linked_table_idx - linked->import_table_count;
             exp_tt = &linked->tables[local_table_idx];
-            WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(linked, exp_tt->elem_type,
-                                                         module, ti->type.elem_type), WAH_ERROR_LINK_FAILED, cleanup);
-            WAH_ENSURE_GOTO(exp_tt->addr_type == ti->type.addr_type, WAH_ERROR_LINK_FAILED, cleanup);
-            if (ti->type.max_elements != UINT64_MAX) {
-                WAH_ENSURE_GOTO(exp_tt->max_elements != UINT64_MAX, WAH_ERROR_LINK_FAILED, cleanup);
-                WAH_ENSURE_GOTO(exp_tt->max_elements <= ti->type.max_elements, WAH_ERROR_LINK_FAILED, cleanup);
-            }
         }
 
         if (linked_ctx && linked_table_idx < linked_ctx->table_count) {
@@ -15831,14 +15832,15 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         uint32_t local_mem_idx = 0;
         wah_memory_type_t *exp_mt = NULL;
 
+        const wah_memory_type_t *linked_mt = wah_memory_type(linked, linked_mem_idx);
+        WAH_ENSURE_GOTO(linked_mt->addr_type == mi->type.addr_type, WAH_ERROR_LINK_FAILED, cleanup);
+        if (mi->type.max_pages != UINT64_MAX) {
+            WAH_ENSURE_GOTO(linked_mt->max_pages != UINT64_MAX, WAH_ERROR_LINK_FAILED, cleanup);
+            WAH_ENSURE_GOTO(linked_mt->max_pages <= mi->type.max_pages, WAH_ERROR_LINK_FAILED, cleanup);
+        }
         if (linked_mem_idx >= linked->import_memory_count) {
             local_mem_idx = linked_mem_idx - linked->import_memory_count;
             exp_mt = &linked->memories[local_mem_idx];
-            WAH_ENSURE_GOTO(exp_mt->addr_type == mi->type.addr_type, WAH_ERROR_LINK_FAILED, cleanup);
-            if (mi->type.max_pages != UINT64_MAX) {
-                WAH_ENSURE_GOTO(exp_mt->max_pages != UINT64_MAX, WAH_ERROR_LINK_FAILED, cleanup);
-                WAH_ENSURE_GOTO(exp_mt->max_pages <= mi->type.max_pages, WAH_ERROR_LINK_FAILED, cleanup);
-            }
         }
 
         if (linked_ctx && linked_mem_idx < linked_ctx->memory_count) {
