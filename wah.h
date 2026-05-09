@@ -10436,7 +10436,7 @@ static inline bool wah_bulk_should_stop(const wah_exec_context_t *ctx) {
 // result_count: number of return values (stored in frame for RETURN/END).
 // fn_ctx: owning exec context of the function (NULL means use linked_modules lookup).
 // value_top: actual top of the value stack region (may differ from ctx->sp during interpretation).
-static inline void wah_bind_frame_module(
+static inline wah_error_t wah_bind_frame_module(
     wah_exec_context_t *ctx, wah_call_frame_t *frame,
     const wah_module_t *fn_module, wah_exec_context_t *fn_ctx
 ) {
@@ -10496,11 +10496,12 @@ static inline void wah_bind_frame_module(
                 }
             }
         }
-        WAH_ASSERT(found && "wah_bind_frame_module: could not find module in linked module chain");
+        WAH_ENSURE(found, WAH_ERROR_TRAP);
     }
+    return WAH_OK;
 }
 
-static inline void wah_init_wasm_frame(
+static inline wah_error_t wah_init_wasm_frame(
     wah_exec_context_t *ctx, wah_call_frame_t *frame,
     const wah_module_t *fn_module, uint32_t local_idx, const wah_code_body_t *code_body,
     wah_value_t *locals, uint32_t result_count, wah_exec_context_t *fn_ctx
@@ -10512,7 +10513,7 @@ static inline void wah_init_wasm_frame(
     frame->result_count = result_count;
     frame->module = fn_module;
     frame->ref_map_offset = 0;
-    wah_bind_frame_module(ctx, frame, fn_module, fn_ctx);
+    return wah_bind_frame_module(ctx, frame, fn_module, fn_ctx);
 }
 
 static wah_error_t wah_push_frame(
@@ -10527,9 +10528,7 @@ static wah_error_t wah_push_frame(
     ctx->call_depth++;
     wah_call_frame_t *frame = new_frame_ptr;
 
-    wah_init_wasm_frame(ctx, frame, fn_module, local_idx, code_body, locals, result_count, fn_ctx);
-
-    return WAH_OK;
+    return wah_init_wasm_frame(ctx, frame, fn_module, local_idx, code_body, locals, result_count, fn_ctx);
 }
 
 #define RELOAD_FRAME() \
@@ -10609,6 +10608,10 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
 
     wah_type_t ht = WAH_TYPE_AS_NON_NULL(target);
     if (wah_ref_is_i31(ref)) {
+        // EXTERN is included because WAH uses identity representation for
+        // any.convert_extern / extern.convert_any. Validation ensures ref.test
+        // extern can only be applied to values in the extern hierarchy, so an
+        // i31 reaching this point was already converted via extern.convert_any.
         return ht == WAH_TYPE_ANY || ht == WAH_TYPE_EXTERN || ht == WAH_TYPE_EQ || ht == WAH_TYPE_I31;
     }
 
@@ -10642,6 +10645,7 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
     }
 
     switch (ht) {
+        // ANY and EXTERN share a case: identity-based extern conversions (see i31 comment above).
         case WAH_TYPE_ANY: case WAH_TYPE_EXTERN: return repr_id != WAH_TYPE_BOT;
         case WAH_TYPE_EQ: return repr_id >= 0;
         case WAH_TYPE_STRUCT: {
@@ -12324,7 +12328,7 @@ WAH_RUN(CALL_REF) {
             memset(sp, 0, sizeof(wah_value_t) * tc_num_locals); \
             sp += tc_num_locals; \
         } \
-        wah_init_wasm_frame(ctx, frame, tc_module, tc_local_idx, tc_code, tc_locals_dst, (result_count_), tc_ctx); \
+        WAH_CHECK_GOTO(wah_init_wasm_frame(ctx, frame, tc_module, tc_local_idx, tc_code, tc_locals_dst, (result_count_), tc_ctx), cleanup); \
         bytecode_ip = frame->bytecode_ip; \
         bytecode_base = frame->code->parsed_code.bytecode; \
         fctx = frame->frame_ctx; \
