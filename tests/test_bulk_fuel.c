@@ -847,6 +847,35 @@ static void test_memory64_copy_backward_fuel_resume(void) {
     wah_free_module(&mod);
 }
 
+// Regression: INT64_MAX fuel caused wah_bulk_fuel_limit overflow to 0,
+// making bulk ops process 0 items per iteration and loop forever.
+static void test_bulk_fuel_int64_max(void) {
+    printf("Testing bulk fuel with INT64_MAX (overflow regression)...\n");
+
+    wah_module_t mod = {0};
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] []]} funcs {[0]} \
+        memories {[limits.i32/1 1]} \
+        code {[{[] i32.const 0 i32.const 171 i32.const 64 memory.fill 0 end}]}");
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_instantiate(&ctx));
+    assert_ok(wah_set_fuel(&ctx, INT64_MAX));
+
+    assert_ok(wah_call(&ctx, 0, NULL, 0, NULL));
+
+    int64_t remaining = wah_get_fuel(&ctx);
+    assert(remaining > 0 && "fuel should barely be consumed");
+
+    for (int i = 0; i < 64; i++)
+        assert_eq_u32(ctx.memory_base[i], 0xAB);
+
+    printf("  INT64_MAX fuel bulk op completed correctly\n");
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_memory_fill_fuel();
     test_memory_fill_fuel_resume();
@@ -871,6 +900,8 @@ int main(void) {
     test_table64_init_fuel_resume();
     test_memory64_fill_fuel_resume();
     test_memory64_copy_backward_fuel_resume();
+
+    test_bulk_fuel_int64_max();
 
     printf("\n=== All bulk fuel tests passed ===\n");
     return 0;

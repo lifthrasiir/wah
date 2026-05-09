@@ -10263,7 +10263,9 @@ static inline bool wah_bulk_should_interrupt(const wah_exec_context_t *ctx) {
 static inline uint64_t wah_bulk_fuel_limit(const wah_exec_context_t *ctx, uint64_t chunk) {
     if (!ctx->module->fuel_metering) return chunk;
     if (ctx->fuel < 0) return 0;
-    uint64_t affordable = ((uint64_t)ctx->fuel + 1) * WAH_BULK_ITEMS_PER_FUEL;
+    uint64_t fuel_u = (uint64_t)ctx->fuel + 1;
+    if (fuel_u > UINT64_MAX / WAH_BULK_ITEMS_PER_FUEL) return chunk;
+    uint64_t affordable = fuel_u * WAH_BULK_ITEMS_PER_FUEL;
     return chunk < affordable ? chunk : affordable;
 }
 
