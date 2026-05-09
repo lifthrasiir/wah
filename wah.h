@@ -14761,9 +14761,9 @@ static wah_error_t wah_finish_internal(
     uint32_t copy_count = result_count < max_result_count ? result_count : max_result_count;
 
     if (results) {
-        if (result_count == 0) {
+        if (result_count == 0 && max_result_count > 0) {
             memset(results, 0, sizeof(wah_value_t));
-        } else if (ctx->sp >= ctx->lifecycle.base_sp + result_count) {
+        } else if (copy_count > 0 && ctx->sp >= ctx->lifecycle.base_sp + result_count) {
             for (uint32_t i = 0; i < copy_count; ++i) {
                 results[i] = *(ctx->sp - result_count + i);
             }

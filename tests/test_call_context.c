@@ -112,6 +112,10 @@ static void partial_result_host(wah_call_context_t *cctx, void *ud) {
     wah_result_i32(cctx, 0, 42);
 }
 
+static void nop_host(wah_call_context_t *cctx, void *ud) {
+    (void)cctx; (void)ud;
+}
+
 int main() {
     // Test 1: Param accessors
     printf("Test 1: Param accessors\n");
@@ -402,6 +406,36 @@ int main() {
         assert(actual == 2);
         assert_eq_i32(results[0].i32, 42);
         assert_eq_i32(results[1].i32, 0);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod);
+    }
+
+    // Bug: wah_finish_internal wrote sizeof(wah_value_t) bytes even when
+    // result_count == 0 and max_result_count == 0, overwriting adjacent memory.
+    printf("Test: wah_call_multi with max_result_count=0 on void function\n");
+    {
+        wah_module_t mod = {0};
+        assert_ok(wah_new_module(&mod, NULL));
+        assert_ok(wah_export_func(&mod, "nop", "()", nop_host, NULL, NULL));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+        assert_ok(wah_instantiate(&ctx));
+
+        uint8_t buf[sizeof(wah_value_t) * 2];
+        memset(buf, 0xAA, sizeof(buf));
+        wah_value_t *results = (wah_value_t *)buf;
+
+        uint32_t actual = 999;
+        assert_ok(wah_call_multi(&ctx, 0, NULL, 0, results, 0, &actual));
+        assert_eq_u32(actual, 0);
+
+        int canary_ok = 1;
+        for (size_t j = 0; j < sizeof(wah_value_t); j++) {
+            if (buf[j] != 0xAA) { canary_ok = 0; break; }
+        }
+        assert_true(canary_ok);
 
         wah_free_exec_context(&ctx);
         wah_free_module(&mod);
