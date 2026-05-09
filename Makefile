@@ -224,7 +224,7 @@ clean:
 	@echo "## Cleaning up..."
 	@rm -f $(patsubst %.c, %, $(ALL_TEST_SRCS)) $(patsubst %.c, %_cov, $(ALL_TEST_SRCS))
 	@rm -f tests/test_cpp
-	@rm -f tests/*.o
+	@rm -f tests/*.o tests/*.o.tmp
 	@rm -f $(FUZZ_HARNESS_BIN)
 	@rm -f $(LIBFUZZER_HARNESS_BIN)
 	@rm -f bench/bench_coremark
