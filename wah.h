@@ -11834,6 +11834,8 @@ WAH_RUN(ARRAY_COPY) {
         for (size_t done = 0; done < byte_size; ) {
             size_t chunk = byte_size - done < WAH_BULK_CHECK_INTERVAL ? byte_size - done : WAH_BULK_CHECK_INTERVAL;
             chunk = (size_t)wah_bulk_fuel_limit(ctx, (uint64_t)chunk);
+            if (chunk > esz) chunk -= chunk % esz; else chunk = esz;
+            if (chunk > byte_size - done) chunk = byte_size - done;
             if (backward) {
                 size_t tail = byte_size - done;
                 memmove(dst_elems + (size_t)dst_offset * esz + tail - chunk,
@@ -11889,6 +11891,8 @@ WAH_RUN(ARRAY_INIT_DATA) {
     for (size_t done = 0; done < byte_size; ) {
         size_t chunk = byte_size - done < WAH_BULK_CHECK_INTERVAL ? byte_size - done : WAH_BULK_CHECK_INTERVAL;
         chunk = (size_t)wah_bulk_fuel_limit(ctx, (uint64_t)chunk);
+        if (chunk > esz) chunk -= chunk % esz; else chunk = esz;
+        if (chunk > byte_size - done) chunk = byte_size - done;
         memcpy(elems + (size_t)dst_offset * esz + done, seg->data + src_offset + done, chunk);
         done += chunk;
         wah_bulk_fuel_charge(ctx, (uint64_t)chunk);
