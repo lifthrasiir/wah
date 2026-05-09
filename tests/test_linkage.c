@@ -1168,6 +1168,49 @@ int main() {
         wah_free_module(&host_mod);
     }
 
+    // Regression: call_indirect on a host function whose type is a subtype of
+    // the expected type (via contravariant params) should succeed.  The old code
+    // used direct `!=` for host function param/result types, which traps when
+    // structurally compatible but non-identical abstract ref types are involved.
+    printf("Test: call_indirect host function subtype (contravariant params)\n");
+    {
+        wah_module_t host_mod = {0};
+        assert_ok(wah_new_module(&host_mod, NULL));
+        // Host fn accepts anyref (= ref null any) and returns i32.
+        assert_ok(wah_export_func(&host_mod, "hostFn", "(anyref) -> i32", simple_host_func, NULL, NULL));
+
+        // Consumer module:
+        // type 0 = fn () -> (i32)             ;; exported function type
+        // type 1 = fn (structref) -> (i32)    ;; call_indirect expected type
+        // type 2 = fn (anyref) -> (i32)       ;; import type (host fn actual type)
+        // fn(anyref)->i32 <: fn(structref)->i32  because structref <: anyref (contravariant params)
+        const char *spec = "wasm \
+            types {[ fn [] [i32], fn [structref] [i32], fn [anyref] [i32] ]} \
+            imports {[ {'host'} {'hostFn'} fn# 2 ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            globals {[ funcref mut ref.func 0 end ]} \
+            exports {[ {'test'} fn# 1 ]} \
+            code {[ {[] i32.const 0 global.get 0 table.set 0 \
+                        ref.null structref i32.const 0 call_indirect 1 0 end} ]}";
+
+        wah_module_t consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&consumer, spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &consumer, NULL));
+        assert_ok(wah_link_module(&ctx, "host", &host_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&consumer);
+        wah_free_module(&host_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
