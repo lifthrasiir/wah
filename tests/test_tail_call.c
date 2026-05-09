@@ -379,6 +379,60 @@ static void test_return_call_indirect_i64_exception_cleanup(void) {
     wah_free_module(&mod);
 }
 
+static void test_return_call_cross_module_fn_ctx(void) {
+    printf("Testing return_call cross-module fn_ctx...\n");
+    // C: global 0 = 42, exports get() returning global 0
+    wah_module_t mod_c = {0};
+    assert_ok(wah_parse_module_from_spec(&mod_c, "wasm \
+        types {[fn [] [i32]]} \
+        funcs {[0]} \
+        globals {[i32 immut i32.const 42 end]} \
+        exports {[{'get'} fn# 0]} \
+        code {[{[] global.get 0 end}]}"));
+
+    // B: imports C.get, global 0 = 99, exports wrap() = return_call C.get
+    wah_module_t mod_b = {0};
+    assert_ok(wah_parse_module_from_spec(&mod_b, "wasm \
+        types {[fn [] [i32]]} \
+        imports {[{'C'} {'get'} fn# 0]} \
+        funcs {[0]} \
+        globals {[i32 immut i32.const 99 end]} \
+        exports {[{'wrap'} fn# 1]} \
+        code {[{[] return_call 0 end}]}"));
+
+    // A: imports B.wrap, exports run() = call B.wrap.
+    // A links B_ctx; B was linked with C directly. A does NOT link C.
+    wah_module_t mod_a = {0};
+    assert_ok(wah_parse_module_from_spec(&mod_a, "wasm \
+        types {[fn [] [i32]]} \
+        imports {[{'B'} {'wrap'} fn# 0]} \
+        funcs {[0]} \
+        globals {[i32 immut i32.const 77 end]} \
+        exports {[{'run'} fn# 1]} \
+        code {[{[] call 0 end}]}"));
+
+    wah_exec_context_t bctx = {0};
+    assert_ok(wah_new_exec_context(&bctx, &mod_b, NULL));
+    wah_link_module(&bctx, "C", &mod_c);
+    assert_ok(wah_instantiate(&bctx));
+
+    wah_exec_context_t actx = {0};
+    assert_ok(wah_new_exec_context(&actx, &mod_a, NULL));
+    assert_ok(wah_link_context(&actx, "B", &bctx));
+    assert_ok(wah_instantiate(&actx));
+
+    // run() -> wrap() --(return_call)--> get() should return 42 (C's global)
+    wah_value_t result;
+    assert_ok(wah_call_by_name(&actx, "run", NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+
+    wah_free_exec_context(&actx);
+    wah_free_exec_context(&bctx);
+    wah_free_module(&mod_a);
+    wah_free_module(&mod_b);
+    wah_free_module(&mod_c);
+}
+
 int main(void) {
     test_return_call_basic();
     test_return_call_with_params();
@@ -393,6 +447,7 @@ int main(void) {
     test_return_call_indirect_exception_cleanup();
     test_return_call_ref_exception_cleanup();
     test_return_call_indirect_i64_exception_cleanup();
+    test_return_call_cross_module_fn_ctx();
     printf("All tail-call tests passed.\n");
     return 0;
 }
