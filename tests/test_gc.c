@@ -329,7 +329,7 @@ int main() {
         assert_ok(wah_new_exec_context(&ctx, &module, NULL));
         assert_ok(wah_gc_start(&ctx));
 
-        void *obj = wah_gc_alloc(&ctx, WAH_REPR_NONE, 16);
+        void *obj = wah_gc_alloc(&ctx, NULL, WAH_REPR_NONE, 16);
         assert_not_null(obj);
         wah_gc_object_t *hdr = wah_gc_header(obj);
         assert_true(hdr->repr_id == WAH_REPR_NONE);
@@ -342,7 +342,7 @@ int main() {
         assert_eq_ptr(wah_gc_payload(hdr), obj);
         assert_eq_ptr(wah_gc_header(obj), hdr);
 
-        void *obj2 = wah_gc_alloc(&ctx, WAH_REPR_NONE, 32);
+        void *obj2 = wah_gc_alloc(&ctx, NULL, WAH_REPR_NONE, 32);
         assert_not_null(obj2);
         wah_gc_object_t *hdr2 = wah_gc_header(obj2);
         assert_eq_u32(ctx.gc->object_count, 2);
@@ -361,7 +361,7 @@ int main() {
             code {[ {[] end } ]}";
         assert_ok(wah_parse_module_from_spec(&module, spec));
         assert_ok(wah_new_exec_context(&ctx, &module, NULL));
-        void *obj = wah_gc_alloc(&ctx, WAH_REPR_NONE, 8);
+        void *obj = wah_gc_alloc(&ctx, NULL, WAH_REPR_NONE, 8);
         assert_null(obj);
         wah_free_exec_context(&ctx);
         wah_free_module(&module);
@@ -378,7 +378,7 @@ int main() {
         assert_ok(wah_gc_start(&ctx));
         ctx.gc->allocation_threshold = sizeof(wah_gc_object_t) + 8;
         assert_false(ctx.gc->gc_pending);
-        wah_gc_alloc(&ctx, WAH_REPR_NONE, 8);
+        wah_gc_alloc(&ctx, NULL, WAH_REPR_NONE, 8);
         assert_true(ctx.gc->gc_pending);
         wah_free_exec_context(&ctx);
         wah_free_module(&module);
@@ -394,9 +394,9 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&module, spec));
         assert_ok(wah_new_exec_context(&ctx, &module, NULL));
         assert_ok(wah_gc_start(&ctx));
-        wah_gc_alloc(&ctx, WAH_REPR_NONE, 16);
-        wah_gc_alloc(&ctx, WAH_REPR_NONE, 32);
-        wah_gc_alloc(&ctx, WAH_REPR_NONE, 64);
+        wah_gc_alloc(&ctx, NULL, WAH_REPR_NONE, 16);
+        wah_gc_alloc(&ctx, NULL, WAH_REPR_NONE, 32);
+        wah_gc_alloc(&ctx, NULL, WAH_REPR_NONE, 64);
         assert_eq_u32(ctx.gc->object_count, 3);
         wah_gc_step(&ctx);
         assert_eq_u32(ctx.gc->object_count, 0);
@@ -444,8 +444,8 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&module, spec));
         assert_ok(wah_new_exec_context(&ctx, &module, NULL));
         assert_ok(wah_gc_start(&ctx));
-        wah_gc_alloc(&ctx, WAH_REPR_NONE, 16);
-        wah_gc_alloc(&ctx, WAH_REPR_NONE, 32);
+        wah_gc_alloc(&ctx, NULL, WAH_REPR_NONE, 16);
+        wah_gc_alloc(&ctx, NULL, WAH_REPR_NONE, 32);
         ctx.gc->gc_pending = true;
         WAH_POLL_FLAG_STORE(ctx.poll_flag, 1);
         wah_value_t r;
@@ -467,8 +467,8 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&module, spec));
         assert_ok(wah_new_exec_context(&ctx, &module, NULL));
         assert_ok(wah_gc_start(&ctx));
-        wah_gc_alloc(&ctx, WAH_REPR_NONE, 16);
-        wah_gc_alloc(&ctx, WAH_REPR_NONE, 32);
+        wah_gc_alloc(&ctx, NULL, WAH_REPR_NONE, 16);
+        wah_gc_alloc(&ctx, NULL, WAH_REPR_NONE, 32);
         wah_gc_heap_stats_t stats;
         wah_gc_heap_stats(&ctx, &stats);
         assert_eq_u32(stats.object_count, 2);
@@ -504,8 +504,8 @@ int main() {
         assert_ok(wah_new_exec_context(&ctx, &module, NULL));
         assert_ok(wah_gc_start(&ctx));
         assert_true(wah_gc_verify_heap(&ctx));
-        wah_gc_alloc(&ctx, WAH_REPR_NONE, 16);
-        wah_gc_alloc(&ctx, WAH_REPR_NONE, 32);
+        wah_gc_alloc(&ctx, NULL, WAH_REPR_NONE, 16);
+        wah_gc_alloc(&ctx, NULL, WAH_REPR_NONE, 32);
         assert_true(wah_gc_verify_heap(&ctx));
         wah_gc_step(&ctx);
         assert_true(wah_gc_verify_heap(&ctx));
@@ -652,7 +652,7 @@ int main() {
             assert_ok(wah_module_alloc_repr(&mod, 0, info, &repr_id));
             assert(repr_id >= 0);
 
-            void *obj = wah_gc_alloc_struct(&ctx3, repr_id, mod.repr_infos[repr_id]);
+            void *obj = wah_gc_alloc_struct(&ctx3, &mod, repr_id, mod.repr_infos[repr_id]);
             assert_not_null(obj);
             wah_gc_object_t *hdr = wah_gc_header(obj);
             assert_eq_u32(hdr->repr_id, (uint32_t)repr_id);
@@ -679,7 +679,7 @@ int main() {
             assert_ok(wah_module_alloc_repr(&mod, 1, info, &repr_id));
 
             uint32_t length = 5;
-            void *obj = wah_gc_alloc_array(&ctx3, repr_id, mod.repr_infos[repr_id], length);
+            void *obj = wah_gc_alloc_array(&ctx3, &mod, repr_id, mod.repr_infos[repr_id], length);
             assert_not_null(obj);
             wah_gc_object_t *hdr = wah_gc_header(obj);
             assert_eq_u32(hdr->repr_id, (uint32_t)repr_id);
@@ -717,7 +717,7 @@ int main() {
         printf("Testing wah_gc_alloc_array overflow protection...\n");
         {
             // Allocation with huge length should return NULL (overflow)
-            void *obj = wah_gc_alloc_array(&ctx3, mod.typeidx_to_repr[1],
+            void *obj = wah_gc_alloc_array(&ctx3, &mod, mod.typeidx_to_repr[1],
                                             mod.repr_infos[mod.typeidx_to_repr[1]],
                                             UINT32_MAX);
             assert_null(obj);
@@ -1103,7 +1103,7 @@ int main() {
         wah_repr_t repr_id;
         assert_ok(wah_module_alloc_repr(&mod, 0, info, &repr_id));
 
-        void *obj = wah_gc_alloc_struct(&ctx5, repr_id, mod.repr_infos[repr_id]);
+        void *obj = wah_gc_alloc_struct(&ctx5, &mod, repr_id, mod.repr_infos[repr_id]);
         assert_not_null(obj);
         void **payload = (void **)obj;
         payload[0] = wah_ref_make_i31(0xDEADBEEF);
@@ -1246,7 +1246,7 @@ int main() {
 
         wah_repr_t struct_repr = wasm_mod.typeidx_to_repr[0];
         const wah_repr_info_t *struct_info = wasm_mod.repr_infos[struct_repr];
-        void *struct_ref = wah_gc_alloc_struct(&ctx5, struct_repr, struct_info);
+        void *struct_ref = wah_gc_alloc_struct(&ctx5, &wasm_mod, struct_repr, struct_info);
         assert_not_null(struct_ref);
         wah_value_t field_value = { .i32 = 123 };
         wah_gc_store_field(WAH_TYPE_I32, (uint8_t *)struct_ref + struct_info->fields[0].offset, &field_value);
