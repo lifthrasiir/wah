@@ -600,7 +600,7 @@ typedef void (*wah_finalize_t)(void *userdata);
 #endif
 
 // Struct: wah_module_t
-//   Opaque type representing a parsed WebAssembly module.
+//   Opaque type representing a parsed WebAssembly module. Immovable after initial linkage.
 //
 //   This type is meant to be stack-allocatable and has a fixed size for ABI compatibility.
 typedef struct wah_module_s {
@@ -710,7 +710,7 @@ typedef volatile int wah_poll_flag_t;
 #endif
 
 // Struct: wah_exec_context_t
-//   Opaque type representing an instantiated module ready for execution.
+//   Opaque and immovable type representing an instantiated module ready for execution.
 //
 //   This type is meant to be stack-allocatable and has a fixed size for ABI compatibility.
 typedef struct wah_exec_context_s {
