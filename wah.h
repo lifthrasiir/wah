@@ -10496,12 +10496,7 @@ static inline void wah_bind_frame_module(
                 }
             }
         }
-        if (!found) {
-            frame->frame_globals = ctx->globals;
-            frame->frame_function_table = ctx->function_table;
-            frame->frame_function_table_count = ctx->function_table_count;
-            frame->frame_ctx = ctx;
-        }
+        WAH_ASSERT(found && "wah_bind_frame_module: could not find module in linked module chain");
     }
 }
 
