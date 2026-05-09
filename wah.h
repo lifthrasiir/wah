@@ -15440,7 +15440,9 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     // and global import resolution, since imports may reference linked module globals)
     uint32_t total_globals = wah_global_index_limit(module);
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
-        total_globals += ctx->linked_modules[j].module->global_count;
+        uint32_t gc = ctx->linked_modules[j].module->global_count;
+        WAH_ENSURE_GOTO(total_globals <= UINT32_MAX - gc, WAH_ERROR_TOO_LARGE, cleanup);
+        total_globals += gc;
     }
 
     if (total_globals > wah_global_index_limit(module)) {
