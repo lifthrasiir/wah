@@ -579,6 +579,44 @@ void test_trunc_edge_cases() {
     }
 }
 
+void test_trunc_trap_saves_frame_state() {
+    printf("Testing i32.trunc_f64_s trap properly saves frame state...\n");
+
+    // Use resumable API: start, resume (traps), cancel, then call again.
+    // If frame state (sp) is not saved on trap, subsequent call may corrupt the stack.
+    const char *spec = "wasm \
+        types {[ fn [f64] [i32] ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'trunc'} fn# 0 ]} \
+        code {[ {[] local.get 0 i32.trunc_f64_s end } ]}";
+
+    wah_module_t mod = {0};
+    assert_ok(wah_parse_module_from_spec(&mod, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_instantiate(&ctx));
+
+    // First: trap with NaN via resumable API
+    wah_value_t params[1];
+    params[0].f64 = 0.0 / 0.0; // NaN
+    assert_ok(wah_start(&ctx, 0, params, 1));
+    wah_error_t err = wah_resume(&ctx);
+    assert_err(err, WAH_ERROR_TRAP);
+    wah_cancel(&ctx);
+
+    // After cancel, context should be back to READY and reusable
+    assert_true(wah_exec_state(&ctx) == WAH_EXEC_READY);
+
+    // Now call again with a valid value -- this must succeed
+    params[0].f64 = 42.7;
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, params, 1, &result));
+    assert_eq_i32(result.i32, 42);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 int main() {
     test_i32_and();
     test_i32_eq();
@@ -639,6 +677,7 @@ int main() {
     test_i64_extend32_s();
 
     test_trunc_edge_cases();
+    test_trunc_trap_saves_frame_state();
 
     printf("\nSUMMARY: All tests PASSED!\n");
     return 0;

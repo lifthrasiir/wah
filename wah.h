@@ -12567,9 +12567,10 @@ WAH_RUN(END) { // End of function
 }
 #define CONVERT_CHECK(from_field, call, ty, cast, to_field) { \
     ty res; \
-    WAH_CHECK(call(sp[-1].from_field, &res)); \
+    WAH_CHECK_GOTO(call(sp[-1].from_field, &res), cleanup); \
     sp[-1].to_field = cast (res); \
     WAH_NEXT(); \
+    WAH_CLEANUP(); \
 }
 #define REINTERPRET(from_field, from_ty, to_field, to_ty) { \
     union { from_ty from; to_ty to; } u = { .from = sp[-1].from_field }; \
