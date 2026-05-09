@@ -4570,13 +4570,15 @@ static bool wah_types_structurally_equal(const wah_module_t *module, uint32_t a,
     return true;
 }
 
-static bool wah_cross_module_rec_group_eq(const wah_module_t *ma, uint32_t rga_s, uint32_t rga_n,
-                                          const wah_module_t *mb, uint32_t rgb_s, uint32_t rgb_n);
+#define WAH_MAX_TYPE_RECURSION_DEPTH 256
 
-// Compare a type reference in the context of a rec-group comparison.
-// Intra-rec-group references are compared by offset; others recurse.
+static bool wah_cross_module_rec_group_eq(const wah_module_t *ma, uint32_t rga_s, uint32_t rga_n,
+                                          const wah_module_t *mb, uint32_t rgb_s, uint32_t rgb_n,
+                                          uint32_t depth);
+
 static bool wah_cross_module_ref_in_recgroup(const wah_module_t *ma, wah_type_t ta, uint32_t rga_s, uint32_t rga_n,
-                                             const wah_module_t *mb, wah_type_t tb, uint32_t rgb_s, uint32_t rgb_n) {
+                                             const wah_module_t *mb, wah_type_t tb, uint32_t rgb_s, uint32_t rgb_n,
+                                             uint32_t depth) {
     if (ta == tb && ta < 0) return true;
     if (ta < 0 || tb < 0) return ta == tb;
     if (WAH_TYPE_IS_NULLABLE(ta) != WAH_TYPE_IS_NULLABLE(tb)) return false;
@@ -4588,16 +4590,18 @@ static bool wah_cross_module_ref_in_recgroup(const wah_module_t *ma, wah_type_t 
     if (a_in && b_in) return (ca - rga_s) == (cb - rgb_s);
     if (a_in || b_in) return false;
     if (ma == mb && ca == cb) return true;
+    if (depth >= WAH_MAX_TYPE_RECURSION_DEPTH) return false;
     const wah_type_def_t *da = &ma->type_defs[ca];
     const wah_type_def_t *db = &mb->type_defs[cb];
     if (da->rec_group_size != db->rec_group_size) return false;
     if (ca - da->rec_group_start != cb - db->rec_group_start) return false;
     return wah_cross_module_rec_group_eq(ma, da->rec_group_start, da->rec_group_size,
-                                         mb, db->rec_group_start, db->rec_group_size);
+                                         mb, db->rec_group_start, db->rec_group_size, depth + 1);
 }
 
 static bool wah_cross_module_type_eq_in_recgroup(const wah_module_t *ma, uint32_t ia, uint32_t rga_s, uint32_t rga_n,
-                                                 const wah_module_t *mb, uint32_t ib, uint32_t rgb_s, uint32_t rgb_n) {
+                                                 const wah_module_t *mb, uint32_t ib, uint32_t rgb_s, uint32_t rgb_n,
+                                                 uint32_t depth) {
     const wah_type_def_t *da = &ma->type_defs[ia];
     const wah_type_def_t *db = &mb->type_defs[ib];
     if (da->kind != db->kind) return false;
@@ -4609,7 +4613,7 @@ static bool wah_cross_module_type_eq_in_recgroup(const wah_module_t *ma, uint32_
     } else {
         if (db->supertype == WAH_NO_SUPERTYPE) return false;
         if (!wah_cross_module_ref_in_recgroup(ma, WAH_TYPE_FROM_IDX(da->supertype, 0), rga_s, rga_n,
-                                              mb, WAH_TYPE_FROM_IDX(db->supertype, 0), rgb_s, rgb_n))
+                                              mb, WAH_TYPE_FROM_IDX(db->supertype, 0), rgb_s, rgb_n, depth))
             return false;
     }
 
@@ -4619,17 +4623,17 @@ static bool wah_cross_module_type_eq_in_recgroup(const wah_module_t *ma, uint32_
         if (fa->param_count != fb->param_count || fa->result_count != fb->result_count) return false;
         for (uint32_t j = 0; j < fa->param_count; ++j) {
             if (!wah_cross_module_ref_in_recgroup(ma, fa->param_types[j], rga_s, rga_n,
-                                                  mb, fb->param_types[j], rgb_s, rgb_n)) return false;
+                                                  mb, fb->param_types[j], rgb_s, rgb_n, depth)) return false;
         }
         for (uint32_t j = 0; j < fa->result_count; ++j) {
             if (!wah_cross_module_ref_in_recgroup(ma, fa->result_types[j], rga_s, rga_n,
-                                                  mb, fb->result_types[j], rgb_s, rgb_n)) return false;
+                                                  mb, fb->result_types[j], rgb_s, rgb_n, depth)) return false;
         }
     } else {
         if (da->field_count != db->field_count) return false;
         for (uint32_t j = 0; j < da->field_count; ++j) {
             if (!wah_cross_module_ref_in_recgroup(ma, da->field_types[j], rga_s, rga_n,
-                                                  mb, db->field_types[j], rgb_s, rgb_n)) return false;
+                                                  mb, db->field_types[j], rgb_s, rgb_n, depth)) return false;
             if (da->field_mutables[j] != db->field_mutables[j]) return false;
         }
     }
@@ -4637,12 +4641,13 @@ static bool wah_cross_module_type_eq_in_recgroup(const wah_module_t *ma, uint32_
 }
 
 static bool wah_cross_module_rec_group_eq(const wah_module_t *ma, uint32_t rga_s, uint32_t rga_n,
-                                          const wah_module_t *mb, uint32_t rgb_s, uint32_t rgb_n) {
+                                          const wah_module_t *mb, uint32_t rgb_s, uint32_t rgb_n,
+                                          uint32_t depth) {
     if (rga_n != rgb_n) return false;
     if (ma == mb && rga_s == rgb_s) return true;
     for (uint32_t k = 0; k < rga_n; ++k) {
         if (!wah_cross_module_type_eq_in_recgroup(ma, rga_s + k, rga_s, rga_n,
-                                                  mb, rgb_s + k, rgb_s, rgb_n))
+                                                  mb, rgb_s + k, rgb_s, rgb_n, depth))
             return false;
     }
     return true;
@@ -4669,7 +4674,7 @@ static bool wah_cross_module_type_ref_eq(const wah_module_t *ma, wah_type_t ta,
     if (rga_n != rgb_n) return false;
     if (ca - rga_s != cb - rgb_s) return false;
 
-    return wah_cross_module_rec_group_eq(ma, rga_s, rga_n, mb, rgb_s, rgb_n);
+    return wah_cross_module_rec_group_eq(ma, rga_s, rga_n, mb, rgb_s, rgb_n, 0);
 }
 
 static bool wah_cross_module_subtype(const wah_module_t *sub_m, wah_type_t sub_t,
