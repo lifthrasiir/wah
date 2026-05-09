@@ -10020,6 +10020,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
 
     WAH_CHECK_GOTO(wah_alloc_unified_stack(exec_ctx, limits->max_stack_bytes), cleanup);
 
+    WAH_ENSURE_GOTO(module->global_count <= UINT32_MAX - module->import_global_count, WAH_ERROR_TOO_LARGE, cleanup);
     uint32_t total_globals = wah_global_index_limit(module);
     if (total_globals > 0) {
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->globals, total_globals, cleanup);
@@ -10040,6 +10041,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
         exec_ctx->deadline_us = limits->deadline_us;
     }
 
+    WAH_ENSURE_GOTO(module->memory_count <= UINT32_MAX - module->import_memory_count, WAH_ERROR_TOO_LARGE, cleanup);
     uint32_t total_memories = wah_memory_index_limit(module);
     if (total_memories > 0) {
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->memories, total_memories, cleanup);
@@ -10073,6 +10075,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
         }
     }
 
+    WAH_ENSURE_GOTO(module->table_count <= UINT32_MAX - module->import_table_count, WAH_ERROR_TOO_LARGE, cleanup);
     uint32_t total_tables = wah_table_index_limit(module);
     if (total_tables > 0) {
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables, total_tables, cleanup);
@@ -10099,6 +10102,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
     }
 
     // Build the runtime tag_instances (global tag index space: imports + locals).
+    WAH_ENSURE_GOTO(module->tag_count <= UINT32_MAX - module->import_tag_count, WAH_ERROR_TOO_LARGE, cleanup);
     uint32_t total_tags = module->import_tag_count + module->tag_count;
     if (total_tags > 0) {
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->tag_instances, total_tags, cleanup);
@@ -10122,6 +10126,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
     // funcrefs into this table dispatch correctly even when handled by a third-party
     // context that has not directly linked us.
     uint32_t import_count = module->import_function_count;
+    WAH_ENSURE_GOTO(module->local_function_count <= UINT32_MAX - import_count, WAH_ERROR_TOO_LARGE, cleanup);
     uint32_t table_size = import_count + module->local_function_count;
     exec_ctx->function_table_count = table_size;
     if (table_size > 0) {
