@@ -995,6 +995,42 @@ int main() {
         wah_free_module(&mod_exp);
     }
 
+    // Bug: table import element type uses == instead of cross-module comparison.
+    // struct{i32} vs struct{i64} at the same type index passes with ==.
+    printf("Test: cross-module table import rejects incompatible element types\n");
+    {
+        // exporter: type 0 = struct{i32 mut}, table of (ref null 0)
+        wah_module_t mod_exp = {0};
+        assert_ok(wah_parse_module_from_spec(&mod_exp, "wasm \
+            types {[struct [i32 mut]]} \
+            tables {[type.ref.null 0 limits.i32/1 10]} \
+            exports {[{'t'} table# 0]}"));
+
+        // importer: type 0 = struct{i64 mut}, imports table of (ref null 0)
+        wah_module_t mod_imp = {0};
+        assert_ok(wah_parse_module_from_spec(&mod_imp, "wasm \
+            types {[struct [i64 mut], fn [] []]} \
+            imports {[{'E'} {'t'} table# type.ref.null 0 limits.i32/1 5]} \
+            funcs {[1]} \
+            exports {[{'run'} fn# 0]} \
+            code {[{[] end}]}"));
+
+        wah_exec_context_t ectx = {0};
+        assert_ok(wah_new_exec_context(&ectx, &mod_exp, NULL));
+        assert_ok(wah_instantiate(&ectx));
+
+        wah_exec_context_t ictx = {0};
+        assert_ok(wah_new_exec_context(&ictx, &mod_imp, NULL));
+        assert_ok(wah_link_context(&ictx, "E", &ectx));
+        wah_error_t err = wah_instantiate(&ictx);
+        assert_err(err, WAH_ERROR_LINK_FAILED);
+
+        wah_free_exec_context(&ictx);
+        wah_free_exec_context(&ectx);
+        wah_free_module(&mod_imp);
+        wah_free_module(&mod_exp);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

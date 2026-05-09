@@ -15754,7 +15754,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         if (linked_table_idx >= linked->import_table_count) {
             local_table_idx = linked_table_idx - linked->import_table_count;
             exp_tt = &linked->tables[local_table_idx];
-            WAH_ENSURE_GOTO(exp_tt->elem_type == ti->type.elem_type, WAH_ERROR_LINK_FAILED, cleanup);
+            WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(linked, exp_tt->elem_type,
+                                                         module, ti->type.elem_type), WAH_ERROR_LINK_FAILED, cleanup);
             WAH_ENSURE_GOTO(exp_tt->addr_type == ti->type.addr_type, WAH_ERROR_LINK_FAILED, cleanup);
             if (ti->type.max_elements != UINT64_MAX) {
                 WAH_ENSURE_GOTO(exp_tt->max_elements != UINT64_MAX, WAH_ERROR_LINK_FAILED, cleanup);
