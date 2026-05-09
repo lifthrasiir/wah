@@ -145,6 +145,38 @@ int main(void) {
         code {[{[] i32.const 0 i32.const 0 i32.const 0 memory.init 0xffffffff 0 end}]}"),
         WAH_ERROR_VALIDATION_FAILED);
 
+    // Bug: wah_start_internal preflight check doesn't include param_count.
+    // A function with many params and a tight stack passes preflight but overflows.
+    printf("14. Testing preflight stack overflow check includes param_count...\n");
+    {
+#define I32x10 "i32,i32,i32,i32,i32,i32,i32,i32,i32,i32"
+#define I32x100 I32x10 "," I32x10 "," I32x10 "," I32x10 "," I32x10 "," \
+                I32x10 "," I32x10 "," I32x10 "," I32x10 "," I32x10
+        assert_ok(wah_parse_module_from_spec(&module,
+            "wasm types {[fn [" I32x100 "] [i32]]} "
+            "funcs {[0]} "
+            "exports {[{'run'} fn# 0]} "
+            "code {[{[] local.get 0 end}]}"));
+
+        wah_exec_options_t opts = {0};
+        opts.limits.max_stack_bytes = 512;
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &module, &opts));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t params[100] = {{0}};
+        for (int i = 0; i < 100; i++) params[i].i32 = i;
+
+        wah_value_t result;
+        wah_error_t err = wah_call(&ctx, 0, params, 100, &result);
+        assert_err(err, WAH_ERROR_STACK_OVERFLOW);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&module);
+#undef I32x10
+#undef I32x100
+    }
+
     printf("--- All Overflow Tests Passed ---\n");
     return 0;
 }

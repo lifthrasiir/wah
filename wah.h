@@ -14669,7 +14669,7 @@ static wah_error_t wah_start_internal(
     ctx->lifecycle.entry_result_count = func_type->result_count;
 
     const wah_code_body_t *start_code = &fn_module->code_bodies[local_idx];
-    wah_value_t *preflight_top = ctx->sp + start_code->max_frame_slots;
+    wah_value_t *preflight_top = ctx->sp + param_count + start_code->max_frame_slots;
     // Preflight: one frame + params + max_frame_slots must fit
     WAH_ENSURE((uint8_t *)preflight_top <= (uint8_t *)(ctx->frame_ptr - 1), WAH_ERROR_STACK_OVERFLOW);
 
