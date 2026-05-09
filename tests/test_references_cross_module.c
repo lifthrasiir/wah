@@ -150,10 +150,58 @@ static void test_link_module_frame_ctx_wrong_module() {
     wah_free_module(&provider);
 }
 
+// Regression test for GC root scan corrupting memory when an imported mutable
+// funcref/externref global is present. The slot ctx->globals[i].ref stores a
+// pointer-to-wah_value_t (for indirection), but wah_gc_enumerate_roots was
+// visiting it as if .ref were a GC object, calling wah_gc_header() which
+// computes (ptr - sizeof(header)) — an out-of-bounds address.
+static void test_gc_root_scan_imported_mutable_ref_global() {
+    printf("Testing GC root scan with imported mutable funcref global (security regression)...\n");
+
+    // Provider: exports a function and a mutable funcref global.
+    const char *provider_spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        globals {[ funcref mut ref.func 0 end ]} \
+        exports {[ {'f'} fn# 0, {'g'} global# 0 ]} \
+        code {[ {[] i32.const 42 end } ]}";
+
+    // Consumer: imports the mutable funcref global, has a dummy function.
+    const char *consumer_spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        imports {[ {'provider'} {'g'} global# funcref mut ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] i32.const 1 end } ]}";
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &consumer, NULL));
+    assert_ok(wah_link_module(&ctx, "provider", &provider));
+    assert_ok(wah_instantiate(&ctx));
+
+    // Start GC and trigger a collection cycle.
+    // Before the fix, this corrupts memory (ASAN: heap-buffer-overflow).
+    assert_ok(wah_gc_start(&ctx));
+    wah_debug_gc_step(&ctx);
+
+    // Verify the global is still usable via indirection.
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 1);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
 int main() {
     test_cross_module_ref_test_abstract_struct_oob();
     test_cross_module_ref_test_abstract_array_oob();
     test_link_module_frame_ctx_wrong_module();
+    test_gc_root_scan_imported_mutable_ref_global();
     printf("All cross-module reference security tests passed!\n");
     return 0;
 }

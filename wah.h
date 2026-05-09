@@ -9465,7 +9465,13 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
     for (uint32_t i = 0; i < primary_globals; i++) {
         wah_type_t gt = wah_global_type(module, i);
         if (WAH_TYPE_IS_REF(gt)) {
-            visitor(&ctx->globals[i], gt, userdata);
+            // Imported mutable globals store an indirection pointer in .ref,
+            // not a GC object. Dereference to visit the actual value.
+            if (i < module->import_global_count && module->global_imports[i].is_mutable) {
+                visitor((wah_value_t *)ctx->globals[i].ref, gt, userdata);
+            } else {
+                visitor(&ctx->globals[i], gt, userdata);
+            }
         }
     }
 
