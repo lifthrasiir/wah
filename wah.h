@@ -2393,8 +2393,8 @@ static inline void *wah_gc_payload(wah_gc_object_t *obj) {
 static inline uint32_t wah_gc_struct_alloc_size(const wah_repr_info_t *info) {
     return (uint32_t)(sizeof(wah_gc_object_t) + info->size);
 }
-static inline uint32_t wah_gc_array_alloc_size(const wah_repr_info_t *info, uint32_t length) {
-    return (uint32_t)(sizeof(wah_gc_object_t) + sizeof(wah_gc_array_body_t) + info->size * length);
+static inline size_t wah_gc_array_alloc_size(const wah_repr_info_t *info, uint32_t length) {
+    return sizeof(wah_gc_object_t) + sizeof(wah_gc_array_body_t) + (size_t)info->size * length;
 }
 // Visitor callback for root enumeration. Called once per live reference slot.
 // slot points to the wah_value_t containing the reference; type is its declared type.
