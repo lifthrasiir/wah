@@ -787,35 +787,23 @@ int main() {
             wah_free_module(&mod);
         }
 
-        // ref.func 0, ref.test.null anyref -> 0 (funcref not <: anyref in GC spec)
+        // ref.func 0, ref.test.null anyref -> validation error (cross-hierarchy: func vs any)
         {
             memset(&mod, 0, sizeof(mod));
-            memset(&ctx4, 0, sizeof(ctx4));
             const char *s = "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} \
                 exports {[ {'f'} fn# 0 ]} \
                 code {[ {[] ref.func 0 ref.test.null anyref end } ]}";
-            assert_ok(wah_parse_module_from_spec(&mod, s));
-            assert_ok(wah_new_exec_context(&ctx4, &mod, NULL));
-            assert_ok(wah_instantiate(&ctx4));
-            assert_ok(wah_call(&ctx4, 0, NULL, 0, &result));
-            assert_eq_i32(result.i32, 0);
-            wah_free_exec_context(&ctx4);
+            assert_err(wah_parse_module_from_spec(&mod, s), WAH_ERROR_VALIDATION_FAILED);
             wah_free_module(&mod);
         }
 
-        // ref.func 0, ref.test.null eqref -> 0 (funcref not <: eqref)
+        // ref.func 0, ref.test.null eqref -> validation error (cross-hierarchy: func vs any)
         {
             memset(&mod, 0, sizeof(mod));
-            memset(&ctx4, 0, sizeof(ctx4));
             const char *s = "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} \
                 exports {[ {'f'} fn# 0 ]} \
                 code {[ {[] ref.func 0 ref.test.null eqref end } ]}";
-            assert_ok(wah_parse_module_from_spec(&mod, s));
-            assert_ok(wah_new_exec_context(&ctx4, &mod, NULL));
-            assert_ok(wah_instantiate(&ctx4));
-            assert_ok(wah_call(&ctx4, 0, NULL, 0, &result));
-            assert_eq_i32(result.i32, 0);
-            wah_free_exec_context(&ctx4);
+            assert_err(wah_parse_module_from_spec(&mod, s), WAH_ERROR_VALIDATION_FAILED);
             wah_free_module(&mod);
         }
 

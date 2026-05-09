@@ -746,6 +746,56 @@ static void test_packed_field_get_validation() {
     wah_free_module(&m5);
 }
 
+static void test_ref_cast_hierarchy_validation() {
+    printf("Testing ref.cast/ref.test reject cross-hierarchy casts...\n");
+
+    // ref.test structref on funcref (any vs func hierarchy)
+    const char *bad1 = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] ref.null funcref ref.test structref end } ]}";
+    wah_module_t m1 = {0};
+    assert_err(wah_parse_module_from_spec(&m1, bad1), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m1);
+
+    // ref.cast externref on anyref (extern vs any hierarchy)
+    const char *bad2 = "wasm \
+        types {[ fn [] [externref] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] ref.null anyref ref.cast externref end } ]}";
+    wah_module_t m2 = {0};
+    assert_err(wah_parse_module_from_spec(&m2, bad2), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m2);
+
+    // ref.test i31ref on anyref (same any hierarchy -- valid)
+    const char *good1 = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] ref.null anyref ref.test i31ref end } ]}";
+    wah_module_t m3 = {0};
+    assert_ok(wah_parse_module_from_spec(&m3, good1));
+    wah_free_module(&m3);
+
+    // ref.test concrete struct on anyref (same any hierarchy -- valid)
+    const char *good2 = "wasm \
+        types {[ struct [i32 mut], fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] ref.null anyref ref.test 0 end } ]}";
+    wah_module_t m4 = {0};
+    assert_ok(wah_parse_module_from_spec(&m4, good2));
+    wah_free_module(&m4);
+
+    // ref.test funcref on (ref func_type) (same func hierarchy -- valid)
+    const char *good3 = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[] ref.func 0 ref.test.null funcref end } ]}";
+    wah_module_t m5 = {0};
+    assert_ok(wah_parse_module_from_spec(&m5, good3));
+    wah_free_module(&m5);
+}
+
 int main() {
     test_block_type_not_skipped();
     test_if_complex_block_type();
@@ -766,6 +816,7 @@ int main() {
     test_array_new_default_non_defaultable();
     test_non_nullable_field_store_validation();
     test_packed_field_get_validation();
+    test_ref_cast_hierarchy_validation();
     printf("All validation tests passed!\n");
     return 0;
 }

@@ -4510,6 +4510,30 @@ static inline bool wah_type_is_subtype(wah_type_t sub, wah_type_t sup, const wah
     }
 }
 
+static inline wah_type_t wah_type_hierarchy_top(wah_type_t t, const wah_module_t *module) {
+    t = WAH_TYPE_AS_NON_NULL(t);
+    if (t >= 0) {
+        switch (wah_type_def_kind(module, t)) {
+            case WAH_COMP_STRUCT: case WAH_COMP_ARRAY: return WAH_TYPE_ANY;
+            case WAH_COMP_FUNC: return WAH_TYPE_FUNC;
+            default: return WAH_TYPE_BOT;
+        }
+    }
+    switch (t) {
+        case WAH_TYPE_ANY: case WAH_TYPE_EQ: case WAH_TYPE_I31:
+        case WAH_TYPE_STRUCT: case WAH_TYPE_ARRAY: case WAH_TYPE_NONE:
+            return WAH_TYPE_ANY;
+        case WAH_TYPE_FUNC: case WAH_TYPE_NOFUNC:
+            return WAH_TYPE_FUNC;
+        case WAH_TYPE_EXTERN: case WAH_TYPE_NOEXTERN:
+            return WAH_TYPE_EXTERN;
+        case WAH_TYPE_EXN: case WAH_TYPE_NOEXN:
+            return WAH_TYPE_EXN;
+        default:
+            return WAH_TYPE_BOT;
+    }
+}
+
 static wah_type_t wah_canonicalize_type_ref(wah_type_t t, uint32_t rec_start, uint32_t rec_size, const uint32_t *canonical_map, uint32_t type_count) {
     if (t < 0) return t;
     uint32_t idx = WAH_TYIDX(t);
@@ -6888,6 +6912,11 @@ cleanup_block:
             }
             wah_type_t ref_type; POP_INTO(&ref_type);
             WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
+            if (ref_type != WAH_TYPE_BOT) {
+                wah_type_t src_top = wah_type_hierarchy_top(ref_type, vctx->module);
+                wah_type_t tgt_top = wah_type_hierarchy_top(heap_type, vctx->module);
+                WAH_ENSURE(src_top != WAH_TYPE_BOT && src_top == tgt_top, WAH_ERROR_VALIDATION_FAILED);
+            }
             if (opcode_val == WAH_OP_REF_TEST_NULL || opcode_val == WAH_OP_REF_TEST) {
                 PUSH(I32);
             } else {
@@ -6964,7 +6993,7 @@ cleanup_block:
         case WAH_OP_ANY_CONVERT_EXTERN: {
             wah_type_t ref_type; POP_INTO(&ref_type);
             WAH_ENSURE(ref_type == WAH_TYPE_BOT ||
-                       wah_type_is_subtype(WAH_TYPE_AS_NON_NULL(ref_type), WAH_TYPE_EXTERN, vctx->module),
+                       wah_type_hierarchy_top(ref_type, vctx->module) == WAH_TYPE_EXTERN,
                        WAH_ERROR_VALIDATION_FAILED);
             PUSH(_(WAH_TYPE_IS_NULLABLE(ref_type) ? WAH_TYPE_ANYREF : WAH_TYPE_ANY));
             break; // No opcode emitted
@@ -6972,7 +7001,7 @@ cleanup_block:
         case WAH_OP_EXTERN_CONVERT_ANY: {
             wah_type_t ref_type; POP_INTO(&ref_type);
             WAH_ENSURE(ref_type == WAH_TYPE_BOT ||
-                       wah_type_is_subtype(WAH_TYPE_AS_NON_NULL(ref_type), WAH_TYPE_ANY, vctx->module),
+                       wah_type_hierarchy_top(ref_type, vctx->module) == WAH_TYPE_ANY,
                        WAH_ERROR_VALIDATION_FAILED);
             PUSH(_(WAH_TYPE_IS_NULLABLE(ref_type) ? WAH_TYPE_EXTERNREF : WAH_TYPE_EXTERN));
             break; // No opcode emitted
