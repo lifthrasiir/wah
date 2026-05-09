@@ -1498,6 +1498,55 @@ int main() {
         wah_free_module(&deep_mod);
     }
 
+    // Ref map type_ptr misalignment when clamping rm_count across 16-entry boundary.
+    // func 0 (caller): push 20 structrefs on operand stack (rm_count=20, bmp_words=2),
+    //                  then call func 1 with 5 params (actual_depth=15, clamped bmp_words=1).
+    // func 1 (callee): allocate many structs to force GC, triggering root scan of caller.
+    // Without fix, type_ptr in caller's ref map is misaligned by 2 bytes.
+    printf("Testing GC ref map clamping across 16-entry boundary...\n");
+    {
+        wah_module_t wasm_mod = {0};
+        wah_exec_context_t ctx_rm = {0};
+
+        // type 0: struct {i32 mut}
+        // type 1: fn [] -> [i32]       (func 0 = caller)
+        // type 2: fn (structref x5) -> ()  (func 1 = callee that triggers GC)
+        #define A "i32.const 42 struct.new 0 "
+        const char *spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32], fn [structref, structref, structref, structref, structref] [] ]} \
+            funcs {[1, 2]} \
+            exports {[ {'f'} fn# 0 ]} \
+            code {[ \
+                {[] "
+                    A A A A A A A A A A A A A A A A A A A A
+                    "call 1 \
+                    drop drop drop drop drop drop drop drop \
+                    drop drop drop drop drop drop \
+                    struct.get 0 0 \
+                    end}, \
+                {[1 i32] i32.const 0 local.set 5 \
+                    block void loop void \
+                        i32.const 0 struct.new 0 drop \
+                        local.get 5 i32.const 1 i32.add local.set 5 \
+                        local.get 5 i32.const 100 i32.lt_s br_if 0 \
+                    end end \
+                end} \
+            ]}";
+        #undef A
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        assert_ok(wah_new_exec_context(&ctx_rm, &wasm_mod, NULL));
+        assert_ok(wah_gc_start(&ctx_rm));
+        ctx_rm.gc->allocation_threshold = 1;
+        assert_ok(wah_instantiate(&ctx_rm));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx_rm, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_free_exec_context(&ctx_rm);
+        wah_free_module(&wasm_mod);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }

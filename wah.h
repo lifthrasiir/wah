@@ -9439,6 +9439,7 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
 
         if (oref_map && rm_byte_offset < code->parsed_code.operand_ref_map_size) {
             uint16_t rm_count = wah_read_u16_le(oref_map + rm_byte_offset);
+            uint32_t original_bmp_words = (rm_count + 15) / 16;
             // The ref map describes the post-POLL type stack. Clamp to the
             // actual operand stack depth to handle frames suspended mid-call
             // (where callee results haven't been pushed yet).
@@ -9447,9 +9448,8 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
                 ? (uint32_t)(next_frame_base - operand_base) : 0;
             if (rm_count > actual_depth) rm_count = (uint16_t)actual_depth;
 
-            uint32_t bmp_words = (rm_count + 15) / 16;
             const uint8_t *bits = oref_map + rm_byte_offset + sizeof(uint16_t);
-            const uint8_t *type_ptr = bits + bmp_words * sizeof(uint16_t);
+            const uint8_t *type_ptr = bits + original_bmp_words * sizeof(uint16_t);
             for (uint16_t i = 0; i < rm_count; i++) {
                 uint16_t word = wah_read_u16_le(bits + (i / 16) * sizeof(uint16_t));
                 if (word & (1u << (i % 16))) {
