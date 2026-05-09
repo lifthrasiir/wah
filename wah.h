@@ -10264,6 +10264,8 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
             wah_free(alloc, (void*)exec_ctx->linked_modules[i].name);
             if (exec_ctx->linked_modules[i].owns_ctx) {
                 wah_free(alloc, exec_ctx->linked_modules[i].ctx->tag_instances);
+                wah_free(alloc, exec_ctx->linked_modules[i].ctx->dropped_elem_segments);
+                wah_free(alloc, exec_ctx->linked_modules[i].ctx->dropped_data_segments);
                 wah_free(alloc, exec_ctx->linked_modules[i].ctx);
             }
         }

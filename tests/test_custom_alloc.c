@@ -127,6 +127,52 @@ int main(void) {
         assert_err(wah_new_module(&m, &bad), WAH_ERROR_MISUSE);
     }
 
+    // Regression: wah_free_exec_context did not free dropped_elem_segments /
+    // dropped_data_segments on owned linked module contexts, leaking memory.
+    printf("Testing linked module dropped segment cleanup...\n");
+    {
+        tracking_alloc_t mc = {0}, cc = {0};
+        wah_alloc_t ma = { tracking_malloc, tracking_realloc, tracking_free, &mc };
+        wah_alloc_t ca = { tracking_malloc, tracking_realloc, tracking_free, &cc };
+
+        wah_module_t linked_mod = {0};
+        wah_parse_options_t po = { .alloc = &ma };
+        assert_ok(wah_parse_module_from_spec_ex(&linked_mod, &po, "wasm \
+            types {[fn [] []]} \
+            funcs {[0, 0]} \
+            tables {[funcref limits.i32/2 10 10]} \
+            memories {[limits.i32/1 1]} \
+            exports {[{'drop_both'} fn# 0]} \
+            elements {[elem.passive elem.funcref [1]]} \
+            datacount {1} \
+            code {[{[] elem.drop 0 data.drop 0 end}, {[] end}]} \
+            data {[data.passive {%'AB'}]}"));
+
+        wah_module_t primary_mod = {0};
+        assert_ok(wah_parse_module_from_spec_ex(&primary_mod, &po, "wasm \
+            types {[fn [] []]} \
+            imports {[{'L'} {'drop_both'} fn# 0]} \
+            funcs {[0]} \
+            exports {[{'run'} fn# 1]} \
+            code {[{[] call 0 end}]}"));
+
+        wah_exec_context_t ectx = {0};
+        wah_exec_options_t eo = { .alloc = &ca };
+        assert_ok(wah_new_exec_context(&ectx, &primary_mod, &eo));
+        assert_ok(wah_link_module(&ectx, "L", &linked_mod));
+        assert_ok(wah_instantiate(&ectx));
+
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ectx, "run", NULL, 0, &result));
+
+        wah_free_exec_context(&ectx);
+        wah_free_module(&primary_mod);
+        wah_free_module(&linked_mod);
+        if (!tracking_ok("linked-drop-ctx", &cc) || !tracking_ok("linked-drop-mod", &mc)) {
+            return 1;
+        }
+    }
+
     printf("custom allocator API tests passed\n");
     return 0;
 }
