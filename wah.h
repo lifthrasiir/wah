@@ -23,7 +23,7 @@ extern "C" {
 // Macro: WAH_VERSION
 //   The version of the WAH API. Incremented on any change to the API, including bug fixes.
 //   Based on (fractional Gregorian year - 2000) * 100, with a liberal rounding.
-#define WAH_VERSION 2635
+#define WAH_VERSION -2635
 
 // Macro: WAH_FORCE_PORTABLE [user-definable]
 //   If defined, forces the interpreter to use portable C implementations
@@ -1626,8 +1626,8 @@ typedef enum {
     X(ARRAY_NEW_DATA,II, WAH_FB+0x09, GC) X(ARRAY_NEW_ELEM,II, WAH_FB+0x0A, GC) \
     X(ARRAY_GET,, WAH_FB+0x0B, GC) X(ARRAY_GET_S,, WAH_FB+0x0C, GC) X(ARRAY_GET_U,, WAH_FB+0x0D, GC) \
     X(ARRAY_SET,, WAH_FB+0x0E, GC) X(ARRAY_LEN,, WAH_FB+0x0F, GC) \
-    X(ARRAY_FILL,I, WAH_FB+0x10, GC) X(ARRAY_COPY,II, WAH_FB+0x11, GC) \
-    X(ARRAY_INIT_DATA,II, WAH_FB+0x12, GC) X(ARRAY_INIT_ELEM,II, WAH_FB+0x13, GC) \
+    X(ARRAY_FILL,I, WAH_FB+0x10, GC) X(ARRAY_COPY,, WAH_FB+0x11, GC) \
+    X(ARRAY_INIT_DATA,II, WAH_FB+0x12, GC) X(ARRAY_INIT_ELEM,, WAH_FB+0x13, GC) \
     X(REF_TEST,, WAH_FB+0x14, GC) X(REF_TEST_NULL,, WAH_FB+0x15, GC) \
     X(REF_CAST,, WAH_FB+0x16, GC) X(REF_CAST_NULL,, WAH_FB+0x17, GC) \
     X(BR_ON_CAST,, WAH_FB+0x18, GC) X(BR_ON_CAST_FAIL,, WAH_FB+0x19, GC) \
@@ -7690,10 +7690,6 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                     WAH_LOWER_U16(WAH_OP_SELECT);
                     break;
                 }
-                case WAH_OP_REF_NULL: {
-                    WAH_LOWER_U32(instr->imm.u32);
-                    break;
-                }
                 case WAH_OP_REF_FUNC: {
                     if (ac->mode == WAH_ANALYZE_CONST_EXPR) {
                         wah_write_u16_le(buf + buf_size - sizeof(uint16_t), WAH_OP_REF_FUNC_CONST);
@@ -7720,10 +7716,12 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                     break;
                 }
                 case WAH_OP_ARRAY_NEW_FIXED:
-                case WAH_OP_ARRAY_NEW_DATA: case WAH_OP_ARRAY_NEW_ELEM:
-                case WAH_OP_ARRAY_COPY:
-                case WAH_OP_ARRAY_INIT_DATA: case WAH_OP_ARRAY_INIT_ELEM: {
+                case WAH_OP_ARRAY_NEW_DATA: case WAH_OP_ARRAY_NEW_ELEM: {
                     WAH_LOWER_U32(instr->imm.type_length.type_idx);
+                    WAH_LOWER_U32(instr->imm.type_length.length);
+                    break;
+                }
+                case WAH_OP_ARRAY_INIT_ELEM: {
                     WAH_LOWER_U32(instr->imm.type_length.length);
                     break;
                 }
@@ -11354,12 +11352,6 @@ WAH_RUN(V128_CONST) {
 #endif
 
 WAH_RUN(REF_NULL) {
-    // Read type from bytecode (already parsed as uint32_t)
-    uint32_t type = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-
-    // All references are unified as void*, so null is always NULL
-    (void)type; // Type is validated during parsing, but we don't need it here
     (*sp++).ref = NULL;
     WAH_NEXT();
 }
@@ -11825,9 +11817,6 @@ WAH_RUN(ARRAY_FILL) {
 
 WAH_RUN(ARRAY_COPY) {
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
-    uint32_t dst_typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
-    uint32_t src_typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
-    (void)dst_typeidx; (void)src_typeidx;
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t src_offset = (uint32_t)(--sp)->i32;
     void *src_obj = (--sp)->ref;
@@ -11929,9 +11918,7 @@ WAH_RUN(ARRAY_INIT_DATA) {
 
 WAH_RUN(ARRAY_INIT_ELEM) {
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
-    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
     uint32_t elemidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
-    (void)typeidx;
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t src_offset = (uint32_t)(--sp)->i32;
     uint32_t dst_offset = (uint32_t)(--sp)->i32;
