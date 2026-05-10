@@ -60,7 +60,6 @@ wah_error_t wah_debug_module_export_table(wah_module_t *mod, const char *name,
 bool wah_debug_is_func_ref_in_ctx(const wah_exec_context_t *ctx, const void *ref);
 bool wah_debug_is_func_ref_in_module(const wah_module_t *mod, const void *ref);
 bool wah_debug_type_is_exnref(const wah_module_t *mod, wah_type_t type);
-void wah_debug_free_exnref(wah_exec_context_t *ctx, void *ref);
 bool wah_debug_has_type_check_cache_entry(const wah_exec_context_t *ctx,
     const wah_module_t *sub_module, wah_type_t sub_type,
     const wah_module_t *sup_module, wah_type_t sup_type,

@@ -4,20 +4,13 @@
 #include "../wah.h"
 #include "common.h"
 
-static void count_roots_visitor(wah_value_t *slot, wah_type_t type, void *ud) {
-    (void)slot; (void)type;
+static void count_roots_visitor(wah_value_t *slot, void *ud) {
+    (void)slot;
     (*(uint32_t*)ud)++;
 }
 
-static void count_ref_roots_visitor(wah_value_t *slot, wah_type_t type, void *ud) {
+static void count_ref_roots_visitor(wah_value_t *slot, void *ud) {
     (void)slot;
-    assert(WAH_TYPE_IS_REF(type));
-    (*(uint32_t*)ud)++;
-}
-
-static void count_funcref_roots_visitor(wah_value_t *slot, wah_type_t type, void *ud) {
-    (void)slot;
-    assert(WAH_TYPE_AS_NULLABLE(type) == WAH_TYPE_FUNCREF);
     (*(uint32_t*)ud)++;
 }
 
@@ -31,9 +24,12 @@ static void host_count_roots(wah_call_context_t *cc, void *ud) {
     wah_return_i32(cc, (int32_t)g_root_count);
 }
 
-static void count_structref_visitor(wah_value_t *slot, wah_type_t type, void *ud) {
-    (void)slot; (void)ud;
-    if (type == WAH_TYPE_STRUCTREF) g_structref_count++;
+static void count_structref_visitor(wah_value_t *slot, void *ud) {
+    (void)ud;
+    if (slot->ref && !wah_ref_is_i31(slot->ref)) {
+        wah_gc_object_t *obj = wah_gc_header(slot->ref);
+        if (obj->repr_id >= 0) g_structref_count++;
+    }
 }
 
 static void host_count_structref(wah_call_context_t *cc, void *ud) {
@@ -299,7 +295,7 @@ int main() {
         assert_ok(wah_parse_module_from_spec(&module, spec));
         assert_ok(wah_new_exec_context(&ctx, &module, NULL));
         uint32_t count = 0;
-        wah_gc_enumerate_roots(&ctx, count_funcref_roots_visitor, &count);
+        wah_gc_enumerate_roots(&ctx, count_ref_roots_visitor, &count);
         assert_eq_u32(count, 3);
         wah_free_exec_context(&ctx);
         wah_free_module(&module);
@@ -1239,35 +1235,27 @@ int main() {
         wah_value_t field_value = { .i32 = 123 };
         wah_gc_store_field(WAH_TYPE_I32, (uint8_t *)struct_ref + struct_info->fields[0].offset, &field_value);
 
-        wah_exception_t *inner = (wah_exception_t *)calloc(1, sizeof(*inner));
-        wah_exception_t *outer = (wah_exception_t *)calloc(1, sizeof(*outer));
+        wah_exception_t *inner = wah_gc_alloc_exception(&ctx5, 1);
+        wah_exception_t *outer = wah_gc_alloc_exception(&ctx5, 1);
         assert_not_null(inner);
         assert_not_null(outer);
         inner->value_count = 1;
-        inner->values = (wah_value_t *)calloc(1, sizeof(wah_value_t));
-        inner->value_types = (wah_type_t *)calloc(1, sizeof(wah_type_t));
         outer->value_count = 1;
-        outer->values = (wah_value_t *)calloc(1, sizeof(wah_value_t));
-        outer->value_types = (wah_type_t *)calloc(1, sizeof(wah_type_t));
-        assert_not_null(inner->values);
-        assert_not_null(inner->value_types);
-        assert_not_null(outer->values);
-        assert_not_null(outer->value_types);
 
-        inner->values[0].ref = struct_ref;
-        inner->value_types[0] = 0; // (ref null type 0), the struct type.
-        outer->values[0].ref = inner;
-        outer->value_types[0] = WAH_TYPE_EXNREF;
-        wah_exception_track(&ctx5, inner);
-        wah_exception_track(&ctx5, outer);
+        wah_value_t inner_val = { .ref = struct_ref };
+        wah_exception_set_value(inner, 0, &inner_val);
+        wah_exception_value_types(inner)[0] = 0; // (ref null type 0), the struct type.
+        wah_value_t outer_val = { .ref = wah_exception_to_ref(inner) };
+        wah_exception_set_value(outer, 0, &outer_val);
+        wah_exception_value_types(outer)[0] = WAH_TYPE_EXNREF;
         ctx5.pending_exception = outer;
 
         wah_gc_step(&ctx5);
-        assert_eq_u32(ctx5.gc->object_count, 1);
+        // 3 GC objects survive: outer exception, inner exception, struct
+        assert_eq_u32(ctx5.gc->object_count, 3);
         assert_true(wah_gc_verify_heap(&ctx5));
 
         ctx5.pending_exception = NULL;
-        wah_exception_free_all(&ctx5);
         wah_gc_step(&ctx5);
         assert_eq_u32(ctx5.gc->object_count, 0);
 
@@ -1290,37 +1278,32 @@ int main() {
         assert_ok(wah_gc_start(&ctx5));
         assert_ok(wah_instantiate(&ctx5));
 
-        wah_exception_t *old_exc = (wah_exception_t *)calloc(1, sizeof(*old_exc));
-        wah_exception_t *new_exc = (wah_exception_t *)calloc(1, sizeof(*new_exc));
+        wah_exception_t *old_exc = wah_gc_alloc_exception(&ctx5, 1);
+        wah_exception_t *new_exc = wah_gc_alloc_exception(&ctx5, 1);
         assert_not_null(old_exc);
         assert_not_null(new_exc);
 
         old_exc->value_count = 1;
-        old_exc->values = (wah_value_t *)calloc(1, sizeof(wah_value_t));
-        old_exc->value_types = (wah_type_t *)calloc(1, sizeof(wah_type_t));
         new_exc->value_count = 1;
-        new_exc->values = (wah_value_t *)calloc(1, sizeof(wah_value_t));
-        new_exc->value_types = (wah_type_t *)calloc(1, sizeof(wah_type_t));
-        assert_not_null(old_exc->values);
-        assert_not_null(old_exc->value_types);
-        assert_not_null(new_exc->values);
-        assert_not_null(new_exc->value_types);
-        old_exc->values[0].i32 = 11;
-        old_exc->value_types[0] = WAH_TYPE_I32;
-        new_exc->values[0].i32 = 22;
-        new_exc->value_types[0] = WAH_TYPE_I32;
+        wah_value_t old_val = { .i32 = 11 };
+        wah_exception_set_value(old_exc, 0, &old_val);
+        wah_exception_value_types(old_exc)[0] = WAH_TYPE_I32;
+        wah_value_t new_val = { .i32 = 22 };
+        wah_exception_set_value(new_exc, 0, &new_val);
+        wah_exception_value_types(new_exc)[0] = WAH_TYPE_I32;
 
-        wah_exception_track(&ctx5, old_exc);
-        wah_exception_track(&ctx5, new_exc);
         ctx5.pending_exception = old_exc;
 
         assert_err(wah_throw_exception(&ctx5, new_exc), WAH_ERROR_EXCEPTION);
         assert_eq_ptr(ctx5.pending_exception, new_exc);
-        assert_eq_i32(ctx5.pending_exception->values[0].i32, 22);
+        wah_value_t check_val;
+        wah_exception_get_value(ctx5.pending_exception, 0, &check_val);
+        assert_eq_i32(check_val.i32, 22);
 
-        uint32_t tracked = 0;
-        for (wah_exception_t *e = ctx5.exceptions; e; e = e->next) tracked++;
-        assert_eq_u32(tracked, 1);
+        // Both exceptions are GC-managed; old one is unreachable after replacement.
+        // After GC, only new_exc (reachable via pending_exception) should survive.
+        wah_gc_step(&ctx5);
+        assert_eq_u32(ctx5.gc->object_count, 1);
 
         wah_free_exec_context(&ctx5);
         wah_free_module(&wasm_mod);

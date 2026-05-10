@@ -196,10 +196,6 @@ bool wah_debug_has_type_check_cache_entry(const wah_exec_context_t *ctx,
     return false;
 }
 
-void wah_debug_free_exnref(wah_exec_context_t *ctx, void *ref) {
-    wah_exception_free(ctx, (wah_exception_t *)ref);
-}
-
 const wah_module_t *wah_debug_linked_module(const wah_exec_context_t *ctx, uint32_t i) {
     if (i >= ctx->linked_module_count) return NULL;
     return ctx->linked_modules[i].module;

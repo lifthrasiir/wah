@@ -764,7 +764,6 @@ private:
 
     // Pending exception (set by throw, consumed by try_table catch or propagated)
     struct wah_exception_s *pending_exception;
-    struct wah_exception_s *exceptions;
 
     // Exception handler stack (try_table frames)
     struct wah_exception_handler_s *exception_handlers;
@@ -2399,7 +2398,7 @@ static inline size_t wah_gc_array_alloc_size(const wah_repr_info_t *info, uint32
 }
 // Visitor callback for root enumeration. Called once per live reference slot.
 // slot points to the wah_value_t containing the reference; type is its declared type.
-typedef void (*wah_gc_ref_visitor_t)(wah_value_t *slot, wah_type_t type, void *userdata);
+typedef void (*wah_gc_ref_visitor_t)(wah_value_t *slot, void *userdata);
 
 // --- Repr Lookup ---
 static inline wah_repr_t wah_module_typeidx_to_repr(const wah_module_t *module, uint32_t typeidx) {
@@ -2577,13 +2576,28 @@ typedef struct wah_tag_instance_s {
 } wah_tag_instance_t;
 
 typedef struct wah_exception_s {
-    struct wah_exception_s *next;
+    wah_gc_object_t header;
     const wah_tag_instance_t *tag_identity;
     uint32_t tag_index;
     uint32_t value_count;
-    wah_value_t *values;
-    wah_type_t *value_types;
 } wah_exception_t;
+
+// GC payloads are not expected to be aligned to multiples of 16 bytes, so memcpy is required.
+static inline void wah_exception_get_value(wah_exception_t *exc, uint32_t i, wah_value_t *out) {
+    memcpy(out, (uint8_t *)exc + sizeof(wah_exception_t) + i * sizeof(wah_value_t), sizeof(wah_value_t));
+}
+static inline void wah_exception_set_value(wah_exception_t *exc, uint32_t i, const wah_value_t *val) {
+    memcpy((uint8_t *)exc + sizeof(wah_exception_t) + i * sizeof(wah_value_t), val, sizeof(wah_value_t));
+}
+static inline wah_type_t *wah_exception_value_types(wah_exception_t *exc) {
+    return (wah_type_t *)((uint8_t *)exc + sizeof(wah_exception_t) + exc->value_count * sizeof(wah_value_t));
+}
+static inline wah_exception_t *wah_exception_from_ref(void *ref) {
+    return (wah_exception_t *)wah_gc_header(ref);
+}
+static inline void *wah_exception_to_ref(wah_exception_t *exc) {
+    return wah_gc_payload(&exc->header);
+}
 
 typedef struct wah_exception_handler_s {
     uint32_t call_depth;
@@ -9311,50 +9325,6 @@ static void wah_free_element_segment_data(wah_element_segment_t *segment, const 
 
 static inline void wah_recompute_poll_flag(wah_exec_context_t *ctx);
 
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
-static void wah_exception_destroy(wah_exec_context_t *ctx, wah_exception_t *exc) {
-    if (!exc) return;
-    WAH_ASSERT(ctx);
-    const wah_alloc_t *alloc = &ctx->alloc;
-    wah_free(alloc, exc->values);
-    wah_free(alloc, exc->value_types);
-    wah_free(alloc, exc);
-}
-
-static void wah_exception_track(wah_exec_context_t *ctx, wah_exception_t *exc) {
-    if (!ctx || !exc) return;
-    exc->next = ctx->exceptions;
-    ctx->exceptions = exc;
-}
-
-static void wah_exception_free(wah_exec_context_t *ctx, wah_exception_t *exc) {
-    if (!exc) return;
-    if (ctx) {
-        wah_exception_t **p = &ctx->exceptions;
-        while (*p) {
-            if (*p == exc) {
-                *p = exc->next;
-                break;
-            }
-            p = &(*p)->next;
-        }
-    }
-    wah_exception_destroy(ctx, exc);
-}
-
-static void wah_exception_free_all(wah_exec_context_t *ctx) {
-    if (!ctx) return;
-    wah_exception_t *exc = ctx->exceptions;
-    while (exc) {
-        wah_exception_t *next = exc->next;
-        wah_exception_destroy(ctx, exc);
-        exc = next;
-    }
-    ctx->exceptions = NULL;
-    ctx->pending_exception = NULL;
-}
-#endif // WAH_FEATURE_EXCEPTION
-
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 
 #define WAH_GC_DEFAULT_THRESHOLD (256 * 1024)
@@ -9446,6 +9416,17 @@ void *wah_gc_alloc_host(wah_exec_context_t *ctx, size_t size) {
     return wah_gc_alloc(ctx, NULL, WAH_REPR_HOST, (uint32_t)size);
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+static wah_exception_t *wah_gc_alloc_exception(wah_exec_context_t *ctx, uint32_t value_count) {
+    uint32_t fields_size = (uint32_t)(sizeof(wah_exception_t) - sizeof(wah_gc_object_t));
+    uint64_t payload64 = (uint64_t)fields_size + (uint64_t)value_count * (sizeof(wah_value_t) + sizeof(wah_type_t));
+    if (payload64 > UINT32_MAX) return NULL;
+    void *p = wah_gc_alloc(ctx, NULL, WAH_TYPE_EXN, (uint32_t)payload64);
+    if (!p) return NULL;
+    return (wah_exception_t *)wah_gc_header(p);
+}
+#endif
+
 static inline void wah_gc_store_field(wah_type_t ft, uint8_t *addr, const wah_value_t *val) {
     switch (ft) {
         case WAH_TYPE_PACKED_I8:  *(uint8_t *)addr = (uint8_t)val->i32; break;
@@ -9505,13 +9486,13 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
         // 1a. Parameters (slots [locals .. locals + param_count))
         for (uint32_t i = 0; i < ftype->param_count; i++) {
             if (WAH_TYPE_IS_REF(ftype->param_types[i])) {
-                visitor(&frame->locals[i], ftype->param_types[i], userdata);
+                visitor(&frame->locals[i], userdata);
             }
         }
         // 1b. Declared locals (slots [locals + param_count .. + param_count + local_count))
         for (uint32_t i = 0; i < code->local_count; i++) {
             if (WAH_TYPE_IS_REF(code->local_types[i])) {
-                visitor(&frame->locals[ftype->param_count + i], code->local_types[i], userdata);
+                visitor(&frame->locals[ftype->param_count + i], userdata);
             }
         }
 
@@ -9529,7 +9510,6 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
 
         if (oref_map && rm_byte_offset < code->parsed_code.operand_ref_map_size) {
             uint16_t rm_count = wah_read_u16_le(oref_map + rm_byte_offset);
-            uint32_t original_bmp_words = (rm_count + 15) / 16;
             // The ref map describes the post-POLL type stack. Clamp to the
             // actual operand stack depth to handle frames suspended mid-call
             // (where callee results haven't been pushed yet).
@@ -9539,13 +9519,10 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
             if (rm_count > actual_depth) rm_count = (uint16_t)actual_depth;
 
             const uint8_t *bits = oref_map + rm_byte_offset + sizeof(uint16_t);
-            const uint8_t *type_ptr = bits + original_bmp_words * sizeof(uint16_t);
             for (uint16_t i = 0; i < rm_count; i++) {
                 uint16_t word = wah_read_u16_le(bits + (i / 16) * sizeof(uint16_t));
                 if (word & (1u << (i % 16))) {
-                    wah_type_t ref_type = (wah_type_t)(int32_t)wah_read_u32_le(type_ptr);
-                    type_ptr += sizeof(wah_type_t);
-                    visitor(&operand_base[i], ref_type, userdata);
+                    visitor(&operand_base[i], userdata);
                 }
             }
         }
@@ -9560,9 +9537,9 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
             // Imported mutable globals store an indirection pointer in .ref,
             // not a GC object. Dereference to visit the actual value.
             if (i < module->import_global_count && module->global_imports[i].is_mutable) {
-                visitor((wah_value_t *)ctx->globals[i].ref, gt, userdata);
+                visitor((wah_value_t *)ctx->globals[i].ref, userdata);
             } else {
-                visitor(&ctx->globals[i], gt, userdata);
+                visitor(&ctx->globals[i], userdata);
             }
         }
     }
@@ -9573,7 +9550,7 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
         for (uint32_t k = 0; k < linked->global_count; k++) {
             wah_type_t gt = linked->globals[k].type;
             if (WAH_TYPE_IS_REF(gt)) {
-                visitor(&ctx->globals[g_offset + k], gt, userdata);
+                visitor(&ctx->globals[g_offset + k], userdata);
             }
         }
         g_offset += linked->global_count;
@@ -9584,7 +9561,7 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
         const wah_table_type_t *tt = wah_table_type(module, t);
         if (WAH_TYPE_IS_REF(tt->elem_type)) {
             for (uint64_t e = 0; e < ctx->tables[t].size; e++) {
-                visitor(&ctx->tables[t].entries[e], tt->elem_type, userdata);
+                visitor(&ctx->tables[t].entries[e], userdata);
             }
         }
     }
@@ -9592,8 +9569,8 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
     // 4. Pending exception (in-flight between throw and catch)
     if (ctx->pending_exception) {
         wah_value_t exc_val;
-        exc_val.ref = ctx->pending_exception;
-        visitor(&exc_val, WAH_TYPE_EXNREF, userdata);
+        exc_val.ref = wah_exception_to_ref(ctx->pending_exception);
+        visitor(&exc_val, userdata);
     }
 }
 
@@ -9622,6 +9599,18 @@ static void wah_gc_mark_ref(void *ref, const wah_module_t *module) {
 
 static void wah_gc_scan_object(wah_gc_object_t *obj, const wah_module_t *module) {
     wah_repr_t repr_id = obj->repr_id;
+    if (repr_id == WAH_TYPE_EXN) {
+        wah_exception_t *exc = (wah_exception_t *)obj;
+        wah_type_t *types = wah_exception_value_types(exc);
+        for (uint32_t i = 0; i < exc->value_count; i++) {
+            if (!WAH_TYPE_IS_REF(types[i])) continue;
+            wah_value_t v;
+            wah_exception_get_value(exc, i, &v);
+            if (!v.ref || wah_ref_is_i31(v.ref)) continue;
+            wah_gc_mark_ref(v.ref, module);
+        }
+        return;
+    }
     if (repr_id < 0) return;
     const wah_module_t *obj_mod = obj->module ? obj->module : module;
     const wah_repr_info_t *info = wah_repr_info_get(obj_mod, repr_id);
@@ -9662,30 +9651,10 @@ static void wah_gc_drain_gray(wah_gc_state_t *gc, const wah_module_t *module) {
     } while (found_gray);
 }
 
-static void wah_gc_mark_exception(wah_exception_t *exc, const wah_module_t *module) {
-    if (!exc || !exc->values || !exc->value_types) return;
-    for (uint32_t i = 0; i < exc->value_count; i++) {
-        if (!WAH_TYPE_IS_REF(exc->value_types[i])) continue;
-        void *ref = exc->values[i].ref;
-        if (!ref || wah_ref_is_i31(ref)) continue;
-        if (WAH_TYPE_AS_NON_NULL(exc->value_types[i]) == WAH_TYPE_EXN || WAH_TYPE_AS_NON_NULL(exc->value_types[i]) == WAH_TYPE_NOEXN) {
-            wah_gc_mark_exception((wah_exception_t *)ref, module);
-            continue;
-        }
-        wah_gc_mark_object(wah_gc_header(ref), module);
-    }
-}
-
-static void wah_gc_mark_visitor(wah_value_t *slot, wah_type_t type, void *userdata) {
-    const wah_module_t *module = (const wah_module_t *)userdata;
-    if (WAH_TYPE_AS_NON_NULL(type) == WAH_TYPE_EXN || WAH_TYPE_AS_NON_NULL(type) == WAH_TYPE_NOEXN) {
-        wah_gc_mark_exception((wah_exception_t *)slot->ref, module);
-        return;
-    }
+static void wah_gc_mark_visitor(wah_value_t *slot, void *userdata) {
     void *ref = slot->ref;
     if (!ref || wah_ref_is_i31(ref)) return;
-    wah_gc_object_t *obj = wah_gc_header(ref);
-    wah_gc_mark_object(obj, module);
+    wah_gc_mark_object(wah_gc_header(ref), (const wah_module_t *)userdata);
 }
 
 static void wah_gc_step_mark(wah_exec_context_t *ctx) {
@@ -10344,9 +10313,6 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     }
 
     wah_free(alloc, exec_ctx->tag_instances);
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
-    wah_exception_free_all(exec_ctx);
-#endif
 
     // Free linked modules
     if (exec_ctx->linked_modules) {
@@ -10556,11 +10522,8 @@ static wah_error_t wah_push_frame(
         fctx = frame->frame_ctx; \
     } while (0)
 
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t *exc) {
-    if (ctx->pending_exception) {
-        wah_exception_free(ctx, ctx->pending_exception);
-    }
     ctx->pending_exception = exc;
 
     while (ctx->exception_handler_depth > 0) {
@@ -10593,16 +10556,13 @@ static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t 
 
                 if (catch_kind == WAH_CATCH_KIND_CATCH || catch_kind == WAH_CATCH_KIND_CATCH_REF) {
                     for (uint32_t i = 0; i < exc->value_count; i++) {
-                        *ctx->sp++ = exc->values[i];
+                        wah_exception_get_value(exc, i, ctx->sp++);
                     }
                 }
                 if (catch_kind == WAH_CATCH_KIND_CATCH_REF || catch_kind == WAH_CATCH_KIND_CATCH_ALL_REF) {
-                    (*ctx->sp++).ref = exc;
-                    ctx->pending_exception = NULL;
-                } else {
-                    wah_exception_free(ctx, exc);
-                    ctx->pending_exception = NULL;
+                    (*ctx->sp++).ref = wah_exception_to_ref(exc);
                 }
+                ctx->pending_exception = NULL;
 
                 if (ctx->call_depth > 0) {
                     ctx->frame_ptr->bytecode_ip = handler->bytecode_base + catch_offset;
@@ -10616,7 +10576,7 @@ static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t 
 
     return WAH_ERROR_EXCEPTION;
 }
-#endif // WAH_FEATURE_EXCEPTION
+#endif // WAH_FEATURE_EXCEPTION && WAH_FEATURE_GC
 
 static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t ref_val, wah_type_t target) {
     void *ref = ref_val.ref;
@@ -11229,7 +11189,7 @@ WAH_RUN(BR_TABLE) {
     WAH_NEXT();
 }
 
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 
 WAH_RUN(TRY_TABLE) {
     uint32_t catch_count_val = wah_read_u32_le(bytecode_ip);
@@ -11259,7 +11219,6 @@ WAH_RUN(END_TRY_TABLE) {
 }
 
 WAH_RUN(THROW) {
-    const wah_alloc_t *alloc = &ctx->alloc;
     uint32_t tag_idx = wah_read_u32_le(bytecode_ip);
     bytecode_ip += sizeof(uint32_t);
     WAH_ASSERT(tag_idx < fctx->tag_instance_count);
@@ -11270,74 +11229,51 @@ WAH_RUN(THROW) {
     const wah_func_type_t *tag_type = &cur_module->types[type_idx];
     uint32_t value_count = tag_type->param_count;
 
-    wah_exception_t *exc;
-    WAH_MALLOC_GOTO(exc, cleanup);
-    *exc = (wah_exception_t){0};
-    wah_exception_track(ctx, exc);
+    wah_exception_t *exc = wah_gc_alloc_exception(ctx, value_count);
+    WAH_ENSURE_GOTO(exc != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
     exc->tag_identity = tag_inst->identity;
     exc->tag_index = tag_idx;
     exc->value_count = value_count;
     if (value_count > 0) {
-        WAH_MALLOC_ARRAY_GOTO(exc->values, value_count, cleanup_exc);
-        WAH_MALLOC_ARRAY_GOTO(exc->value_types, value_count, cleanup_exc);
+        wah_type_t *exc_types = wah_exception_value_types(exc);
         for (uint32_t i = 0; i < value_count; i++) {
-            exc->values[i] = sp[-(int32_t)value_count + (int32_t)i];
-            exc->value_types[i] = tag_type->param_types[i];
+            wah_exception_set_value(exc, i, &sp[-(int32_t)value_count + (int32_t)i]);
+            exc_types[i] = tag_type->param_types[i];
         }
         sp -= value_count;
     }
 
     frame->bytecode_ip = bytecode_ip;
     ctx->sp = sp;
-    // exc is no longer owned. Also it returns WAH_THROW_EXCEPTION which should be propagated.
     err = wah_throw_exception(ctx, exc);
     if (err != WAH_OK) goto cleanup;
     sp = ctx->sp;
     RELOAD_FRAME();
     WAH_NEXT();
 
-cleanup_exc:
-    wah_exception_free(ctx, exc);
     WAH_CLEANUP();
 }
 
 WAH_RUN(THROW_REF) {
-    const wah_alloc_t *alloc = &ctx->alloc;
     wah_value_t exnref_val = *--sp;
     WAH_ENSURE_GOTO(exnref_val.ref != NULL, WAH_ERROR_TRAP, cleanup);
 
-    wah_exception_t *exc = (wah_exception_t *)exnref_val.ref;
-    wah_exception_t *copy;
-    WAH_MALLOC_GOTO(copy, cleanup);
-    *copy = *exc;
-    copy->next = NULL;
-    wah_exception_track(ctx, copy);
-    copy->values = NULL;
-    copy->value_types = NULL;
-    if (exc->value_count > 0) {
-        WAH_MALLOC_ARRAY_GOTO(copy->values, exc->value_count, cleanup_copy);
-        WAH_MALLOC_ARRAY_GOTO(copy->value_types, exc->value_count, cleanup_copy);
-        memcpy(copy->values, exc->values, sizeof(wah_value_t) * exc->value_count);
-        memcpy(copy->value_types, exc->value_types, sizeof(wah_type_t) * exc->value_count);
-    }
+    wah_exception_t *exc = wah_exception_from_ref(exnref_val.ref);
 
     frame->bytecode_ip = bytecode_ip;
     ctx->sp = sp;
-    // copy is no longer owned. Also it returns WAH_THROW_EXCEPTION which should be propagated.
-    err = wah_throw_exception(ctx, copy);
+    err = wah_throw_exception(ctx, exc);
     if (err != WAH_OK) goto cleanup;
     sp = ctx->sp;
     RELOAD_FRAME();
     WAH_NEXT();
 
-cleanup_copy:
-    wah_exception_free(ctx, copy);
     WAH_CLEANUP();
 }
 
-#else // !WAH_FEATURE_EXCEPTION
+#else // !WAH_FEATURE_EXCEPTION || !WAH_FEATURE_GC
 WAH_NEVER_RUN(TRY_TABLE) WAH_NEVER_RUN(END_TRY_TABLE) WAH_NEVER_RUN(THROW) WAH_NEVER_RUN(THROW_REF)
-#endif // WAH_FEATURE_EXCEPTION
+#endif // WAH_FEATURE_EXCEPTION && WAH_FEATURE_GC
 
 WAH_RUN(I32_CONST) { (*sp++).i32 = (int32_t)wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); WAH_NEXT(); }
 WAH_RUN(I64_CONST) { (*sp++).i64 = (int64_t)wah_read_u64_le(bytecode_ip); bytecode_ip += sizeof(uint64_t); WAH_NEXT(); }
@@ -14705,11 +14641,30 @@ static void wah_cancel_internal(wah_exec_context_t *ctx) {
     WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0);
     wah_recompute_poll_flag(ctx);
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
-    if (ctx->pending_exception) {
-        wah_exception_free(ctx, ctx->pending_exception);
-        ctx->pending_exception = NULL;
+    ctx->pending_exception = NULL;
+#endif
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+    if (ctx->gc) {
+        wah_gc_state_t *gc = ctx->gc;
+        wah_gc_object_t *prev = NULL;
+        wah_gc_object_t *obj = gc->all_objects;
+        while (obj) {
+            wah_gc_object_t *next = wah_gc_next(obj);
+            if (obj->repr_id == WAH_TYPE_EXN) {
+                if (prev)
+                    wah_gc_set_next(prev, next);
+                else
+                    gc->all_objects = next;
+                gc->allocated_bytes -= obj->size_bytes;
+                gc->object_count--;
+                wah_budget_release(ctx, obj->size_bytes);
+                wah_free(&ctx->alloc, obj);
+            } else {
+                prev = obj;
+            }
+            obj = next;
+        }
     }
-    wah_exception_free_all(ctx);
 #endif
     if (ctx->lifecycle.state == WAH_EXEC_READY) return;
     ctx->sp = ctx->lifecycle.base_sp;

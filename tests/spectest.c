@@ -215,17 +215,6 @@ static int is_func_ref(const spectest_instance_t *instance, void *ref) {
     return 0;
 }
 
-static void free_result_refs(spectest_instance_t *instance, wast_const_result_t *result) {
-    const wah_module_t *module = instance ? wah_debug_exec_module(&instance->exec) : NULL;
-    for (uint32_t i = 0; i < result->count; ++i) {
-        if (wah_debug_type_is_exnref(module, result->values[i].type) && result->values[i].value.ref) {
-            wah_debug_free_exnref(instance ? &instance->exec : NULL, result->values[i].value.ref);
-            result->values[i].value.ref = NULL;
-        }
-    }
-    result->count = 0;
-}
-
 static int match_num_pat_i32(int32_t actual, const wast_num_pat_t *pat) {
     return pat->kind == WAST_NUM_LITERAL && actual == pat->literal.i32;
 }
@@ -766,7 +755,7 @@ static int expect_trap_like(wah_error_t err) {
 static int execute_command(const wast_node_t *node, spectest_env_t *env);
 
 static int handle_assert_return(const wast_node_t *node, spectest_env_t *env) {
-    wast_const_result_t actual;
+    wast_const_result_t actual = {0};
     spectest_instance_t *instance = NULL;
     wast_result_pat_t patterns[WAST_MAX_RESULTS];
     size_t i;
@@ -779,19 +768,16 @@ static int handle_assert_return(const wast_node_t *node, spectest_env_t *env) {
         return 0;
     }
     if (err != WAH_OK) {
-        free_result_refs(instance, &actual);
         fail_check(env, "assert_return action failed with %s", wah_strerror(err));
         return 0;
     }
     if (actual.count != node->child_count - 2) {
-        free_result_refs(instance, &actual);
         fail_check(env, "result count mismatch: expected %zu, got %u", node->child_count - 2, actual.count);
         return 0;
     }
     for (i = 2; i < node->child_count && i - 2 < WAST_MAX_RESULTS; ++i) {
         if (!wast_parse_result_pattern(node->children[i], &patterns[i - 2])) {
             fail_check(env, "unsupported result pattern");
-            free_result_refs(instance, &actual);
             ok = 0;
             break;
         }
@@ -825,13 +811,12 @@ static int handle_assert_return(const wast_node_t *node, spectest_env_t *env) {
     for (i = 0; i < node->child_count - 2 && i < WAST_MAX_RESULTS; ++i) {
         wast_free_result_pattern(&patterns[i]);
     }
-    free_result_refs(instance, &actual);
     if (ok) pass_check(env);
     return ok;
 }
 
 static int handle_assert_trap_like(const wast_node_t *node, spectest_env_t *env, int exhaustion) {
-    wast_const_result_t actual;
+    wast_const_result_t actual = {0};
     spectest_instance_t *instance = NULL;
     char error_buf[256] = {0};
     wah_error_t err = WAH_OK;
@@ -843,18 +828,16 @@ static int handle_assert_trap_like(const wast_node_t *node, spectest_env_t *env,
     }
     if ((!exhaustion && expect_trap_like(err)) ||
         (exhaustion && (err == WAH_ERROR_STACK_OVERFLOW || err == WAH_ERROR_OUT_OF_MEMORY || err == WAH_ERROR_TRAP))) {
-        free_result_refs(instance, &actual);
         pass_check(env);
         return 1;
     }
-    free_result_refs(instance, &actual);
     fail_check(env, "%s expected, got %s",
                exhaustion ? "exhaustion" : "trap", wah_strerror(err));
     return 0;
 }
 
 static int handle_assert_exception(const wast_node_t *node, spectest_env_t *env) {
-    wast_const_result_t actual;
+    wast_const_result_t actual = {0};
     spectest_instance_t *instance = NULL;
     char error_buf[256] = {0};
     wah_error_t err = WAH_OK;
@@ -865,11 +848,9 @@ static int handle_assert_exception(const wast_node_t *node, spectest_env_t *env)
         return 0;
     }
     if (err == WAH_ERROR_EXCEPTION) {
-        free_result_refs(instance, &actual);
         pass_check(env);
         return 1;
     }
-    free_result_refs(instance, &actual);
     fail_check(env, "exception expected, got %s", wah_strerror(err));
     return 0;
 }
@@ -985,7 +966,7 @@ static int execute_command(const wast_node_t *node, spectest_env_t *env) {
         return 1;
     }
     if (wast_atom_eq(node->children[0], "invoke") || wast_atom_eq(node->children[0], "get")) {
-        wast_const_result_t actual;
+        wast_const_result_t actual = {0};
         spectest_instance_t *owner = NULL;
         char error_buf[256] = {0};
         if (!execute_action(node, env, &actual, &err, &owner, error_buf, sizeof(error_buf))) {
@@ -993,11 +974,9 @@ static int execute_command(const wast_node_t *node, spectest_env_t *env) {
             return 0;
         }
         if (err == WAH_OK) {
-            free_result_refs(owner, &actual);
             pass_check(env);
             return 1;
         }
-        free_result_refs(owner, &actual);
         fail_check(env, "action failed: %s", wah_strerror(err));
         return 0;
     }
