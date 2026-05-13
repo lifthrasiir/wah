@@ -4378,6 +4378,21 @@ static bool wah_budget_check(const wah_exec_context_t *ctx, uint64_t additional)
     return additional <= ctx->max_memory_bytes - ctx->memory_bytes_committed;
 }
 
+static inline wah_error_t wah_table_byte_size(uint64_t elements, uint64_t *out_bytes) {
+#if WAH_HAS_BUILTIN(__builtin_mul_overflow)
+    uint64_t bytes;
+    if (__builtin_mul_overflow(elements, (uint64_t)sizeof(wah_value_t), &bytes)) {
+        return WAH_ERROR_TOO_LARGE;
+    }
+#else
+    if (elements > UINT64_MAX / sizeof(wah_value_t)) return WAH_ERROR_TOO_LARGE;
+    uint64_t bytes = elements * sizeof(wah_value_t);
+#endif
+    if (bytes > SIZE_MAX) return WAH_ERROR_TOO_LARGE;
+    *out_bytes = bytes;
+    return WAH_OK;
+}
+
 static void wah_budget_charge(wah_exec_context_t *ctx, uint64_t bytes) {
     ctx->memory_bytes_committed += bytes;
 }
@@ -10149,12 +10164,13 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
         for (uint32_t i = 0; i < module->table_count; ++i) {
             uint32_t slot = exec_ctx->table_count;
             uint64_t min_elements = module->tables[i].min_elements;
-            uint64_t table_bytes = min_elements * sizeof(wah_value_t);
+            uint64_t table_bytes = 0;
+            WAH_CHECK_GOTO(wah_table_byte_size(min_elements, &table_bytes), cleanup);
             WAH_ENSURE_GOTO(wah_budget_check(exec_ctx, table_bytes), WAH_ERROR_TOO_LARGE, cleanup);
             exec_ctx->tables[slot] = (wah_table_inst_t){ .size = min_elements, .max_size = module->tables[i].max_elements };
             if (min_elements > 0) {
                 WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables[slot].entries, min_elements, cleanup);
-                memset(exec_ctx->tables[slot].entries, 0, sizeof(wah_value_t) * min_elements);
+                memset(exec_ctx->tables[slot].entries, 0, (size_t)table_bytes);
             }
             wah_budget_charge(exec_ctx, table_bytes);
             exec_ctx->table_count++;
@@ -15813,7 +15829,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             if (linked_table_idx >= linked->import_table_count) {
                 WAH_ENSURE_GOTO(linked_ctx->tables[linked_table_idx].size >= ti->type.min_elements, WAH_ERROR_LINK_FAILED, cleanup);
             }
-            uint64_t imp_bytes = (uint64_t)linked_ctx->tables[linked_table_idx].size * sizeof(wah_value_t);
+            uint64_t imp_bytes = 0;
+            WAH_CHECK_GOTO(wah_table_byte_size(linked_ctx->tables[linked_table_idx].size, &imp_bytes), cleanup);
             WAH_ENSURE_GOTO(wah_budget_check(ctx, imp_bytes), WAH_ERROR_TOO_LARGE, cleanup);
             ctx->tables[i].entries = linked_ctx->tables[linked_table_idx].entries;
             ctx->tables[i].size = linked_ctx->tables[linked_table_idx].size;
@@ -15825,13 +15842,14 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         } else if (linked_table_idx >= linked->import_table_count) {
             WAH_ENSURE_GOTO(exp_tt->min_elements >= ti->type.min_elements, WAH_ERROR_LINK_FAILED, cleanup);
             uint64_t min_elements = exp_tt->min_elements;
-            uint64_t table_bytes = min_elements * sizeof(wah_value_t);
+            uint64_t table_bytes = 0;
+            WAH_CHECK_GOTO(wah_table_byte_size(min_elements, &table_bytes), cleanup);
             WAH_ENSURE_GOTO(wah_budget_check(ctx, table_bytes), WAH_ERROR_TOO_LARGE, cleanup);
             ctx->tables[i].is_imported = false;
             ctx->tables[i].size = min_elements;
             ctx->tables[i].max_size = exp_tt->max_elements;
             WAH_MALLOC_ARRAY_GOTO(ctx->tables[i].entries, min_elements > 0 ? min_elements : 1, cleanup);
-            memset(ctx->tables[i].entries, 0, sizeof(wah_value_t) * min_elements);
+            memset(ctx->tables[i].entries, 0, (size_t)table_bytes);
             wah_budget_charge(ctx, table_bytes);
         }
     }

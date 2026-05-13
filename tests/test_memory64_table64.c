@@ -1245,6 +1245,40 @@ static void test_table64_grow_overflow() {
     wah_free_module(&module);
 }
 
+static void test_table64_initial_size_overflow() {
+    printf("Testing table64 initial allocation size overflow...\n");
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, "wasm \
+        tables {[ funcref limits.i64/1 0x7fffffffffffffff ]}"));
+
+    wah_exec_context_t ctx = {0};
+    assert_err(wah_new_exec_context(&ctx, &module, NULL), WAH_ERROR_TOO_LARGE);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&module);
+}
+
+static void test_table64_linked_initial_size_overflow() {
+    printf("Testing linked table64 initial allocation size overflow...\n");
+
+    wah_module_t provider = {0}, consumer = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, "wasm \
+        tables {[ funcref limits.i64/1 0x7fffffffffffffff ]} \
+        exports {[ {'tab'} table# 0 ]}"));
+    assert_ok(wah_parse_module_from_spec(&consumer, "wasm \
+        imports {[ {'provider'} {'tab'} export.table funcref limits.i64/1 0 ]}"));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &consumer, NULL));
+    assert_ok(wah_link_module(&ctx, "provider", &provider));
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_TOO_LARGE);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
 int main() {
     test_memory_grow_clamp();
     test_memory64_large_limits_parsing();
@@ -1279,6 +1313,8 @@ int main() {
     test_memory_copy_mixed_validation();
     test_memory64_grow_overflow();
     test_table64_grow_overflow();
+    test_table64_initial_size_overflow();
+    test_table64_linked_initial_size_overflow();
     printf("All memory64/table64 tests passed!\n");
     return 0;
 }
