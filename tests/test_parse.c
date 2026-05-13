@@ -6,6 +6,18 @@
 #include "common.h"
 #include "wah_impl.h"
 
+static void test_parse_module_argument_errors() {
+    printf("Running test_parse_module_argument_errors...\n");
+
+    uint8_t short_binary[4] = {0};
+    uint8_t header_only[8] = {0};
+    wah_module_t module = {0};
+
+    assert_err(wah_parse_module(NULL, header_only, sizeof(header_only), NULL), WAH_ERROR_MISUSE);
+    assert_err(wah_parse_module(&module, NULL, 0, NULL), WAH_ERROR_MISUSE);
+    assert_err(wah_parse_module(&module, short_binary, sizeof(short_binary), NULL), WAH_ERROR_UNEXPECTED_EOF);
+}
+
 static void test_malformed_code_body_size_wasm() {
     printf("Running test_malformed_code_body_size_wasm...\n");
     wah_module_t module;
@@ -1050,6 +1062,7 @@ static void test_fuzz_ref_validation_regressions() {
 }
 
 int main(void) {
+    test_parse_module_argument_errors();
     test_zero_params_zero_results_func_type();
     test_invalid_section_order_mem_table();
     test_invalid_element_segment_func_idx();

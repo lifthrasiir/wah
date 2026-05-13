@@ -9185,7 +9185,9 @@ static const struct wah_section_handler_s {
 
 wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t binary_size, const wah_parse_options_t *options) {
     wah_error_t err = WAH_OK;
-    WAH_ENSURE(binary && module && binary_size >= 8, WAH_ERROR_UNEXPECTED_EOF);
+    WAH_ENSURE(module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(binary, WAH_ERROR_MISUSE);
+    WAH_ENSURE(binary_size >= 8, WAH_ERROR_UNEXPECTED_EOF);
     WAH_ENSURE(wah_alloc_valid(options ? options->alloc : NULL), WAH_ERROR_MISUSE);
 
     *module = (wah_module_t){0}; // Initialize module struct
@@ -9360,6 +9362,7 @@ static void wah_gc_free_all_objects(wah_exec_context_t *ctx, wah_gc_state_t *gc)
 }
 
 wah_error_t wah_gc_start(wah_exec_context_t *ctx) {
+    WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
     if (ctx->gc) return WAH_OK;
     const wah_alloc_t *alloc = &ctx->alloc;
     WAH_MALLOC(ctx->gc);
@@ -9428,6 +9431,7 @@ static void *wah_gc_alloc_array(wah_exec_context_t *ctx, const wah_module_t *mod
 }
 
 void *wah_gc_alloc_host(wah_exec_context_t *ctx, size_t size) {
+    if (!ctx) return NULL;
     if (size > UINT32_MAX) return NULL;
     return wah_gc_alloc(ctx, NULL, WAH_REPR_HOST, (uint32_t)size);
 }
@@ -9747,7 +9751,8 @@ static void wah_gc_step(wah_exec_context_t *ctx) {
 }
 
 void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats) {
-    if (!ctx->gc) {
+    if (!stats) return;
+    if (!ctx || !ctx->gc) {
         *stats = (wah_gc_heap_stats_t){0};
         return;
     }
@@ -9763,10 +9768,15 @@ void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats
 
 void wah_gc_heap_stats_from_host(const wah_call_context_t *ctx, wah_gc_heap_stats_t *stats) {
     WAH_ASSERT(ctx && "Call context is NULL");
+    if (!ctx) {
+        if (stats) *stats = (wah_gc_heap_stats_t){0};
+        return;
+    }
     wah_gc_heap_stats(ctx->exec, stats);
 }
 
 bool wah_gc_verify_heap(const wah_exec_context_t *ctx) {
+    if (!ctx) return false;
     if (!ctx->gc) return true;
     const wah_gc_state_t *gc = ctx->gc;
 
@@ -9793,16 +9803,25 @@ bool wah_gc_verify_heap(const wah_exec_context_t *ctx) {
 
 #else // !WAH_FEATURE_GC
 
-wah_error_t wah_gc_start(wah_exec_context_t *ctx) { (void)ctx; return WAH_OK; }
+wah_error_t wah_gc_start(wah_exec_context_t *ctx) {
+    WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    return WAH_OK;
+}
 static void wah_gc_end(wah_exec_context_t *ctx) { (void)ctx; }
 static void wah_gc_step(wah_exec_context_t *ctx) { (void)ctx; }
 void wah_gc_heap_stats(const wah_exec_context_t *ctx, wah_gc_heap_stats_t *stats) {
-    (void)ctx; *stats = (wah_gc_heap_stats_t){0};
+    (void)ctx;
+    if (stats) *stats = (wah_gc_heap_stats_t){0};
 }
 void wah_gc_heap_stats_from_host(const wah_call_context_t *ctx, wah_gc_heap_stats_t *stats) {
-    (void)ctx; *stats = (wah_gc_heap_stats_t){0};
+    (void)ctx;
+    if (stats) *stats = (wah_gc_heap_stats_t){0};
 }
-bool wah_gc_verify_heap(const wah_exec_context_t *ctx) { (void)ctx; return true; }
+bool wah_gc_verify_heap(const wah_exec_context_t *ctx) { return ctx != NULL; }
+void *wah_gc_alloc_host(wah_exec_context_t *ctx, size_t size) {
+    (void)ctx; (void)size;
+    return NULL;
+}
 
 static inline void wah_ref_store_global(wah_exec_context_t *ctx, uint32_t idx, wah_value_t val) {
     ctx->globals[idx] = val;
@@ -10073,6 +10092,8 @@ static wah_error_t wah_alloc_unified_stack(wah_exec_context_t *exec_ctx, uint64_
 wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_exec_options_t *options) {
     wah_limits_t default_limits = {0};
     const wah_limits_t *limits = options ? &options->limits : &default_limits;
+    WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(module, WAH_ERROR_MISUSE);
     WAH_ENSURE(wah_alloc_valid(options ? options->alloc : NULL), WAH_ERROR_MISUSE);
     *exec_ctx = (wah_exec_context_t){ .is_instantiated = false, .alloc = wah_resolve_alloc(options ? options->alloc : NULL) };
     wah_error_t err = WAH_OK;
@@ -10247,6 +10268,7 @@ cleanup:
 
 wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *limits) {
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(limits, WAH_ERROR_MISUSE);
     const wah_alloc_t *alloc = &exec_ctx->alloc;
     WAH_ENSURE(exec_ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
     WAH_ENSURE(exec_ctx->call_depth == 0 && exec_ctx->sp == exec_ctx->value_stack, WAH_ERROR_MISUSE);
@@ -10289,6 +10311,11 @@ wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *lim
 }
 
 void wah_get_limits(const wah_exec_context_t *exec_ctx, wah_limits_t *out) {
+    if (!out) return;
+    if (!exec_ctx) {
+        *out = (wah_limits_t){0};
+        return;
+    }
     uint64_t mm = exec_ctx->max_memory_bytes;
     *out = (wah_limits_t){
         .max_stack_bytes = exec_ctx->stack_buffer_size,
@@ -10351,12 +10378,15 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
 }
 
 wah_error_t wah_set_fuel(wah_exec_context_t *ctx, int64_t fuel) {
+    WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(ctx->module, WAH_ERROR_MISUSE);
     WAH_ENSURE(ctx->module->fuel_metering, WAH_ERROR_DISABLED_FEATURE);
     ctx->fuel = fuel;
     return WAH_OK;
 }
 
 int64_t wah_get_fuel(const wah_exec_context_t *ctx) {
+    if (!ctx) return 0;
     return ctx->fuel;
 }
 
