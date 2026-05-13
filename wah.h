@@ -2980,7 +2980,9 @@ static inline wah_error_t wah_realloc(const wah_alloc_t *a, size_t count, size_t
     } while (0)
 
 #define WAH_ENSURE_CAP(arr, needed) do { \
-        uint32_t _cap_needed = (needed); \
+        size_t _cap_needed_size = (needed); \
+        WAH_ENSURE(_cap_needed_size <= UINT32_MAX, WAH_ERROR_TOO_LARGE); \
+        uint32_t _cap_needed = (uint32_t)_cap_needed_size; \
         if (_cap_needed > arr##_cap) { \
             uint32_t _nc = arr##_cap == 0 ? 8 : arr##_cap; \
             while (_nc < _cap_needed) { \
@@ -2993,7 +2995,9 @@ static inline wah_error_t wah_realloc(const wah_alloc_t *a, size_t count, size_t
     } while (0)
 
 #define WAH_ENSURE_CAP_GOTO(arr, needed, label) do { \
-        uint32_t _cap_needed = (needed); \
+        size_t _cap_needed_size = (needed); \
+        WAH_ENSURE_GOTO(_cap_needed_size <= UINT32_MAX, WAH_ERROR_TOO_LARGE, label); \
+        uint32_t _cap_needed = (uint32_t)_cap_needed_size; \
         if (_cap_needed > arr##_cap) { \
             uint32_t _nc = arr##_cap == 0 ? 8 : arr##_cap; \
             while (_nc < _cap_needed) { \
