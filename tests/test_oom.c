@@ -128,6 +128,32 @@ static void run_oom_loop(const char *name, oom_op_t op, oom_cleanup_t cleanup, v
     }
 }
 
+static void run_oom_loop_no_failure_cleanup(const char *name, oom_op_t op, oom_cleanup_t cleanup, void *userdata) {
+    printf("Testing OOM cleanup without caller cleanup: %s...\n", name);
+    fflush(stdout);
+    for (size_t fail_at = 1; ; ++fail_at) {
+        oom_alloc_t state = { .fail_after = fail_at };
+        wah_error_t err = op(&state, userdata);
+        if (err == WAH_OK) {
+            if (cleanup) cleanup(userdata);
+            assert_no_leaks(name, &state);
+            printf("  success after %zu allocation attempts\n", fail_at - 1);
+            return;
+        }
+        if (err != WAH_ERROR_OUT_OF_MEMORY) {
+            fprintf(stderr, "%s fail_at=%zu: expected OOM or OK, got %s (failed %s size=%zu)\n",
+                    name, fail_at, wah_strerror(err),
+                    state.failed_realloc ? "realloc" : "malloc", state.failed_size);
+            exit(1);
+        }
+        assert_no_leaks(name, &state);
+        if (fail_at > 10000) {
+            fprintf(stderr, "%s did not reach success\n", name);
+            exit(1);
+        }
+    }
+}
+
 static void host_id(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
     wah_return_i32(ctx, wah_param_i32(ctx, 0));
@@ -141,6 +167,12 @@ static void cleanup_module_case(void *userdata) {
     module_case_t *c = (module_case_t *)userdata;
     wah_free_module(&c->module);
     c->module = (wah_module_t){0};
+}
+
+static wah_error_t op_new_module_constructor(oom_alloc_t *state, void *userdata) {
+    module_case_t *c = (module_case_t *)userdata;
+    wah_alloc_t alloc = make_oom_alloc(state);
+    return wah_new_module(&c->module, &alloc);
 }
 
 static wah_error_t op_parse_complex_module(oom_alloc_t *state, void *userdata) {
@@ -370,6 +402,9 @@ static void prepare_runtime_throw_ref_case(runtime_case_t *c) {
 }
 
 int main(void) {
+    module_case_t new_module_case = {0};
+    run_oom_loop_no_failure_cleanup("wah_new_module", op_new_module_constructor, cleanup_module_case, &new_module_case);
+
     module_case_t parse_case = {0};
     run_oom_loop("wah_parse_module", op_parse_complex_module, cleanup_module_case, &parse_case);
 

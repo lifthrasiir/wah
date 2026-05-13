@@ -15080,14 +15080,19 @@ wah_error_t wah_new_module(wah_module_t *mod, const wah_alloc_t *alloc_arg) {
     *mod = (wah_module_t){ .functions_cap = 16, .local_function_count = 0, .exports_cap = 16,
                            .alloc = wah_resolve_alloc(alloc_arg) };
     const wah_alloc_t *alloc = &mod->alloc;
+    wah_error_t err = WAH_OK;
 
     // Allocate initial unified functions[] array (all host functions for a new module)
-    WAH_MALLOC_ARRAY(mod->functions, mod->functions_cap);
+    WAH_MALLOC_ARRAY_GOTO(mod->functions, mod->functions_cap, cleanup);
 
     // Allocate initial export array
-    WAH_MALLOC_ARRAY(mod->exports, mod->exports_cap);
+    WAH_MALLOC_ARRAY_GOTO(mod->exports, mod->exports_cap, cleanup);
 
     return WAH_OK;
+
+cleanup:
+    wah_free_module(mod);
+    return err;
 }
 
 static bool wah_define_type_matches(const wah_module_t *mod, uint32_t i, const wah_func_type_t *ft, const wah_type_def_t *td) {
