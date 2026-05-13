@@ -1,4 +1,4 @@
-# <img src="./wah.png" width="64" height="64" valign="middle" alt=""> WebAssembly interpreter in a Header (WAH)
+# <sub><sub><img src="./wah.png" width="64" height="64" valign="middle" alt=""></sub></sub> WebAssembly interpreter in a Header (WAH)
 
 This is **WAH**, a [WebAssembly](https://webassembly.org/) interpreter implemented in a single C header file. It implements the WebAssembly 3.0 [deterministic profile](https://webassembly.github.io/spec/core/appendix/profiles.html#deterministic-profile-small-mathrm-det) -- GC, exception handling, relaxed SIMD, multi-memory, memory64/table64, tail calls, extended const, and everything else in the WASM 2.0/3.0 lineup -- and is designed to run untrusted modules in production with predictable resource bounds.
 

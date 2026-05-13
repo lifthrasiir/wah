@@ -2929,7 +2929,8 @@ static inline wah_error_t wah_realloc(const wah_alloc_t *a, size_t count, size_t
         return WAH_OK;
     }
     if (elemsize != 0 && count > SIZE_MAX / elemsize) return WAH_ERROR_OUT_OF_MEMORY;
-    void* new_ptr = a->realloc(*p_ptr, count * elemsize, a->userdata);
+    size_t size = count * elemsize;
+    void* new_ptr = *p_ptr ? a->realloc(*p_ptr, size, a->userdata) : a->malloc(size, a->userdata);
     if (!new_ptr) return WAH_ERROR_OUT_OF_MEMORY;
     *p_ptr = new_ptr;
     return WAH_OK;

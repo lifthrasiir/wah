@@ -11,6 +11,11 @@ typedef struct {
     uintptr_t xorv;
 } tracking_alloc_t;
 
+typedef struct {
+    tracking_alloc_t tracking;
+    int null_reallocs;
+} strict_alloc_t;
+
 static void track_alloc_ptr(tracking_alloc_t *t, void *ptr) {
     uintptr_t h = wah_test_perturb_ptr(ptr);
     t->allocs++;
@@ -62,6 +67,25 @@ static void tracking_free(void *ptr, void *userdata) {
         track_free_ptr(t, ptr);
         free(ptr);
     }
+}
+
+static void *strict_malloc(size_t size, void *userdata) {
+    strict_alloc_t *s = (strict_alloc_t *)userdata;
+    return tracking_malloc(size, &s->tracking);
+}
+
+static void *strict_realloc(void *ptr, size_t size, void *userdata) {
+    strict_alloc_t *s = (strict_alloc_t *)userdata;
+    if (!ptr) {
+        s->null_reallocs++;
+        return NULL;
+    }
+    return tracking_realloc(ptr, size, &s->tracking);
+}
+
+static void strict_free(void *ptr, void *userdata) {
+    strict_alloc_t *s = (strict_alloc_t *)userdata;
+    tracking_free(ptr, &s->tracking);
 }
 
 static int tracking_ok(const char *name, const tracking_alloc_t *t) {
@@ -125,6 +149,22 @@ int main(void) {
         wah_alloc_t bad = { tracking_malloc, NULL, tracking_free, NULL };
         wah_module_t m = {0};
         assert_err(wah_new_module(&m, &bad), WAH_ERROR_MISUSE);
+    }
+
+    // Regression: wah_realloc must honor the public allocator contract and use
+    // malloc for initial allocation instead of calling realloc with NULL.
+    printf("Testing realloc(NULL) avoidance...\n");
+    {
+        strict_alloc_t sc = {0};
+        wah_alloc_t strict_alloc = { strict_malloc, strict_realloc, strict_free, &sc };
+        wah_module_t m = {0};
+        wah_type_t t;
+        assert_ok(wah_new_module(&m, &strict_alloc));
+        assert_ok(wah_define_type(&m, &t, "fn (i32) -> i32"));
+        wah_free_module(&m);
+        if (sc.null_reallocs != 0 || !tracking_ok("strict-realloc", &sc.tracking)) {
+            return 1;
+        }
     }
 
     // Regression: wah_free_exec_context did not free dropped_elem_segments /
