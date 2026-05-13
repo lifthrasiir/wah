@@ -1,4 +1,5 @@
 #include "../wah.h"
+#include "wah_impl.h"
 #include "common.h"
 #include <stdio.h>
 
@@ -647,6 +648,32 @@ static void test_link_module_tag_type_index_cross_module() {
     wah_free_module(&provider);
 }
 
+static void test_link_module_tag_context_has_gc() {
+    printf("Testing wah_link_module tag context has GC state...\n");
+
+    wah_module_t provider = {0};
+    wah_module_t primary = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, "wasm \
+        types {[ fn [] [] ]} \
+        tags {[ tag.type# 0 ]}"));
+    assert_ok(wah_parse_module_from_spec(&primary, "wasm"));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+    assert_ok(wah_link_module(&ctx, "provider", &provider));
+    assert_ok(wah_instantiate(&ctx));
+
+    const wah_exec_context_t *linked_ctx = wah_debug_linked_ctx(&ctx, 0);
+    assert_not_null(linked_ctx);
+    wah_gc_heap_stats_t stats = {0};
+    wah_gc_heap_stats(linked_ctx, &stats);
+    assert_true(stats.allocation_threshold > 0);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&primary);
+    wah_free_module(&provider);
+}
+
 static void test_try_table_handler_overflow() {
     printf("Testing try_table exception handler overflow...\n");
 
@@ -765,6 +792,7 @@ int main() {
     test_return_inside_try_table();
     test_end_inside_try_table();
     test_link_module_tag_type_index_cross_module();
+    test_link_module_tag_context_has_gc();
     test_try_table_handler_overflow();
     test_exception_survives_gc_on_stack();
     test_exception_oom();

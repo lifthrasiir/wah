@@ -15809,6 +15809,13 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         WAH_CHECK_GOTO(wah_gc_start(ctx), cleanup);
     }
 
+    // Fix up wah_exec_context_t::gc for linked modules.
+    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+        if (ctx->linked_modules[j].owns_ctx && ctx->linked_modules[j].ctx) {
+            ctx->linked_modules[j].ctx->gc = ctx->gc;
+        }
+    }
+
     // Initialize primary module's local globals (at offset import_global_count)
     // Must happen after global import resolution so global.get in init exprs can see imported values
     for (uint32_t i = 0; i < module->global_count; ++i) {
