@@ -722,7 +722,9 @@ static int eval_module_command(const wast_node_t *node, spectest_env_t *env, spe
         return 0;
     }
     {
-        wah_error_t parse_err = wah_parse_module(&def->module, bytes, bytes_len, NULL);
+        const uint8_t empty = 0;
+        const uint8_t *binary = bytes_len > 0 ? bytes : &empty;
+        wah_error_t parse_err = wah_parse_module(&def->module, binary, bytes_len, NULL);
         if (parse_err == WAH_OK) {
             def->valid = 1;
             env->current_def = def;
@@ -1002,7 +1004,9 @@ static int execute_command(const wast_node_t *node, spectest_env_t *env) {
         }
         {
             wah_module_t mod = {0};
-            err = wah_parse_module(&mod, bytes, bytes_len, NULL);
+            const uint8_t empty = 0;
+            const uint8_t *binary = bytes_len > 0 ? bytes : &empty;
+            err = wah_parse_module(&mod, binary, bytes_len, NULL);
             wah_free_module(&mod);
             free(bytes);
             if (wast_atom_eq(node->children[0], "assert_invalid")) {
