@@ -33,7 +33,7 @@ extern "C" {
 // Macro: WAH_AARCH64
 //   Defined automatically based on compiler macros if WAH_FORCE_PORTABLE is not defined.
 #ifndef WAH_FORCE_PORTABLE
-#if defined(__x86_64__) || defined(_M_X64) || defined(__i386__) || defined(_M_IX86)
+#if defined(__x86_64__) || defined(_M_X64)
 #define WAH_X86_64
 #include <immintrin.h>
 #elif defined(__aarch64__) || defined(_M_ARM64)
