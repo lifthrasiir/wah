@@ -5408,6 +5408,12 @@ static inline void wah_write_f64_le(uint8_t *ptr, double val) {
     wah_write_u64_le(ptr, u.i);
 }
 
+#define wah_decode_u16_le(ptr) wah_read_u16_le((*(ptr) += sizeof(uint16_t)) - sizeof(uint16_t))
+#define wah_decode_u32_le(ptr) wah_read_u32_le((*(ptr) += sizeof(uint32_t)) - sizeof(uint32_t))
+#define wah_decode_u64_le(ptr) wah_read_u64_le((*(ptr) += sizeof(uint64_t)) - sizeof(uint64_t))
+#define wah_decode_f32_le(ptr) wah_read_f32_le((*(ptr) += sizeof(float)) - sizeof(float))
+#define wah_decode_f64_le(ptr) wah_read_f64_le((*(ptr) += sizeof(double)) - sizeof(double))
+
 // --- LEB128 Decoding ---
 // Helper function to decode an unsigned LEB128 integer
 static inline wah_error_t wah_decode_uleb128(const uint8_t **ptr, const uint8_t *end, uint32_t *result) {
@@ -10671,8 +10677,8 @@ static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t 
         const uint8_t *catch_ptr = handler->catch_table;
         for (uint32_t ci = 0; ci < handler->catch_count; ci++) {
             uint8_t catch_kind = *catch_ptr++;
-            uint32_t catch_tag_idx = wah_read_u32_le(catch_ptr); catch_ptr += sizeof(uint32_t);
-            uint32_t catch_offset = wah_read_u32_le(catch_ptr); catch_ptr += sizeof(uint32_t);
+            uint32_t catch_tag_idx = wah_decode_u32_le(&catch_ptr);
+            uint32_t catch_offset = wah_decode_u32_le(&catch_ptr);
 
             bool match = false;
             if (catch_kind == WAH_CATCH_KIND_CATCH || catch_kind == WAH_CATCH_KIND_CATCH_REF) {
@@ -11182,8 +11188,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
     wah_exec_context_t *fctx = frame->frame_ctx;   // Module-local context for table/memory access
 
     while (1) {
-        uint16_t opcode = wah_read_u16_le(bytecode_ip);
-        bytecode_ip += sizeof(uint16_t);
+        uint16_t opcode = wah_decode_u16_le(&bytecode_ip);
 
         switch (opcode) {
 
@@ -11206,8 +11211,7 @@ WAH_RUN(POLL) {
     // (read via bytecode_ip - sizeof(uint32_t) after advancing), but
     // host functions currently call wah_gc_enumerate_roots which relies on
     // ref_map_offset being up-to-date outside of poll_handler. See test_gc.c.
-    frame->ref_map_offset = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    frame->ref_map_offset = wah_decode_u32_le(&bytecode_ip);
 
     if (WAH_POLL_FLAG_LOAD(ctx->poll_flag)) {
         frame->bytecode_ip = bytecode_ip;
@@ -11224,10 +11228,8 @@ WAH_RUN(POLL) {
 }
 
 WAH_RUN(METER) {
-    uint16_t cost = wah_read_u16_le(bytecode_ip);
-    bytecode_ip += sizeof(uint16_t);
-    uint32_t slow_offset = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint16_t cost = wah_decode_u16_le(&bytecode_ip);
+    uint32_t slow_offset = wah_decode_u32_le(&bytecode_ip);
     ctx->fuel -= cost;
     if (ctx->fuel < 0) {
         ctx->fuel += cost;
@@ -11237,8 +11239,7 @@ WAH_RUN(METER) {
 }
 
 WAH_RUN(TICK) {
-    uint32_t resume_offset = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t resume_offset = wah_decode_u32_le(&bytecode_ip);
     ctx->fuel--;
     if (ctx->fuel < 0) {
         err = WAH_STATUS_FUEL_EXHAUSTED;
@@ -11257,8 +11258,7 @@ WAH_RUN(TICK) {
 }
 
 WAH_RUN(IF) {
-    uint32_t offset = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t offset = wah_decode_u32_le(&bytecode_ip);
     if ((*--sp).i32 == 0) {
         bytecode_ip = bytecode_base + offset;
     }
@@ -11266,8 +11266,7 @@ WAH_RUN(IF) {
 }
 
 WAH_RUN(ELSE) { // This is an unconditional jump
-    uint32_t offset = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t offset = wah_decode_u32_le(&bytecode_ip);
     bytecode_ip = bytecode_base + offset;
     WAH_NEXT();
 }
@@ -11283,24 +11282,18 @@ WAH_RUN(ELSE) { // This is an unconditional jump
 } while (0)
 
 WAH_RUN(BR) {
-    uint32_t offset = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-    uint32_t keep = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-    uint32_t drop = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t offset = wah_decode_u32_le(&bytecode_ip);
+    uint32_t keep = wah_decode_u32_le(&bytecode_ip);
+    uint32_t drop = wah_decode_u32_le(&bytecode_ip);
     WAH_DROP_KEEP(keep, drop);
     bytecode_ip = bytecode_base + offset;
     WAH_NEXT();
 }
 
 WAH_RUN(BR_IF) {
-    uint32_t offset = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-    uint32_t keep = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-    uint32_t drop = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t offset = wah_decode_u32_le(&bytecode_ip);
+    uint32_t keep = wah_decode_u32_le(&bytecode_ip);
+    uint32_t drop = wah_decode_u32_le(&bytecode_ip);
     if ((*--sp).i32 != 0) {
         WAH_DROP_KEEP(keep, drop);
         bytecode_ip = bytecode_base + offset;
@@ -11310,10 +11303,8 @@ WAH_RUN(BR_IF) {
 
 WAH_RUN(BR_TABLE) {
     uint32_t index = (uint32_t)(*--sp).i32;
-    uint32_t num_targets = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-    uint32_t keep = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t num_targets = wah_decode_u32_le(&bytecode_ip);
+    uint32_t keep = wah_decode_u32_le(&bytecode_ip);
 
     uint32_t target_idx = (index < num_targets) ? index : num_targets;
     uint32_t target_offset = wah_read_u32_le(bytecode_ip + target_idx * 2 * sizeof(uint32_t));
@@ -11326,8 +11317,7 @@ WAH_RUN(BR_TABLE) {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 
 WAH_RUN(TRY_TABLE) {
-    uint32_t catch_count_val = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t catch_count_val = wah_decode_u32_le(&bytecode_ip);
     WAH_ENSURE_GOTO(ctx->exception_handler_depth < WAH_MAX_EXCEPTION_HANDLER_DEPTH, WAH_ERROR_STACK_OVERFLOW, cleanup);
     wah_exception_handler_t *handler = &ctx->exception_handlers[ctx->exception_handler_depth++];
     handler->call_depth = ctx->call_depth;
@@ -11353,8 +11343,7 @@ WAH_RUN(END_TRY_TABLE) {
 }
 
 WAH_RUN(THROW) {
-    uint32_t tag_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t tag_idx = wah_decode_u32_le(&bytecode_ip);
     WAH_ASSERT(tag_idx < fctx->tag_instance_count);
 
     const wah_tag_instance_t *tag_inst = &fctx->tag_instances[tag_idx];
@@ -11409,10 +11398,10 @@ WAH_RUN(THROW_REF) {
 WAH_NEVER_RUN(TRY_TABLE) WAH_NEVER_RUN(END_TRY_TABLE) WAH_NEVER_RUN(THROW) WAH_NEVER_RUN(THROW_REF)
 #endif // WAH_FEATURE_EXCEPTION && WAH_FEATURE_GC
 
-WAH_RUN(I32_CONST) { (*sp++).i32 = (int32_t)wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); WAH_NEXT(); }
-WAH_RUN(I64_CONST) { (*sp++).i64 = (int64_t)wah_read_u64_le(bytecode_ip); bytecode_ip += sizeof(uint64_t); WAH_NEXT(); }
-WAH_RUN(F32_CONST) { (*sp++).f32 = wah_read_f32_le(bytecode_ip); bytecode_ip += sizeof(float); WAH_NEXT(); }
-WAH_RUN(F64_CONST) { (*sp++).f64 = wah_read_f64_le(bytecode_ip); bytecode_ip += sizeof(double); WAH_NEXT(); }
+WAH_RUN(I32_CONST) { (*sp++).i32 = (int32_t)wah_decode_u32_le(&bytecode_ip); WAH_NEXT(); }
+WAH_RUN(I64_CONST) { (*sp++).i64 = (int64_t)wah_decode_u64_le(&bytecode_ip); WAH_NEXT(); }
+WAH_RUN(F32_CONST) { (*sp++).f32 = wah_decode_f32_le(&bytecode_ip); WAH_NEXT(); }
+WAH_RUN(F64_CONST) { (*sp++).f64 = wah_decode_f64_le(&bytecode_ip); WAH_NEXT(); }
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
 WAH_RUN(V128_CONST) {
     memcpy(&(*sp++).v128, bytecode_ip, sizeof(wah_v128_t));
@@ -11438,8 +11427,7 @@ WAH_RUN(REF_IS_NULL) {
 }
 
 WAH_RUN(REF_FUNC) {
-    uint32_t func_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t func_idx = wah_decode_u32_le(&bytecode_ip);
 
     WAH_ASSERT(func_idx < frame->frame_function_table_count && "validation should have verified function index");
     (*sp++).ref = wah_func_to_ref(&frame->frame_function_table[func_idx]);
@@ -11447,8 +11435,7 @@ WAH_RUN(REF_FUNC) {
 }
 
 WAH_RUN(REF_FUNC_CONST) {
-    uint32_t func_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t func_idx = wah_decode_u32_le(&bytecode_ip);
     *sp++ = (wah_value_t){
         ._prefuncref = { .sentinel = wah_func_to_ref(wah_funcref_sentinel), .func_idx = func_idx }
     };
@@ -11456,15 +11443,13 @@ WAH_RUN(REF_FUNC_CONST) {
 }
 
 WAH_RUN(GLOBAL_GET_INDIRECT) {
-    uint32_t global_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t global_idx = wah_decode_u32_le(&bytecode_ip);
     *sp++ = *(wah_value_t *)frame->frame_globals[global_idx].ref;
     WAH_NEXT();
 }
 
 WAH_RUN(GLOBAL_SET_INDIRECT) {
-    uint32_t global_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t global_idx = wah_decode_u32_le(&bytecode_ip);
     wah_ref_store_global_slot((wah_value_t *)frame->frame_globals[global_idx].ref, *--sp);
     WAH_NEXT();
 }
@@ -11476,12 +11461,9 @@ WAH_RUN(REF_AS_NON_NULL) {
 }
 
 WAH_RUN(BR_ON_NULL) {
-    uint32_t offset = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-    uint32_t keep = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-    uint32_t drop = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t offset = wah_decode_u32_le(&bytecode_ip);
+    uint32_t keep = wah_decode_u32_le(&bytecode_ip);
+    uint32_t drop = wah_decode_u32_le(&bytecode_ip);
     if (sp[-1].ref == NULL) {
         --sp;
         WAH_DROP_KEEP(keep, drop);
@@ -11491,12 +11473,9 @@ WAH_RUN(BR_ON_NULL) {
 }
 
 WAH_RUN(BR_ON_NON_NULL) {
-    uint32_t offset = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-    uint32_t keep = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-    uint32_t drop = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t offset = wah_decode_u32_le(&bytecode_ip);
+    uint32_t keep = wah_decode_u32_le(&bytecode_ip);
+    uint32_t drop = wah_decode_u32_le(&bytecode_ip);
     if (sp[-1].ref != NULL) {
         WAH_DROP_KEEP(keep, drop);
         bytecode_ip = bytecode_base + offset;
@@ -11509,8 +11488,7 @@ WAH_RUN(BR_ON_NON_NULL) {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 
 WAH_RUN(REF_TEST) {
-    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(int32_t);
+    wah_type_t heap_type = (wah_type_t)(int32_t)wah_decode_u32_le(&bytecode_ip);
     wah_value_t ref_val = *--sp;
     bool result = wah_ref_test_heap_type(fctx, ref_val, heap_type);
     (*sp++).i32 = result ? 1 : 0;
@@ -11518,8 +11496,7 @@ WAH_RUN(REF_TEST) {
 }
 
 WAH_RUN(REF_TEST_NULL) {
-    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(int32_t);
+    wah_type_t heap_type = (wah_type_t)(int32_t)wah_decode_u32_le(&bytecode_ip);
     wah_value_t ref_val = *--sp;
     bool result = (ref_val.ref == NULL) || wah_ref_test_heap_type(fctx, ref_val, heap_type);
     (*sp++).i32 = result ? 1 : 0;
@@ -11527,8 +11504,7 @@ WAH_RUN(REF_TEST_NULL) {
 }
 
 WAH_RUN(REF_CAST) {
-    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(int32_t);
+    wah_type_t heap_type = (wah_type_t)(int32_t)wah_decode_u32_le(&bytecode_ip);
     wah_value_t ref_val = sp[-1];
     WAH_ENSURE_GOTO(ref_val.ref != NULL && wah_ref_test_heap_type(fctx, ref_val, heap_type),
                      WAH_ERROR_TRAP, cleanup);
@@ -11537,8 +11513,7 @@ WAH_RUN(REF_CAST) {
 }
 
 WAH_RUN(REF_CAST_NULL) {
-    wah_type_t heap_type = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(int32_t);
+    wah_type_t heap_type = (wah_type_t)(int32_t)wah_decode_u32_le(&bytecode_ip);
     wah_value_t ref_val = sp[-1];
     WAH_ENSURE_GOTO(ref_val.ref == NULL || wah_ref_test_heap_type(fctx, ref_val, heap_type),
                      WAH_ERROR_TRAP, cleanup);
@@ -11555,10 +11530,10 @@ WAH_RUN(REF_EQ) {
 
 WAH_RUN(BR_ON_CAST) {
     uint8_t cast_flags = *bytecode_ip++;
-    uint32_t offset = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
-    wah_type_t target_ht = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(int32_t);
-    uint32_t keep = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
-    uint32_t drop = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t offset = wah_decode_u32_le(&bytecode_ip);
+    wah_type_t target_ht = (wah_type_t)(int32_t)wah_decode_u32_le(&bytecode_ip);
+    uint32_t keep = wah_decode_u32_le(&bytecode_ip);
+    uint32_t drop = wah_decode_u32_le(&bytecode_ip);
     wah_value_t ref_val = sp[-1];
     bool matches;
     if (ref_val.ref == NULL) {
@@ -11576,10 +11551,10 @@ WAH_RUN(BR_ON_CAST) {
 
 WAH_RUN(BR_ON_CAST_FAIL) {
     uint8_t cast_flags = *bytecode_ip++;
-    uint32_t offset = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
-    wah_type_t target_ht = (wah_type_t)(int32_t)wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(int32_t);
-    uint32_t keep = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
-    uint32_t drop = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t offset = wah_decode_u32_le(&bytecode_ip);
+    wah_type_t target_ht = (wah_type_t)(int32_t)wah_decode_u32_le(&bytecode_ip);
+    uint32_t keep = wah_decode_u32_le(&bytecode_ip);
+    uint32_t drop = wah_decode_u32_le(&bytecode_ip);
     wah_value_t ref_val = sp[-1];
     bool matches;
     if (ref_val.ref == NULL) {
@@ -11596,7 +11571,7 @@ WAH_RUN(BR_ON_CAST_FAIL) {
 }
 
 WAH_RUN(STRUCT_NEW) {
-    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_struct(ctx, fctx->module, repr_id, info);
@@ -11613,7 +11588,7 @@ WAH_RUN(STRUCT_NEW) {
 }
 
 WAH_RUN(STRUCT_NEW_DEFAULT) {
-    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_struct(ctx, fctx->module, repr_id, info);
@@ -11624,7 +11599,7 @@ WAH_RUN(STRUCT_NEW_DEFAULT) {
 }
 
 #define WAH_STRUCT_GET_BODY(load) { \
-    uint32_t offset = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); \
+    uint32_t offset = wah_decode_u32_le(&bytecode_ip); \
     void *obj = (--sp)->ref; \
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup); \
     uint8_t *addr = (uint8_t *)obj + offset; \
@@ -11635,7 +11610,7 @@ WAH_RUN(STRUCT_NEW_DEFAULT) {
     WAH_CLEANUP(); \
 }
 #define WAH_STRUCT_SET_BODY(store) { \
-    uint32_t offset = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); \
+    uint32_t offset = wah_decode_u32_le(&bytecode_ip); \
     wah_value_t val = *--sp; \
     void *obj = (--sp)->ref; \
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_TRAP, cleanup); \
@@ -11660,7 +11635,7 @@ WAH_RUN(STRUCT_SET_64)  WAH_STRUCT_SET_BODY(*(int64_t *)addr = val.i64)
 WAH_RUN(STRUCT_SET_128) WAH_STRUCT_SET_BODY(memcpy(addr, &val, sizeof(wah_v128_t)))
 
 WAH_RUN(ARRAY_NEW) {
-    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
     uint32_t length = (uint32_t)(--sp)->i32;
     wah_value_t init_val = *--sp;
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
@@ -11677,7 +11652,7 @@ WAH_RUN(ARRAY_NEW) {
 }
 
 WAH_RUN(ARRAY_NEW_DEFAULT) {
-    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
     uint32_t length = (uint32_t)(--sp)->i32;
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
@@ -11689,8 +11664,8 @@ WAH_RUN(ARRAY_NEW_DEFAULT) {
 }
 
 WAH_RUN(ARRAY_NEW_FIXED) {
-    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
-    uint32_t length = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t length = wah_decode_u32_le(&bytecode_ip);
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_array(ctx, fctx->module, repr_id, info, length);
@@ -11756,8 +11731,8 @@ WAH_RUN(ARRAY_LEN) {
 }
 
 WAH_RUN(ARRAY_NEW_DATA) {
-    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
-    uint32_t dataidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t dataidx = wah_decode_u32_le(&bytecode_ip);
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t offset = (uint32_t)(--sp)->i32;
     WAH_ASSERT(dataidx < fctx->module->data_segment_count);
@@ -11777,8 +11752,8 @@ WAH_RUN(ARRAY_NEW_DATA) {
 }
 
 WAH_RUN(ARRAY_NEW_ELEM) {
-    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
-    uint32_t elemidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t elemidx = wah_decode_u32_le(&bytecode_ip);
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t offset = (uint32_t)(--sp)->i32;
     WAH_ASSERT(elemidx < fctx->module->element_segment_count);
@@ -11809,7 +11784,7 @@ WAH_RUN(ARRAY_NEW_ELEM) {
 
 WAH_RUN(ARRAY_FILL) {
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
-    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
     uint32_t size = (uint32_t)(--sp)->i32;
     wah_value_t fill_val = *--sp;
     uint32_t offset = (uint32_t)(--sp)->i32;
@@ -11898,8 +11873,8 @@ WAH_RUN(ARRAY_COPY) {
 
 WAH_RUN(ARRAY_INIT_DATA) {
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
-    uint32_t typeidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
-    uint32_t dataidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t dataidx = wah_decode_u32_le(&bytecode_ip);
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t src_offset = (uint32_t)(--sp)->i32;
     uint32_t dst_offset = (uint32_t)(--sp)->i32;
@@ -11938,7 +11913,7 @@ WAH_RUN(ARRAY_INIT_DATA) {
 
 WAH_RUN(ARRAY_INIT_ELEM) {
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
-    uint32_t elemidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t);
+    uint32_t elemidx = wah_decode_u32_le(&bytecode_ip);
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t src_offset = (uint32_t)(--sp)->i32;
     uint32_t dst_offset = (uint32_t)(--sp)->i32;
@@ -11996,44 +11971,38 @@ WAH_GC_OPCODES(WAH_GC_NEVER_RUN)
 #endif // WAH_FEATURE_GC
 
 WAH_RUN(LOCAL_GET) {
-    uint32_t local_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t local_idx = wah_decode_u32_le(&bytecode_ip);
     *sp++ = frame->locals[local_idx];
     WAH_NEXT();
 }
 
 WAH_RUN(LOCAL_SET) {
-    uint32_t local_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t local_idx = wah_decode_u32_le(&bytecode_ip);
     frame->locals[local_idx] = *--sp;
     WAH_NEXT();
 }
 
 WAH_RUN(LOCAL_TEE) {
-    uint32_t local_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t local_idx = wah_decode_u32_le(&bytecode_ip);
     wah_value_t val = sp[-1];
     frame->locals[local_idx] = val;
     WAH_NEXT();
 }
 
 WAH_RUN(GLOBAL_GET) {
-    uint32_t global_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t global_idx = wah_decode_u32_le(&bytecode_ip);
     *sp++ = frame->frame_globals[global_idx];
     WAH_NEXT();
 }
 
 WAH_RUN(GLOBAL_SET) {
-    uint32_t global_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t global_idx = wah_decode_u32_le(&bytecode_ip);
     wah_ref_store_global_slot(&frame->frame_globals[global_idx], *--sp);
     WAH_NEXT();
 }
 
 #define WAH_TABLE_GET_IMPL(N) { \
-    uint32_t table_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
     uint64_t elem_idx = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     WAH_ASSERT(table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
     WAH_ENSURE_GOTO(elem_idx < fctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
@@ -12043,8 +12012,7 @@ WAH_RUN(GLOBAL_SET) {
 }
 
 #define WAH_TABLE_SET_IMPL(N) { \
-    uint32_t table_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
     wah_value_t val = *--sp; \
     uint64_t elem_idx = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     WAH_ASSERT(table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
@@ -12055,16 +12023,14 @@ WAH_RUN(GLOBAL_SET) {
 }
 
 #define WAH_TABLE_SIZE_IMPL(N) { \
-    uint32_t table_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
     WAH_ASSERT(table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
     (*sp++).i##N = (int##N##_t)fctx->tables[table_idx].size; \
     WAH_NEXT(); \
 }
 
 #define WAH_TABLE_GROW_IMPL(N) { \
-    uint32_t table_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
     int64_t delta = (int64_t)(*--sp).i##N; \
     wah_value_t init_val = *--sp; \
     WAH_ASSERT(table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
@@ -12083,8 +12049,7 @@ WAH_RUN(GLOBAL_SET) {
 
 #define WAH_TABLE_FILL_IMPL(N) { \
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
-    uint32_t table_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
     uint64_t size = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     wah_value_t val = *--sp; \
     uint64_t offset = (uint64_t)(uint##N##_t)(*--sp).i##N; \
@@ -12103,10 +12068,8 @@ WAH_RUN(GLOBAL_SET) {
 
 #define WAH_TABLE_COPY_IMPL(N,M,Z) { \
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
-    uint32_t dst_table_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
-    uint32_t src_table_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+    uint32_t dst_table_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t src_table_idx = wah_decode_u32_le(&bytecode_ip); \
     uint64_t size = (uint64_t)(uint##Z##_t)(*--sp).i##Z; \
     uint64_t src_offset = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     uint64_t dst_offset = (uint64_t)(uint##M##_t)(*--sp).i##M; \
@@ -12133,10 +12096,8 @@ WAH_RUN(GLOBAL_SET) {
 
 #define WAH_TABLE_INIT_IMPL(N) { \
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
-    uint32_t elem_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
-    uint32_t table_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+    uint32_t elem_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
     uint32_t size = (*--sp).i32; \
     uint32_t src_offset = (*--sp).i32; \
     uint64_t dst_offset = (uint64_t)(uint##N##_t)(*--sp).i##N; \
@@ -12184,8 +12145,7 @@ WAH_RUN(TABLE_INIT_i64) WAH_TABLE_INIT_IMPL(64)
 #endif // WAH_FEATURE_MEMORY64 (i64 table ops)
 
 WAH_RUN(ELEM_DROP) {
-    uint32_t elem_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t elem_idx = wah_decode_u32_le(&bytecode_ip);
     WAH_ASSERT(elem_idx < fctx->module->element_segment_count && "validation didn't catch out-of-bound element segment index");
 
     wah_elem_seg_mark_dropped(fctx, elem_idx);
@@ -12267,8 +12227,7 @@ WAH_RUN(ELEM_DROP) {
     }
 
 WAH_RUN(CALL) {
-    uint32_t called_func_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t called_func_idx = wah_decode_u32_le(&bytecode_ip);
 
     WAH_ASSERT(called_func_idx < frame->frame_function_table_count && "validation didn't catch out-of-bound function index");
     const wah_function_t *called_fn = &frame->frame_function_table[called_func_idx];
@@ -12288,10 +12247,8 @@ WAH_RUN(CALL) {
 }
 
 WAH_RUN(CALL_INDIRECT) {
-    uint32_t type_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-    uint32_t table_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip);
     uint32_t func_table_idx = (uint32_t)(*--sp).i32;
     WAH_ASSERT(type_idx < fctx->module->type_count);
     WAH_ASSERT(table_idx < fctx->table_count);
@@ -12304,10 +12261,8 @@ WAH_RUN(CALL_INDIRECT) {
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
 WAH_RUN(CALL_INDIRECT_i64) {
-    uint32_t type_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-    uint32_t table_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip);
     uint64_t func_table_idx = (uint64_t)(*--sp).i64;
     WAH_ASSERT(type_idx < fctx->module->type_count);
     WAH_ASSERT(table_idx < fctx->table_count);
@@ -12320,8 +12275,7 @@ WAH_RUN(CALL_INDIRECT_i64) {
 #endif // WAH_FEATURE_MEMORY64
 
 WAH_RUN(CALL_REF) {
-    uint32_t type_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     void *_fn_ref = (*--sp).ref;
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup);
     WAH_ASSERT(_fn_ref != wah_func_to_ref(wah_funcref_sentinel) && "prefuncref stored without conversion to funcref");
@@ -12392,8 +12346,7 @@ WAH_RUN(CALL_REF) {
     } while (0)
 
 WAH_RUN(RETURN_CALL) {
-    uint32_t called_func_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t called_func_idx = wah_decode_u32_le(&bytecode_ip);
 
     while (ctx->exception_handler_depth > 0 &&
            ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) {
@@ -12418,10 +12371,8 @@ WAH_RUN(RETURN_CALL) {
 }
 
 WAH_RUN(RETURN_CALL_INDIRECT) {
-    uint32_t type_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-    uint32_t table_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip);
     uint32_t func_table_idx = (uint32_t)(*--sp).i32;
     WAH_ASSERT(type_idx < fctx->module->type_count);
     WAH_ASSERT(table_idx < fctx->table_count);
@@ -12438,10 +12389,8 @@ WAH_RUN(RETURN_CALL_INDIRECT) {
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
 WAH_RUN(RETURN_CALL_INDIRECT_i64) {
-    uint32_t type_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-    uint32_t table_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip);
     uint64_t func_table_idx = (uint64_t)(*--sp).i64;
     WAH_ASSERT(type_idx < fctx->module->type_count);
     WAH_ASSERT(table_idx < fctx->table_count);
@@ -12458,8 +12407,7 @@ WAH_RUN(RETURN_CALL_INDIRECT_i64) {
 #endif // WAH_FEATURE_MEMORY64
 
 WAH_RUN(RETURN_CALL_REF) {
-    uint32_t type_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     void *_fn_ref = (*--sp).ref;
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup);
     WAH_ASSERT(_fn_ref != wah_func_to_ref(wah_funcref_sentinel) && "prefuncref stored without conversion to funcref");
@@ -12601,9 +12549,8 @@ WAH_RUN(END) { // End of function
 
 #define LOAD_OP(mem0, addr_expr, N, T, value_field, cast) { \
     uint32_t memidx = 0; \
-    if (!(mem0)) { memidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); } \
-    uint64_t offset = wah_read_u64_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint64_t); \
+    if (!(mem0)) { memidx = wah_decode_u32_le(&bytecode_ip); } \
+    uint64_t offset = wah_decode_u64_le(&bytecode_ip); \
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
     if (!(mem0)) { WAH_ASSERT(memidx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
@@ -12617,9 +12564,8 @@ WAH_RUN(END) { // End of function
 
 #define STORE_OP(mem0, addr_expr, N, T, value_field, value_type, cast) { \
     uint32_t memidx = 0; \
-    if (!(mem0)) { memidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); } \
-    uint64_t offset = wah_read_u64_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint64_t); \
+    if (!(mem0)) { memidx = wah_decode_u32_le(&bytecode_ip); } \
+    uint64_t offset = wah_decode_u64_le(&bytecode_ip); \
     value_type val = (*--sp).value_field; \
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
@@ -12820,16 +12766,14 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
 #undef REINTERPRET
 
 #define WAH_MEMORY_SIZE_IMPL(N) { \
-    uint32_t mem_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+    uint32_t mem_idx = wah_decode_u32_le(&bytecode_ip); \
     WAH_ASSERT(mem_idx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); \
     (*sp++).i##N = (int##N##_t)(fctx->memories[mem_idx].size / WAH_WASM_PAGE_SIZE); \
     WAH_NEXT(); \
 }
 
 #define WAH_MEMORY_GROW_IMPL(N) { \
-    uint32_t mem_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+    uint32_t mem_idx = wah_decode_u32_le(&bytecode_ip); \
     WAH_ASSERT(mem_idx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); \
     \
     int##N##_t pages_to_grow = (*--sp).i##N; \
@@ -12849,8 +12793,7 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
 
 #define WAH_MEMORY_FILL_IMPL(N) { \
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
-    uint32_t mem_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+    uint32_t mem_idx = wah_decode_u32_le(&bytecode_ip); \
     WAH_ASSERT(mem_idx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); \
     \
     uint64_t size = (uint64_t)(uint##N##_t)(*--sp).i##N; \
@@ -12871,10 +12814,8 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
 
 #define WAH_MEMORY_INIT_IMPL(N) { \
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
-    uint32_t data_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
-    uint32_t mem_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+    uint32_t data_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t mem_idx = wah_decode_u32_le(&bytecode_ip); \
     \
     WAH_ASSERT(mem_idx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); \
     WAH_ASSERT(data_idx < fctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index"); \
@@ -12904,10 +12845,8 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
 
 #define WAH_MEMORY_COPY_IMPL(N,M,Z) { \
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
-    uint32_t dest_mem_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
-    uint32_t src_mem_idx = wah_read_u32_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint32_t); \
+    uint32_t dest_mem_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t src_mem_idx = wah_decode_u32_le(&bytecode_ip); \
     \
     WAH_ASSERT(dest_mem_idx < fctx->memory_count); \
     WAH_ASSERT(src_mem_idx < fctx->memory_count); \
@@ -12944,8 +12883,7 @@ WAH_RUN(MEMORY_INIT) WAH_MEMORY_INIT_IMPL(32)
 WAH_RUN(MEMORY_COPY) WAH_MEMORY_COPY_IMPL(32,32,32)
 
 WAH_RUN(DATA_DROP) {
-    uint32_t data_idx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
+    uint32_t data_idx = wah_decode_u32_le(&bytecode_ip);
     WAH_ASSERT(data_idx < fctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index");
 
     wah_data_seg_mark_dropped(fctx, data_idx);
@@ -13053,9 +12991,8 @@ WAH_RUN(UNREACHABLE) {
 
 #define V128_LOAD_COMMON(mem0, read_size, addr_expr) \
     uint32_t memidx = 0; \
-    if (!(mem0)) { memidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); } \
-    uint64_t offset = wah_read_u64_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint64_t); \
+    if (!(mem0)) { memidx = wah_decode_u32_le(&bytecode_ip); } \
+    uint64_t offset = wah_decode_u64_le(&bytecode_ip); \
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
     if (!(mem0)) { WAH_ASSERT(memidx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
@@ -13083,9 +13020,8 @@ WAH_RUN(UNREACHABLE) {
 
 #define V128_LOAD_LANE_OP(mem0, addr_expr, N) { \
     uint32_t memidx = 0; \
-    if (!(mem0)) { memidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); } \
-    uint64_t offset = wah_read_u64_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint64_t); \
+    if (!(mem0)) { memidx = wah_decode_u32_le(&bytecode_ip); } \
+    uint64_t offset = wah_decode_u64_le(&bytecode_ip); \
     uint32_t lane_idx = *bytecode_ip++; \
     wah_v128_t val = (*--sp).v128; \
     uint64_t addr = (addr_expr); \
@@ -13181,9 +13117,8 @@ WAH_RUN(V128_LOAD64_LANE_i32_mem0) V128_LOAD_LANE_OP(1, WAH_SP_ADDR_I32, 64)
 
 #define V128_STORE_LANE_OP(mem0, addr_expr, N) { \
     uint32_t memidx = 0; \
-    if (!(mem0)) { memidx = wah_read_u32_le(bytecode_ip); bytecode_ip += sizeof(uint32_t); } \
-    uint64_t offset = wah_read_u64_le(bytecode_ip); \
-    bytecode_ip += sizeof(uint64_t); \
+    if (!(mem0)) { memidx = wah_decode_u32_le(&bytecode_ip); } \
+    uint64_t offset = wah_decode_u64_le(&bytecode_ip); \
     uint32_t lane_idx = *bytecode_ip++; \
     wah_v128_t val = (*--sp).v128; \
     uint64_t addr = (addr_expr); \
@@ -13209,10 +13144,8 @@ WAH_RUN(V128_STORE32_LANE_i32_mem0) V128_STORE_LANE_OP(1, WAH_SP_ADDR_I32, 32)
 WAH_RUN(V128_STORE64_LANE_i32_mem0) V128_STORE_LANE_OP(1, WAH_SP_ADDR_I32, 64)
 
 WAH_RUN(V128_STORE) {
-    uint32_t memidx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-    uint64_t offset = wah_read_u64_le(bytecode_ip);
-    bytecode_ip += sizeof(uint64_t);
+    uint32_t memidx = wah_decode_u32_le(&bytecode_ip);
+    uint64_t offset = wah_decode_u64_le(&bytecode_ip);
     wah_v128_t val = (*--sp).v128;
     uint32_t addr = (uint32_t)(*--sp).i32;
     uint64_t effective_addr;
@@ -13224,8 +13157,7 @@ WAH_RUN(V128_STORE) {
 }
 
 WAH_RUN(V128_STORE_i32_mem0) {
-    uint64_t offset = wah_read_u64_le(bytecode_ip);
-    bytecode_ip += sizeof(uint64_t);
+    uint64_t offset = wah_decode_u64_le(&bytecode_ip);
     wah_v128_t val = (*--sp).v128;
     uint32_t addr = (uint32_t)(*--sp).i32;
     uint64_t effective_addr;
@@ -13327,10 +13259,8 @@ WAH_RUN(V128_STORE32_LANE_i64_mem0) V128_STORE_LANE_OP(1, WAH_SP_ADDR_I64, 32)
 WAH_RUN(V128_STORE64_LANE_i64_mem0) V128_STORE_LANE_OP(1, WAH_SP_ADDR_I64, 64)
 
 WAH_RUN(V128_STORE_i64) {
-    uint32_t memidx = wah_read_u32_le(bytecode_ip);
-    bytecode_ip += sizeof(uint32_t);
-    uint64_t offset = wah_read_u64_le(bytecode_ip);
-    bytecode_ip += sizeof(uint64_t);
+    uint32_t memidx = wah_decode_u32_le(&bytecode_ip);
+    uint64_t offset = wah_decode_u64_le(&bytecode_ip);
     wah_v128_t val = (*--sp).v128;
     uint64_t addr = (uint64_t)(*--sp).i64;
     uint64_t effective_addr;
@@ -13342,8 +13272,7 @@ WAH_RUN(V128_STORE_i64) {
 }
 
 WAH_RUN(V128_STORE_i64_mem0) {
-    uint64_t offset = wah_read_u64_le(bytecode_ip);
-    bytecode_ip += sizeof(uint64_t);
+    uint64_t offset = wah_decode_u64_le(&bytecode_ip);
     wah_v128_t val = (*--sp).v128;
     uint64_t addr = (uint64_t)(*--sp).i64;
     uint64_t effective_addr;
@@ -14391,8 +14320,7 @@ WAH_SIMD_OPCODES(WAH_SIMD_NEVER_RUN)
 static wah_error_t wah_run_single(wah_exec_context_t *ctx, wah_call_frame_t *frame,
                                   const uint8_t *bytecode_ip, const uint8_t *bytecode_base,
                                   wah_value_t *sp, wah_exec_context_t *fctx, wah_error_t err) {
-    uint16_t opcode = wah_read_u16_le(bytecode_ip);
-    bytecode_ip += sizeof(uint16_t);
+    uint16_t opcode = wah_decode_u16_le(&bytecode_ip);
 
     switch (opcode) {
         #define WAH_OPCODE_CASES(opcode, ...) \
