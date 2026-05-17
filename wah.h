@@ -16383,6 +16383,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                         if (texp && tprov_ctx && texp->index < tprov_ctx->table_count) {
                             ictx->tables[ti] = tprov_ctx->tables[texp->index];
                             ictx->tables[ti].is_imported = true;
+                            ictx->tables[ti].import_ctx = tprov_ctx;
+                            ictx->tables[ti].import_idx = texp->index;
                             tbl_found = true;
                         }
                         break;
@@ -16401,6 +16403,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                         if (pexp && pexp->index < ctx->table_count) {
                             ictx->tables[ti] = ctx->tables[pexp->index];
                             ictx->tables[ti].is_imported = true;
+                            ictx->tables[ti].import_ctx = ctx;
+                            ictx->tables[ti].import_idx = pexp->index;
                             tbl_found = true;
                         }
                     }

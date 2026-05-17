@@ -47,6 +47,54 @@ static void test_cross_module_call_indirect() {
     wah_free_module(&provider);
 }
 
+// Regression test for linked module internal contexts losing imported table
+// ownership metadata. Without import_ctx/import_idx, table.grow in the linked
+// module reallocates the provider's table storage without updating the provider
+// context, leaving a dangling provider table pointer.
+static void test_linked_module_imported_table_grow() {
+    printf("Testing linked-module imported table grow metadata...\n");
+
+    const char *provider_spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 4 ]} \
+        exports {[ {'t'} table# 0, {'isnull'} fn# 0 ]} \
+        code {[ {[] i32.const 0 table.get 0 ref.is_null end } ]}";
+
+    const char *grower_spec = "wasm \
+        types {[ fn [] [] ]} \
+        imports {[ {'b'} {'t'} table# funcref limits.i32/1 4 ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'grow'} fn# 0 ]} \
+        code {[ {[] ref.null funcref i32.const 1 table.grow 0 drop end } ]}";
+
+    const char *main_spec = "wasm \
+        types {[ fn [] [], fn [] [i32] ]} \
+        imports {[ {'a'} {'grow'} fn# 0, {'b'} {'isnull'} fn# 1 ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] call 0 call 1 end } ]}";
+
+    wah_module_t provider = {0}, grower = {0}, main_mod = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&grower, grower_spec));
+    assert_ok(wah_parse_module_from_spec(&main_mod, main_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &main_mod, NULL));
+    assert_ok(wah_link_module(&ctx, "b", &provider));
+    assert_ok(wah_link_module(&ctx, "a", &grower));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+    assert_eq_i32(result.i32, 1);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&main_mod);
+    wah_free_module(&grower);
+    wah_free_module(&provider);
+}
+
 // bab76d4: Reorder element segments before data segments per spec.
 static void test_elem_before_data_order() {
     printf("Testing element segments init before data segments (bab76d4)...\n");
@@ -576,6 +624,7 @@ static void test_host_import_concrete_ref_uses_linked_type_namespace() {
 
 int main() {
     test_cross_module_call_indirect();
+    test_linked_module_imported_table_grow();
     test_elem_before_data_order();
     test_cross_module_memory_ops();
     test_cross_module_funcref_global();
