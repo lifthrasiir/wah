@@ -9664,13 +9664,23 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
     uint32_t g_offset = primary_globals;
     for (uint32_t m = 0; m < ctx->linked_module_count; m++) {
         const wah_module_t *linked = ctx->linked_modules[m].module;
+        for (uint32_t k = 0; k < linked->import_global_count; k++) {
+            wah_type_t gt = linked->global_imports[k].type;
+            if (WAH_TYPE_IS_REF(gt)) {
+                if (linked->global_imports[k].is_mutable) {
+                    visitor((wah_value_t *)ctx->globals[g_offset + k].ref, userdata);
+                } else {
+                    visitor(&ctx->globals[g_offset + k], userdata);
+                }
+            }
+        }
         for (uint32_t k = 0; k < linked->global_count; k++) {
             wah_type_t gt = linked->globals[k].type;
             if (WAH_TYPE_IS_REF(gt)) {
-                visitor(&ctx->globals[g_offset + k], userdata);
+                visitor(&ctx->globals[g_offset + linked->import_global_count + k], userdata);
             }
         }
-        g_offset += linked->global_count;
+        g_offset += wah_global_index_limit(linked);
     }
 
     // 3. Table elements
@@ -10604,7 +10614,7 @@ static inline wah_error_t wah_bind_frame_module(
                 found = true;
                 break;
             }
-            offset += ctx->linked_modules[i].module->global_count;
+            offset += wah_global_index_limit(ctx->linked_modules[i].module);
         }
         if (!found) {
             for (uint32_t i = 0; i < ctx->linked_module_count && !found; i++) {
@@ -10627,7 +10637,7 @@ static inline wah_error_t wah_bind_frame_module(
                         found = true;
                         break;
                     }
-                    loffset += lctx->linked_modules[j].module->global_count;
+                    loffset += wah_global_index_limit(lctx->linked_modules[j].module);
                 }
             }
         }
@@ -15623,7 +15633,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     // and global import resolution, since imports may reference linked module globals)
     uint32_t total_globals = wah_global_index_limit(module);
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
-        uint32_t gc = ctx->linked_modules[j].module->global_count;
+        uint32_t gc = wah_global_index_limit(ctx->linked_modules[j].module);
         WAH_ENSURE_GOTO(total_globals <= UINT32_MAX - gc, WAH_ERROR_TOO_LARGE, cleanup);
         total_globals += gc;
     }
@@ -15643,20 +15653,22 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
             const wah_module_t *linked = ctx->linked_modules[j].module;
             wah_exec_context_t *lctx = ctx->linked_modules[j].ctx;
-            if (lctx && linked->global_count > 0) {
-                uint32_t lg_offset = wah_global_index_limit(linked) - linked->global_count;
-                memcpy(new_globals + offset, lctx->globals + lg_offset,
-                        linked->global_count * sizeof(wah_value_t));
+            if (lctx && wah_global_index_limit(linked) > 0) {
+                memcpy(new_globals + offset, lctx->globals,
+                        wah_global_index_limit(linked) * sizeof(wah_value_t));
             } else {
+                if (linked->import_global_count > 0) {
+                    memset(new_globals + offset, 0, linked->import_global_count * sizeof(wah_value_t));
+                }
                 ctx->globals = new_globals + offset;
-                ctx->global_count = linked->global_count;
+                ctx->global_count = wah_global_index_limit(linked);
                 const wah_module_t *saved_module = ctx->module;
                 ctx->module = linked;
                 for (uint32_t k = 0; k < linked->global_count; k++) {
                     err = wah_eval_const_expr(ctx,
                                               linked->globals[k].init_expr.bytecode,
                                               linked->globals[k].init_expr.bytecode_size,
-                                              &new_globals[offset + k]);
+                                              &new_globals[offset + linked->import_global_count + k]);
                     if (err != WAH_OK) {
                         ctx->module = saved_module;
                         ctx->globals = saved_globals;
@@ -15667,7 +15679,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 }
                 ctx->module = saved_module;
             }
-            offset += linked->global_count;
+            offset += wah_global_index_limit(linked);
         }
         ctx->globals = saved_globals;
         ctx->global_count = saved_global_count;
@@ -15750,11 +15762,11 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         // Find the linked module's globals offset in ctx->globals
         uint32_t linked_globals_offset = wah_global_index_limit(module);
         for (uint32_t j = 0; j < gi_linked_idx; j++) {
-            linked_globals_offset += ctx->linked_modules[j].module->global_count;
+            linked_globals_offset += wah_global_index_limit(ctx->linked_modules[j].module);
         }
 
         uint32_t linked_global_idx = exp->index;
-        WAH_ENSURE_GOTO(linked_global_idx < linked->import_global_count + linked->global_count, WAH_ERROR_LINK_FAILED, cleanup);
+        WAH_ENSURE_GOTO(linked_global_idx < wah_global_index_limit(linked), WAH_ERROR_LINK_FAILED, cleanup);
         WAH_ENSURE_GOTO(linked_global_idx >= linked->import_global_count, WAH_ERROR_LINK_FAILED, cleanup);
         uint32_t linked_local_global_idx = linked_global_idx - linked->import_global_count;
 
@@ -15769,10 +15781,10 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             if (gi_linked_ctx) {
                 ctx->globals[i].ref = &gi_linked_ctx->globals[linked_global_idx];
             } else {
-                ctx->globals[i].ref = &ctx->globals[linked_globals_offset + linked_local_global_idx];
+                ctx->globals[i].ref = &ctx->globals[linked_globals_offset + linked_global_idx];
             }
         } else {
-            ctx->globals[i] = ctx->globals[linked_globals_offset + linked_local_global_idx];
+            ctx->globals[i] = ctx->globals[linked_globals_offset + linked_global_idx];
         }
     }
 
@@ -15791,7 +15803,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 *ictx = (wah_exec_context_t){
                     .alloc = ctx->alloc, .module = lmod, .memories = ctx->memories, .memory_count = ctx->memory_count,
                     .tables = ctx->tables, .table_count = ctx->table_count,
-                    .globals = g_offset ? ctx->globals + g_offset : ctx->globals, .global_count = lmod->global_count,
+                    .globals = g_offset ? ctx->globals + g_offset : ctx->globals, .global_count = wah_global_index_limit(lmod),
                     .gc = ctx->gc, .type_check_cache = ctx->type_check_cache, .tag_instance_count = 0,
                 };
                 uint32_t lmod_total_tables = lmod->import_table_count + lmod->table_count;
@@ -15846,7 +15858,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 ictx->is_instantiated = true;
             }
         }
-        g_offset += lmod->global_count;
+        g_offset += wah_global_index_limit(lmod);
     }
 
     // Resolve tag imports from linked modules
@@ -15903,6 +15915,59 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             wah_function_t *fn = &ctx->function_table[fidx].func;
             if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
             ctx->globals[slot].ref = wah_func_to_ref(fn);
+        }
+    }
+
+    // Resolve imported globals for linked modules (wah_link_module path only;
+    // wah_link_context modules already have fully resolved globals from their own instantiation)
+    {
+        uint32_t lg_offset = wah_global_index_limit(module);
+        for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+            const wah_module_t *lmod = ctx->linked_modules[j].module;
+            if (ctx->linked_modules[j].ctx == NULL) {
+                for (uint32_t gi_idx = 0; gi_idx < lmod->import_global_count; gi_idx++) {
+                    wah_global_import_t *lgi = &lmod->global_imports[gi_idx];
+                    const wah_module_t *provider = NULL;
+                    wah_exec_context_t *provider_ctx = NULL;
+                    uint32_t provider_linked_idx = 0;
+                    bool found = wah_find_linked_module(ctx, &lgi->name, &provider, &provider_ctx, &provider_linked_idx);
+                    if (found && provider == module) provider_ctx = ctx;
+                    const wah_export_t *gexp = found ? wah_find_export(provider, 3, &lgi->name) : NULL;
+                    if (!gexp) {
+                        for (uint32_t e = 0; e < module->export_count; e++) {
+                            if (module->exports[e].kind == 3 &&
+                                wah_name_matches(module->exports[e].name, module->exports[e].name_len,
+                                                 lgi->name.field, lgi->name.field_len)) {
+                                gexp = &module->exports[e];
+                                provider = module;
+                                provider_ctx = ctx;
+                                found = true;
+                                break;
+                            }
+                        }
+                    }
+                    WAH_ENSURE_GOTO(gexp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
+                    uint32_t prov_gidx = gexp->index;
+                    WAH_ENSURE_GOTO(prov_gidx < wah_global_index_limit(provider), WAH_ERROR_LINK_FAILED, cleanup);
+                    WAH_ENSURE_GOTO(prov_gidx >= provider->import_global_count, WAH_ERROR_LINK_FAILED, cleanup);
+                    wah_value_t *prov_slot;
+                    if (provider_ctx) {
+                        prov_slot = &provider_ctx->globals[prov_gidx];
+                    } else {
+                        uint32_t prov_offset = wah_global_index_limit(module);
+                        for (uint32_t p = 0; p < provider_linked_idx; p++) {
+                            prov_offset += wah_global_index_limit(ctx->linked_modules[p].module);
+                        }
+                        prov_slot = &ctx->globals[prov_offset + prov_gidx];
+                    }
+                    if (lgi->is_mutable) {
+                        ctx->globals[lg_offset + gi_idx].ref = prov_slot;
+                    } else {
+                        ctx->globals[lg_offset + gi_idx] = *prov_slot;
+                    }
+                }
+            }
+            lg_offset += wah_global_index_limit(lmod);
         }
     }
 
@@ -16188,7 +16253,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             WAH_CHECK_GOTO(wah_malloc(alloc, 1, sizeof(wah_exec_context_t), (void **)&ictx), cleanup);
             *ictx = (wah_exec_context_t){
                 .alloc = ctx->alloc, .module = lmod,
-                .globals = go ? ctx->globals + go : ctx->globals, .global_count = lmod->global_count,
+                .globals = go ? ctx->globals + go : ctx->globals, .global_count = wah_global_index_limit(lmod),
                 .gc = ctx->gc, .type_check_cache = ctx->type_check_cache,
             };
             uint32_t lmod_total_memories = lmod->import_memory_count + lmod->memory_count;
@@ -16419,7 +16484,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             WAH_MALLOC_ARRAY_GOTO(ictx->dropped_data_segments, bytes, cleanup);
             memset(ictx->dropped_data_segments, 0, bytes);
         }
-        go += lmod->global_count;
+        go += wah_global_index_limit(lmod);
     }
 
     // If a start function is defined, call it after all imports/globals/elements are ready.

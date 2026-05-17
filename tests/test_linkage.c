@@ -1517,6 +1517,124 @@ int main() {
         wah_free_module(&prov);
     }
 
+    // Test: Linked module with imported mutable global
+    // Regression: imported mutable globals in linked modules must have proper
+    // slots in the global index space. Previously, only local globals were
+    // allocated, causing GLOBAL_SET_INDIRECT to interpret a local global's value
+    // as a pointer (arbitrary write).
+    printf("Test: Linked module imported mutable global\n");
+    {
+        // Primary module: has a mutable i64 global, exports it as "g",
+        // imports a function "write" from linked module "L",
+        // and has a "read_g" function to read back the global.
+        wah_module_t primary = {0};
+        assert_ok(wah_parse_module_from_spec(&primary, "wasm \
+            types {[ fn [i64] [], fn [] [i64] ]} \
+            imports {[ {'L'} {'write'} fn# 0 ]} \
+            funcs {[ 0, 1 ]} \
+            globals {[ i64 mut i64.const 100 end ]} \
+            exports {[ {'run'} fn# 1, {'g'} export.global 0, {'read_g'} fn# 2 ]} \
+            code {[ {[] local.get 0 call 0 end}, {[] global.get 0 end} ]}"));
+
+        // Linked module "L": imports mutable i64 global from "primary" (field "g"),
+        // has a local i64 global (to verify no aliasing), exports "write" that
+        // sets the imported global.
+        wah_module_t linked = {0};
+        assert_ok(wah_parse_module_from_spec(&linked, "wasm \
+            types {[ fn [i64] [] ]} \
+            imports {[ {'primary'} {'g'} export.global i64 mut ]} \
+            funcs {[ 0 ]} \
+            globals {[ i64 immut i64.const 999 end ]} \
+            exports {[ {'write'} fn# 0 ]} \
+            code {[ {[] local.get 0 global.set 0 end} ]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "L", &linked));
+        assert_ok(wah_link_module(&ctx, "primary", &primary));
+        assert_ok(wah_instantiate(&ctx));
+
+        // Call write(42) - should set primary's mutable global to 42
+        wah_value_t arg = { .i64 = 42 };
+        assert_ok(wah_call_by_name(&ctx, "run", &arg, 1, NULL));
+
+        // Read back the global through primary's read_g function
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ctx, "read_g", NULL, 0, &result));
+        assert_eq_i64(result.i64, 42);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&primary);
+        wah_free_module(&linked);
+    }
+
+    // Test: Linked module imported mutable global - unresolvable import should fail
+    printf("Test: Linked module unresolvable global import\n");
+    {
+        wah_module_t primary = {0};
+        assert_ok(wah_parse_module_from_spec(&primary, "wasm \
+            types {[ fn [i64] [] ]} \
+            imports {[ {'L'} {'write'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'run'} fn# 1 ]} \
+            code {[ {[] local.get 0 call 0 end} ]}"));
+
+        // Linked module imports from "nowhere" which is not linked
+        wah_module_t linked = {0};
+        assert_ok(wah_parse_module_from_spec(&linked, "wasm \
+            types {[ fn [i64] [] ]} \
+            imports {[ {'nowhere'} {'g'} export.global i64 mut ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'write'} fn# 0 ]} \
+            code {[ {[] local.get 0 global.set 0 end} ]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "L", &linked));
+        wah_error_t err = wah_instantiate(&ctx);
+        assert(err == WAH_ERROR_LINK_FAILED);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&primary);
+        wah_free_module(&linked);
+    }
+
+    // Test: Linked module with imported immutable global (value copy)
+    printf("Test: Linked module imported immutable global\n");
+    {
+        wah_module_t primary = {0};
+        assert_ok(wah_parse_module_from_spec(&primary, "wasm \
+            types {[ fn [] [i64] ]} \
+            imports {[ {'L'} {'read'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            globals {[ i64 immut i64.const 777 end ]} \
+            exports {[ {'run'} fn# 1, {'g'} export.global 0 ]} \
+            code {[ {[] call 0 end} ]}"));
+
+        // Linked module: imports immutable i64 global, exports a function that reads it
+        wah_module_t linked = {0};
+        assert_ok(wah_parse_module_from_spec(&linked, "wasm \
+            types {[ fn [] [i64] ]} \
+            imports {[ {'primary'} {'g'} export.global i64 immut ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'read'} fn# 0 ]} \
+            code {[ {[] global.get 0 end} ]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "L", &linked));
+        assert_ok(wah_link_module(&ctx, "primary", &primary));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ctx, "run", NULL, 0, &result));
+        assert_eq_i64(result.i64, 777);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&primary);
+        wah_free_module(&linked);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
