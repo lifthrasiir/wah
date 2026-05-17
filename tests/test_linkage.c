@@ -1680,6 +1680,90 @@ int main() {
         wah_free_module(&host_mod);
     }
 
+    // Bug: linked module with tags gets a partial ictx early (for tag instances),
+    // causing later function import resolution to be skipped. Import slots remain
+    // zeroed, bypassing type checks and dispatching to wrong functions.
+    printf("Test: linked module with tag resolves function imports correctly\n");
+    {
+        // Host module exports sink: (i64) -> ()
+        wah_module_t host_mod = {0};
+        assert_ok(wah_new_module(&host_mod, NULL));
+        assert_ok(wah_export_func(&host_mod, "sink", "(i64) -> ()", sink_i64, NULL, NULL));
+
+        // Linked module: imports host.sink as (i32)->() [TYPE MISMATCH], has a tag,
+        // exports call_sink which calls the import.
+        wah_module_t linked = {0};
+        assert_ok(wah_parse_module_from_spec(&linked, "wasm \
+            types {[ fn [i32] [], fn [] [] ]} \
+            imports {[ {'host'} {'sink'} fn# 0 ]} \
+            funcs {[0]} \
+            tags {[ tag.type# 1 ]} \
+            exports {[ {'call_sink'} fn# 1 ]} \
+            code {[ {[] local.get 0 call 0 end } ]}"));
+
+        // Primary module: imports linked.call_sink.
+        wah_module_t primary = {0};
+        assert_ok(wah_parse_module_from_spec(&primary, "wasm \
+            types {[ fn [i32] [] ]} \
+            imports {[ {'linked'} {'call_sink'} fn# 0 ]} \
+            funcs {[0]} \
+            exports {[ {'run'} fn# 1 ]} \
+            code {[ {[] local.get 0 call 0 end } ]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "host", &host_mod));
+        assert_ok(wah_link_module(&ctx, "linked", &linked));
+        assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&primary);
+        wah_free_module(&linked);
+        wah_free_module(&host_mod);
+    }
+
+    // Same scenario but with matching types — should succeed and call through.
+    printf("Test: linked module with tag + correct imports calls through\n");
+    {
+        wah_module_t host_mod = {0};
+        assert_ok(wah_new_module(&host_mod, NULL));
+        assert_ok(wah_export_func(&host_mod, "sink", "(i32) -> ()", sink_i64, NULL, NULL));
+
+        // Linked module: imports host.sink as (i32)->() [matches], has a tag,
+        // exports call_sink.
+        wah_module_t linked = {0};
+        assert_ok(wah_parse_module_from_spec(&linked, "wasm \
+            types {[ fn [i32] [], fn [] [] ]} \
+            imports {[ {'host'} {'sink'} fn# 0 ]} \
+            funcs {[0]} \
+            tags {[ tag.type# 1 ]} \
+            exports {[ {'call_sink'} fn# 1 ]} \
+            code {[ {[] local.get 0 call 0 end } ]}"));
+
+        // Primary module: imports linked.call_sink and calls it.
+        wah_module_t primary = {0};
+        assert_ok(wah_parse_module_from_spec(&primary, "wasm \
+            types {[ fn [i32] [] ]} \
+            imports {[ {'linked'} {'call_sink'} fn# 0 ]} \
+            funcs {[0]} \
+            exports {[ {'run'} fn# 1 ]} \
+            code {[ {[] local.get 0 call 0 end } ]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "host", &host_mod));
+        assert_ok(wah_link_module(&ctx, "linked", &linked));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t arg = {.i32 = 123};
+        assert_ok(wah_call_by_name(&ctx, "run", &arg, 1, NULL));
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&primary);
+        wah_free_module(&linked);
+        wah_free_module(&host_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

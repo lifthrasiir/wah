@@ -15937,7 +15937,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         uint32_t lg_offset = wah_global_index_limit(module);
         for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
             const wah_module_t *lmod = ctx->linked_modules[j].module;
-            if (ctx->linked_modules[j].ctx == NULL) {
+            if (ctx->linked_modules[j].ctx == NULL || ctx->linked_modules[j].owns_ctx) {
                 for (uint32_t gi_idx = 0; gi_idx < lmod->import_global_count; gi_idx++) {
                     wah_global_import_t *lgi = &lmod->global_imports[gi_idx];
                     const wah_module_t *provider = NULL;
@@ -16261,14 +16261,34 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     uint32_t go = wah_global_index_limit(module);
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
         const wah_module_t *lmod = ctx->linked_modules[j].module;
-        if (ctx->linked_modules[j].ctx == NULL) {
+        bool tag_path_ictx = (ctx->linked_modules[j].ctx != NULL && ctx->linked_modules[j].owns_ctx);
+        if (ctx->linked_modules[j].ctx == NULL || tag_path_ictx) {
             wah_exec_context_t *ictx = NULL;
-            WAH_CHECK_GOTO(wah_malloc(alloc, 1, sizeof(wah_exec_context_t), (void **)&ictx), cleanup);
-            *ictx = (wah_exec_context_t){
-                .alloc = ctx->alloc, .module = lmod,
-                .globals = go ? ctx->globals + go : ctx->globals, .global_count = wah_global_index_limit(lmod),
-                .gc = ctx->gc, .type_check_cache = ctx->type_check_cache,
-            };
+            if (tag_path_ictx) {
+                ictx = ctx->linked_modules[j].ctx;
+                if (ictx->function_table) {
+                    wah_free(alloc, ictx->function_table);
+                    ictx->function_table = NULL;
+                    ictx->function_table_count = 0;
+                }
+                if (ictx->tables && ictx->tables != ctx->tables) {
+                    for (uint32_t ti = lmod->import_table_count; ti < ictx->table_count; ti++) {
+                        if (ictx->tables[ti].entries) wah_free(alloc, ictx->tables[ti].entries);
+                    }
+                    wah_free(alloc, ictx->tables);
+                }
+                ictx->tables = NULL;
+                ictx->table_count = 0;
+                ictx->memories = NULL;
+                ictx->memory_count = 0;
+            } else {
+                WAH_CHECK_GOTO(wah_malloc(alloc, 1, sizeof(wah_exec_context_t), (void **)&ictx), cleanup);
+                *ictx = (wah_exec_context_t){
+                    .alloc = ctx->alloc, .module = lmod,
+                    .globals = go ? ctx->globals + go : ctx->globals, .global_count = wah_global_index_limit(lmod),
+                    .gc = ctx->gc, .type_check_cache = ctx->type_check_cache,
+                };
+            }
             uint32_t lmod_total_memories = lmod->import_memory_count + lmod->memory_count;
             if (lmod_total_memories > 0) {
                 WAH_MALLOC_ARRAY_GOTO(ictx->memories, lmod_total_memories, cleanup);
