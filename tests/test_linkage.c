@@ -1603,6 +1603,40 @@ int main() {
         wah_free_module(&linked);
     }
 
+    // Regression: linked module global imports must be type-checked. Without
+    // this, a linked module can import a primary funcref global as mutable i64,
+    // write an arbitrary integer into it, and later make call_indirect treat
+    // that integer as a function reference pointer.
+    printf("Test: linked module global import type mismatch rejected (security regression)\n");
+    {
+        wah_module_t primary = {0};
+        assert_ok(wah_parse_module_from_spec(&primary, "wasm \
+            types {[ fn [] [] ]} \
+            imports {[ {'L'} {'poison'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            globals {[ funcref mut ref.null funcref end ]} \
+            exports {[ {'g'} export.global 0, {'run'} fn# 1 ]} \
+            code {[ {[] call 0 end} ]}"));
+
+        wah_module_t linked = {0};
+        assert_ok(wah_parse_module_from_spec(&linked, "wasm \
+            types {[ fn [] [] ]} \
+            imports {[ {'primary'} {'g'} export.global i64 mut ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'poison'} fn# 0 ]} \
+            code {[ {[] i64.const 1048576 global.set 0 end} ]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "L", &linked));
+        assert_ok(wah_link_module(&ctx, "primary", &primary));
+        assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&primary);
+        wah_free_module(&linked);
+    }
+
     // Test: Linked module with imported immutable global (value copy)
     printf("Test: Linked module imported immutable global\n");
     {

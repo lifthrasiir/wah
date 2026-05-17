@@ -15959,6 +15959,13 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     uint32_t prov_gidx = gexp->index;
                     WAH_ENSURE_GOTO(prov_gidx < wah_global_index_limit(provider), WAH_ERROR_LINK_FAILED, cleanup);
                     WAH_ENSURE_GOTO(prov_gidx >= provider->import_global_count, WAH_ERROR_LINK_FAILED, cleanup);
+                    uint32_t prov_local_gidx = prov_gidx - provider->import_global_count;
+                    const wah_global_t *exported_global = &provider->globals[prov_local_gidx];
+                    wah_type_t vt1 = exported_global->type, vt2 = lgi->type;
+                    WAH_ENSURE_GOTO(wah_cross_module_subtype(provider, vt1, lmod, vt2) &&
+                                     exported_global->is_mutable == lgi->is_mutable &&
+                                     (!lgi->is_mutable || wah_cross_module_subtype(lmod, vt2, provider, vt1)),
+                                     WAH_ERROR_LINK_FAILED, cleanup);
                     wah_value_t *prov_slot;
                     if (provider_ctx) {
                         prov_slot = &provider_ctx->globals[prov_gidx];
