@@ -1211,6 +1211,110 @@ int main() {
         wah_free_module(&host_mod);
     }
 
+    // Regression: importing the same memory twice via wah_link_context, then growing
+    // one slot, left the alias slot with a stale pointer/size.
+    printf("Test: duplicate memory import alias updated on grow (security regression)\n");
+    {
+        // Provider: 1 memory (1 page, max 10), exports it.
+        wah_module_t provider = {0};
+        assert_ok(wah_new_module(&provider, NULL));
+        assert_ok(wah_export_memory(&provider, "mem", 1, 10));
+
+        wah_exec_context_t pctx = {0};
+        assert_ok(wah_new_exec_context(&pctx, &provider, NULL));
+        assert_ok(wah_instantiate(&pctx));
+
+        // Consumer: imports "mem" twice, exports grow0 (memory.grow 0) and
+        // size1 (memory.size 1) to observe the alias.
+        const char *consumer_spec = "wasm \
+            types {[ fn [i32] [i32], fn [] [i32] ]} \
+            imports {[ {'p'} {'mem'} mem# limits.i32/2 1 10, \
+                       {'p'} {'mem'} mem# limits.i32/2 1 10 ]} \
+            funcs {[ 0, 1 ]} \
+            exports {[ {'grow0'} fn# 0, {'size1'} fn# 1 ]} \
+            code {[ {[] local.get 0 memory.grow 0 end }, \
+                    {[] memory.size 1 end } ]}";
+
+        wah_module_t consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+        wah_exec_context_t cctx = {0};
+        assert_ok(wah_new_exec_context(&cctx, &consumer, NULL));
+        assert_ok(wah_link_context(&cctx, "p", &pctx));
+        assert_ok(wah_instantiate(&cctx));
+
+        // Initial: both slots should report 1 page.
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&cctx, "size1", NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+
+        // Grow memory 0 by 2 pages.
+        wah_value_t arg = {.i32 = 2};
+        assert_ok(wah_call_by_name(&cctx, "grow0", &arg, 1, &result));
+        assert_eq_i32(result.i32, 1);  // old page count
+
+        // memory 1 (alias) must also see 3 pages now.
+        assert_ok(wah_call_by_name(&cctx, "size1", NULL, 0, &result));
+        assert_eq_i32(result.i32, 3);
+
+        wah_free_exec_context(&cctx);
+        wah_free_exec_context(&pctx);
+        wah_free_module(&consumer);
+        wah_free_module(&provider);
+    }
+
+    // Regression: same bug for tables — duplicate table import alias not updated on grow.
+    printf("Test: duplicate table import alias updated on grow (security regression)\n");
+    {
+        // Provider: 1 table (funcref, min 1, max 10), exports it.
+        wah_module_t provider = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, "wasm \
+            tables {[ funcref limits.i32/2 1 10 ]} \
+            exports {[ {'tbl'} table# 0 ]}"));
+
+        wah_exec_context_t pctx = {0};
+        assert_ok(wah_new_exec_context(&pctx, &provider, NULL));
+        assert_ok(wah_instantiate(&pctx));
+
+        // Consumer: imports "tbl" twice, exports grow0 (table.grow 0) and
+        // size1 (table.size 1).
+        const char *consumer_spec = "wasm \
+            types {[ fn [i32] [i32], fn [] [i32] ]} \
+            imports {[ {'p'} {'tbl'} table# funcref limits.i32/2 1 10, \
+                       {'p'} {'tbl'} table# funcref limits.i32/2 1 10 ]} \
+            funcs {[ 0, 1 ]} \
+            exports {[ {'grow0'} fn# 0, {'size1'} fn# 1 ]} \
+            code {[ {[] ref.null funcref local.get 0 table.grow 0 end }, \
+                    {[] table.size 1 end } ]}";
+
+        wah_module_t consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+        wah_exec_context_t cctx = {0};
+        assert_ok(wah_new_exec_context(&cctx, &consumer, NULL));
+        assert_ok(wah_link_context(&cctx, "p", &pctx));
+        assert_ok(wah_instantiate(&cctx));
+
+        // Initial: both slots should report size 1.
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&cctx, "size1", NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+
+        // Grow table 0 by 2.
+        wah_value_t arg = {.i32 = 2};
+        assert_ok(wah_call_by_name(&cctx, "grow0", &arg, 1, &result));
+        assert_eq_i32(result.i32, 1);  // old size
+
+        // table 1 (alias) must also see size 3 now.
+        assert_ok(wah_call_by_name(&cctx, "size1", NULL, 0, &result));
+        assert_eq_i32(result.i32, 3);
+
+        wah_free_exec_context(&cctx);
+        wah_free_exec_context(&pctx);
+        wah_free_module(&consumer);
+        wah_free_module(&provider);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
