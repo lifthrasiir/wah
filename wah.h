@@ -1163,6 +1163,7 @@ wah_v128_t wah_param_v128(const wah_call_context_t *ctx, size_t index);  // v128
 
 // Function: wah_param_ref
 //   Get a `wah_gc_alloc_host`-compatible reference parameter passed to a host function by index.
+//   Any incompatible pointer is masked to prevent an accidental type confusion.
 //   Valid only during the host function call.
 //
 //   - idx [in]: Index of the parameter to retrieve. Must be less than the number of parameters.
@@ -15501,7 +15502,12 @@ void *wah_param_ref(const wah_call_context_t *ctx, size_t index) {
     WAH_ASSERT(ctx && "Call context is NULL");
     WAH_ASSERT(index < ctx->nparams && "Parameter index out of bounds");
     WAH_ASSERT(WAH_TYPE_IS_REF(ctx->param_types[index]) && "Parameter type mismatch");
-    return ctx->params[index].ref;
+    void *ref = ctx->params[index].ref;
+    if (ref != NULL && (wah_ref_is_i31(ref) || wah_gc_header(ref)->repr_id != WAH_REPR_HOST)) {
+        // Due to the type confusion concern, we mask any non-host non-null pointer with a likely-invalid one.
+        return (void*)(~(uintptr_t)0);
+    }
+    return ref;
 }
 
 size_t wah_result_count(const wah_call_context_t *ctx) {
