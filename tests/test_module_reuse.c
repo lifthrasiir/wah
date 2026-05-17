@@ -30,9 +30,9 @@ static void snapshot_module(module_snapshot_t *snap, const wah_module_t *mod) {
     snap->local_function_count = mod->local_function_count;
     uint32_t fn = mod->local_function_count < 16 ? mod->local_function_count : 16;
     for (uint32_t i = 0; i < fn; i++) {
-        snap->functions_local_idx[i] = mod->functions[i].local_idx;
-        snap->functions_global_idx[i] = mod->functions[i].global_idx;
-        snap->functions_fn_module[i] = mod->functions[i].fn_module;
+        snap->functions_local_idx[i] = mod->functions[i].func.local_idx;
+        snap->functions_global_idx[i] = mod->functions[i].func.global_idx;
+        snap->functions_fn_module[i] = mod->functions[i].func.fn_module;
     }
     uint32_t es = mod->element_segment_count < 16 ? mod->element_segment_count : 16;
     for (uint32_t i = 0; i < es; i++) {
@@ -52,9 +52,9 @@ static void assert_module_unchanged(const module_snapshot_t *snap, const wah_mod
     }
     uint32_t fn = mod->local_function_count < 16 ? mod->local_function_count : 16;
     for (uint32_t i = 0; i < fn; i++) {
-        if (mod->functions[i].local_idx != snap->functions_local_idx[i] ||
-            mod->functions[i].global_idx != snap->functions_global_idx[i] ||
-            mod->functions[i].fn_module != snap->functions_fn_module[i]) {
+        if (mod->functions[i].func.local_idx != snap->functions_local_idx[i] ||
+            mod->functions[i].func.global_idx != snap->functions_global_idx[i] ||
+            mod->functions[i].func.fn_module != snap->functions_fn_module[i]) {
             fprintf(stderr, "%s: module->functions[%u] mutated\n", where, i);
             exit(1);
         }

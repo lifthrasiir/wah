@@ -646,7 +646,7 @@ private:
     // functions[wasm_function_count..local_function_count) are host functions.
     uint32_t local_function_count;
     uint32_t functions_cap;    // allocated capacity of functions[]
-    struct wah_function_s *functions; // unified function array
+    struct wah_function_holder_s *functions; // unified function array
 
     // Import section
     uint32_t import_function_count;
@@ -755,7 +755,7 @@ private:
     bool is_instantiated;
 
     // Runtime dispatch table (global function index space: imports + locals + hosts)
-    struct wah_function_s *function_table;
+    struct wah_function_holder_s *function_table;
     uint32_t function_table_count;
 
     // Tag instances (global tag index space: import tags + local tags)
@@ -2466,7 +2466,6 @@ typedef struct wah_data_segment_s {
 // For WASM functions only kind is meaningful; the rest is zero.
 // For host functions all fields are valid.
 typedef struct wah_function_s {
-    wah_gc_object_t fake_header;
     bool is_host;
 
     // Global function index (for reference types)
@@ -2485,6 +2484,11 @@ typedef struct wah_function_s {
     const struct wah_module_s *fn_module;  // owning module (NULL means ctx->module)
     struct wah_exec_context_s *fn_ctx;     // owning exec context (NULL means current ctx)
 } wah_function_t;
+
+typedef struct wah_function_holder_s {
+    wah_gc_object_t header;
+    wah_function_t func;
+} wah_function_holder_t;
 
 typedef struct wah_export_s {
     const char *name;
@@ -2519,7 +2523,7 @@ typedef struct wah_call_frame_s {
     const struct wah_module_s *module; // The module this function belongs to (for cross-module calls)
     wah_value_t *frame_globals;  // Pointer to the globals array for this frame's module
     uint32_t ref_map_offset;     // Byte offset into parsed_code.operand_ref_map for current POLL point
-    struct wah_function_s *frame_function_table; // Function table for this frame
+    struct wah_function_holder_s *frame_function_table; // Function table for this frame
     uint32_t frame_function_table_count; // Number of entries in frame_function_table
     struct wah_exec_context_s *frame_ctx; // Exec context for this frame
 } wah_call_frame_t;
@@ -2788,18 +2792,20 @@ typedef struct wah_type_check_cache_entry_s {
 #define WAH_MAX_EXCEPTION_HANDLER_DEPTH 64
 
 // -- Function References --
-#define WAH_FUNCREF_FAKE_HEADER { .next_tagged = NULL, .repr_id = WAH_TYPE_BOT, .size_bytes = 0 }
+#define WAH_FUNCREF_HEADER { .next_tagged = NULL, .repr_id = WAH_TYPE_FUNC, .size_bytes = 0 }
 
 // Sentinel used by wah_value_t._prefuncref to distinguish ref.func 0 from ref.null.
 // A prefuncref with .sentinel == wah_funcref_sentinel is a valid function reference;
 // .ref == NULL means null. This sentinel is never executed.
-static wah_function_t wah_funcref_sentinel[1] = {{ .fake_header = WAH_FUNCREF_FAKE_HEADER }};
+// The sentinel uses WAH_TYPE_BOT so leaked refs fail all type checks.
+static wah_function_holder_t wah_funcref_sentinel[1] =
+    {{ .header = { .next_tagged = NULL, .repr_id = WAH_TYPE_BOT, .size_bytes = 0 } }};
 
 static inline void *wah_func_to_ref(wah_function_t *fn) {
-    return wah_gc_payload(&fn->fake_header);
+    return (void *)fn;
 }
 static inline wah_function_t *wah_ref_to_func(void *ref) {
-    return (wah_function_t *)wah_gc_header(ref);
+    return (wah_function_t *)ref;
 }
 
 // -- Forward declarations --
@@ -9391,11 +9397,9 @@ wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t
     if (module->wasm_function_count > 0) {
         WAH_MALLOC_ARRAY_GOTO(module->functions, module->wasm_function_count, cleanup_parse);
         for (uint32_t i = 0; i < module->wasm_function_count; i++) {
-            module->functions[i] = (wah_function_t){
-                .fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER,
-                .local_idx = i,
-                .global_idx = module->import_function_count + i,
-                .fn_module = module,
+            module->functions[i] = (wah_function_holder_t){
+                .header = (wah_gc_object_t)WAH_FUNCREF_HEADER,
+                .func = { .local_idx = i, .global_idx = module->import_function_count + i, .fn_module = module },
             };
         }
         module->functions_cap = module->wasm_function_count;
@@ -10323,13 +10327,13 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
         WAH_MALLOC_ARRAY_GOTO(exec_ctx->function_table, table_size, cleanup);
         // Initialize import slots (will be filled during import resolution)
         for (uint32_t i = 0; i < import_count; i++) {
-            exec_ctx->function_table[i] = (wah_function_t){ .fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER };
+            exec_ctx->function_table[i] = (wah_function_holder_t){ .header = (wah_gc_object_t)WAH_FUNCREF_HEADER };
         }
         // Copy local/host functions at offset import_count
         for (uint32_t i = 0; i < module->local_function_count; i++) {
             exec_ctx->function_table[import_count + i] = module->functions[i];
-            if (!module->functions[i].is_host) {
-                exec_ctx->function_table[import_count + i].fn_ctx = exec_ctx;
+            if (!module->functions[i].func.is_host) {
+                exec_ctx->function_table[import_count + i].func.fn_ctx = exec_ctx;
             }
         }
     }
@@ -10746,7 +10750,7 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
                 return wah_cross_module_subtype_cached(ctx, obj_mod, WAH_TYPE_FROM_IDX(obj_typeidx, 0),
                                                        ctx->module, target);
         }
-        if (repr_id == WAH_TYPE_BOT &&
+        if (repr_id == WAH_TYPE_FUNC &&
             ctx->module->type_defs && target_idx < ctx->module->type_count &&
             ctx->module->type_defs[target_idx].kind == WAH_COMP_FUNC) {
             const wah_function_t *fn = wah_ref_to_func(ref);
@@ -10762,7 +10766,7 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
 
     switch (ht) {
         // ANY and EXTERN share a case: identity-based extern conversions (see i31 comment above).
-        case WAH_TYPE_ANY: case WAH_TYPE_EXTERN: return repr_id != WAH_TYPE_BOT;
+        case WAH_TYPE_ANY: case WAH_TYPE_EXTERN: return repr_id != WAH_TYPE_FUNC;
         case WAH_TYPE_EQ: return repr_id >= 0;
         case WAH_TYPE_STRUCT: {
             if (repr_id < 0) return false;
@@ -10776,7 +10780,7 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
             return obj_mod && (uint32_t)repr_id < obj_mod->repr_count &&
                    obj_mod->repr_infos[repr_id]->type == WAH_REPR_ARRAY;
         }
-        case WAH_TYPE_FUNC: return repr_id == WAH_TYPE_BOT;
+        case WAH_TYPE_FUNC: return repr_id == WAH_TYPE_FUNC;
         case WAH_TYPE_I31: default: return false;
     }
 }
@@ -10862,7 +10866,7 @@ static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, wah_exec_context_t 
             if (!segment->is_expr_elem) {
                 uint32_t gfi = segment->u.func_indices[src_offset + i];
                 WAH_ASSERT(gfi < fctx->function_table_count);
-                wah_function_t *fn = &fctx->function_table[gfi];
+                wah_function_t *fn = &fctx->function_table[gfi].func;
                 if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == fctx->module) fn->fn_ctx = fctx;
                 store_val.ref = wah_func_to_ref(fn);
             } else {
@@ -10871,10 +10875,10 @@ static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, wah_exec_context_t 
                 wah_error_t e = wah_eval_const_expr(fctx, segment->u.expr.bytecodes[src_offset + i],
                                                     segment->u.expr.bytecode_sizes[src_offset + i], &elem_val);
                 if (e != WAH_OK) { *out_err = e; return done + j; }
-                if (elem_val.ref == wah_func_to_ref(wah_funcref_sentinel)) {
+                if (elem_val.ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
                     uint32_t gfi = elem_val._prefuncref.func_idx;
                     WAH_ASSERT(gfi < fctx->function_table_count);
-                    wah_function_t *fn = &fctx->function_table[gfi];
+                    wah_function_t *fn = &fctx->function_table[gfi].func;
                     if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == fctx->module) fn->fn_ctx = fctx;
                     store_val.ref = wah_func_to_ref(fn);
                 } else {
@@ -10917,7 +10921,7 @@ static uint32_t wah_bulk_array_init_elem(wah_exec_context_t *ctx, uint8_t *elems
             if (!seg->is_expr_elem) {
                 uint32_t fidx = seg->u.func_indices[src_offset + i];
                 WAH_ASSERT(fidx < ctx->function_table_count);
-                ((void **)(elems))[dst_offset + i] = wah_func_to_ref(&ctx->function_table[fidx]);
+                ((void **)(elems))[dst_offset + i] = wah_func_to_ref(&ctx->function_table[fidx].func);
             } else {
                 wah_value_t ev;
                 wah_error_t e = wah_eval_const_expr(ctx, seg->u.expr.bytecodes[src_offset + i],
@@ -11430,14 +11434,14 @@ WAH_RUN(REF_FUNC) {
     uint32_t func_idx = wah_decode_u32_le(&bytecode_ip);
 
     WAH_ASSERT(func_idx < frame->frame_function_table_count && "validation should have verified function index");
-    (*sp++).ref = wah_func_to_ref(&frame->frame_function_table[func_idx]);
+    (*sp++).ref = wah_func_to_ref(&frame->frame_function_table[func_idx].func);
     WAH_NEXT();
 }
 
 WAH_RUN(REF_FUNC_CONST) {
     uint32_t func_idx = wah_decode_u32_le(&bytecode_ip);
     *sp++ = (wah_value_t){
-        ._prefuncref = { .sentinel = wah_func_to_ref(wah_funcref_sentinel), .func_idx = func_idx }
+        ._prefuncref = { .sentinel = wah_func_to_ref(&wah_funcref_sentinel->func), .func_idx = func_idx }
     };
     WAH_NEXT();
 }
@@ -11769,7 +11773,7 @@ WAH_RUN(ARRAY_NEW_ELEM) {
         if (!seg->is_expr_elem) {
             uint32_t fidx = seg->u.func_indices[offset + i];
             WAH_ASSERT(fidx < ctx->function_table_count);
-            ((void **)elems)[i] = wah_func_to_ref(&ctx->function_table[fidx]);
+            ((void **)elems)[i] = wah_func_to_ref(&ctx->function_table[fidx].func);
         } else {
             wah_value_t ev;
             WAH_CHECK_GOTO(wah_eval_const_expr(ctx, seg->u.expr.bytecodes[offset + i],
@@ -12193,7 +12197,7 @@ WAH_RUN(ELEM_DROP) {
     WAH_ENSURE_GOTO(func_table_idx < fctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
     void *_fn_ref = fctx->tables[table_idx].entries[func_table_idx].ref; \
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup); \
-    WAH_ASSERT(_fn_ref != wah_func_to_ref(wah_funcref_sentinel) && "prefuncref stored in table without conversion to funcref"); \
+    WAH_ASSERT(_fn_ref != wah_func_to_ref(&wah_funcref_sentinel->func) && "prefuncref stored in table without conversion to funcref"); \
     const wah_function_t *actual_fn = wah_ref_to_func(_fn_ref); \
     WAH_REF_BODY(actual_fn, CALL_HOST, CALL_WASM)
 
@@ -12233,7 +12237,7 @@ WAH_RUN(CALL) {
     uint32_t called_func_idx = wah_decode_u32_le(&bytecode_ip);
 
     WAH_ASSERT(called_func_idx < frame->frame_function_table_count && "validation didn't catch out-of-bound function index");
-    const wah_function_t *called_fn = &frame->frame_function_table[called_func_idx];
+    const wah_function_t *called_fn = &frame->frame_function_table[called_func_idx].func;
 
     if (called_fn->is_host) {
         WAH_CALL_HOST_INLINE(called_fn);
@@ -12281,7 +12285,7 @@ WAH_RUN(CALL_REF) {
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     void *_fn_ref = (*--sp).ref;
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup);
-    WAH_ASSERT(_fn_ref != wah_func_to_ref(wah_funcref_sentinel) && "prefuncref stored without conversion to funcref");
+    WAH_ASSERT(_fn_ref != wah_func_to_ref(&wah_funcref_sentinel->func) && "prefuncref stored without conversion to funcref");
     const wah_function_t *actual_fn = wah_ref_to_func(_fn_ref);
     WAH_REF_BODY(actual_fn,
         WAH_CALL_HOST_INLINE(actual_fn),
@@ -12357,7 +12361,7 @@ WAH_RUN(RETURN_CALL) {
     }
 
     WAH_ASSERT(called_func_idx < frame->frame_function_table_count && "validation didn't catch out-of-bound function index");
-    const wah_function_t *called_fn = &frame->frame_function_table[called_func_idx];
+    const wah_function_t *called_fn = &frame->frame_function_table[called_func_idx].func;
 
     if (called_fn->is_host) {
         WAH_TAIL_CALL_HOST(called_fn);
@@ -12413,7 +12417,7 @@ WAH_RUN(RETURN_CALL_REF) {
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     void *_fn_ref = (*--sp).ref;
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup);
-    WAH_ASSERT(_fn_ref != wah_func_to_ref(wah_funcref_sentinel) && "prefuncref stored without conversion to funcref");
+    WAH_ASSERT(_fn_ref != wah_func_to_ref(&wah_funcref_sentinel->func) && "prefuncref stored without conversion to funcref");
     const wah_function_t *actual_fn = wah_ref_to_func(_fn_ref);
     while (ctx->exception_handler_depth > 0 &&
            ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) {
@@ -14695,7 +14699,7 @@ static wah_error_t wah_start_internal(
 ) {
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
     WAH_ENSURE(func_idx < ctx->function_table_count, WAH_ERROR_NOT_FOUND);
-    const wah_function_t *fn = &ctx->function_table[func_idx];
+    const wah_function_t *fn = &ctx->function_table[func_idx].func;
 
     ctx->lifecycle.base_sp = ctx->sp;
     ctx->lifecycle.base_call_depth = ctx->call_depth;
@@ -14864,7 +14868,7 @@ static wah_error_t wah_call_module_multi(
 static wah_error_t wah_call_module(wah_exec_context_t *exec_ctx, uint32_t func_idx,
                                    const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
     WAH_ENSURE(func_idx < exec_ctx->function_table_count, WAH_ERROR_NOT_FOUND);
-    const wah_function_t *fn = &exec_ctx->function_table[func_idx];
+    const wah_function_t *fn = &exec_ctx->function_table[func_idx].func;
     uint32_t nresults;
     if (fn->is_host) {
         nresults = (uint32_t)fn->nresults;
@@ -14995,7 +14999,7 @@ void wah_free_module(wah_module_t *module) {
             bool is_host_export = (module->exports[i].kind == WAH_KIND_FUNCTION &&
                                    module->functions &&
                                    idx < module->local_function_count &&
-                                   module->functions[idx].is_host);
+                                   module->functions[idx].func.is_host);
             // For memory (kind 2) and global (kind 3) exports from programmatically created modules,
             // the name is owned by the export entry itself, not by another structure.
             // For WASM function exports (kind 0, not host), the name is also owned by the export entry.
@@ -15009,7 +15013,7 @@ void wah_free_module(wah_module_t *module) {
     // Free host function resources stored in the unified functions[] array.
     if (module->functions) {
         for (uint32_t i = module->wasm_function_count; i < module->local_function_count; ++i) {
-            wah_function_t *fn = &module->functions[i];
+            wah_function_t *fn = &module->functions[i].func;
             if (fn->is_host) {
                 if (fn->finalize) fn->finalize(fn->userdata);
                 wah_free(alloc, fn->name);
@@ -15224,13 +15228,14 @@ static wah_error_t wah_module_register_host_func(
     }
 
     uint32_t new_func_idx = mod->local_function_count;
-    mod->functions[new_func_idx] = (wah_function_t){
-        .fake_header = (wah_gc_object_t)WAH_FUNCREF_FAKE_HEADER, .is_host = true,
-        .global_idx = mod->import_function_count + new_func_idx,
-        .name = name_copy, .func = func, .userdata = userdata, .finalize = finalize,
-        .nparams = ft->param_count, .param_types = param_types_copy,
-        .nresults = ft->result_count, .result_types = result_types_copy,
-        .fn_module = mod,
+    mod->functions[new_func_idx] = (wah_function_holder_t){
+        .header = (wah_gc_object_t)WAH_FUNCREF_HEADER,
+        .func = { .is_host = true,
+                  .global_idx = mod->import_function_count + new_func_idx,
+                  .name = name_copy, .func = func, .userdata = userdata, .finalize = finalize,
+                  .nparams = ft->param_count, .param_types = param_types_copy,
+                  .nresults = ft->result_count, .result_types = result_types_copy,
+                  .fn_module = mod },
     };
     mod->local_function_count++;
     mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
@@ -15453,6 +15458,10 @@ void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value) {
     WAH_ASSERT(WAH_TYPE_IS_REF(ctx->result_types[index]) && "Result type mismatch");
     WAH_ASSERT((value != NULL || WAH_TYPE_IS_NULLABLE(ctx->result_types[index])) &&
                "Non-nullable reference result cannot be set to NULL");
+    WAH_ASSERT((value == NULL || wah_ref_is_i31(value) ||
+                wah_gc_header(value)->repr_id == WAH_REPR_HOST ||
+                wah_type_hierarchy_top(ctx->result_types[index], NULL) != WAH_TYPE_EXTERN) &&
+               "externref result must be allocated with wah_gc_alloc_host");
     ctx->results[index].ref = value;
 }
 
@@ -15633,7 +15642,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         uint32_t linked_local_idx = exp->index - linked_import_count;
         WAH_ENSURE_GOTO(linked_local_idx < linked->local_function_count, WAH_ERROR_LINK_FAILED, cleanup);
 
-        const wah_function_t *src = &linked->functions[linked_local_idx];
+        const wah_function_t *src = &linked->functions[linked_local_idx].func;
 
         // Verify function type compatibility
         WAH_ENSURE_GOTO(fi->type_index < module->type_count, WAH_ERROR_LINK_FAILED, cleanup);
@@ -15663,14 +15672,14 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             }
         }
 
-        ctx->function_table[i] = *src;  // shallow copy (pointers shared with linked module)
-        ctx->function_table[i].global_idx = exp->index;  // Set global index from export
+        ctx->function_table[i] = (wah_function_holder_t){ .header = (wah_gc_object_t)WAH_FUNCREF_HEADER, .func = *src };
+        ctx->function_table[i].func.global_idx = exp->index;  // Set global index from export
         if (!src->is_host) {
-            ctx->function_table[i].fn_module = linked;
-            ctx->function_table[i].local_idx = linked_local_idx;
+            ctx->function_table[i].func.fn_module = linked;
+            ctx->function_table[i].func.local_idx = linked_local_idx;
             // Cache the providing context so funcrefs into this slot can be dispatched
             // from a third-party context that did not directly link to `linked`.
-            ctx->function_table[i].fn_ctx = fi_linked_ctx;
+            ctx->function_table[i].func.fn_ctx = fi_linked_ctx;
         }
     }
 
@@ -15800,10 +15809,10 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                                            module->globals[i].init_expr.bytecode,
                                            module->globals[i].init_expr.bytecode_size,
                                            &ctx->globals[slot]), cleanup);
-        if (ctx->globals[slot].ref == wah_func_to_ref(wah_funcref_sentinel)) {
+        if (ctx->globals[slot].ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
             uint32_t fidx = ctx->globals[slot]._prefuncref.func_idx;
             WAH_ENSURE_GOTO(fidx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-            wah_function_t *fn = &ctx->function_table[fidx];
+            wah_function_t *fn = &ctx->function_table[fidx].func;
             if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
             ctx->globals[slot].ref = wah_func_to_ref(fn);
         }
@@ -15942,13 +15951,13 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
         const wah_module_t *linked = ctx->linked_modules[j].module;
         for (uint32_t k = 0; k < linked->global_count; k++) {
-            if (ctx->globals[lg_offset + k].ref == wah_func_to_ref(wah_funcref_sentinel)) {
+            if (ctx->globals[lg_offset + k].ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
                 uint32_t fidx = ctx->globals[lg_offset + k]._prefuncref.func_idx;
                 uint32_t linked_import_count = linked->import_function_count;
                 if (fidx >= linked_import_count) {
                     uint32_t local_k = fidx - linked_import_count;
                     WAH_ENSURE_GOTO(local_k < linked->wasm_function_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                    ctx->globals[lg_offset + k].ref = wah_func_to_ref(&linked->functions[local_k]);
+                    ctx->globals[lg_offset + k].ref = wah_func_to_ref(&linked->functions[local_k].func);
                 } else {
                     // ref.func to linked module's own import: resolve from another linked module
                     wah_func_import_t *fi = &linked->func_imports[fidx];
@@ -15976,7 +15985,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     WAH_ENSURE_GOTO(exp->index >= provider_import_count, WAH_ERROR_LINK_FAILED, cleanup);
                     uint32_t provider_local_idx = exp->index - provider_import_count;
                     WAH_ENSURE_GOTO(provider_local_idx < provider->local_function_count, WAH_ERROR_LINK_FAILED, cleanup);
-                    ctx->globals[lg_offset + k].ref = wah_func_to_ref(&provider->functions[provider_local_idx]);
+                    ctx->globals[lg_offset + k].ref = wah_func_to_ref(&provider->functions[provider_local_idx].func);
                 }
             }
         }
@@ -15992,10 +16001,10 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 module->tables[i].init_expr.bytecode,
                 module->tables[i].init_expr.bytecode_size,
                 &init_val), cleanup);
-            if (init_val.ref == wah_func_to_ref(wah_funcref_sentinel)) {
+            if (init_val.ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
                 uint32_t func_idx = init_val._prefuncref.func_idx;
                 WAH_ENSURE_GOTO(func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                init_val.ref = wah_func_to_ref(&ctx->function_table[func_idx]);
+                init_val.ref = wah_func_to_ref(&ctx->function_table[func_idx].func);
             }
             for (uint64_t j = 0; j < ctx->tables[slot].size; ++j) {
                 ctx->tables[slot].entries[j] = init_val;
@@ -16034,7 +16043,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             if (!segment->is_expr_elem) {
                 uint32_t global_func_idx = segment->u.func_indices[j];
                 WAH_ENSURE_GOTO(global_func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                wah_function_t *fn = &ctx->function_table[global_func_idx];
+                wah_function_t *fn = &ctx->function_table[global_func_idx].func;
                 if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
                 ctx->tables[segment->table_idx].entries[offset + j].ref = wah_func_to_ref(fn);
             } else {
@@ -16043,10 +16052,10 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                                                    segment->u.expr.bytecodes[j],
                                                    segment->u.expr.bytecode_sizes[j],
                                                    &elem_val), cleanup);
-                if (elem_val.ref == wah_func_to_ref(wah_funcref_sentinel)) {
+                if (elem_val.ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
                     uint32_t global_func_idx = elem_val._prefuncref.func_idx;
                     WAH_ENSURE_GOTO(global_func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                    wah_function_t *fn = &ctx->function_table[global_func_idx];
+                    wah_function_t *fn = &ctx->function_table[global_func_idx].func;
                     if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
                     ctx->tables[segment->table_idx].entries[offset + j].ref = wah_func_to_ref(fn);
                 } else {
@@ -16193,8 +16202,8 @@ wah_error_t wah_module_function(const wah_module_t *module, uint32_t funcidx, wa
 
     uint32_t local_fn_idx = funcidx - module->import_function_count;
     WAH_ENSURE(module->functions && local_fn_idx < module->local_function_count, WAH_ERROR_NOT_FOUND);
-    if (module->functions[local_fn_idx].is_host) {
-        const wah_function_t *fn = &module->functions[local_fn_idx];
+    if (module->functions[local_fn_idx].func.is_host) {
+        const wah_function_t *fn = &module->functions[local_fn_idx].func;
         *out = (wah_func_desc_t){
             .is_host = true, .type_index = UINT32_MAX,
             .param_count = (uint32_t)fn->nparams, .param_types = fn->param_types,

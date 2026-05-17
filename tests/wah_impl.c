@@ -154,7 +154,7 @@ static int is_func_ref_in_range(const void *base, uint32_t count, size_t elem_si
 bool wah_debug_is_func_ref_in_ctx(const wah_exec_context_t *ctx, const void *ref) {
     if (!ctx || !ref) return false;
     if (is_func_ref_in_range(ctx->function_table, ctx->function_table_count,
-                             sizeof(wah_function_t), ref))
+                             sizeof(wah_function_holder_t), ref))
         return true;
     return false;
 }
@@ -162,7 +162,7 @@ bool wah_debug_is_func_ref_in_ctx(const wah_exec_context_t *ctx, const void *ref
 bool wah_debug_is_func_ref_in_module(const wah_module_t *mod, const void *ref) {
     if (!mod || !ref) return false;
     return is_func_ref_in_range(mod->functions, mod->local_function_count,
-                                sizeof(wah_function_t), ref) != 0;
+                                sizeof(wah_function_holder_t), ref) != 0;
 }
 
 uint32_t wah_debug_typidx(wah_type_t t) {
@@ -244,10 +244,10 @@ void wah_debug_relocate_exec_refs(wah_exec_context_t *ctx, void *old_base, size_
         }
     }
     for (uint32_t i = 0; i < ctx->function_table_count; i++) {
-        if (!ctx->function_table[i].is_host) {
-            ctx->function_table[i].fn_module =
-                relocate_module_ptr(ctx->function_table[i].fn_module, old_base, byte_size, delta);
-            ctx->function_table[i].fn_ctx = relocate_ctx_ptr(ctx->function_table[i].fn_ctx, old_base, byte_size, delta);
+        if (!ctx->function_table[i].func.is_host) {
+            ctx->function_table[i].func.fn_module =
+                relocate_module_ptr(ctx->function_table[i].func.fn_module, old_base, byte_size, delta);
+            ctx->function_table[i].func.fn_ctx = relocate_ctx_ptr(ctx->function_table[i].func.fn_ctx, old_base, byte_size, delta);
         }
     }
     for (uint32_t i = 0; i < ctx->call_depth; i++) {
