@@ -10460,11 +10460,19 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
         for (uint32_t i = 0; i < exec_ctx->linked_module_count; ++i) {
             wah_free(alloc, (void*)exec_ctx->linked_modules[i].name);
             if (exec_ctx->linked_modules[i].owns_ctx) {
-                wah_free(alloc, exec_ctx->linked_modules[i].ctx->function_table);
-                wah_free(alloc, exec_ctx->linked_modules[i].ctx->tag_instances);
-                wah_free(alloc, exec_ctx->linked_modules[i].ctx->dropped_elem_segments);
-                wah_free(alloc, exec_ctx->linked_modules[i].ctx->dropped_data_segments);
-                wah_free(alloc, exec_ctx->linked_modules[i].ctx);
+                wah_exec_context_t *ictx = exec_ctx->linked_modules[i].ctx;
+                if (ictx->tables && ictx->tables != exec_ctx->tables) {
+                    for (uint32_t t = 0; t < ictx->table_count; ++t) {
+                        if (!ictx->tables[t].is_imported)
+                            wah_free(alloc, ictx->tables[t].entries);
+                    }
+                    wah_free(alloc, ictx->tables);
+                }
+                wah_free(alloc, ictx->function_table);
+                wah_free(alloc, ictx->tag_instances);
+                wah_free(alloc, ictx->dropped_elem_segments);
+                wah_free(alloc, ictx->dropped_data_segments);
+                wah_free(alloc, ictx);
             }
         }
         wah_free(alloc, exec_ctx->linked_modules);
@@ -15783,6 +15791,26 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     .globals = g_offset ? ctx->globals + g_offset : ctx->globals, .global_count = lmod->global_count,
                     .gc = ctx->gc, .tag_instance_count = 0,
                 };
+                uint32_t lmod_total_tables = lmod->import_table_count + lmod->table_count;
+                if (lmod_total_tables > 0 && lmod_total_tables > ctx->table_count) {
+                    WAH_MALLOC_ARRAY_GOTO(ictx->tables, lmod_total_tables, cleanup);
+                    ictx->table_count = lmod_total_tables;
+                    for (uint32_t ti = 0; ti < lmod->import_table_count && ti < ctx->table_count; ti++) {
+                        ictx->tables[ti] = ctx->tables[ti];
+                        ictx->tables[ti].is_imported = true;
+                    }
+                    for (uint32_t ti = lmod->import_table_count; ti < lmod_total_tables; ti++) {
+                        uint32_t li = ti - lmod->import_table_count;
+                        uint64_t min_elements = lmod->tables[li].min_elements;
+                        uint64_t table_bytes = 0;
+                        WAH_CHECK_GOTO(wah_table_byte_size(min_elements, &table_bytes), cleanup);
+                        ictx->tables[ti] = (wah_table_inst_t){ .size = min_elements, .max_size = lmod->tables[li].max_elements };
+                        if (min_elements > 0) {
+                            WAH_MALLOC_ARRAY_GOTO(ictx->tables[ti].entries, min_elements, cleanup);
+                            memset(ictx->tables[ti].entries, 0, (size_t)table_bytes);
+                        }
+                    }
+                }
                 {
                     uint32_t lmod_ic = lmod->import_function_count;
                     uint32_t lmod_ft_size = lmod_ic + lmod->local_function_count;
@@ -16161,6 +16189,26 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 .globals = go ? ctx->globals + go : ctx->globals, .global_count = lmod->global_count,
                 .memory_base = ctx->memory_base, .memory_size = ctx->memory_size, .gc = ctx->gc,
             };
+            uint32_t lmod_total_tables = lmod->import_table_count + lmod->table_count;
+            if (lmod_total_tables > 0 && lmod_total_tables > ctx->table_count) {
+                WAH_MALLOC_ARRAY_GOTO(ictx->tables, lmod_total_tables, cleanup);
+                ictx->table_count = lmod_total_tables;
+                for (uint32_t ti = 0; ti < lmod->import_table_count && ti < ctx->table_count; ti++) {
+                    ictx->tables[ti] = ctx->tables[ti];
+                    ictx->tables[ti].is_imported = true;
+                }
+                for (uint32_t ti = lmod->import_table_count; ti < lmod_total_tables; ti++) {
+                    uint32_t li = ti - lmod->import_table_count;
+                    uint64_t min_elements = lmod->tables[li].min_elements;
+                    uint64_t table_bytes = 0;
+                    WAH_CHECK_GOTO(wah_table_byte_size(min_elements, &table_bytes), cleanup);
+                    ictx->tables[ti] = (wah_table_inst_t){ .size = min_elements, .max_size = lmod->tables[li].max_elements };
+                    if (min_elements > 0) {
+                        WAH_MALLOC_ARRAY_GOTO(ictx->tables[ti].entries, min_elements, cleanup);
+                        memset(ictx->tables[ti].entries, 0, (size_t)table_bytes);
+                    }
+                }
+            }
             uint32_t lmod_ic = lmod->import_function_count;
             uint32_t lmod_ft_size = lmod_ic + lmod->local_function_count;
             ictx->function_table_count = lmod_ft_size;

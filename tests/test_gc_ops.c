@@ -1157,16 +1157,11 @@ static void gc_danger_host_func(wah_call_context_t *cctx, void *userdata) {
 static void test_cross_module_array_new_elem_funcref() {
     printf("Testing cross-module array.new_elem uses correct function table (security regression)...\n");
 
-    // Provider: func 0 returns 111. func 1 (exported "run") uses array.new_elem to get
-    // funcref from passive element segment [0] (referring to provider func 0), stores
-    // it in shared table[0], then calls via call_indirect.
-    // Bug: array.new_elem used ctx->function_table[0] (danger host) instead of
-    // fctx->function_table[0] (provider func 0 returning 111).
-    // Provider: has local table + func 0 (returns 111) + func 1 (exported "run")
-    // that gets funcref from array.new_elem and calls it via call_indirect.
-    // Element segment [0] refers to provider's func index 0.
-    // Bug: array.new_elem used ctx->function_table[0] (danger) instead of
-    // fctx->function_table[0] (provider func 0 returning 111).
+    // Provider: has its own local table + func 0 (returns 111) + func 1 (exported "run").
+    // func 1 uses array.new_elem to get a funcref from passive element segment [0]
+    // (referring to provider func 0), stores it in its own table[0], calls via call_indirect.
+    // Bug 1: array.new_elem used ctx->function_table (root) instead of fctx->function_table.
+    // Bug 2: linked modules with local tables but no tags had fctx->table_count == 0.
     const char *provider_spec = "wasm \
         types {[ array funcref mut, fn [] [i32] ]} \
         funcs {[ 1, 1 ]} \
@@ -1188,7 +1183,7 @@ static void test_cross_module_array_new_elem_funcref() {
             end } \
         ]}";
 
-    // Primary: has table (required so linked modules share it), imports danger + provider.run
+    // Primary: NO table -- the provider's own table must be independently usable.
     const char *primary_spec = "wasm \
         types {[ fn [] [i32] ]} \
         imports {[ \
@@ -1196,7 +1191,6 @@ static void test_cross_module_array_new_elem_funcref() {
             {'provider'} {'run'} fn# 0 \
         ]} \
         funcs {[ 0 ]} \
-        tables {[ funcref limits.i32/1 1 ]} \
         exports {[ {'go'} fn# 2 ]} \
         code {[ {[] call 1 end } ]}";
 
@@ -1266,7 +1260,6 @@ static void test_cross_module_array_init_elem_funcref() {
             {'provider'} {'run'} fn# 0 \
         ]} \
         funcs {[ 0 ]} \
-        tables {[ funcref limits.i32/1 1 ]} \
         exports {[ {'go'} fn# 2 ]} \
         code {[ {[] call 1 end } ]}";
 
