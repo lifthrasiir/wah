@@ -23,6 +23,10 @@ void imported_start_host_func(wah_call_context_t *ctx, void *userdata) {
     imported_start_called = 1;
 }
 
+void sink_i64(wah_call_context_t *ctx, void *userdata) {
+    (void)ctx; (void)userdata;
+}
+
 int danger_called = 0;
 void danger_host_func(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
@@ -1633,6 +1637,47 @@ int main() {
         wah_free_exec_context(&ctx);
         wah_free_module(&primary);
         wah_free_module(&linked);
+    }
+
+    // Regression: linked module internal context must verify host import param/result
+    // types, not just counts. Without this, a type-mismatched host import (e.g. i32
+    // vs i64) would silently succeed and allow type confusion at runtime.
+    printf("Test: linked module host import type mismatch rejected\n");
+    {
+        // Host module: exports sink with signature (i64) -> ()
+        wah_module_t host_mod = {0};
+        assert_ok(wah_new_module(&host_mod, NULL));
+        assert_ok(wah_export_func(&host_mod, "sink", "(i64) -> ()", sink_i64, NULL, NULL));
+
+        // Linked wasm module: imports host.sink as (i32) -> () -- type mismatch!
+        // Exports "call_sink" that forwards an i32 arg to the import.
+        wah_module_t linked = {0};
+        assert_ok(wah_parse_module_from_spec(&linked, "wasm \
+            types {[ fn [i32] [] ]} \
+            imports {[ {'host'} {'sink'} fn# 0 ]} \
+            funcs {[0]} \
+            exports {[ {'call_sink'} fn# 1 ]} \
+            code {[ {[] local.get 0 call 0 end } ]}"));
+
+        // Primary module: imports linked.call_sink and exports "run".
+        wah_module_t primary = {0};
+        assert_ok(wah_parse_module_from_spec(&primary, "wasm \
+            types {[ fn [i32] [] ]} \
+            imports {[ {'linked'} {'call_sink'} fn# 0 ]} \
+            funcs {[0]} \
+            exports {[ {'run'} fn# 1 ]} \
+            code {[ {[] local.get 0 call 0 end } ]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "host", &host_mod));
+        assert_ok(wah_link_module(&ctx, "linked", &linked));
+        assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&primary);
+        wah_free_module(&linked);
+        wah_free_module(&host_mod);
     }
 
     printf("All linkage tests passed!\n");

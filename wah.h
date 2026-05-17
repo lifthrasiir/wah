@@ -16440,6 +16440,16 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                         const wah_func_type_t *import_type = &lmod->types[lfi->type_index];
                         WAH_ENSURE_GOTO(import_type->param_count == src->nparams, WAH_ERROR_LINK_FAILED, cleanup);
                         WAH_ENSURE_GOTO(import_type->result_count == src->nresults, WAH_ERROR_LINK_FAILED, cleanup);
+                        for (uint32_t p = 0; p < import_type->param_count; p++) {
+                            WAH_ENSURE_GOTO(wah_cross_module_subtype(lmod, import_type->param_types[p],
+                                                                     provider, src->param_types[p]),
+                                            WAH_ERROR_LINK_FAILED, cleanup);
+                        }
+                        for (uint32_t r = 0; r < import_type->result_count; r++) {
+                            WAH_ENSURE_GOTO(wah_cross_module_subtype(provider, src->result_types[r],
+                                                                     lmod, import_type->result_types[r]),
+                                            WAH_ERROR_LINK_FAILED, cleanup);
+                        }
                     } else {
                         uint32_t src_type_idx = provider->function_type_indices[provider_local_idx];
                         WAH_ENSURE_GOTO(src_type_idx < provider->type_count, WAH_ERROR_LINK_FAILED, cleanup);
