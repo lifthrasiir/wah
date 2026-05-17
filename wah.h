@@ -15789,7 +15789,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     .alloc = ctx->alloc, .module = lmod, .memories = ctx->memories, .memory_count = ctx->memory_count,
                     .tables = ctx->tables, .table_count = ctx->table_count,
                     .globals = g_offset ? ctx->globals + g_offset : ctx->globals, .global_count = lmod->global_count,
-                    .gc = ctx->gc, .tag_instance_count = 0,
+                    .gc = ctx->gc, .type_check_cache = ctx->type_check_cache, .tag_instance_count = 0,
                 };
                 uint32_t lmod_total_tables = lmod->import_table_count + lmod->table_count;
                 if (lmod_total_tables > 0 && lmod_total_tables > ctx->table_count) {
@@ -16188,6 +16188,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 .tables = ctx->tables, .table_count = ctx->table_count,
                 .globals = go ? ctx->globals + go : ctx->globals, .global_count = lmod->global_count,
                 .memory_base = ctx->memory_base, .memory_size = ctx->memory_size, .gc = ctx->gc,
+                .type_check_cache = ctx->type_check_cache,
             };
             uint32_t lmod_total_tables = lmod->import_table_count + lmod->table_count;
             if (lmod_total_tables > 0 && lmod_total_tables > ctx->table_count) {

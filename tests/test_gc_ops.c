@@ -1290,6 +1290,55 @@ static void test_cross_module_array_init_elem_funcref() {
     wah_free_module(&host_mod);
 }
 
+// Regression: ref.cast inside a linked module crashed with SEGV because the
+// internal exec context had type_check_cache == NULL.
+static void test_cross_module_ref_cast_in_linked() {
+    printf("Testing cross-module ref.cast in linked module (type_check_cache regression)...\n");
+
+    // Provider: type 0 = struct {i32}, type 1 = fn [] -> i32.
+    // func 0 creates a struct, tests it via ref.test (triggers type_check_cache),
+    // then reads field 0 and adds the test result.
+    const char *provider_spec = "wasm \
+        types {[ struct [i32 mut], fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        exports {[ {'run'} fn# 0 ]} \
+        code {[ {[1 type.ref.null 0] \
+            i32.const 77 \
+            struct.new 0 \
+            local.set 0 \
+            local.get 0 \
+            ref.test 0 \
+            local.get 0 \
+            struct.get 0 0 \
+            i32.add \
+        end } ]}";
+
+    const char *primary_spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        imports {[ {'p'} {'run'} fn# 0 ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'go'} fn# 1 ]} \
+        code {[ {[] call 0 end } ]}";
+
+    wah_module_t provider = {0}, primary = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&primary, primary_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+    assert_ok(wah_link_module(&ctx, "p", &provider));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call_by_name(&ctx, "go", NULL, 0, &result));
+    assert_eq_i32(result.i32, 78);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&primary);
+    wah_free_module(&provider);
+}
+
 int main() {
     test_i31_ops();
     test_extern_convert();
@@ -1322,6 +1371,7 @@ int main() {
     test_br_on_non_null_with_drop();
     test_cross_module_array_new_elem_funcref();
     test_cross_module_array_init_elem_funcref();
+    test_cross_module_ref_cast_in_linked();
     printf("All GC ops tests passed!\n");
     return 0;
 }
