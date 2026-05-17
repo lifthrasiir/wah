@@ -1378,6 +1378,145 @@ int main() {
         wah_free_module(&host_mod);
     }
 
+    // Regression: linked module that imports a function and calls it directly
+    // must have its import slot properly resolved, not left as a zeroed entry.
+    printf("Test: linked module import function slot resolved correctly (security regression)\n");
+    {
+        // "impl" module: exports "get42" returning 42.
+        wah_module_t impl_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&impl_mod, "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[0]} \
+            exports {[ {'get42'} fn# 0 ]} \
+            code {[ {[] i32.const 42 end } ]}"));
+
+        // "middle" module: imports impl.get42 as func 0, has local func 1 that calls func 0.
+        // Exports "call_import" = func 1.
+        wah_module_t middle_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&middle_mod, "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'impl'} {'get42'} fn# 0 ]} \
+            funcs {[0]} \
+            exports {[ {'call_import'} fn# 1 ]} \
+            code {[ {[] call 0 end } ]}"));
+
+        // Primary module: imports middle.call_import, exports "run" that calls it.
+        wah_module_t primary2 = {0};
+        assert_ok(wah_parse_module_from_spec(&primary2, "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'middle'} {'call_import'} fn# 0 ]} \
+            funcs {[0]} \
+            exports {[ {'run'} fn# 1 ]} \
+            code {[ {[] call 0 end } ]}"));
+
+        wah_exec_context_t ctx2 = {0};
+        assert_ok(wah_new_exec_context(&ctx2, &primary2, NULL));
+        assert_ok(wah_link_module(&ctx2, "impl", &impl_mod));
+        assert_ok(wah_link_module(&ctx2, "middle", &middle_mod));
+        assert_ok(wah_instantiate(&ctx2));
+
+        wah_value_t result2;
+        assert_ok(wah_call_by_name(&ctx2, "run", NULL, 0, &result2));
+        assert_eq_i32(result2.i32, 42);
+
+        wah_free_exec_context(&ctx2);
+        wah_free_module(&primary2);
+        wah_free_module(&middle_mod);
+        wah_free_module(&impl_mod);
+    }
+
+    // Regression: linked module with its own memory must use its own memory,
+    // not the primary module's memory array.
+    printf("Test: linked module uses own memory space (security regression)\n");
+    {
+        // "memmod" module: has 1 page memory, exports "store" that stores i32 at offset 0,
+        // and "load" that loads from offset 0.
+        wah_module_t memmod = {0};
+        assert_ok(wah_parse_module_from_spec(&memmod, "wasm \
+            types {[ fn [i32] [], fn [] [i32] ]} \
+            funcs {[0, 1]} \
+            memories {[ limits.i32/2 1 1 ]} \
+            exports {[ {'store'} fn# 0, {'load'} fn# 1 ]} \
+            code {[ \
+                {[] i32.const 0 local.get 0 i32.store 0 0 end }, \
+                {[] i32.const 0 i32.load 0 0 end } \
+            ]}"));
+
+        // Primary has no memory. Imports memmod.store and memmod.load.
+        wah_module_t primary3 = {0};
+        assert_ok(wah_parse_module_from_spec(&primary3, "wasm \
+            types {[ fn [i32] [], fn [] [i32] ]} \
+            imports {[ {'memmod'} {'store'} fn# 0, {'memmod'} {'load'} fn# 1 ]} \
+            funcs {[0, 1]} \
+            exports {[ {'do_store'} fn# 2, {'do_load'} fn# 3 ]} \
+            code {[ \
+                {[] local.get 0 call 0 end }, \
+                {[] call 1 end } \
+            ]}"));
+
+        wah_exec_context_t ctx3 = {0};
+        assert_ok(wah_new_exec_context(&ctx3, &primary3, NULL));
+        assert_ok(wah_link_module(&ctx3, "memmod", &memmod));
+        assert_ok(wah_instantiate(&ctx3));
+
+        wah_value_t store_arg = {.i32 = 12345};
+        assert_ok(wah_call_by_name(&ctx3, "do_store", &store_arg, 1, NULL));
+
+        wah_value_t load_result;
+        assert_ok(wah_call_by_name(&ctx3, "do_load", NULL, 0, &load_result));
+        assert_eq_i32(load_result.i32, 12345);
+
+        wah_free_exec_context(&ctx3);
+        wah_free_module(&primary3);
+        wah_free_module(&memmod);
+    }
+
+    // Regression: linked module with signature-mismatched imports must not
+    // silently fall through to local function 0.
+    printf("Test: linked module import with type mismatch rejected (security regression)\n");
+    {
+        // "provider" exports "fn_i64" with signature () -> i64
+        wah_module_t prov = {0};
+        assert_ok(wah_parse_module_from_spec(&prov, "wasm \
+            types {[ fn [] [i64] ]} \
+            funcs {[0]} \
+            exports {[ {'fn_i64'} fn# 0 ]} \
+            code {[ {[] i64.const 999 end } ]}"));
+
+        // "consumer" imports provider.fn_i64 as () -> i32 (type mismatch)
+        // Has local func 0 that calls import func 0.
+        wah_module_t consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&consumer, "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'provider'} {'fn_i64'} fn# 0 ]} \
+            funcs {[0]} \
+            exports {[ {'call_it'} fn# 1 ]} \
+            code {[ {[] call 0 end } ]}"));
+
+        // Primary just calls consumer.call_it
+        wah_module_t primary4 = {0};
+        assert_ok(wah_parse_module_from_spec(&primary4, "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'consumer'} {'call_it'} fn# 0 ]} \
+            funcs {[0]} \
+            exports {[ {'run'} fn# 1 ]} \
+            code {[ {[] call 0 end } ]}"));
+
+        wah_exec_context_t ctx4 = {0};
+        assert_ok(wah_new_exec_context(&ctx4, &primary4, NULL));
+        assert_ok(wah_link_module(&ctx4, "provider", &prov));
+        assert_ok(wah_link_module(&ctx4, "consumer", &consumer));
+        // Instantiation should fail because consumer imports () -> i32
+        // but provider exports () -> i64 -- type mismatch.
+        wah_error_t err4 = wah_instantiate(&ctx4);
+        assert(err4 == WAH_ERROR_LINK_FAILED);
+
+        wah_free_exec_context(&ctx4);
+        wah_free_module(&primary4);
+        wah_free_module(&consumer);
+        wah_free_module(&prov);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

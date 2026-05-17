@@ -16184,19 +16184,130 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             wah_exec_context_t *ictx = NULL;
             WAH_CHECK_GOTO(wah_malloc(alloc, 1, sizeof(wah_exec_context_t), (void **)&ictx), cleanup);
             *ictx = (wah_exec_context_t){
-                .alloc = ctx->alloc, .module = lmod, .memories = ctx->memories, .memory_count = ctx->memory_count,
-                .tables = ctx->tables, .table_count = ctx->table_count,
+                .alloc = ctx->alloc, .module = lmod,
                 .globals = go ? ctx->globals + go : ctx->globals, .global_count = lmod->global_count,
-                .memory_base = ctx->memory_base, .memory_size = ctx->memory_size, .gc = ctx->gc,
-                .type_check_cache = ctx->type_check_cache,
+                .gc = ctx->gc, .type_check_cache = ctx->type_check_cache,
             };
+            uint32_t lmod_total_memories = lmod->import_memory_count + lmod->memory_count;
+            if (lmod_total_memories > 0) {
+                WAH_MALLOC_ARRAY_GOTO(ictx->memories, lmod_total_memories, cleanup);
+                memset(ictx->memories, 0, lmod_total_memories * sizeof(wah_memory_inst_t));
+                ictx->memory_count = lmod_total_memories;
+                for (uint32_t mi = 0; mi < lmod->import_memory_count; mi++) {
+                    wah_memory_import_t *mim = &lmod->memory_imports[mi];
+                    bool mem_found = false;
+                    for (uint32_t m = 0; m < ctx->linked_module_count; m++) {
+                        const char *lname = ctx->linked_modules[m].name;
+                        if (!wah_name_matches(lname, strlen(lname), mim->name.module, mim->name.module_len)) continue;
+                        const wah_module_t *mprov = ctx->linked_modules[m].module;
+                        wah_exec_context_t *mprov_ctx = ctx->linked_modules[m].ctx;
+                        const wah_export_t *mexp = NULL;
+                        for (uint32_t e = 0; e < mprov->export_count; e++) {
+                            if (mprov->exports[e].kind == 2 &&
+                                wah_name_matches(mprov->exports[e].name, mprov->exports[e].name_len,
+                                                 mim->name.field, mim->name.field_len)) {
+                                mexp = &mprov->exports[e];
+                                break;
+                            }
+                        }
+                        if (mexp && mprov_ctx && mexp->index < mprov_ctx->memory_count) {
+                            ictx->memories[mi] = mprov_ctx->memories[mexp->index];
+                            ictx->memories[mi].is_imported = true;
+                            ictx->memories[mi].import_ctx = mprov_ctx;
+                            ictx->memories[mi].import_idx = mexp->index;
+                            mem_found = true;
+                        }
+                        break;
+                    }
+                    if (!mem_found && ctx->memory_count > 0) {
+                        wah_import_name_t tmp_name = mim->name;
+                        const wah_export_t *pexp = NULL;
+                        for (uint32_t e = 0; e < module->export_count; e++) {
+                            if (module->exports[e].kind == 2 &&
+                                wah_name_matches(module->exports[e].name, module->exports[e].name_len,
+                                                 tmp_name.field, tmp_name.field_len)) {
+                                pexp = &module->exports[e];
+                                break;
+                            }
+                        }
+                        if (pexp && pexp->index < ctx->memory_count) {
+                            ictx->memories[mi] = ctx->memories[pexp->index];
+                            ictx->memories[mi].is_imported = true;
+                            ictx->memories[mi].import_ctx = ctx;
+                            ictx->memories[mi].import_idx = pexp->index;
+                            mem_found = true;
+                        }
+                    }
+                    WAH_ENSURE_GOTO(mem_found, WAH_ERROR_LINK_FAILED, cleanup);
+                }
+                for (uint32_t mi = 0; mi < lmod->memory_count; mi++) {
+                    uint32_t slot = lmod->import_memory_count + mi;
+                    uint64_t min_pages = lmod->memories[mi].min_pages;
+                    uint64_t byte_size = min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
+                    ictx->memories[slot].max_pages = lmod->memories[mi].max_pages;
+                    ictx->memories[slot].size = byte_size;
+                    if (byte_size > 0) {
+                        WAH_MALLOC_ARRAY_GOTO(ictx->memories[slot].data, byte_size, cleanup);
+                        memset(ictx->memories[slot].data, 0, (size_t)byte_size);
+                    }
+                }
+                if (lmod_total_memories > 0) {
+                    ictx->memory_base = ictx->memories[0].data;
+                    ictx->memory_size = ictx->memories[0].size;
+                }
+            } else {
+                ictx->memories = NULL;
+                ictx->memory_count = 0;
+                ictx->memory_base = NULL;
+                ictx->memory_size = 0;
+            }
             uint32_t lmod_total_tables = lmod->import_table_count + lmod->table_count;
-            if (lmod_total_tables > 0 && lmod_total_tables > ctx->table_count) {
+            if (lmod_total_tables > 0) {
                 WAH_MALLOC_ARRAY_GOTO(ictx->tables, lmod_total_tables, cleanup);
+                memset(ictx->tables, 0, lmod_total_tables * sizeof(wah_table_inst_t));
                 ictx->table_count = lmod_total_tables;
-                for (uint32_t ti = 0; ti < lmod->import_table_count && ti < ctx->table_count; ti++) {
-                    ictx->tables[ti] = ctx->tables[ti];
-                    ictx->tables[ti].is_imported = true;
+                for (uint32_t ti = 0; ti < lmod->import_table_count; ti++) {
+                    wah_table_import_t *tim = &lmod->table_imports[ti];
+                    bool tbl_found = false;
+                    for (uint32_t m = 0; m < ctx->linked_module_count; m++) {
+                        const char *lname = ctx->linked_modules[m].name;
+                        if (!wah_name_matches(lname, strlen(lname), tim->name.module, tim->name.module_len)) continue;
+                        const wah_module_t *tprov = ctx->linked_modules[m].module;
+                        wah_exec_context_t *tprov_ctx = ctx->linked_modules[m].ctx;
+                        const wah_export_t *texp = NULL;
+                        for (uint32_t e = 0; e < tprov->export_count; e++) {
+                            if (tprov->exports[e].kind == 1 &&
+                                wah_name_matches(tprov->exports[e].name, tprov->exports[e].name_len,
+                                                 tim->name.field, tim->name.field_len)) {
+                                texp = &tprov->exports[e];
+                                break;
+                            }
+                        }
+                        if (texp && tprov_ctx && texp->index < tprov_ctx->table_count) {
+                            ictx->tables[ti] = tprov_ctx->tables[texp->index];
+                            ictx->tables[ti].is_imported = true;
+                            tbl_found = true;
+                        }
+                        break;
+                    }
+                    if (!tbl_found && ctx->table_count > 0) {
+                        wah_import_name_t tmp_name = tim->name;
+                        const wah_export_t *pexp = NULL;
+                        for (uint32_t e = 0; e < module->export_count; e++) {
+                            if (module->exports[e].kind == 1 &&
+                                wah_name_matches(module->exports[e].name, module->exports[e].name_len,
+                                                 tmp_name.field, tmp_name.field_len)) {
+                                pexp = &module->exports[e];
+                                break;
+                            }
+                        }
+                        if (pexp && pexp->index < ctx->table_count) {
+                            ictx->tables[ti] = ctx->tables[pexp->index];
+                            ictx->tables[ti].is_imported = true;
+                            tbl_found = true;
+                        }
+                    }
+                    WAH_ENSURE_GOTO(tbl_found, WAH_ERROR_LINK_FAILED, cleanup);
                 }
                 for (uint32_t ti = lmod->import_table_count; ti < lmod_total_tables; ti++) {
                     uint32_t li = ti - lmod->import_table_count;
@@ -16209,6 +16320,9 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                         memset(ictx->tables[ti].entries, 0, (size_t)table_bytes);
                     }
                 }
+            } else {
+                ictx->tables = NULL;
+                ictx->table_count = 0;
             }
             uint32_t lmod_ic = lmod->import_function_count;
             uint32_t lmod_ft_size = lmod_ic + lmod->local_function_count;
@@ -16216,7 +16330,64 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             if (lmod_ft_size > 0) {
                 WAH_MALLOC_ARRAY_GOTO(ictx->function_table, lmod_ft_size, cleanup);
                 for (uint32_t fi = 0; fi < lmod_ic; fi++) {
-                    ictx->function_table[fi] = (wah_function_holder_t){ .header = (wah_gc_object_t)WAH_FUNCREF_HEADER };
+                    wah_func_import_t *lfi = &lmod->func_imports[fi];
+                    const wah_module_t *provider = NULL;
+                    wah_exec_context_t *provider_ctx = NULL;
+                    bool found = false;
+                    for (uint32_t m = 0; m < ctx->linked_module_count; m++) {
+                        const char *lname = ctx->linked_modules[m].name;
+                        if (wah_name_matches(lname, strlen(lname), lfi->name.module, lfi->name.module_len)) {
+                            provider = ctx->linked_modules[m].module;
+                            provider_ctx = ctx->linked_modules[m].ctx;
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        if (wah_name_matches(ctx->linked_modules[j].name, strlen(ctx->linked_modules[j].name),
+                                             lfi->name.module, lfi->name.module_len)) {
+                            provider = lmod;
+                            provider_ctx = ictx;
+                            found = true;
+                        }
+                    }
+                    WAH_ENSURE_GOTO(found && provider != NULL, WAH_ERROR_LINK_FAILED, cleanup);
+                    const wah_export_t *exp = NULL;
+                    for (uint32_t m = 0; m < provider->export_count; m++) {
+                        if (provider->exports[m].kind == 0 &&
+                            wah_name_matches(provider->exports[m].name, provider->exports[m].name_len,
+                                             lfi->name.field, lfi->name.field_len)) {
+                            exp = &provider->exports[m];
+                            break;
+                        }
+                    }
+                    WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
+                    uint32_t provider_import_count = provider->import_function_count;
+                    WAH_ENSURE_GOTO(exp->index >= provider_import_count, WAH_ERROR_LINK_FAILED, cleanup);
+                    uint32_t provider_local_idx = exp->index - provider_import_count;
+                    WAH_ENSURE_GOTO(provider_local_idx < provider->local_function_count, WAH_ERROR_LINK_FAILED, cleanup);
+                    const wah_function_t *src = &provider->functions[provider_local_idx].func;
+                    WAH_ENSURE_GOTO(lfi->type_index < lmod->type_count, WAH_ERROR_LINK_FAILED, cleanup);
+                    if (src->is_host) {
+                        const wah_func_type_t *import_type = &lmod->types[lfi->type_index];
+                        WAH_ENSURE_GOTO(import_type->param_count == src->nparams, WAH_ERROR_LINK_FAILED, cleanup);
+                        WAH_ENSURE_GOTO(import_type->result_count == src->nresults, WAH_ERROR_LINK_FAILED, cleanup);
+                    } else {
+                        uint32_t src_type_idx = provider->function_type_indices[provider_local_idx];
+                        WAH_ENSURE_GOTO(src_type_idx < provider->type_count, WAH_ERROR_LINK_FAILED, cleanup);
+                        WAH_ENSURE_GOTO(wah_cross_module_subtype(provider, WAH_TYPE_FROM_IDX(src_type_idx, 0),
+                                                                 lmod, WAH_TYPE_FROM_IDX(lfi->type_index, 0)),
+                                        WAH_ERROR_LINK_FAILED, cleanup);
+                    }
+                    ictx->function_table[fi] = (wah_function_holder_t){
+                        .header = (wah_gc_object_t)WAH_FUNCREF_HEADER, .func = *src
+                    };
+                    ictx->function_table[fi].func.global_idx = exp->index;
+                    if (!src->is_host) {
+                        ictx->function_table[fi].func.fn_module = provider;
+                        ictx->function_table[fi].func.local_idx = provider_local_idx;
+                        ictx->function_table[fi].func.fn_ctx = provider_ctx;
+                    }
                 }
                 for (uint32_t fi = 0; fi < lmod->local_function_count; fi++) {
                     ictx->function_table[lmod_ic + fi] = lmod->functions[fi];
