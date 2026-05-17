@@ -12246,6 +12246,7 @@ WAH_RUN(ELEM_DROP) {
     WAH_ENSURE_GOTO(func_table_idx < fctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
     void *_fn_ref = fctx->tables[table_idx].entries[func_table_idx].ref; \
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup); \
+    WAH_ENSURE_GOTO(!wah_ref_is_i31(_fn_ref) && wah_gc_header(_fn_ref)->repr_id == WAH_TYPE_FUNC, WAH_ERROR_TRAP, cleanup); \
     WAH_ASSERT(_fn_ref != wah_func_to_ref(&wah_funcref_sentinel->func) && "prefuncref stored in table without conversion to funcref"); \
     const wah_function_t *actual_fn = wah_ref_to_func(_fn_ref); \
     WAH_REF_BODY(actual_fn, CALL_HOST, CALL_WASM)
@@ -12334,6 +12335,7 @@ WAH_RUN(CALL_REF) {
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     void *_fn_ref = (*--sp).ref;
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(!wah_ref_is_i31(_fn_ref) && wah_gc_header(_fn_ref)->repr_id == WAH_TYPE_FUNC, WAH_ERROR_TRAP, cleanup);
     WAH_ASSERT(_fn_ref != wah_func_to_ref(&wah_funcref_sentinel->func) && "prefuncref stored without conversion to funcref");
     const wah_function_t *actual_fn = wah_ref_to_func(_fn_ref);
     WAH_REF_BODY(actual_fn,
@@ -12466,6 +12468,7 @@ WAH_RUN(RETURN_CALL_REF) {
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     void *_fn_ref = (*--sp).ref;
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup);
+    WAH_ENSURE_GOTO(!wah_ref_is_i31(_fn_ref) && wah_gc_header(_fn_ref)->repr_id == WAH_TYPE_FUNC, WAH_ERROR_TRAP, cleanup);
     WAH_ASSERT(_fn_ref != wah_func_to_ref(&wah_funcref_sentinel->func) && "prefuncref stored without conversion to funcref");
     const wah_function_t *actual_fn = wah_ref_to_func(_fn_ref);
     while (ctx->exception_handler_depth > 0 &&
