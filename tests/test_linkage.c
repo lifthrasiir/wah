@@ -23,6 +23,13 @@ void imported_start_host_func(wah_call_context_t *ctx, void *userdata) {
     imported_start_called = 1;
 }
 
+int danger_called = 0;
+void danger_host_func(wah_call_context_t *ctx, void *userdata) {
+    (void)userdata;
+    danger_called = 1;
+    wah_return_i32(ctx, -999);
+}
+
 int main() {
     printf("Testing linkage...\n\n");
 
@@ -1313,6 +1320,62 @@ int main() {
         wah_free_exec_context(&pctx);
         wah_free_module(&consumer);
         wah_free_module(&provider);
+    }
+
+    // Regression: linked module internal call must use the linked module's
+    // function index space, not the primary module's function_table.
+    printf("Test: linked module internal call uses correct function index space (security regression)\n");
+    {
+        // Provider module: func 0 returns 111, func 1 (exported as "safe") calls func 0.
+        wah_module_t provider = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, "wasm \
+            types {[ fn [i32] [i32] ]} \
+            funcs {[0, 0]} \
+            exports {[ {'safe'} fn# 1 ]} \
+            code {[ \
+                {[] i32.const 111 end }, \
+                {[] local.get 0 call 0 end } \
+            ]}"));
+
+        // Primary module: imports host.danger as func 0, provider.safe as func 1.
+        // Exports "run" = func 2 which calls func 1 (provider.safe).
+        wah_module_t primary = {0};
+        assert_ok(wah_parse_module_from_spec(&primary, "wasm \
+            types {[ fn [i32] [i32] ]} \
+            imports {[ \
+                {'host'} {'danger'} fn# 0, \
+                {'provider'} {'safe'} fn# 0 \
+            ]} \
+            funcs {[0]} \
+            exports {[ {'run'} fn# 2 ]} \
+            code {[ \
+                {[] local.get 0 call 1 end } \
+            ]}"));
+
+        wah_module_t host_mod = {0};
+        wah_new_module(&host_mod, NULL);
+        wah_export_func(&host_mod, "danger", "(i32) -> (i32)", danger_host_func, NULL, NULL);
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "host", &host_mod));
+        assert_ok(wah_link_module(&ctx, "provider", &provider));
+        assert_ok(wah_instantiate(&ctx));
+
+        danger_called = 0;
+        wah_value_t arg = {.i32 = 42};
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ctx, "run", &arg, 1, &result));
+
+        // provider.safe calls provider.func0 which returns 111.
+        // If the bug is present, it would call host.danger instead.
+        assert_eq_i32(danger_called, 0);
+        assert_eq_i32(result.i32, 111);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&primary);
+        wah_free_module(&provider);
+        wah_free_module(&host_mod);
     }
 
     printf("All linkage tests passed!\n");

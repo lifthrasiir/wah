@@ -10460,6 +10460,7 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
         for (uint32_t i = 0; i < exec_ctx->linked_module_count; ++i) {
             wah_free(alloc, (void*)exec_ctx->linked_modules[i].name);
             if (exec_ctx->linked_modules[i].owns_ctx) {
+                wah_free(alloc, exec_ctx->linked_modules[i].ctx->function_table);
                 wah_free(alloc, exec_ctx->linked_modules[i].ctx->tag_instances);
                 wah_free(alloc, exec_ctx->linked_modules[i].ctx->dropped_elem_segments);
                 wah_free(alloc, exec_ctx->linked_modules[i].ctx->dropped_data_segments);
@@ -15760,9 +15761,25 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     .alloc = ctx->alloc, .module = lmod, .memories = ctx->memories, .memory_count = ctx->memory_count,
                     .tables = ctx->tables, .table_count = ctx->table_count,
                     .globals = g_offset ? ctx->globals + g_offset : ctx->globals, .global_count = lmod->global_count,
-                    .function_table = ctx->function_table, .function_table_count = ctx->function_table_count,
                     .gc = ctx->gc, .tag_instance_count = 0,
                 };
+                {
+                    uint32_t lmod_ic = lmod->import_function_count;
+                    uint32_t lmod_ft_size = lmod_ic + lmod->local_function_count;
+                    ictx->function_table_count = lmod_ft_size;
+                    if (lmod_ft_size > 0) {
+                        WAH_MALLOC_ARRAY_GOTO(ictx->function_table, lmod_ft_size, cleanup);
+                        for (uint32_t fi = 0; fi < lmod_ic; fi++) {
+                            ictx->function_table[fi] = (wah_function_holder_t){ .header = (wah_gc_object_t)WAH_FUNCREF_HEADER };
+                        }
+                        for (uint32_t fi = 0; fi < lmod->local_function_count; fi++) {
+                            ictx->function_table[lmod_ic + fi] = lmod->functions[fi];
+                            if (!lmod->functions[fi].func.is_host) {
+                                ictx->function_table[lmod_ic + fi].func.fn_ctx = ictx;
+                            }
+                        }
+                    }
+                }
                 ctx->linked_modules[j].ctx = ictx;
                 ctx->linked_modules[j].owns_ctx = true;
                 WAH_MALLOC_ARRAY_GOTO(ictx->tag_instances, ltotal_tags, cleanup);
@@ -16122,9 +16139,23 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 .alloc = ctx->alloc, .module = lmod, .memories = ctx->memories, .memory_count = ctx->memory_count,
                 .tables = ctx->tables, .table_count = ctx->table_count,
                 .globals = go ? ctx->globals + go : ctx->globals, .global_count = lmod->global_count,
-                .function_table = ctx->function_table, .function_table_count = ctx->function_table_count,
                 .memory_base = ctx->memory_base, .memory_size = ctx->memory_size, .gc = ctx->gc,
             };
+            uint32_t lmod_ic = lmod->import_function_count;
+            uint32_t lmod_ft_size = lmod_ic + lmod->local_function_count;
+            ictx->function_table_count = lmod_ft_size;
+            if (lmod_ft_size > 0) {
+                WAH_MALLOC_ARRAY_GOTO(ictx->function_table, lmod_ft_size, cleanup);
+                for (uint32_t fi = 0; fi < lmod_ic; fi++) {
+                    ictx->function_table[fi] = (wah_function_holder_t){ .header = (wah_gc_object_t)WAH_FUNCREF_HEADER };
+                }
+                for (uint32_t fi = 0; fi < lmod->local_function_count; fi++) {
+                    ictx->function_table[lmod_ic + fi] = lmod->functions[fi];
+                    if (!lmod->functions[fi].func.is_host) {
+                        ictx->function_table[lmod_ic + fi].func.fn_ctx = ictx;
+                    }
+                }
+            }
             ctx->linked_modules[j].ctx = ictx;
             ctx->linked_modules[j].owns_ctx = true;
             ictx->is_instantiated = true;
