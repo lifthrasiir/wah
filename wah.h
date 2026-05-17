@@ -10471,6 +10471,13 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
             wah_free(alloc, (void*)exec_ctx->linked_modules[i].name);
             if (exec_ctx->linked_modules[i].owns_ctx) {
                 wah_exec_context_t *ictx = exec_ctx->linked_modules[i].ctx;
+                if (ictx->memories && ictx->memories != exec_ctx->memories) {
+                    for (uint32_t m = 0; m < ictx->memory_count; ++m) {
+                        if (!ictx->memories[m].is_imported)
+                            wah_free(alloc, ictx->memories[m].data);
+                    }
+                    wah_free(alloc, ictx->memories);
+                }
                 if (ictx->tables && ictx->tables != exec_ctx->tables) {
                     for (uint32_t t = 0; t < ictx->table_count; ++t) {
                         if (!ictx->tables[t].is_imported)
@@ -15806,6 +15813,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     .globals = g_offset ? ctx->globals + g_offset : ctx->globals, .global_count = wah_global_index_limit(lmod),
                     .gc = ctx->gc, .type_check_cache = ctx->type_check_cache, .tag_instance_count = 0,
                 };
+                ctx->linked_modules[j].ctx = ictx;
+                ctx->linked_modules[j].owns_ctx = true;
                 uint32_t lmod_total_tables = lmod->import_table_count + lmod->table_count;
                 if (lmod_total_tables > 0 && lmod_total_tables > ctx->table_count) {
                     WAH_MALLOC_ARRAY_GOTO(ictx->tables, lmod_total_tables, cleanup);
@@ -15843,8 +15852,6 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                         }
                     }
                 }
-                ctx->linked_modules[j].ctx = ictx;
-                ctx->linked_modules[j].owns_ctx = true;
                 WAH_MALLOC_ARRAY_GOTO(ictx->tag_instances, ltotal_tags, cleanup);
                 for (uint32_t t = 0; t < lmod->import_tag_count; t++) {
                     ictx->tag_instances[ictx->tag_instance_count++] =
