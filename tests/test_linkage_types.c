@@ -3,6 +3,11 @@
 #include "wah_impl.h"
 #include <stdio.h>
 
+static void host_return_null_ref(wah_call_context_t *ctx, void *userdata) {
+    (void)userdata;
+    wah_result_ref(ctx, 0, NULL);
+}
+
 // a70aac0: Support cross-module call_indirect through imported tables.
 static void test_cross_module_call_indirect() {
     printf("Testing cross-module call_indirect (a70aac0)...\n");
@@ -538,6 +543,37 @@ static void test_cross_module_subtype_func_ref_test() {
     wah_free_module(&provider);
 }
 
+static void test_host_import_concrete_ref_uses_linked_type_namespace() {
+    printf("Testing host import concrete ref type namespace...\n");
+
+    wah_module_t provider = {0}, consumer = {0};
+    wah_type_t provider_struct = 0;
+    wah_type_t provider_func = 0;
+
+    assert_ok(wah_new_module(&provider, NULL));
+    assert_ok(wah_define_type(&provider, &provider_struct, "struct { i32 }"));
+    assert_ok(wah_define_type(&provider, &provider_func, "fn () -> (ref null %T)", provider_struct));
+    assert_ok(wah_export_typed_func(&provider, "make", provider_func, host_return_null_ref, NULL, NULL));
+
+    // Consumer type 0 is a function type, not the provider's struct type.
+    // Before the fix, host import checking interpreted provider result type 0
+    // in the consumer's type namespace, so this mismatched import linked.
+    const char *consumer_spec = "wasm \
+        types {[ fn [] [type.ref.null 0] ]} \
+        imports {[ {'p'} {'make'} fn# 0 ]}";
+
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &consumer, NULL));
+    assert_ok(wah_link_module(&ctx, "p", &provider));
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
 int main() {
     test_cross_module_call_indirect();
     test_elem_before_data_order();
@@ -552,6 +588,7 @@ int main() {
     test_ref_test_concrete_func_subtype();
     test_cross_module_type_with_extra_types();
     test_cross_module_subtype_func_ref_test();
+    test_host_import_concrete_ref_uses_linked_type_namespace();
     printf("All linkage_types tests passed!\n");
     return 0;
 }

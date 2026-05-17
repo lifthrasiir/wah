@@ -12202,15 +12202,18 @@ WAH_RUN(ELEM_DROP) {
 #define WAH_REF_BODY(actual_fn, CALL_HOST, CALL_WASM) \
     const wah_func_type_t *expected_func_type = &fctx->module->types[type_idx]; \
     if ((actual_fn)->is_host) { \
+        const wah_module_t *actual_module = (actual_fn)->fn_module ? (actual_fn)->fn_module : fctx->module; \
         WAH_ENSURE_GOTO(expected_func_type->param_count == (actual_fn)->nparams && \
                         expected_func_type->result_count == (actual_fn)->nresults, WAH_ERROR_TRAP, cleanup); \
         { bool _types_ok = true; \
         for (uint32_t i = 0; i < expected_func_type->param_count; ++i) { \
-            if (!wah_type_is_subtype(expected_func_type->param_types[i], (actual_fn)->param_types[i], fctx->module)) \
+            if (!wah_cross_module_subtype(fctx->module, expected_func_type->param_types[i], \
+                                          actual_module, (actual_fn)->param_types[i])) \
                 { _types_ok = false; break; } \
         } \
         for (uint32_t i = 0; _types_ok && i < expected_func_type->result_count; ++i) { \
-            if (!wah_type_is_subtype((actual_fn)->result_types[i], expected_func_type->result_types[i], fctx->module)) \
+            if (!wah_cross_module_subtype(actual_module, (actual_fn)->result_types[i], \
+                                          fctx->module, expected_func_type->result_types[i])) \
                 { _types_ok = false; break; } \
         } \
         WAH_ENSURE_GOTO(_types_ok, WAH_ERROR_TRAP, cleanup); } \
@@ -15227,6 +15230,7 @@ static wah_error_t wah_module_register_host_func(
         .name = name_copy, .func = func, .userdata = userdata, .finalize = finalize,
         .nparams = ft->param_count, .param_types = param_types_copy,
         .nresults = ft->result_count, .result_types = result_types_copy,
+        .fn_module = mod,
     };
     mod->local_function_count++;
     mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
@@ -15638,11 +15642,13 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             WAH_ENSURE_GOTO(import_type->param_count == src->nparams, WAH_ERROR_LINK_FAILED, cleanup);
             WAH_ENSURE_GOTO(import_type->result_count == src->nresults, WAH_ERROR_LINK_FAILED, cleanup);
             for (uint32_t p = 0; p < import_type->param_count; p++) {
-                WAH_ENSURE_GOTO(wah_type_is_subtype(import_type->param_types[p], src->param_types[p], module),
+                WAH_ENSURE_GOTO(wah_cross_module_subtype(module, import_type->param_types[p],
+                                                         linked, src->param_types[p]),
                                 WAH_ERROR_LINK_FAILED, cleanup);
             }
             for (uint32_t r = 0; r < import_type->result_count; r++) {
-                WAH_ENSURE_GOTO(wah_type_is_subtype(src->result_types[r], import_type->result_types[r], module),
+                WAH_ENSURE_GOTO(wah_cross_module_subtype(linked, src->result_types[r],
+                                                         module, import_type->result_types[r]),
                                 WAH_ERROR_LINK_FAILED, cleanup);
             }
         } else {
