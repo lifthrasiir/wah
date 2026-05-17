@@ -1143,6 +1143,160 @@ static void test_br_on_non_null_with_drop() {
     wah_free_module(&module);
 }
 
+static int gc_danger_called = 0;
+static void gc_danger_host_func(wah_call_context_t *cctx, void *userdata) {
+    (void)userdata;
+    gc_danger_called = 1;
+    wah_return_i32(cctx, -999);
+}
+
+// Security regression: array.new_elem and array.init_elem in a linked module must
+// resolve funcref indices from the linked module's function table (fctx), not the
+// root context (ctx). Otherwise a primary module's host function at the same numeric
+// index could be materialized into the array, enabling unintended host calls.
+static void test_cross_module_array_new_elem_funcref() {
+    printf("Testing cross-module array.new_elem uses correct function table (security regression)...\n");
+
+    // Provider: func 0 returns 111. func 1 (exported "run") uses array.new_elem to get
+    // funcref from passive element segment [0] (referring to provider func 0), stores
+    // it in shared table[0], then calls via call_indirect.
+    // Bug: array.new_elem used ctx->function_table[0] (danger host) instead of
+    // fctx->function_table[0] (provider func 0 returning 111).
+    // Provider: has local table + func 0 (returns 111) + func 1 (exported "run")
+    // that gets funcref from array.new_elem and calls it via call_indirect.
+    // Element segment [0] refers to provider's func index 0.
+    // Bug: array.new_elem used ctx->function_table[0] (danger) instead of
+    // fctx->function_table[0] (provider func 0 returning 111).
+    const char *provider_spec = "wasm \
+        types {[ array funcref mut, fn [] [i32] ]} \
+        funcs {[ 1, 1 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        exports {[ {'run'} fn# 1 ]} \
+        elements {[ elem.passive 0 [ 0 ] ]} \
+        code {[ \
+            {[] i32.const 111 end }, \
+            {[] \
+                i32.const 0 \
+                i32.const 0 \
+                i32.const 1 \
+                array.new_elem 0 0 \
+                i32.const 0 \
+                array.get 0 \
+                table.set 0 \
+                i32.const 0 \
+                call_indirect 1 0 \
+            end } \
+        ]}";
+
+    // Primary: has table (required so linked modules share it), imports danger + provider.run
+    const char *primary_spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        imports {[ \
+            {'host'} {'danger'} fn# 0, \
+            {'provider'} {'run'} fn# 0 \
+        ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        exports {[ {'go'} fn# 2 ]} \
+        code {[ {[] call 1 end } ]}";
+
+    wah_module_t provider = {0}, primary = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&primary, primary_spec));
+
+    wah_module_t host_mod = {0};
+    wah_new_module(&host_mod, NULL);
+    wah_export_func(&host_mod, "danger", "() -> i32", gc_danger_host_func, NULL, NULL);
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+    assert_ok(wah_link_module(&ctx, "host", &host_mod));
+    assert_ok(wah_link_module(&ctx, "provider", &provider));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    gc_danger_called = 0;
+    wah_value_t result;
+    assert_ok(wah_call_by_name(&ctx, "go", NULL, 0, &result));
+    assert_eq_i32(gc_danger_called, 0);
+    assert_eq_i32(result.i32, 111);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&primary);
+    wah_free_module(&provider);
+    wah_free_module(&host_mod);
+}
+
+static void test_cross_module_array_init_elem_funcref() {
+    printf("Testing cross-module array.init_elem uses correct function table (security regression)...\n");
+
+    // Same structure as above but exercises array.init_elem path.
+    const char *provider_spec = "wasm \
+        types {[ array funcref mut, fn [] [i32] ]} \
+        funcs {[ 1, 1 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        exports {[ {'run'} fn# 1 ]} \
+        elements {[ elem.passive 0 [ 0 ] ]} \
+        code {[ \
+            {[] i32.const 222 end }, \
+            {[1 type.ref.null 0] \
+                ref.null funcref \
+                i32.const 1 \
+                array.new 0 \
+                local.set 0 \
+                local.get 0 \
+                i32.const 0 \
+                i32.const 0 \
+                i32.const 1 \
+                array.init_elem 0 0 \
+                i32.const 0 \
+                local.get 0 \
+                i32.const 0 \
+                array.get 0 \
+                table.set 0 \
+                i32.const 0 \
+                call_indirect 1 0 \
+            end } \
+        ]}";
+
+    const char *primary_spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        imports {[ \
+            {'host'} {'danger'} fn# 0, \
+            {'provider'} {'run'} fn# 0 \
+        ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        exports {[ {'go'} fn# 2 ]} \
+        code {[ {[] call 1 end } ]}";
+
+    wah_module_t provider = {0}, primary = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&primary, primary_spec));
+
+    wah_module_t host_mod = {0};
+    wah_new_module(&host_mod, NULL);
+    wah_export_func(&host_mod, "danger", "() -> i32", gc_danger_host_func, NULL, NULL);
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+    assert_ok(wah_link_module(&ctx, "host", &host_mod));
+    assert_ok(wah_link_module(&ctx, "provider", &provider));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    gc_danger_called = 0;
+    wah_value_t result;
+    assert_ok(wah_call_by_name(&ctx, "go", NULL, 0, &result));
+    assert_eq_i32(gc_danger_called, 0);
+    assert_eq_i32(result.i32, 222);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&primary);
+    wah_free_module(&provider);
+    wah_free_module(&host_mod);
+}
+
 int main() {
     test_i31_ops();
     test_extern_convert();
@@ -1173,6 +1327,8 @@ int main() {
     test_struct_v128_field();
     test_br_on_null_with_drop();
     test_br_on_non_null_with_drop();
+    test_cross_module_array_new_elem_funcref();
+    test_cross_module_array_init_elem_funcref();
     printf("All GC ops tests passed!\n");
     return 0;
 }

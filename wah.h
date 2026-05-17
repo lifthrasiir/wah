@@ -10910,7 +10910,7 @@ static uint32_t wah_bulk_array_fill(wah_exec_context_t *ctx, wah_type_t et, uint
     return size;
 }
 
-static uint32_t wah_bulk_array_init_elem(wah_exec_context_t *ctx, uint8_t *elems, uint32_t dst_offset,
+static uint32_t wah_bulk_array_init_elem(wah_exec_context_t *ctx, wah_exec_context_t *fctx, uint8_t *elems, uint32_t dst_offset,
                                           const wah_element_segment_t *seg, uint32_t src_offset,
                                           uint32_t size, wah_error_t *out_err) {
     *out_err = WAH_OK;
@@ -10921,14 +10921,24 @@ static uint32_t wah_bulk_array_init_elem(wah_exec_context_t *ctx, uint8_t *elems
             uint32_t i = done + j;
             if (!seg->is_expr_elem) {
                 uint32_t fidx = seg->u.func_indices[src_offset + i];
-                WAH_ASSERT(fidx < ctx->function_table_count);
-                ((void **)(elems))[dst_offset + i] = wah_func_to_ref(&ctx->function_table[fidx].func);
+                WAH_ASSERT(fidx < fctx->function_table_count);
+                wah_function_t *fn = &fctx->function_table[fidx].func;
+                if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == fctx->module) fn->fn_ctx = fctx;
+                ((void **)(elems))[dst_offset + i] = wah_func_to_ref(fn);
             } else {
                 wah_value_t ev;
-                wah_error_t e = wah_eval_const_expr(ctx, seg->u.expr.bytecodes[src_offset + i],
+                wah_error_t e = wah_eval_const_expr(fctx, seg->u.expr.bytecodes[src_offset + i],
                     seg->u.expr.bytecode_sizes[src_offset + i], &ev);
                 if (e != WAH_OK) { *out_err = e; return done + j; }
-                ((void **)(elems))[dst_offset + i] = ev.ref;
+                if (ev.ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
+                    uint32_t gfi = ev._prefuncref.func_idx;
+                    WAH_ASSERT(gfi < fctx->function_table_count);
+                    wah_function_t *fn = &fctx->function_table[gfi].func;
+                    if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == fctx->module) fn->fn_ctx = fctx;
+                    ((void **)(elems))[dst_offset + i] = wah_func_to_ref(fn);
+                } else {
+                    ((void **)(elems))[dst_offset + i] = ev.ref;
+                }
             }
         }
         done += chunk;
@@ -11793,13 +11803,23 @@ WAH_RUN(ARRAY_NEW_ELEM) {
     for (uint32_t i = 0; i < size; i++) {
         if (!seg->is_expr_elem) {
             uint32_t fidx = seg->u.func_indices[offset + i];
-            WAH_ASSERT(fidx < ctx->function_table_count);
-            ((void **)elems)[i] = wah_func_to_ref(&ctx->function_table[fidx].func);
+            WAH_ASSERT(fidx < fctx->function_table_count);
+            wah_function_t *fn = &fctx->function_table[fidx].func;
+            if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == fctx->module) fn->fn_ctx = fctx;
+            ((void **)elems)[i] = wah_func_to_ref(fn);
         } else {
             wah_value_t ev;
-            WAH_CHECK_GOTO(wah_eval_const_expr(ctx, seg->u.expr.bytecodes[offset + i],
+            WAH_CHECK_GOTO(wah_eval_const_expr(fctx, seg->u.expr.bytecodes[offset + i],
                 seg->u.expr.bytecode_sizes[offset + i], &ev), cleanup);
-            ((void **)elems)[i] = ev.ref;
+            if (ev.ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
+                uint32_t gfi = ev._prefuncref.func_idx;
+                WAH_ASSERT(gfi < fctx->function_table_count);
+                wah_function_t *fn = &fctx->function_table[gfi].func;
+                if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == fctx->module) fn->fn_ctx = fctx;
+                ((void **)elems)[i] = wah_func_to_ref(fn);
+            } else {
+                ((void **)elems)[i] = ev.ref;
+            }
         }
     }
     (*sp++).ref = obj;
@@ -11952,7 +11972,7 @@ WAH_RUN(ARRAY_INIT_ELEM) {
     WAH_ENSURE_GOTO((uint64_t)src_offset + size <= seg_len, WAH_ERROR_TRAP, cleanup);
     uint8_t *elems = (uint8_t *)body + sizeof(wah_gc_array_body_t);
     wah_error_t init_err;
-    uint32_t done = wah_bulk_array_init_elem(ctx, elems, dst_offset, seg, src_offset, size, &init_err);
+    uint32_t done = wah_bulk_array_init_elem(ctx, fctx, elems, dst_offset, seg, src_offset, size, &init_err);
     if (init_err != WAH_OK) { err = init_err; goto cleanup; }
     if (done < size) {
         (*sp++).ref = obj;
