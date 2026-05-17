@@ -11070,7 +11070,6 @@ static wah_error_t wah_table_grow_internal(
         uint32_t src_idx = fctx->tables[table_idx].import_idx;
         if (fctx->tables[table_idx].is_imported) {
             wah_budget_charge(src, delta_bytes);
-            src->tables[src_idx].is_imported = true;
         }
         src->tables[src_idx].entries = new_table;
         src->tables[src_idx].size = new_size;
@@ -11084,7 +11083,6 @@ static wah_error_t wah_table_grow_internal(
         }
     }
     wah_free(grow_alloc, old_entries);
-    fctx->tables[table_idx].is_imported = false;
 
     *grew = true;
     return WAH_OK;
@@ -11131,7 +11129,6 @@ static bool wah_memory_grow_internal(
         uint32_t src_idx = fctx->memories[mem_idx].import_idx;
         if (fctx->memories[mem_idx].is_imported) {
             wah_budget_charge(src, delta_bytes);
-            src->memories[src_idx].is_imported = true;
         }
         src->memories[src_idx].data = fctx->memories[mem_idx].data;
         src->memories[src_idx].size = fctx->memories[mem_idx].size;
@@ -11152,7 +11149,6 @@ static bool wah_memory_grow_internal(
             }
         }
     }
-    fctx->memories[mem_idx].is_imported = false;
     if (mem_idx == 0) {
         fctx->memory_base = fctx->memories[0].data;
         fctx->memory_size = fctx->memories[0].size;

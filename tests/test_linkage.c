@@ -1764,6 +1764,111 @@ int main() {
         wah_free_module(&host_mod);
     }
 
+    // Regression: memory.grow on imported memory flipped is_imported flags, causing
+    // UAF when the importer context was freed before the provider context.
+    printf("Test: memory.grow on imported memory must not transfer ownership (UAF regression)\n");
+    {
+        // Provider exports a memory and a store function.
+        const char *provider_spec = "wasm \
+            types {[ fn [i32, i32] [] ]} \
+            funcs {[ 0 ]} \
+            memories {[ limits.i32/2 1 10 ]} \
+            exports {[ {'mem'} mem# 0, {'store'} fn# 0 ]} \
+            code {[ {[] local.get 0 local.get 1 i32.store 0 0 end } ]}";
+
+        // Consumer imports memory and grows it.
+        const char *consumer_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            imports {[ {'p'} {'mem'} mem# limits.i32/2 1 10 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'grow'} fn# 0 ]} \
+            code {[ {[] local.get 0 memory.grow 0 end } ]}";
+
+        wah_module_t provider = {0}, consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+        wah_exec_context_t pctx = {0};
+        assert_ok(wah_new_exec_context(&pctx, &provider, NULL));
+        assert_ok(wah_instantiate(&pctx));
+
+        wah_exec_context_t cctx = {0};
+        assert_ok(wah_new_exec_context(&cctx, &consumer, NULL));
+        assert_ok(wah_link_context(&cctx, "p", &pctx));
+        assert_ok(wah_instantiate(&cctx));
+
+        // Consumer grows the imported memory.
+        wah_value_t arg = {.i32 = 2};
+        wah_value_t result;
+        assert_ok(wah_call(&cctx, 0, &arg, 1, &result));
+        assert_eq_i32(result.i32, 1);
+
+        // Free consumer first (simulates per-request teardown).
+        wah_free_exec_context(&cctx);
+
+        // Provider must still be able to use its memory (would UAF before fix).
+        wah_value_t store_args[2] = {{.i32 = 0}, {.i32 = 0xCAFE}};
+        assert_ok(wah_call(&pctx, 0, store_args, 2, NULL));
+
+        wah_free_exec_context(&pctx);
+        wah_free_module(&consumer);
+        wah_free_module(&provider);
+    }
+
+    // Regression: table.grow on imported table must not transfer ownership (UAF regression).
+    printf("Test: table.grow on imported table must not transfer ownership (UAF regression)\n");
+    {
+        // Provider exports a table and a table.size function.
+        const char *provider_spec = "wasm \
+            types {[ fn [] [i32], fn [i32] [i32] ]} \
+            funcs {[ 0, 1 ]} \
+            tables {[ funcref limits.i32/2 2 10 ]} \
+            exports {[ {'tbl'} table# 0, {'size'} fn# 0, {'grow'} fn# 1 ]} \
+            code {[ \
+                {[] table.size 0 end }, \
+                {[] ref.null funcref local.get 0 table.grow 0 end } \
+            ]}";
+
+        // Consumer imports table and grows it.
+        const char *consumer_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            imports {[ {'p'} {'tbl'} table# funcref limits.i32/2 2 10 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'grow'} fn# 0 ]} \
+            code {[ {[] ref.null funcref local.get 0 table.grow 0 end } ]}";
+
+        wah_module_t provider = {0}, consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+
+        wah_exec_context_t pctx = {0};
+        assert_ok(wah_new_exec_context(&pctx, &provider, NULL));
+        assert_ok(wah_instantiate(&pctx));
+
+        wah_exec_context_t cctx = {0};
+        assert_ok(wah_new_exec_context(&cctx, &consumer, NULL));
+        assert_ok(wah_link_context(&cctx, "p", &pctx));
+        assert_ok(wah_instantiate(&cctx));
+
+        // Consumer grows the imported table.
+        wah_value_t arg = {.i32 = 3};
+        wah_value_t result;
+        assert_ok(wah_call(&cctx, 0, &arg, 1, &result));
+        assert_eq_i32(result.i32, 2);
+
+        // Free consumer first.
+        wah_free_exec_context(&cctx);
+
+        // Provider must still be able to query its table (would UAF before fix).
+        wah_value_t size_result;
+        assert_ok(wah_call(&pctx, 0, NULL, 0, &size_result));
+        assert_eq_i32(size_result.i32, 5);
+
+        wah_free_exec_context(&pctx);
+        wah_free_module(&consumer);
+        wah_free_module(&provider);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
