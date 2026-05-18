@@ -1450,7 +1450,7 @@ int main() {
             funcs {[ 1 ]} \
             exports {[ {'f'} fn# 0 ]} \
             code {[ {[] \
-                block [] \
+                block void \
                 local.get 0 \
                 br_on_null 0 \
                 struct.get 0 0 \

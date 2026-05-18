@@ -5816,6 +5816,7 @@ static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, co
         WAH_ENSURE(block_type_val >= 0, WAH_ERROR_MALFORMED);
         uint32_t type_idx = (uint32_t)block_type_val;
         WAH_ENSURE(type_idx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+        WAH_ENSURE(vctx->module->type_defs[type_idx].kind == WAH_COMP_FUNC, WAH_ERROR_VALIDATION_FAILED);
         const wah_func_type_t* referenced_type = &vctx->module->types[type_idx];
 
         bt->param_count = referenced_type->param_count;

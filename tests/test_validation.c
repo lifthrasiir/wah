@@ -837,6 +837,38 @@ static void test_non_func_type_as_function_type() {
     wah_free_module(&m4);
 }
 
+static void test_non_func_type_as_block_type() {
+    printf("Testing non-func type index rejected in block type...\n");
+
+    // block with struct type index
+    const char *block_struct = "wasm \
+        types {[ struct [i64 mut], fn [] [] ]} \
+        funcs {[ 1 ]} \
+        code {[{[] block 0 end end}]}";
+    wah_module_t m1 = {0};
+    assert_err(wah_parse_module_from_spec(&m1, block_struct), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m1);
+
+    // loop with struct type index
+    const char *loop_struct = "wasm \
+        types {[ struct [i32 mut], fn [] [] ]} \
+        funcs {[ 1 ]} \
+        code {[{[] loop 0 end end}]}";
+    wah_module_t m2 = {0};
+    assert_err(wah_parse_module_from_spec(&m2, loop_struct), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m2);
+
+    // if with struct type index
+    const char *if_struct = "wasm \
+        types {[ struct [i32 mut], fn [] [] ]} \
+        funcs {[ 1 ]} \
+        code {[{[] i32.const 1 if 0 else end end}]}";
+    wah_module_t m3 = {0};
+    assert_err(wah_parse_module_from_spec(&m3, if_struct), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m3);
+
+}
+
 int main() {
     test_block_type_not_skipped();
     test_if_complex_block_type();
@@ -859,6 +891,7 @@ int main() {
     test_packed_field_get_validation();
     test_ref_cast_hierarchy_validation();
     test_non_func_type_as_function_type();
+    test_non_func_type_as_block_type();
     printf("All validation tests passed!\n");
     return 0;
 }

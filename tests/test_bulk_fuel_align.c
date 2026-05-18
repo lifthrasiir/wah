@@ -34,7 +34,7 @@ static void test_array_init_data_i32_fuel_align(void) {
             local.get 0 i32.const 0 i32.const 0 i32.const 32 array.init_data 0 0 \
             i32.const 0 local.set 1 \
             i32.const 0 local.set 2 \
-            block [] loop [] \
+            block void loop void \
                 local.get 2 i32.const 32 i32.ge_u br_if 1 \
                 local.get 1 local.get 0 local.get 2 array.get 0 i32.add local.set 1 \
                 local.get 2 i32.const 1 i32.add local.set 2 \
@@ -100,7 +100,7 @@ static void test_array_copy_i32_fuel_align(void) {
             i32.const 0 i32.const 64 array.new 0 local.set 0 \
             i32.const 0 i32.const 64 array.new 0 local.set 1 \
             i32.const 0 local.set 2 \
-            block [] loop [] \
+            block void loop void \
                 local.get 2 i32.const 64 i32.ge_u br_if 1 \
                 local.get 0 local.get 2 local.get 2 i32.const 100 i32.add array.set 0 \
                 local.get 2 i32.const 1 i32.add local.set 2 \
@@ -109,7 +109,7 @@ static void test_array_copy_i32_fuel_align(void) {
             local.get 1 i32.const 0 local.get 0 i32.const 0 i32.const 64 array.copy 0 0 \
             i32.const 0 local.set 3 \
             i32.const 0 local.set 2 \
-            block [] loop [] \
+            block void loop void \
                 local.get 2 i32.const 64 i32.ge_u br_if 1 \
                 local.get 3 \
                 local.get 1 local.get 2 array.get 0 \
