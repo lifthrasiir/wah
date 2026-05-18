@@ -9318,10 +9318,17 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
                 }
             }
 
-            // For active segments, validate element type is subtype of table element type
             if (segment->is_active) {
                 const wah_table_type_t *tt = wah_table_type(module, segment->table_idx);
-                WAH_CHECK(wah_validate_type_match(segment->elem_type, tt->elem_type, module));
+                if (is_expr_elem) {
+                    WAH_CHECK(wah_validate_type_match(segment->elem_type, tt->elem_type, module));
+                } else {
+                    // Func-index segments can only hold non-null references,
+                    // so skip the nullability check against the table type.
+                    WAH_ENSURE(wah_type_is_subtype(WAH_TYPE_AS_NON_NULL(segment->elem_type),
+                                                   WAH_TYPE_AS_NON_NULL(tt->elem_type), module),
+                               WAH_ERROR_VALIDATION_FAILED);
+                }
             }
 
             // Parse num_elems
