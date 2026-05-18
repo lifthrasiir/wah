@@ -2902,6 +2902,128 @@ int main() {
         wah_free_module(&provider_mod);
     }
 
+    // Test: linked module active element segments initialize imported tables
+    printf("Test: linked module active element segments initialize imported tables\n");
+    {
+        wah_module_t host_mod = {0};
+        assert_ok(wah_new_module(&host_mod, NULL));
+        assert_ok(wah_export_func(&host_mod, "danger", "() -> i32", danger_host_func, NULL, NULL));
+        assert_ok(wah_export_func(&host_mod, "safe", "() -> i32", safe_host_func, NULL, NULL));
+
+        // Primary: imports danger, has table with 1 slot filled with danger
+        // via active elem segment. Exports table and a call_indirect wrapper.
+        const char *primary_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'host'} {'danger'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            exports {[ {'tbl'} table# 0, {'call_it'} fn# 1 ]} \
+            elements {[ elem.active.table#0 i32.const 0 end [0] ]} \
+            code {[ {[] i32.const 0 call_indirect 0 0 end} ]}";
+
+        // Linked provider: imports table from "env" (falls back to primary
+        // module exports) and safe from host. Active elem segment overwrites
+        // slot 0 with safe function (fn#0 = safe import in linked module).
+        const char *linked_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'env'} {'tbl'} table# funcref limits.i32/1 1, {'host'} {'safe'} fn# 0 ]} \
+            elements {[ elem.active.table#0 i32.const 0 end [0] ]}";
+
+        wah_module_t primary_mod = {0}, linked_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+        assert_ok(wah_parse_module_from_spec(&linked_mod, linked_spec));
+
+        wah_exec_context_t exec = {0};
+        assert_ok(wah_new_exec_context(&exec, &primary_mod, NULL));
+        assert_ok(wah_link_module(&exec, "host", &host_mod));
+        assert_ok(wah_link_module(&exec, "provider", &linked_mod));
+        assert_ok(wah_instantiate(&exec));
+
+        danger_called = 0;
+        safe_called = 0;
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&exec, "call_it", NULL, 0, &result));
+        assert(safe_called == 1 && "safe function should have been called");
+        assert(danger_called == 0 && "danger function should NOT have been called");
+        assert_eq_i32(result.i32, 123);
+
+        wah_free_exec_context(&exec);
+        wah_free_module(&linked_mod);
+        wah_free_module(&primary_mod);
+        wah_free_module(&host_mod);
+    }
+
+    // Test: linked module active data segments initialize imported memory
+    printf("Test: linked module active data segments initialize imported memory\n");
+    {
+        // Primary: 1-page memory exported. Linked module imports it and writes
+        // data via active data segment.
+        const char *primary_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            memories {[ limits.i32/2 1 1 ]} \
+            exports {[ {'read'} fn# 0, {'mem'} mem# 0 ]} \
+            code {[ {[] i32.const 0 i32.load 0 0 end} ]}";
+
+        const char *linked_spec = "wasm \
+            types {[]} \
+            imports {[ {'env'} {'mem'} mem# limits.i32/2 1 1 ]} \
+            datacount { 1 } \
+            data {[ data.active.table#0 i32.const 0 end {%'78563412'} ]}";
+
+        wah_module_t primary_mod = {0}, linked_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+        assert_ok(wah_parse_module_from_spec(&linked_mod, linked_spec));
+
+        wah_exec_context_t exec = {0};
+        assert_ok(wah_new_exec_context(&exec, &primary_mod, NULL));
+        assert_ok(wah_link_module(&exec, "provider", &linked_mod));
+        assert_ok(wah_instantiate(&exec));
+
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&exec, "read", NULL, 0, &result));
+        assert_eq_i32(result.i32, 305419896);
+
+        wah_free_exec_context(&exec);
+        wah_free_module(&linked_mod);
+        wah_free_module(&primary_mod);
+    }
+
+    // Test: linked module start function is called during instantiation
+    printf("Test: linked module start function is called during instantiation\n");
+    {
+        wah_module_t host_mod = {0};
+        assert_ok(wah_new_module(&host_mod, NULL));
+        assert_ok(wah_export_func(&host_mod, "notify", "() -> ()", imported_start_host_func, NULL, NULL));
+
+        // Linked module: imports notify, uses it as start function.
+        const char *linked_spec = "wasm \
+            types {[ fn [] [] ]} \
+            imports {[ {'host'} {'notify'} fn# 0 ]} \
+            start {0}";
+
+        // Primary: trivial module
+        const char *primary_spec = "wasm types {[]}";
+
+        wah_module_t primary_mod = {0}, linked_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+        assert_ok(wah_parse_module_from_spec(&linked_mod, linked_spec));
+
+        wah_exec_context_t exec = {0};
+        assert_ok(wah_new_exec_context(&exec, &primary_mod, NULL));
+        assert_ok(wah_link_module(&exec, "host", &host_mod));
+        assert_ok(wah_link_module(&exec, "provider", &linked_mod));
+
+        imported_start_called = 0;
+        assert_ok(wah_instantiate(&exec));
+        assert(imported_start_called == 1 && "linked module start function should have been called");
+
+        wah_free_exec_context(&exec);
+        wah_free_module(&linked_mod);
+        wah_free_module(&primary_mod);
+        wah_free_module(&host_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
