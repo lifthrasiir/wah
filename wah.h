@@ -16278,13 +16278,14 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
         const wah_module_t *linked = ctx->linked_modules[j].module;
         for (uint32_t k = 0; k < linked->global_count; k++) {
-            if (ctx->globals[lg_offset + k].ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
-                uint32_t fidx = ctx->globals[lg_offset + k]._prefuncref.func_idx;
+            uint32_t slot = lg_offset + linked->import_global_count + k;
+            if (ctx->globals[slot].ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
+                uint32_t fidx = ctx->globals[slot]._prefuncref.func_idx;
                 uint32_t linked_import_count = linked->import_function_count;
                 if (fidx >= linked_import_count) {
                     uint32_t local_k = fidx - linked_import_count;
                     WAH_ENSURE_GOTO(local_k < linked->wasm_function_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-                    ctx->globals[lg_offset + k].ref = wah_func_to_ref(&linked->functions[local_k].func);
+                    ctx->globals[slot].ref = wah_func_to_ref(&linked->functions[local_k].func);
                 } else {
                     // ref.func to linked module's own import: resolve from another linked module
                     wah_func_import_t *fi = &linked->func_imports[fidx];
@@ -16312,11 +16313,11 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     WAH_ENSURE_GOTO(exp->index >= provider_import_count, WAH_ERROR_LINK_FAILED, cleanup);
                     uint32_t provider_local_idx = exp->index - provider_import_count;
                     WAH_ENSURE_GOTO(provider_local_idx < provider->local_function_count, WAH_ERROR_LINK_FAILED, cleanup);
-                    ctx->globals[lg_offset + k].ref = wah_func_to_ref(&provider->functions[provider_local_idx].func);
+                    ctx->globals[slot].ref = wah_func_to_ref(&provider->functions[provider_local_idx].func);
                 }
             }
         }
-        lg_offset += linked->global_count;
+        lg_offset += wah_global_index_limit(linked);
     }
 
     // Evaluate table init expressions (for tables declared with 0x40 encoding)

@@ -381,6 +381,60 @@ int main() {
         wah_free_module(&mod_c);
     }
 
+    // Regression: linked module with imported globals had wrong slot offset for funcref
+    // global conversion. The prefuncref sentinel was written at lg_offset + k instead of
+    // lg_offset + import_global_count + k, leaving the funcref global unconverted.
+    printf("Testing linked module funcref global with imported globals...\n");
+    {
+        // Module C (host): exports a dummy i32 global and "getConst" () -> i32 returning 42.
+        wah_module_t mod_c = {0};
+        assert_ok(wah_new_module(&mod_c, NULL));
+        assert_ok(wah_export_global_i32(&mod_c, "dummyGlobal", 0, false));
+        assert_ok(wah_export_func(&mod_c, "getConst", "() -> i32",
+                                         simple_host_func, NULL, NULL));
+
+        // Module B: imports "moduleC"."dummyGlobal" (global idx 0, i32 immut)
+        //           and "moduleC"."getConst" (func idx 0).
+        // local global[0] (global idx 1) = funcref mut ref.func 0 (= the imported getConst).
+        // local func 0 (func idx 1): reads global[1], stores into table[0][0], call_indirect.
+        const char *spec_b = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'moduleC'} {'dummyGlobal'} global# i32 immut, \
+                       {'moduleC'} {'getConst'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            globals {[ funcref mut ref.func 0 end ]} \
+            exports {[ {'callViaRef'} fn# 1 ]} \
+            code {[ \
+                {[] i32.const 0 global.get 1 table.set 0 i32.const 0 call_indirect 0 0 end} \
+            ]}";
+
+        // Module A: imports callViaRef from moduleB.
+        const char *spec_a = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'moduleB'} {'callViaRef'} fn# 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]}";
+
+        wah_module_t mod_a = {0}, mod_b = {0};
+        wah_exec_context_t ctx = {0};
+
+        assert_ok(wah_parse_module_from_spec(&mod_b, spec_b));
+        assert_ok(wah_parse_module_from_spec(&mod_a, spec_a));
+        assert_ok(wah_new_exec_context(&ctx, &mod_a, NULL));
+        assert_ok(wah_link_module(&ctx, "moduleB", &mod_b));
+        assert_ok(wah_link_module(&ctx, "moduleC", &mod_c));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod_a);
+        wah_free_module(&mod_b);
+        wah_free_module(&mod_c);
+    }
+
     // 2cc74f5: Fix cross-module CALL using wrong function table.
     {
         printf("Testing cross-module call uses correct function (2cc74f5)...\n");
