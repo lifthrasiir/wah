@@ -2172,6 +2172,112 @@ int main() {
         wah_free_module(&primary_mod);
     }
 
+    // Regression: table import min_elements validation must reject undersized provider.
+    printf("Test: table import rejects provider with smaller min_elements\n");
+    {
+        // Provider: table with min=1
+        const char *linked_spec = "wasm \
+            tables {[ funcref limits.i32/1 1 ]} \
+            exports {[ {'t'} table# 0 ]}";
+        // Consumer: imports table with min=5 -- must fail
+        const char *primary_spec = "wasm \
+            imports {[ {'linked'} {'t'} table# funcref limits.i32/1 5 ]}";
+
+        wah_module_t primary_mod = {0}, linked_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&linked_mod, linked_spec));
+        assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary_mod, NULL));
+        assert_ok(wah_link_module(&ctx, "linked", &linked_mod));
+        assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&linked_mod);
+        wah_free_module(&primary_mod);
+    }
+
+    // Regression: table import min_elements validation via wah_link_context.
+    printf("Test: table import rejects undersized provider via link_context\n");
+    {
+        const char *linked_spec = "wasm \
+            tables {[ funcref limits.i32/1 1 ]} \
+            exports {[ {'t'} table# 0 ]}";
+        const char *primary_spec = "wasm \
+            imports {[ {'linked'} {'t'} table# funcref limits.i32/1 5 ]}";
+
+        wah_module_t primary_mod = {0}, linked_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&linked_mod, linked_spec));
+        assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+
+        wah_exec_context_t linked_ctx = {0};
+        assert_ok(wah_new_exec_context(&linked_ctx, &linked_mod, NULL));
+        assert_ok(wah_instantiate(&linked_ctx));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary_mod, NULL));
+        assert_ok(wah_link_context(&ctx, "linked", &linked_ctx));
+        assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+
+        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&linked_ctx);
+        wah_free_module(&linked_mod);
+        wah_free_module(&primary_mod);
+    }
+
+    // Regression: memory import min_pages validation must reject undersized provider.
+    printf("Test: memory import rejects provider with smaller min_pages\n");
+    {
+        // Provider: memory with min=1
+        const char *linked_spec = "wasm \
+            memories {[ limits.i32/1 1 ]} \
+            exports {[ {'m'} mem# 0 ]}";
+        // Consumer: imports memory with min=5 -- must fail
+        const char *primary_spec = "wasm \
+            imports {[ {'linked'} {'m'} mem# limits.i32/1 5 ]}";
+
+        wah_module_t primary_mod = {0}, linked_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&linked_mod, linked_spec));
+        assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary_mod, NULL));
+        assert_ok(wah_link_module(&ctx, "linked", &linked_mod));
+        assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&linked_mod);
+        wah_free_module(&primary_mod);
+    }
+
+    // Regression: memory import min_pages validation via wah_link_context.
+    printf("Test: memory import rejects undersized provider via link_context\n");
+    {
+        const char *linked_spec = "wasm \
+            memories {[ limits.i32/1 1 ]} \
+            exports {[ {'m'} mem# 0 ]}";
+        const char *primary_spec = "wasm \
+            imports {[ {'linked'} {'m'} mem# limits.i32/1 5 ]}";
+
+        wah_module_t primary_mod = {0}, linked_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&linked_mod, linked_spec));
+        assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+
+        wah_exec_context_t linked_ctx = {0};
+        assert_ok(wah_new_exec_context(&linked_ctx, &linked_mod, NULL));
+        assert_ok(wah_instantiate(&linked_ctx));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary_mod, NULL));
+        assert_ok(wah_link_context(&ctx, "linked", &linked_ctx));
+        assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+
+        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&linked_ctx);
+        wah_free_module(&linked_mod);
+        wah_free_module(&primary_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

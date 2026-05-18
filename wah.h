@@ -8522,6 +8522,8 @@ static wah_error_t wah_bind_memory_import_slot(
         WAH_ENSURE(provider_type->max_pages != UINT64_MAX, WAH_ERROR_LINK_FAILED);
         WAH_ENSURE(provider_type->max_pages <= import_type->max_pages, WAH_ERROR_LINK_FAILED);
     }
+    uint64_t cur_pages = provider_ctx->memories[mem_idx].size / WAH_WASM_PAGE_SIZE;
+    WAH_ENSURE(cur_pages >= import_type->min_pages, WAH_ERROR_LINK_FAILED);
     *slot = provider_ctx->memories[mem_idx];
     slot->is_imported = true;
     slot->import_ctx = provider_ctx;
@@ -8544,6 +8546,7 @@ static wah_error_t wah_bind_table_import_slot(
         WAH_ENSURE(provider_type->max_elements != UINT64_MAX, WAH_ERROR_LINK_FAILED);
         WAH_ENSURE(provider_type->max_elements <= import_type->max_elements, WAH_ERROR_LINK_FAILED);
     }
+    WAH_ENSURE(provider_ctx->tables[table_idx].size >= import_type->min_elements, WAH_ERROR_LINK_FAILED);
     *slot = provider_ctx->tables[table_idx];
     slot->is_imported = true;
     slot->import_ctx = provider_ctx;
@@ -16259,9 +16262,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         }
 
         if (linked_ctx && linked_table_idx < linked_ctx->table_count) {
-            if (linked_table_idx >= linked->import_table_count) {
-                WAH_ENSURE_GOTO(linked_ctx->tables[linked_table_idx].size >= ti->type.min_elements, WAH_ERROR_LINK_FAILED, cleanup);
-            }
+            WAH_ENSURE_GOTO(linked_ctx->tables[linked_table_idx].size >= ti->type.min_elements, WAH_ERROR_LINK_FAILED, cleanup);
             uint64_t imp_bytes = 0;
             WAH_CHECK_GOTO(wah_table_byte_size(linked_ctx->tables[linked_table_idx].size, &imp_bytes), cleanup);
             WAH_ENSURE_GOTO(wah_budget_check(ctx, imp_bytes), WAH_ERROR_TOO_LARGE, cleanup);
@@ -16315,10 +16316,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         }
 
         if (linked_ctx && linked_mem_idx < linked_ctx->memory_count) {
-            if (linked_mem_idx >= linked->import_memory_count) {
-                uint64_t cur_pages = linked_ctx->memories[linked_mem_idx].size / WAH_WASM_PAGE_SIZE;
-                WAH_ENSURE_GOTO(cur_pages >= mi->type.min_pages, WAH_ERROR_LINK_FAILED, cleanup);
-            }
+            uint64_t cur_pages = linked_ctx->memories[linked_mem_idx].size / WAH_WASM_PAGE_SIZE;
+            WAH_ENSURE_GOTO(cur_pages >= mi->type.min_pages, WAH_ERROR_LINK_FAILED, cleanup);
             uint64_t imp_bytes = linked_ctx->memories[linked_mem_idx].size;
             WAH_ENSURE_GOTO(wah_budget_check(ctx, imp_bytes), WAH_ERROR_TOO_LARGE, cleanup);
             ctx->memories[i].data = linked_ctx->memories[linked_mem_idx].data;
