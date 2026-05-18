@@ -9693,6 +9693,24 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
         }
     }
 
+    // 2b. Globals in externally linked contexts (wah_link_context path).
+    // owns_ctx contexts share ctx->globals and are already covered above.
+    for (uint32_t m = 0; m < ctx->linked_module_count; m++) {
+        wah_exec_context_t *lctx = ctx->linked_modules[m].ctx;
+        if (!lctx || ctx->linked_modules[m].owns_ctx) continue;
+        const wah_module_t *lmod = ctx->linked_modules[m].module;
+        for (uint32_t k = 0; k < wah_global_index_limit(lmod); k++) {
+            wah_type_t gt = wah_global_type(lmod, k);
+            if (WAH_TYPE_IS_REF(gt)) {
+                if (k < lmod->import_global_count && lmod->global_imports[k].is_mutable) {
+                    visitor((wah_value_t *)lctx->globals[k].ref, userdata);
+                } else {
+                    visitor(&lctx->globals[k], userdata);
+                }
+            }
+        }
+    }
+
     // 3b. Table elements (linked module local tables)
     for (uint32_t m = 0; m < ctx->linked_module_count; m++) {
         wah_exec_context_t *lctx = ctx->linked_modules[m].ctx;

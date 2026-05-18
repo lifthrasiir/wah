@@ -1722,6 +1722,70 @@ int main() {
         printf("  PASSED\n");
     }
 
+    printf("Testing GC root scan includes wah_link_context globals...\n");
+    {
+        // Linked context "p" has a mutable anyref global and exports:
+        //   store(anyref) -> ()  : local.get 0, global.set 0, end
+        //   get() -> anyref      : global.get 0, end
+        // Primary module allocates a struct, calls store, triggers GC, calls get,
+        // then reads struct field. Without the fix, GC sweeps the struct since the
+        // only root is in the linked context's own globals (not scanned by primary).
+        wah_module_t env_mod = {0}, prov_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t pctx = {0}, ctx_lg = {0};
+
+        assert_ok(wah_new_module(&env_mod, NULL));
+        assert_ok(wah_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
+
+        const char *prov_spec = "wasm \
+            types {[fn [anyref] [], fn [] [anyref]]} \
+            funcs {[0, 1]} \
+            globals {[anyref mut ref.null anyref end]} \
+            exports {[{'store'} fn# 0, {'get'} fn# 1]} \
+            code {[ \
+                {[] local.get 0 global.set 0 end}, \
+                {[] global.get 0 end} \
+            ]}";
+        assert_ok(wah_parse_module_from_spec(&prov_mod, prov_spec));
+
+        assert_ok(wah_new_exec_context(&pctx, &prov_mod, NULL));
+        assert_ok(wah_instantiate(&pctx));
+
+        const char *wasm_spec = "wasm \
+            types {[struct [i32 mut], fn [] [i32], fn [anyref] [], fn [] [anyref], fn [] []]} \
+            imports {[{'p'} {'store'} fn# 2, {'p'} {'get'} fn# 3, {'env'} {'gc'} fn# 4]} \
+            funcs {[1]} \
+            exports {[{'entry'} fn# 3]} \
+            code {[{[] \
+                i32.const 42 struct.new 0 \
+                call 0 \
+                call 2 \
+                call 1 \
+                ref.cast 0 \
+                struct.get 0 0 \
+                end}]}";
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, wasm_spec));
+
+        assert_ok(wah_new_exec_context(&ctx_lg, &wasm_mod, NULL));
+        assert_ok(wah_link_context(&ctx_lg, "p", &pctx));
+        assert_ok(wah_link_module(&ctx_lg, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx_lg));
+        assert_ok(wah_instantiate(&ctx_lg));
+
+        ctx_lg.gc->allocation_threshold = 1;
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx_lg, 3, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_free_exec_context(&ctx_lg);
+        wah_free_exec_context(&pctx);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&prov_mod);
+        wah_free_module(&env_mod);
+
+        printf("  PASSED\n");
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }
