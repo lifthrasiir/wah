@@ -743,9 +743,8 @@ private:
     uint64_t memory_size; // Size of memory 0 in bytes
 
     struct wah_memory_inst_s *memories; // Array[memory_count], memories[0].data kept in sync with memory_base/memory_size
-    uint32_t memory_count;
-
     struct wah_table_inst_s *tables; // Array[table_count]
+    uint32_t memory_count;
     uint32_t table_count;
 
     // Linkage support
@@ -756,10 +755,8 @@ private:
 
     // Runtime dispatch table (global function index space: imports + locals + hosts)
     struct wah_function_holder_s *function_table;
+    struct wah_tag_instance_s *tag_instances; // Tag instances (global tag index space: import tags + local tags)
     uint32_t function_table_count;
-
-    // Tag instances (global tag index space: import tags + local tags)
-    struct wah_tag_instance_s *tag_instances;
     uint32_t tag_instance_count;
 
     // Pending exception (set by throw, consumed by try_table catch or propagated)
@@ -804,6 +801,11 @@ private:
 
     wah_alloc_t alloc;
     wah_features_t enabled_features;
+
+    // Contexts that linked this context via wah_link_context (for grow alias propagation)
+    struct wah_exec_context_s **dependents;
+    uint32_t dependent_count;
+    uint32_t dependents_cap;
 
     void *reserved; // Ensure that at least one pimpl pointer can be added
 #endif
@@ -9531,6 +9533,29 @@ static void wah_free_element_segment_data(wah_element_segment_t *segment, const 
 
 static inline void wah_recompute_poll_flag(wah_exec_context_t *ctx);
 
+static wah_error_t wah_register_dependent(wah_exec_context_t *provider, wah_exec_context_t *consumer) {
+    const wah_alloc_t *alloc = &provider->alloc;
+    if (provider->dependent_count >= provider->dependents_cap) {
+        uint32_t new_cap = provider->dependents_cap == 0 ? 4 : provider->dependents_cap * 2;
+        void *new_ptr = provider->dependents;
+        wah_error_t err = wah_realloc(alloc, new_cap, sizeof(wah_exec_context_t *), &new_ptr);
+        if (err != WAH_OK) return err;
+        provider->dependents = (wah_exec_context_t **)new_ptr;
+        provider->dependents_cap = new_cap;
+    }
+    provider->dependents[provider->dependent_count++] = consumer;
+    return WAH_OK;
+}
+
+static void wah_unregister_dependent(wah_exec_context_t *provider, const wah_exec_context_t *consumer) {
+    for (uint32_t i = 0; i < provider->dependent_count; i++) {
+        if (provider->dependents[i] == consumer) {
+            provider->dependents[i] = provider->dependents[--provider->dependent_count];
+            return;
+        }
+    }
+}
+
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 
 #define WAH_GC_DEFAULT_THRESHOLD (256 * 1024)
@@ -10631,15 +10656,18 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
 
     wah_free(alloc, exec_ctx->tag_instances);
 
-    // Unregister from linked contexts' GC dependent lists (wah_link_context path)
+    // Unregister from linked contexts' GC and grow-alias dependent lists (wah_link_context path)
     for (uint32_t i = 0; i < exec_ctx->linked_module_count; ++i) {
         if (!exec_ctx->linked_modules[i].owns_ctx && exec_ctx->linked_modules[i].ctx) {
-            wah_gc_state_t *linked_gc = exec_ctx->linked_modules[i].ctx->gc;
-            if (linked_gc) {
-                wah_gc_unregister_dependent(linked_gc, exec_ctx);
+            wah_exec_context_t *provider = exec_ctx->linked_modules[i].ctx;
+            if (provider->gc) {
+                wah_gc_unregister_dependent(provider->gc, exec_ctx);
             }
+            wah_unregister_dependent(provider, exec_ctx);
         }
     }
+
+    wah_free(alloc, exec_ctx->dependents);
 
     // Free linked modules
     if (exec_ctx->linked_modules) {
@@ -11301,6 +11329,11 @@ static wah_error_t wah_table_grow_internal(
         if (!lctx || lctx == fctx) continue;
         wah_update_table_import_aliases(lctx, UINT32_MAX, owner_ctx, owner_idx, new_table, new_size);
     }
+    for (uint32_t d = 0; d < owner_ctx->dependent_count; d++) {
+        wah_exec_context_t *dep = owner_ctx->dependents[d];
+        if (dep == ctx || dep == fctx) continue;
+        wah_update_table_import_aliases(dep, UINT32_MAX, owner_ctx, owner_idx, new_table, new_size);
+    }
     wah_free(grow_alloc, old_entries);
 
     *grew = true;
@@ -11370,6 +11403,12 @@ static bool wah_memory_grow_internal(
         wah_exec_context_t *lctx = ctx->linked_modules[m].ctx;
         if (!lctx || lctx == fctx) continue;
         wah_update_memory_import_aliases(lctx, UINT32_MAX, owner_ctx, owner_idx,
+                                         fctx->memories[mem_idx].data, (uint64_t)new_memory_size);
+    }
+    for (uint32_t d = 0; d < owner_ctx->dependent_count; d++) {
+        wah_exec_context_t *dep = owner_ctx->dependents[d];
+        if (dep == ctx || dep == fctx) continue;
+        wah_update_memory_import_aliases(dep, UINT32_MAX, owner_ctx, owner_idx,
                                          fctx->memories[mem_idx].data, (uint64_t)new_memory_size);
     }
     if (mem_idx == 0) {
@@ -15857,6 +15896,13 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
             wah_free(alloc, name_copy);
             return reg_err;
         }
+    }
+
+    wah_error_t dep_err = wah_register_dependent(linked_ctx, ctx);
+    if (dep_err != WAH_OK) {
+        if (linked_ctx->gc) wah_gc_unregister_dependent(linked_ctx->gc, ctx);
+        wah_free(alloc, name_copy);
+        return dep_err;
     }
 
     ctx->linked_modules[ctx->linked_module_count++] =

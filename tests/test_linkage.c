@@ -2278,6 +2278,161 @@ int main() {
         wah_free_module(&primary_mod);
     }
 
+    // Regression: when multiple consumers share the same provider via
+    // wah_link_context, memory.grow in one consumer did not propagate the new
+    // base/size to sibling consumers, causing use-after-free on stale pointers.
+    printf("Test: sibling consumer memory alias propagation after grow\n");
+    {
+        // Provider: 1 page memory (max 10), exports "grow" and "mem".
+        const char *provider_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            funcs {[ 0 ]} \
+            memories {[ limits.i32/2 1 10 ]} \
+            exports {[ {'grow'} fn# 0, {'mem'} mem# 0 ]} \
+            code {[ {[] local.get 0 memory.grow 0 end } ]}";
+
+        // Grower: no memory, imports grow from provider, re-exports as call_grow.
+        const char *grower_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            imports {[ {'p'} {'grow'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'call_grow'} fn# 1 ]} \
+            code {[ {[] local.get 0 call 0 end } ]}";
+
+        // User: imports provider's memory, exports store(addr, val) and load(addr).
+        const char *user_spec = "wasm \
+            types {[ fn [i32, i32] [], fn [i32] [i32] ]} \
+            imports {[ {'p'} {'mem'} mem# limits.i32/2 1 10 ]} \
+            funcs {[ 0, 1 ]} \
+            exports {[ {'store'} fn# 0, {'load'} fn# 1 ]} \
+            code {[ \
+                {[] local.get 0 local.get 1 i32.store 2 0 end }, \
+                {[] local.get 0 i32.load 2 0 end } \
+            ]}";
+
+        wah_module_t pmod = {0}, gmod = {0}, umod = {0};
+        assert_ok(wah_parse_module_from_spec(&pmod, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&gmod, grower_spec));
+        assert_ok(wah_parse_module_from_spec(&umod, user_spec));
+
+        wah_exec_context_t pctx = {0};
+        assert_ok(wah_new_exec_context(&pctx, &pmod, NULL));
+        assert_ok(wah_instantiate(&pctx));
+
+        wah_exec_context_t gctx = {0};
+        assert_ok(wah_new_exec_context(&gctx, &gmod, NULL));
+        assert_ok(wah_link_context(&gctx, "p", &pctx));
+        assert_ok(wah_instantiate(&gctx));
+
+        wah_exec_context_t uctx = {0};
+        assert_ok(wah_new_exec_context(&uctx, &umod, NULL));
+        assert_ok(wah_link_context(&uctx, "p", &pctx));
+        assert_ok(wah_instantiate(&uctx));
+
+        // Store 42 at offset 0 via user context (within initial 1-page memory).
+        wah_value_t store_args[2] = {{.i32 = 0}, {.i32 = 42}};
+        assert_ok(wah_call_by_name(&uctx, "store", store_args, 2, NULL));
+
+        // Grow by 2 pages via grower context (realloc may move the buffer).
+        wah_value_t grow_arg = {.i32 = 2};
+        wah_value_t grow_result;
+        assert_ok(wah_call_by_name(&gctx, "call_grow", &grow_arg, 1, &grow_result));
+        assert_eq_i32(grow_result.i32, 1);  // old page count
+
+        // Load from offset 0 via user context -- must see the grown memory,
+        // not a stale pointer to the freed old buffer.
+        wah_value_t load_arg = {.i32 = 0};
+        wah_value_t load_result;
+        assert_ok(wah_call_by_name(&uctx, "load", &load_arg, 1, &load_result));
+        assert_eq_i32(load_result.i32, 42);
+
+        // Also verify writing into the grown region works.
+        uint32_t addr_in_grown = 1 * 65536 + 100;  // past original 1 page
+        store_args[0].i32 = (int32_t)addr_in_grown;
+        store_args[1].i32 = 99;
+        assert_ok(wah_call_by_name(&uctx, "store", store_args, 2, NULL));
+        load_arg.i32 = (int32_t)addr_in_grown;
+        assert_ok(wah_call_by_name(&uctx, "load", &load_arg, 1, &load_result));
+        assert_eq_i32(load_result.i32, 99);
+
+        wah_free_exec_context(&uctx);
+        wah_free_exec_context(&gctx);
+        wah_free_exec_context(&pctx);
+        wah_free_module(&umod);
+        wah_free_module(&gmod);
+        wah_free_module(&pmod);
+    }
+
+    // Regression: same as above but for table.grow -- sibling consumer's table
+    // pointers were not updated after a grow through a different consumer.
+    printf("Test: sibling consumer table alias propagation after grow\n");
+    {
+        // Provider: 1 funcref table (min 1, max 10), exports "tbl_grow" and "tbl".
+        const char *provider_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/2 1 10 ]} \
+            exports {[ {'tbl_grow'} fn# 0, {'tbl'} table# 0 ]} \
+            code {[ {[] ref.null funcref local.get 0 table.grow 0 end } ]}";
+
+        // Grower: imports tbl_grow from provider.
+        const char *grower_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            imports {[ {'p'} {'tbl_grow'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'call_tbl_grow'} fn# 1 ]} \
+            code {[ {[] local.get 0 call 0 end } ]}";
+
+        // User: imports provider's table, exports tbl_size() -> i32.
+        const char *user_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'p'} {'tbl'} table# funcref limits.i32/2 1 10 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'tbl_size'} fn# 0 ]} \
+            code {[ {[] table.size 0 end } ]}";
+
+        wah_module_t pmod = {0}, gmod = {0}, umod = {0};
+        assert_ok(wah_parse_module_from_spec(&pmod, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&gmod, grower_spec));
+        assert_ok(wah_parse_module_from_spec(&umod, user_spec));
+
+        wah_exec_context_t pctx = {0};
+        assert_ok(wah_new_exec_context(&pctx, &pmod, NULL));
+        assert_ok(wah_instantiate(&pctx));
+
+        wah_exec_context_t gctx = {0};
+        assert_ok(wah_new_exec_context(&gctx, &gmod, NULL));
+        assert_ok(wah_link_context(&gctx, "p", &pctx));
+        assert_ok(wah_instantiate(&gctx));
+
+        wah_exec_context_t uctx = {0};
+        assert_ok(wah_new_exec_context(&uctx, &umod, NULL));
+        assert_ok(wah_link_context(&uctx, "p", &pctx));
+        assert_ok(wah_instantiate(&uctx));
+
+        // Check initial table size from user.
+        wah_value_t size_result;
+        assert_ok(wah_call_by_name(&uctx, "tbl_size", NULL, 0, &size_result));
+        assert_eq_i32(size_result.i32, 1);
+
+        // Grow table by 3 via grower.
+        wah_value_t grow_arg = {.i32 = 3};
+        wah_value_t grow_result;
+        assert_ok(wah_call_by_name(&gctx, "call_tbl_grow", &grow_arg, 1, &grow_result));
+        assert_eq_i32(grow_result.i32, 1);  // old size
+
+        // User must see the updated table size.
+        assert_ok(wah_call_by_name(&uctx, "tbl_size", NULL, 0, &size_result));
+        assert_eq_i32(size_result.i32, 4);
+
+        wah_free_exec_context(&uctx);
+        wah_free_exec_context(&gctx);
+        wah_free_exec_context(&pctx);
+        wah_free_module(&umod);
+        wah_free_module(&gmod);
+        wah_free_module(&pmod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
