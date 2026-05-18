@@ -1798,6 +1798,55 @@ int main() {
         wah_free_module(&host_mod);
     }
 
+    // Regression: linked module tag import must verify type compatibility.
+    // Without this check, a linked module could import a tag with a mismatched type
+    // (e.g., i64 vs funcref), causing type confusion when catching exceptions.
+    printf("Test: linked module tag import type mismatch rejected\n");
+    {
+        // Provider: exports a tag with type (i64)->()
+        wah_module_t provider = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, "wasm \
+            types {[ fn [i64] [], fn [] [] ]} \
+            funcs {[ 1 ]} \
+            tags {[ tag.type# 0 ]} \
+            exports {[ {'thrower'} fn# 0, {'tag'} export.tag 0 ]} \
+            code {[ {[] i64.const 305419896 throw 0 end } ]}"));
+
+        // Plugin: imports tag as (funcref)->() [TYPE MISMATCH]
+        wah_module_t plugin = {0};
+        assert_ok(wah_parse_module_from_spec(&plugin, "wasm \
+            types {[ fn [type.ref.null.func] [], fn [] [i32], fn [] [], fn [] [type.ref.null.func] ]} \
+            imports {[ {'P'} {'thrower'} fn# 2, {'P'} {'tag'} tag# tag.type# 0 ]} \
+            funcs {[ 1 ]} \
+            exports {[ {'run'} fn# 1 ]} \
+            code {[ {[] \
+                block 3 \
+                    try_table void [catch 0 0] \
+                        call 0 \
+                    end \
+                    ref.null funcref \
+                end \
+                ref.is_null \
+            end } ]}"));
+
+        // Primary: imports plugin.run
+        wah_module_t primary = {0};
+        assert_ok(wah_parse_module_from_spec(&primary, "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'L'} {'run'} fn# 0 ]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "P", &provider));
+        assert_ok(wah_link_module(&ctx, "L", &plugin));
+        assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&primary);
+        wah_free_module(&plugin);
+        wah_free_module(&provider);
+    }
+
     // Regression: memory.grow on imported memory flipped is_imported flags, causing
     // UAF when the importer context was freed before the provider context.
     printf("Test: memory.grow on imported memory must not transfer ownership (UAF regression)\n");

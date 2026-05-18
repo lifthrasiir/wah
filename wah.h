@@ -15942,6 +15942,13 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 }
                 WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
                 uint32_t prov_tag_idx = exp->index;
+                WAH_ENSURE_GOTO(prov_tag_idx < provider->import_tag_count + provider->tag_count, WAH_ERROR_LINK_FAILED, cleanup);
+                uint32_t prov_type_idx = prov_tag_idx < provider->import_tag_count
+                    ? provider->tag_imports[prov_tag_idx].type_index
+                    : provider->tags[prov_tag_idx - provider->import_tag_count].type_index;
+                WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(provider, WAH_TYPE_FROM_IDX(prov_type_idx, 0),
+                                                             lmod, WAH_TYPE_FROM_IDX(lti->type_index, 0)),
+                                WAH_ERROR_LINK_FAILED, cleanup);
                 WAH_ENSURE_GOTO(provider_ctx != NULL, WAH_ERROR_LINK_FAILED, cleanup);
                 WAH_ENSURE_GOTO(prov_tag_idx < provider_ctx->tag_instance_count, WAH_ERROR_LINK_FAILED, cleanup);
                 ictx->tag_instances[t] = provider_ctx->tag_instances[prov_tag_idx];
