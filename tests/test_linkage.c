@@ -2743,6 +2743,165 @@ int main() {
         wah_free_module(&host_mod);
     }
 
+    // Re-exported imported immutable global via wah_link_context.
+    printf("Test: re-exported imported immutable global via link_context\n");
+    {
+        // Provider: owns an immutable global, exports it.
+        const char *provider_spec = "wasm \
+            types {[]} \
+            globals {[ i32 0 i32.const 42 end ]} \
+            exports {[ {'g'} global# 0 ]}";
+
+        // Middle: imports global from provider, re-exports it.
+        const char *middle_spec = "wasm \
+            types {[]} \
+            imports {[ {'provider'} {'g'} global# i32 0 ]} \
+            exports {[ {'g'} global# 0 ]}";
+
+        // User: imports global from middle, reads it.
+        const char *user_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'middle'} {'g'} global# i32 0 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'get'} fn# 0 ]} \
+            code {[ {[] global.get 0 end } ]}";
+
+        wah_module_t provider_mod = {0}, middle_mod = {0}, user_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&provider_mod, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&middle_mod, middle_spec));
+        assert_ok(wah_parse_module_from_spec(&user_mod, user_spec));
+
+        wah_exec_context_t provider_ctx = {0};
+        assert_ok(wah_new_exec_context(&provider_ctx, &provider_mod, NULL));
+        assert_ok(wah_instantiate(&provider_ctx));
+
+        wah_exec_context_t middle_ctx = {0};
+        assert_ok(wah_new_exec_context(&middle_ctx, &middle_mod, NULL));
+        assert_ok(wah_link_context(&middle_ctx, "provider", &provider_ctx));
+        assert_ok(wah_instantiate(&middle_ctx));
+
+        wah_exec_context_t user_ctx = {0};
+        assert_ok(wah_new_exec_context(&user_ctx, &user_mod, NULL));
+        assert_ok(wah_link_context(&user_ctx, "middle", &middle_ctx));
+        assert_ok(wah_instantiate(&user_ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&user_ctx, "get", NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_free_exec_context(&user_ctx);
+        wah_free_exec_context(&middle_ctx);
+        wah_free_exec_context(&provider_ctx);
+        wah_free_module(&user_mod);
+        wah_free_module(&middle_mod);
+        wah_free_module(&provider_mod);
+    }
+
+    // Re-exported imported mutable global via wah_link_context.
+    printf("Test: re-exported imported mutable global via link_context\n");
+    {
+        // Provider: owns a mutable global, exports it and a setter.
+        const char *provider_spec = "wasm \
+            types {[ fn [i32] [] ]} \
+            funcs {[ 0 ]} \
+            globals {[ i32 1 i32.const 0 end ]} \
+            exports {[ {'g'} global# 0, {'set'} fn# 0 ]} \
+            code {[ {[] local.get 0 global.set 0 end } ]}";
+
+        // Middle: imports global and setter from provider, re-exports global.
+        // Wraps setter since re-exporting imported functions is now supported.
+        const char *middle_spec = "wasm \
+            types {[ fn [i32] [] ]} \
+            imports {[ {'provider'} {'g'} global# i32 1, \
+                       {'provider'} {'set'} fn# 0 ]} \
+            exports {[ {'g'} global# 0, {'set'} fn# 0 ]}";
+
+        // User: imports global from middle, reads it.
+        const char *user_spec = "wasm \
+            types {[ fn [] [i32], fn [i32] [] ]} \
+            imports {[ {'middle'} {'g'} global# i32 1, \
+                       {'middle'} {'set'} fn# 1 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'get'} fn# 1, {'do_set'} fn# 0 ]} \
+            code {[ {[] global.get 0 end } ]}";
+
+        wah_module_t provider_mod = {0}, middle_mod = {0}, user_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&provider_mod, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&middle_mod, middle_spec));
+        assert_ok(wah_parse_module_from_spec(&user_mod, user_spec));
+
+        wah_exec_context_t provider_ctx = {0};
+        assert_ok(wah_new_exec_context(&provider_ctx, &provider_mod, NULL));
+        assert_ok(wah_instantiate(&provider_ctx));
+
+        wah_exec_context_t middle_ctx = {0};
+        assert_ok(wah_new_exec_context(&middle_ctx, &middle_mod, NULL));
+        assert_ok(wah_link_context(&middle_ctx, "provider", &provider_ctx));
+        assert_ok(wah_instantiate(&middle_ctx));
+
+        wah_exec_context_t user_ctx = {0};
+        assert_ok(wah_new_exec_context(&user_ctx, &user_mod, NULL));
+        assert_ok(wah_link_context(&user_ctx, "middle", &middle_ctx));
+        assert_ok(wah_instantiate(&user_ctx));
+
+        // Set via provider, read via user — must see the same mutable global.
+        wah_value_t set_arg = {.i32 = 99};
+        assert_ok(wah_call_by_name(&user_ctx, "do_set", &set_arg, 1, NULL));
+
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&user_ctx, "get", NULL, 0, &result));
+        assert_eq_i32(result.i32, 99);
+
+        wah_free_exec_context(&user_ctx);
+        wah_free_exec_context(&middle_ctx);
+        wah_free_exec_context(&provider_ctx);
+        wah_free_module(&user_mod);
+        wah_free_module(&middle_mod);
+        wah_free_module(&provider_mod);
+    }
+
+    // Re-exported imported immutable global via wah_link_module.
+    printf("Test: re-exported imported immutable global via link_module\n");
+    {
+        // Provider: owns an immutable global.
+        wah_module_t provider_mod = {0};
+        assert_ok(wah_new_module(&provider_mod, NULL));
+        assert_ok(wah_export_global_i32(&provider_mod, "g", false, 42));
+
+        // Middle: imports global from provider, re-exports it.
+        const char *middle_spec = "wasm \
+            types {[]} \
+            imports {[ {'provider'} {'g'} global# i32 0 ]} \
+            exports {[ {'g'} global# 0 ]}";
+
+        // User: imports global from middle, reads it.
+        const char *user_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'middle'} {'g'} global# i32 0 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'get'} fn# 0 ]} \
+            code {[ {[] global.get 0 end } ]}";
+
+        wah_module_t middle_mod = {0}, user_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&middle_mod, middle_spec));
+        assert_ok(wah_parse_module_from_spec(&user_mod, user_spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &user_mod, NULL));
+        assert_ok(wah_link_module(&ctx, "middle", &middle_mod));
+        assert_ok(wah_link_module(&ctx, "provider", &provider_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ctx, "get", NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&user_mod);
+        wah_free_module(&middle_mod);
+        wah_free_module(&provider_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

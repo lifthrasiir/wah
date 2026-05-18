@@ -8560,6 +8560,39 @@ static wah_error_t wah_resolve_function_export(
     return WAH_ERROR_TOO_LARGE;
 }
 
+// Resolve a global export that may be a re-exported import. Follows the
+// import chain across linked modules until a local global is found.
+// Returns the provider module/ctx, local global index, and the global descriptor.
+static wah_error_t wah_resolve_global_export(
+    wah_exec_context_t *ctx,
+    const wah_module_t *linked, wah_exec_context_t *linked_ctx, uint32_t global_idx,
+    const wah_module_t **out_provider, wah_exec_context_t **out_provider_ctx,
+    uint32_t *out_local_idx, uint32_t *out_global_idx
+) {
+    for (int depth = 0; depth < WAH_REEXPORT_MAX_DEPTH; depth++) {
+        if (global_idx >= linked->import_global_count) {
+            uint32_t local_idx = global_idx - linked->import_global_count;
+            WAH_ENSURE(local_idx < linked->global_count, WAH_ERROR_LINK_FAILED);
+            *out_provider = linked;
+            *out_provider_ctx = linked_ctx;
+            *out_local_idx = local_idx;
+            *out_global_idx = global_idx;
+            return WAH_OK;
+        }
+        wah_global_import_t *gi = &linked->global_imports[global_idx];
+        const wah_module_t *next = NULL;
+        wah_exec_context_t *next_ctx = NULL;
+        WAH_ENSURE(wah_find_linked_module(ctx, &gi->name, &next, &next_ctx, NULL), WAH_ERROR_LINK_FAILED);
+        const wah_export_t *exp = wah_find_export(next, 3, &gi->name);
+        WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
+        WAH_ENSURE(exp->index < wah_global_index_limit(next), WAH_ERROR_LINK_FAILED);
+        linked = next;
+        linked_ctx = next_ctx;
+        global_idx = exp->index;
+    }
+    return WAH_ERROR_TOO_LARGE;
+}
+
 static wah_error_t wah_bind_memory_import_slot(
     wah_memory_inst_t *slot, const wah_module_t *provider, wah_exec_context_t *provider_ctx,
     uint32_t mem_idx, const wah_memory_type_t *import_type
@@ -16101,38 +16134,78 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
 
         const wah_module_t *linked = NULL;
         wah_exec_context_t *gi_linked_ctx = NULL;
-        uint32_t gi_linked_idx = 0;
-        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &gi->name, &linked, &gi_linked_ctx, &gi_linked_idx), WAH_ERROR_LINK_FAILED, cleanup);
+        WAH_ENSURE_GOTO(wah_find_linked_module(ctx, &gi->name, &linked, &gi_linked_ctx, NULL), WAH_ERROR_LINK_FAILED, cleanup);
 
         const wah_export_t *exp = wah_find_export(linked, 3, &gi->name);
         WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
 
-        // Find the linked module's globals offset in ctx->globals
-        uint32_t linked_globals_offset = wah_global_index_limit(module);
-        for (uint32_t j = 0; j < gi_linked_idx; j++) {
-            linked_globals_offset += wah_global_index_limit(ctx->linked_modules[j].module);
-        }
-
         uint32_t linked_global_idx = exp->index;
         WAH_ENSURE_GOTO(linked_global_idx < wah_global_index_limit(linked), WAH_ERROR_LINK_FAILED, cleanup);
-        WAH_ENSURE_GOTO(linked_global_idx >= linked->import_global_count, WAH_ERROR_LINK_FAILED, cleanup);
-        uint32_t linked_local_global_idx = linked_global_idx - linked->import_global_count;
 
-        // Verify global type compatibility: (mut1? vt1) <: (mut2? vt2) iff
-        //   vt1 <: vt2 && (both immut || (both mut && vt2 <: vt1))
-        const wah_global_t *exported_global = &linked->globals[linked_local_global_idx];
-        wah_type_t vt1 = exported_global->type, vt2 = gi->type;
-        WAH_ENSURE_GOTO(wah_cross_module_subtype(linked, vt1, module, vt2) && exported_global->is_mutable == gi->is_mutable
-                     && (!gi->is_mutable || wah_cross_module_subtype(module, vt2, linked, vt1)), WAH_ERROR_LINK_FAILED, cleanup);
-
-        if (gi->is_mutable) {
-            if (gi_linked_ctx) {
-                ctx->globals[i].ref = &gi_linked_ctx->globals[linked_global_idx];
+        if (linked_global_idx < linked->import_global_count && gi_linked_ctx) {
+            // Re-exported import via wah_link_context: linked_ctx is already instantiated,
+            // its global slots are resolved. Use the import declaration for type checking.
+            wah_type_t vt1 = linked->global_imports[linked_global_idx].type, vt2 = gi->type;
+            bool vt1_mut = linked->global_imports[linked_global_idx].is_mutable;
+            WAH_ENSURE_GOTO(wah_cross_module_subtype(linked, vt1, module, vt2) &&
+                            vt1_mut == gi->is_mutable &&
+                            (!gi->is_mutable || wah_cross_module_subtype(module, vt2, linked, vt1)),
+                            WAH_ERROR_LINK_FAILED, cleanup);
+            if (gi->is_mutable) {
+                ctx->globals[i].ref = gi_linked_ctx->globals[linked_global_idx].ref;
             } else {
-                ctx->globals[i].ref = &ctx->globals[linked_globals_offset + linked_global_idx];
+                ctx->globals[i] = gi_linked_ctx->globals[linked_global_idx];
+            }
+        } else if (linked_global_idx < linked->import_global_count) {
+            // Re-exported import via wah_link_module: trace to the actual owner.
+            const wah_module_t *global_provider = NULL;
+            wah_exec_context_t *global_provider_ctx = NULL;
+            uint32_t global_local_idx = 0, global_global_idx = 0;
+            WAH_CHECK_GOTO(wah_resolve_global_export(ctx, linked, NULL, linked_global_idx, &global_provider,
+                                                     &global_provider_ctx, &global_local_idx, &global_global_idx), cleanup);
+            const wah_global_t *exported_global = &global_provider->globals[global_local_idx];
+            wah_type_t vt1 = exported_global->type, vt2 = gi->type;
+            WAH_ENSURE_GOTO(wah_cross_module_subtype(global_provider, vt1, module, vt2) &&
+                            exported_global->is_mutable == gi->is_mutable &&
+                            (!gi->is_mutable || wah_cross_module_subtype(module, vt2, global_provider, vt1)),
+                            WAH_ERROR_LINK_FAILED, cleanup);
+            uint32_t provider_offset = wah_global_index_limit(module);
+            for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+                if (ctx->linked_modules[j].module == global_provider) break;
+                provider_offset += wah_global_index_limit(ctx->linked_modules[j].module);
+            }
+            if (gi->is_mutable) {
+                ctx->globals[i].ref = &ctx->globals[provider_offset + global_global_idx];
+            } else {
+                ctx->globals[i] = ctx->globals[provider_offset + global_global_idx];
             }
         } else {
-            ctx->globals[i] = ctx->globals[linked_globals_offset + linked_global_idx];
+            // Local global in linked module (original non-re-export path).
+            uint32_t linked_local_global_idx = linked_global_idx - linked->import_global_count;
+            const wah_global_t *exported_global = &linked->globals[linked_local_global_idx];
+            wah_type_t vt1 = exported_global->type, vt2 = gi->type;
+            WAH_ENSURE_GOTO(wah_cross_module_subtype(linked, vt1, module, vt2) &&
+                            exported_global->is_mutable == gi->is_mutable &&
+                            (!gi->is_mutable || wah_cross_module_subtype(module, vt2, linked, vt1)),
+                            WAH_ERROR_LINK_FAILED, cleanup);
+            if (gi_linked_ctx) {
+                if (gi->is_mutable) {
+                    ctx->globals[i].ref = &gi_linked_ctx->globals[linked_global_idx];
+                } else {
+                    ctx->globals[i] = gi_linked_ctx->globals[linked_global_idx];
+                }
+            } else {
+                uint32_t linked_globals_offset = wah_global_index_limit(module);
+                for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+                    if (ctx->linked_modules[j].module == linked) break;
+                    linked_globals_offset += wah_global_index_limit(ctx->linked_modules[j].module);
+                }
+                if (gi->is_mutable) {
+                    ctx->globals[i].ref = &ctx->globals[linked_globals_offset + linked_global_idx];
+                } else {
+                    ctx->globals[i] = ctx->globals[linked_globals_offset + linked_global_idx];
+                }
+            }
         }
     }
 
@@ -16316,23 +16389,27 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                 WAH_ENSURE_GOTO(gexp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
                 uint32_t prov_gidx = gexp->index;
                 WAH_ENSURE_GOTO(prov_gidx < wah_global_index_limit(provider), WAH_ERROR_LINK_FAILED, cleanup);
-                WAH_ENSURE_GOTO(prov_gidx >= provider->import_global_count, WAH_ERROR_LINK_FAILED, cleanup);
-                uint32_t prov_local_gidx = prov_gidx - provider->import_global_count;
-                const wah_global_t *exported_global = &provider->globals[prov_local_gidx];
+                const wah_module_t *actual_provider = NULL;
+                wah_exec_context_t *actual_provider_ctx = NULL;
+                uint32_t actual_local_idx = 0, actual_global_idx = 0;
+                WAH_CHECK_GOTO(wah_resolve_global_export(ctx, provider, provider_ctx, prov_gidx, &actual_provider,
+                                                         &actual_provider_ctx, &actual_local_idx, &actual_global_idx), cleanup);
+                const wah_global_t *exported_global = &actual_provider->globals[actual_local_idx];
                 wah_type_t vt1 = exported_global->type, vt2 = lgi->type;
-                WAH_ENSURE_GOTO(wah_cross_module_subtype(provider, vt1, lmod, vt2) &&
-                                    exported_global->is_mutable == lgi->is_mutable &&
-                                    (!lgi->is_mutable || wah_cross_module_subtype(lmod, vt2, provider, vt1)),
-                                    WAH_ERROR_LINK_FAILED, cleanup);
+                WAH_ENSURE_GOTO(wah_cross_module_subtype(actual_provider, vt1, lmod, vt2) &&
+                                exported_global->is_mutable == lgi->is_mutable &&
+                                (!lgi->is_mutable || wah_cross_module_subtype(lmod, vt2, actual_provider, vt1)),
+                                WAH_ERROR_LINK_FAILED, cleanup);
                 wah_value_t *prov_slot;
-                if (provider_ctx) {
-                    prov_slot = &provider_ctx->globals[prov_gidx];
+                if (actual_provider_ctx) {
+                    prov_slot = &actual_provider_ctx->globals[actual_global_idx];
                 } else {
                     uint32_t prov_offset = wah_global_index_limit(module);
-                    for (uint32_t p = 0; p < provider_linked_idx; p++) {
+                    for (uint32_t p = 0; p < ctx->linked_module_count; p++) {
+                        if (ctx->linked_modules[p].module == actual_provider) break;
                         prov_offset += wah_global_index_limit(ctx->linked_modules[p].module);
                     }
-                    prov_slot = &ctx->globals[prov_offset + prov_gidx];
+                    prov_slot = &ctx->globals[prov_offset + actual_global_idx];
                 }
                 if (lgi->is_mutable) {
                     ctx->globals[lg_offset + gi_idx].ref = prov_slot;
