@@ -648,6 +648,79 @@ static void test_link_module_tag_type_index_cross_module() {
     wah_free_module(&provider);
 }
 
+static void test_linked_module_imported_tag_identity() {
+    printf("Testing linked module imported tag identity is resolved (regression)...\n");
+
+    // Provider exports two tags of the same type but distinct identity:
+    //   tag 0: (i32) -> ()  exported as "a"
+    //   tag 1: (i32) -> ()  exported as "b"
+    // Linked module imports both, throws with tag 0 but try_table catches
+    // only tag 1. Before the fix, both imported tags had NULL identity, so
+    // NULL == NULL made them match incorrectly (type confusion / tag confusion).
+    const char *provider_spec = "wasm \
+        types {[ fn [i32] [] ]} \
+        tags {[ tag.type# 0, tag.type# 0 ]} \
+        exports {[ {'a'} export.tag 0, {'b'} export.tag 1 ]}";
+
+    // Linked module:
+    //   import tag 0 = provider.a
+    //   import tag 1 = provider.b
+    //   func 0: () -> (i32)
+    //     try_table catches tag 1 (should NOT match throw of tag 0)
+    //       throw tag 0 with i32.const 42
+    //     catch_all returns -1
+    const char *linked_spec = "wasm \
+        types {[ fn [i32] [], fn [] [i32] ]} \
+        imports {[ \
+            {'provider'} {'a'} tag# tag.type# 0, \
+            {'provider'} {'b'} tag# tag.type# 0 \
+        ]} \
+        funcs {[ 1 ]} \
+        exports {[ {'test'} fn# 0 ]} \
+        code {[ {[] \
+            block i32 \
+                block void \
+                    try_table void [catch 1 1, catch_all 0] \
+                        i32.const 42 \
+                        throw 0 \
+                    end \
+                end \
+                i32.const -1 \
+                br 0 \
+            end \
+        end } ]}";
+
+    // Primary module: imports linked.test, calls it
+    const char *primary_spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        imports {[ {'linked'} {'test'} fn# 0 ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'main'} fn# 1 ]} \
+        code {[ {[] call 0 end } ]}";
+
+    wah_module_t provider = {0}, linked = {0}, primary = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&linked, linked_spec));
+    assert_ok(wah_parse_module_from_spec(&primary, primary_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+    assert_ok(wah_link_module(&ctx, "provider", &provider));
+    assert_ok(wah_link_module(&ctx, "linked", &linked));
+    assert_ok(wah_instantiate(&ctx));
+
+    // Tag 0 and tag 1 have different identities, so catch 1 should NOT
+    // match throw 0. The exception propagates to catch_all -> returns -1.
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, -1);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&primary);
+    wah_free_module(&linked);
+    wah_free_module(&provider);
+}
+
 static void test_link_module_tag_context_has_gc() {
     printf("Testing wah_link_module tag context has GC state...\n");
 
@@ -793,6 +866,7 @@ int main() {
     test_end_inside_try_table();
     test_link_module_tag_type_index_cross_module();
     test_link_module_tag_context_has_gc();
+    test_linked_module_imported_tag_identity();
     test_try_table_handler_overflow();
     test_exception_survives_gc_on_stack();
     test_exception_oom();

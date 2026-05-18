@@ -15870,6 +15870,51 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         g_offset += wah_global_index_limit(lmod);
     }
 
+    // Resolve tag imports for linked modules (wah_link_module path only)
+    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+        const wah_module_t *lmod = ctx->linked_modules[j].module;
+        wah_exec_context_t *ictx = ctx->linked_modules[j].ctx;
+        if (ictx && ctx->linked_modules[j].owns_ctx) {
+            for (uint32_t t = 0; t < lmod->import_tag_count; t++) {
+                wah_tag_import_t *lti = &lmod->tag_imports[t];
+                const wah_module_t *provider = NULL;
+                wah_exec_context_t *provider_ctx = NULL;
+                bool found = wah_find_linked_module(ctx, &lti->name, &provider, &provider_ctx, NULL);
+                if (found && provider == module) provider_ctx = ctx;
+                if (!found) {
+                    for (uint32_t e = 0; e < module->export_count; e++) {
+                        if (module->exports[e].kind == 4 &&
+                            wah_name_matches(module->exports[e].name, module->exports[e].name_len,
+                                             lti->name.field, lti->name.field_len)) {
+                            provider = module;
+                            provider_ctx = ctx;
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+                WAH_ENSURE_GOTO(found, WAH_ERROR_LINK_FAILED, cleanup);
+                const wah_export_t *exp = wah_find_export(provider, 4, &lti->name);
+                if (!exp) {
+                    for (uint32_t e = 0; e < module->export_count; e++) {
+                        if (module->exports[e].kind == 4 &&
+                            wah_name_matches(module->exports[e].name, module->exports[e].name_len,
+                                             lti->name.field, lti->name.field_len)) {
+                            exp = &module->exports[e];
+                            break;
+                        }
+                    }
+                }
+                WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
+                uint32_t prov_tag_idx = exp->index;
+                WAH_ENSURE_GOTO(provider_ctx != NULL, WAH_ERROR_LINK_FAILED, cleanup);
+                WAH_ENSURE_GOTO(prov_tag_idx < provider_ctx->tag_instance_count, WAH_ERROR_LINK_FAILED, cleanup);
+                ictx->tag_instances[t] = provider_ctx->tag_instances[prov_tag_idx];
+                ictx->tag_instances[t].type_index = lti->type_index;
+            }
+        }
+    }
+
     // Resolve tag imports from linked modules
     for (uint32_t i = 0; i < module->import_tag_count; i++) {
         wah_tag_import_t *tgi = &module->tag_imports[i];
