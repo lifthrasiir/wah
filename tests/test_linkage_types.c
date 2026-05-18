@@ -622,6 +622,72 @@ static void test_host_import_concrete_ref_uses_linked_type_namespace() {
     wah_free_module(&provider);
 }
 
+static void test_linked_module_ictx_table_type_validation() {
+    printf("Testing linked module ictx table import type validation...\n");
+
+    // Primary module exports an externref table.
+    const char *primary_spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        tables {[ externref limits.i32/1 4 ]} \
+        exports {[ {'t'} table# 0, {'f'} fn# 0 ]} \
+        code {[ {[] end } ]}";
+
+    // Linked module imports a structref table (type mismatch with externref).
+    const char *linked_spec = "wasm \
+        types {[ fn [] [] ]} \
+        imports {[ {'primary'} {'t'} table# structref limits.i32/1 4 ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'g'} fn# 0 ]} \
+        code {[ {[] end } ]}";
+
+    wah_module_t primary = {0}, linked = {0};
+    assert_ok(wah_parse_module_from_spec(&primary, primary_spec));
+    assert_ok(wah_parse_module_from_spec(&linked, linked_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+    assert_ok(wah_link_module(&ctx, "primary", &linked));
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&linked);
+    wah_free_module(&primary);
+}
+
+static void test_linked_module_ictx_memory_type_validation() {
+    printf("Testing linked module ictx memory import type validation...\n");
+
+    // Primary module exports a memory with max 10 pages.
+    const char *primary_spec = "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/2 1 10 ]} \
+        exports {[ {'m'} mem# 0, {'f'} fn# 0 ]} \
+        code {[ {[] end } ]}";
+
+    // Linked module imports a memory with max 5 pages (provider max 10 > import max 5, should fail).
+    const char *linked_spec = "wasm \
+        types {[ fn [] [] ]} \
+        imports {[ {'primary'} {'m'} mem# limits.i32/2 1 5 ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'g'} fn# 0 ]} \
+        code {[ {[] end } ]}";
+
+    wah_module_t primary = {0}, linked = {0};
+    assert_ok(wah_parse_module_from_spec(&primary, primary_spec));
+    assert_ok(wah_parse_module_from_spec(&linked, linked_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+    assert_ok(wah_link_module(&ctx, "primary", &linked));
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&linked);
+    wah_free_module(&primary);
+}
+
 int main() {
     test_cross_module_call_indirect();
     test_linked_module_imported_table_grow();
@@ -638,6 +704,8 @@ int main() {
     test_cross_module_type_with_extra_types();
     test_cross_module_subtype_func_ref_test();
     test_host_import_concrete_ref_uses_linked_type_namespace();
+    test_linked_module_ictx_table_type_validation();
+    test_linked_module_ictx_memory_type_validation();
     printf("All linkage_types tests passed!\n");
     return 0;
 }

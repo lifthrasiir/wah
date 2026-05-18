@@ -16402,10 +16402,18 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                             }
                         }
                         if (mexp && mprov_ctx && mexp->index < mprov_ctx->memory_count) {
-                            ictx->memories[mi] = mprov_ctx->memories[mexp->index];
+                            uint32_t midx = mexp->index;
+                            WAH_ENSURE_GOTO(midx < wah_memory_index_limit(mprov), WAH_ERROR_LINK_FAILED, cleanup);
+                            const wah_memory_type_t *prov_mt = wah_memory_type(mprov, midx);
+                            WAH_ENSURE_GOTO(prov_mt->addr_type == mim->type.addr_type, WAH_ERROR_LINK_FAILED, cleanup);
+                            if (mim->type.max_pages != UINT64_MAX) {
+                                WAH_ENSURE_GOTO(prov_mt->max_pages != UINT64_MAX, WAH_ERROR_LINK_FAILED, cleanup);
+                                WAH_ENSURE_GOTO(prov_mt->max_pages <= mim->type.max_pages, WAH_ERROR_LINK_FAILED, cleanup);
+                            }
+                            ictx->memories[mi] = mprov_ctx->memories[midx];
                             ictx->memories[mi].is_imported = true;
                             ictx->memories[mi].import_ctx = mprov_ctx;
-                            ictx->memories[mi].import_idx = mexp->index;
+                            ictx->memories[mi].import_idx = midx;
                             mem_found = true;
                         }
                         break;
@@ -16422,6 +16430,13 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                             }
                         }
                         if (pexp && pexp->index < ctx->memory_count) {
+                            WAH_ENSURE_GOTO(pexp->index < wah_memory_index_limit(module), WAH_ERROR_LINK_FAILED, cleanup);
+                            const wah_memory_type_t *prov_mt = wah_memory_type(module, pexp->index);
+                            WAH_ENSURE_GOTO(prov_mt->addr_type == mim->type.addr_type, WAH_ERROR_LINK_FAILED, cleanup);
+                            if (mim->type.max_pages != UINT64_MAX) {
+                                WAH_ENSURE_GOTO(prov_mt->max_pages != UINT64_MAX, WAH_ERROR_LINK_FAILED, cleanup);
+                                WAH_ENSURE_GOTO(prov_mt->max_pages <= mim->type.max_pages, WAH_ERROR_LINK_FAILED, cleanup);
+                            }
                             ictx->memories[mi] = ctx->memories[pexp->index];
                             ictx->memories[mi].is_imported = true;
                             ictx->memories[mi].import_ctx = ctx;
@@ -16475,10 +16490,20 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                             }
                         }
                         if (texp && tprov_ctx && texp->index < tprov_ctx->table_count) {
-                            ictx->tables[ti] = tprov_ctx->tables[texp->index];
+                            uint32_t tidx = texp->index;
+                            WAH_ENSURE_GOTO(tidx < wah_table_index_limit(tprov), WAH_ERROR_LINK_FAILED, cleanup);
+                            const wah_table_type_t *prov_tt = wah_table_type(tprov, tidx);
+                            WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(tprov, prov_tt->elem_type,
+                                                                         lmod, tim->type.elem_type), WAH_ERROR_LINK_FAILED, cleanup);
+                            WAH_ENSURE_GOTO(prov_tt->addr_type == tim->type.addr_type, WAH_ERROR_LINK_FAILED, cleanup);
+                            if (tim->type.max_elements != UINT64_MAX) {
+                                WAH_ENSURE_GOTO(prov_tt->max_elements != UINT64_MAX, WAH_ERROR_LINK_FAILED, cleanup);
+                                WAH_ENSURE_GOTO(prov_tt->max_elements <= tim->type.max_elements, WAH_ERROR_LINK_FAILED, cleanup);
+                            }
+                            ictx->tables[ti] = tprov_ctx->tables[tidx];
                             ictx->tables[ti].is_imported = true;
                             ictx->tables[ti].import_ctx = tprov_ctx;
-                            ictx->tables[ti].import_idx = texp->index;
+                            ictx->tables[ti].import_idx = tidx;
                             tbl_found = true;
                         }
                         break;
@@ -16495,6 +16520,15 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                             }
                         }
                         if (pexp && pexp->index < ctx->table_count) {
+                            WAH_ENSURE_GOTO(pexp->index < wah_table_index_limit(module), WAH_ERROR_LINK_FAILED, cleanup);
+                            const wah_table_type_t *prov_tt = wah_table_type(module, pexp->index);
+                            WAH_ENSURE_GOTO(wah_cross_module_type_ref_eq(module, prov_tt->elem_type,
+                                                                         lmod, tim->type.elem_type), WAH_ERROR_LINK_FAILED, cleanup);
+                            WAH_ENSURE_GOTO(prov_tt->addr_type == tim->type.addr_type, WAH_ERROR_LINK_FAILED, cleanup);
+                            if (tim->type.max_elements != UINT64_MAX) {
+                                WAH_ENSURE_GOTO(prov_tt->max_elements != UINT64_MAX, WAH_ERROR_LINK_FAILED, cleanup);
+                                WAH_ENSURE_GOTO(prov_tt->max_elements <= tim->type.max_elements, WAH_ERROR_LINK_FAILED, cleanup);
+                            }
                             ictx->tables[ti] = ctx->tables[pexp->index];
                             ictx->tables[ti].is_imported = true;
                             ictx->tables[ti].import_ctx = ctx;
