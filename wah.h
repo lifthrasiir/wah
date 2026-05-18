@@ -15365,10 +15365,14 @@ void wah_free_module(wah_module_t *module) {
     if (module->exports) {
         for (uint32_t i = 0; i < module->export_count; ++i) {
             uint32_t idx = module->exports[i].index;
-            bool is_host_export = (module->exports[i].kind == WAH_KIND_FUNCTION &&
-                                   module->functions &&
-                                   idx < module->local_function_count &&
-                                   module->functions[idx].func.is_host);
+            bool is_host_export = false;
+            if (module->exports[i].kind == WAH_KIND_FUNCTION &&
+                module->functions &&
+                idx >= module->import_function_count) {
+                uint32_t local_idx = idx - module->import_function_count;
+                is_host_export = (local_idx < module->local_function_count &&
+                                  module->functions[local_idx].func.is_host);
+            }
             // For memory (kind 2) and global (kind 3) exports from programmatically created modules,
             // the name is owned by the export entry itself, not by another structure.
             // For WASM function exports (kind 0, not host), the name is also owned by the export entry.
@@ -15608,7 +15612,7 @@ static wah_error_t wah_module_register_host_func(
     };
     mod->local_function_count++;
     mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
-                                                        .kind = WAH_KIND_FUNCTION, .index = new_func_idx };
+                                                        .kind = WAH_KIND_FUNCTION, .index = mod->import_function_count + new_func_idx };
     name_copy = NULL;
     param_types_copy = NULL;
     result_types_copy = NULL;
@@ -15708,7 +15712,7 @@ static wah_error_t wah_export_global_internal(wah_module_t *mod, const char *nam
     mod->globals[mod->global_count] = (wah_global_t){ .type = type, .is_mutable = is_mutable };
     WAH_CHECK_GOTO(wah_new_const_expr(type, init_value, &mod->globals[mod->global_count].init_expr, alloc), cleanup);
     mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
-                                                        .kind = WAH_KIND_GLOBAL, .index = mod->global_count };
+                                                        .kind = WAH_KIND_GLOBAL, .index = mod->import_global_count + mod->global_count };
     mod->global_count++;
     return WAH_OK;
 
@@ -15736,7 +15740,7 @@ wah_error_t wah_export_memory(wah_module_t *mod, const char *name, uint64_t min_
 
     mod->memories[mod->memory_count] = (wah_memory_type_t){ .addr_type = WAH_TYPE_I32, .min_pages = min_pages, .max_pages = max_pages };
     mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
-                                                        .kind = WAH_KIND_MEMORY, .index = mod->memory_count };
+                                                        .kind = WAH_KIND_MEMORY, .index = mod->import_memory_count + mod->memory_count };
     mod->memory_count++;
     return WAH_OK;
 

@@ -34,6 +34,13 @@ void danger_host_func(wah_call_context_t *ctx, void *userdata) {
     wah_return_i32(ctx, -999);
 }
 
+int safe_called = 0;
+void safe_host_func(wah_call_context_t *ctx, void *userdata) {
+    (void)userdata;
+    safe_called = 1;
+    wah_return_i32(ctx, 123);
+}
+
 int main() {
     printf("Testing linkage...\n\n");
 
@@ -2431,6 +2438,58 @@ int main() {
         wah_free_module(&umod);
         wah_free_module(&gmod);
         wah_free_module(&pmod);
+    }
+
+    // Regression: wah_export_func on a module with imports must store a global
+    // index (import_count + local_idx), not a bare local index.
+    printf("Test: programmatic export index accounts for imports (security regression)\n");
+    {
+        // Provider module has one function import and one unexported local function
+        // that calls host.danger. We then programmatically add a safe host export.
+        // The consumer imports provider.safe. Before the fix, the bare local index
+        // caused the consumer to call the unexported wasm function instead of the
+        // safe host callback.
+        wah_module_t provider = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'host'} {'danger'} fn# 0 ]} \
+            funcs {[0]} \
+            code {[ {[] call 0 end } ]}"));
+
+        assert_ok(wah_export_func(&provider, "safe", "() -> i32", safe_host_func, NULL, NULL));
+
+        // Consumer calls provider.safe.
+        wah_module_t consumer = {0};
+        assert_ok(wah_parse_module_from_spec(&consumer, "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'provider'} {'safe'} fn# 0 ]} \
+            funcs {[0]} \
+            exports {[ {'run'} fn# 1 ]} \
+            code {[ {[] call 0 end } ]}"));
+
+        wah_module_t host_mod = {0};
+        wah_new_module(&host_mod, NULL);
+        wah_export_func(&host_mod, "danger", "() -> i32", danger_host_func, NULL, NULL);
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &consumer, NULL));
+        assert_ok(wah_link_module(&ctx, "provider", &provider));
+        assert_ok(wah_link_module(&ctx, "host", &host_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        danger_called = 0;
+        safe_called = 0;
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ctx, "run", NULL, 0, &result));
+
+        assert_eq_i32(safe_called, 1);
+        assert_eq_i32(danger_called, 0);
+        assert_eq_i32(result.i32, 123);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&consumer);
+        wah_free_module(&provider);
+        wah_free_module(&host_mod);
     }
 
     printf("All linkage tests passed!\n");
