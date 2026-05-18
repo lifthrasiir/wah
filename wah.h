@@ -11064,11 +11064,15 @@ static wah_error_t wah_table_grow_internal(
     fctx->tables[table_idx].size = new_size;
     wah_budget_charge(ctx, delta_bytes);
 
+    wah_exec_context_t *owner_ctx = owner;
+    uint32_t owner_idx = table_idx;
     if (fctx->tables[table_idx].import_ctx) {
         wah_exec_context_t *src = fctx->tables[table_idx].import_ctx;
         uint32_t src_idx = fctx->tables[table_idx].import_idx;
         if (fctx->tables[table_idx].is_imported) {
             wah_budget_charge(src, delta_bytes);
+            owner_ctx = src;
+            owner_idx = src_idx;
         }
         src->tables[src_idx].entries = new_table;
         src->tables[src_idx].size = new_size;
@@ -11078,6 +11082,18 @@ static wah_error_t wah_table_grow_internal(
                 fctx->tables[j].import_idx == src_idx) {
                 fctx->tables[j].entries = new_table;
                 fctx->tables[j].size = new_size;
+            }
+        }
+    }
+    for (uint32_t m = 0; m < ctx->linked_module_count; m++) {
+        wah_exec_context_t *lctx = ctx->linked_modules[m].ctx;
+        if (!lctx || lctx == fctx) continue;
+        for (uint32_t j = 0; j < lctx->table_count; j++) {
+            if (lctx->tables[j].is_imported &&
+                lctx->tables[j].import_ctx == owner_ctx &&
+                lctx->tables[j].import_idx == owner_idx) {
+                lctx->tables[j].entries = new_table;
+                lctx->tables[j].size = new_size;
             }
         }
     }
@@ -11123,11 +11139,15 @@ static bool wah_memory_grow_internal(
 
     wah_budget_charge(ctx, delta_bytes);
     fctx->memories[mem_idx].size = (uint64_t)new_memory_size;
+    wah_exec_context_t *owner_ctx = owner;
+    uint32_t owner_idx = mem_idx;
     if (fctx->memories[mem_idx].import_ctx) {
         wah_exec_context_t *src = fctx->memories[mem_idx].import_ctx;
         uint32_t src_idx = fctx->memories[mem_idx].import_idx;
         if (fctx->memories[mem_idx].is_imported) {
             wah_budget_charge(src, delta_bytes);
+            owner_ctx = src;
+            owner_idx = src_idx;
         }
         src->memories[src_idx].data = fctx->memories[mem_idx].data;
         src->memories[src_idx].size = fctx->memories[mem_idx].size;
@@ -11144,6 +11164,22 @@ static bool wah_memory_grow_internal(
                 if (j == 0) {
                     fctx->memory_base = fctx->memories[0].data;
                     fctx->memory_size = fctx->memories[0].size;
+                }
+            }
+        }
+    }
+    for (uint32_t m = 0; m < ctx->linked_module_count; m++) {
+        wah_exec_context_t *lctx = ctx->linked_modules[m].ctx;
+        if (!lctx || lctx == fctx) continue;
+        for (uint32_t j = 0; j < lctx->memory_count; j++) {
+            if (lctx->memories[j].is_imported &&
+                lctx->memories[j].import_ctx == owner_ctx &&
+                lctx->memories[j].import_idx == owner_idx) {
+                lctx->memories[j].data = fctx->memories[mem_idx].data;
+                lctx->memories[j].size = (uint64_t)new_memory_size;
+                if (j == 0) {
+                    lctx->memory_base = lctx->memories[0].data;
+                    lctx->memory_size = lctx->memories[0].size;
                 }
             }
         }

@@ -1903,6 +1903,59 @@ int main() {
         wah_free_module(&provider);
     }
 
+    // Regression: table.grow must propagate to linked module internal contexts (UAF).
+    printf("Test: table.grow propagates to linked module internal contexts\n");
+    {
+        // Primary module: owns a table, exports it and a grow function.
+        // Also imports "linked.size" to read the table size from the linked module.
+        const char *primary_spec = "wasm \
+            types {[ fn [i32] [i32], fn [] [i32] ]} \
+            imports {[ {'linked'} {'size'} fn# 1 ]} \
+            funcs {[ 0, 1 ]} \
+            tables {[ funcref limits.i32/2 1 100 ]} \
+            exports {[ {'tbl'} table# 0, {'grow'} fn# 1, {'linked_size'} fn# 2 ]} \
+            code {[ \
+                {[] ref.null funcref local.get 0 table.grow 0 end }, \
+                {[] call 0 end } \
+            ]}";
+
+        // Linked WASM module: imports "primary.tbl", exports table.size.
+        const char *linked_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'primary'} {'tbl'} table# funcref limits.i32/2 1 100 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'size'} fn# 0 ]} \
+            code {[ {[] table.size 0 end } ]}";
+
+        wah_module_t primary_mod = {0}, linked_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+        assert_ok(wah_parse_module_from_spec(&linked_mod, linked_spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary_mod, NULL));
+        assert_ok(wah_link_module(&ctx, "linked", &linked_mod));
+        assert_ok(wah_link_module(&ctx, "primary", &primary_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        // linked_size (calls into linked module) should report size 1.
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ctx, "linked_size", NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+
+        // Grow the table by 5. Old size should be 1.
+        wah_value_t grow_arg = {.i32 = 5};
+        assert_ok(wah_call_by_name(&ctx, "grow", &grow_arg, 1, &result));
+        assert_eq_i32(result.i32, 1);
+
+        // Linked module must see new size = 6 (would UAF before fix).
+        assert_ok(wah_call_by_name(&ctx, "linked_size", NULL, 0, &result));
+        assert_eq_i32(result.i32, 6);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&linked_mod);
+        wah_free_module(&primary_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
