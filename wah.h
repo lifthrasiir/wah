@@ -8507,11 +8507,57 @@ static void wah_bind_function_import_slot(
 ) {
     *slot = (wah_function_holder_t){ .header = (wah_gc_object_t)WAH_FUNCREF_HEADER, .func = *src };
     slot->func.global_idx = exp->index;
+    slot->func.fn_module = provider;
     if (!src->is_host) {
-        slot->func.fn_module = provider;
         slot->func.local_idx = provider_local_idx;
         slot->func.fn_ctx = provider_ctx;
     }
+}
+
+#define WAH_REEXPORT_MAX_DEPTH 64
+
+// Resolve a function export that may be a re-exported import. Follows the
+// import chain across linked modules until a local function is found, or uses
+// an already-resolved slot from an instantiated linked context.
+static wah_error_t wah_resolve_function_export(
+    wah_exec_context_t *ctx,
+    const wah_module_t *linked, wah_exec_context_t *linked_ctx, uint32_t func_idx,
+    const wah_module_t **out_provider, wah_exec_context_t **out_provider_ctx,
+    uint32_t *out_local_idx, const wah_function_t **out_src, uint32_t *out_global_idx
+) {
+    for (int depth = 0; depth < WAH_REEXPORT_MAX_DEPTH; depth++) {
+        if (func_idx >= linked->import_function_count) {
+            uint32_t local_idx = func_idx - linked->import_function_count;
+            WAH_ENSURE(local_idx < linked->local_function_count, WAH_ERROR_LINK_FAILED);
+            *out_provider = linked;
+            *out_provider_ctx = linked_ctx;
+            *out_local_idx = local_idx;
+            *out_src = &linked->functions[local_idx].func;
+            *out_global_idx = func_idx;
+            return WAH_OK;
+        }
+        if (linked_ctx && func_idx < linked_ctx->function_table_count) {
+            wah_function_holder_t *resolved = &linked_ctx->function_table[func_idx];
+            if (resolved->func.fn_module || resolved->func.is_host) {
+                *out_provider = resolved->func.fn_module;
+                *out_provider_ctx = resolved->func.fn_ctx;
+                *out_local_idx = resolved->func.local_idx;
+                *out_src = &resolved->func;
+                *out_global_idx = resolved->func.global_idx;
+                return WAH_OK;
+            }
+        }
+        wah_func_import_t *fi = &linked->func_imports[func_idx];
+        const wah_module_t *next = NULL;
+        wah_exec_context_t *next_ctx = NULL;
+        WAH_ENSURE(wah_find_linked_module(ctx, &fi->name, &next, &next_ctx, NULL), WAH_ERROR_LINK_FAILED);
+        const wah_export_t *exp = wah_find_export(next, 0, &fi->name);
+        WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
+        linked = next;
+        linked_ctx = next_ctx;
+        func_idx = exp->index;
+    }
+    return WAH_ERROR_TOO_LARGE;
 }
 
 static wah_error_t wah_bind_memory_import_slot(
@@ -16038,17 +16084,15 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
         const wah_export_t *exp = wah_find_export(linked, 0, &fi->name);
         WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
 
-        // exp->index is the global function index in the linked module.
-        // For host-only modules (import_function_count=0), global == local (functions[] index).
-        uint32_t linked_import_count = linked->import_function_count;
-        WAH_ENSURE_GOTO(exp->index >= linked_import_count, WAH_ERROR_LINK_FAILED, cleanup);
-        uint32_t linked_local_idx = exp->index - linked_import_count;
-        WAH_ENSURE_GOTO(linked_local_idx < linked->local_function_count, WAH_ERROR_LINK_FAILED, cleanup);
+        const wah_module_t *provider = NULL;
+        wah_exec_context_t *provider_ctx = NULL;
+        uint32_t provider_local_idx = 0, provider_global_idx = 0;
+        const wah_function_t *src = NULL;
+        WAH_CHECK_GOTO(wah_resolve_function_export(ctx, linked, fi_linked_ctx, exp->index, &provider, &provider_ctx,
+                                                   &provider_local_idx, &src, &provider_global_idx), cleanup);
 
-        const wah_function_t *src = &linked->functions[linked_local_idx].func;
-
-        WAH_CHECK_GOTO(wah_validate_function_import_type(module, fi->type_index, linked, linked_local_idx, src), cleanup);
-        wah_bind_function_import_slot(&ctx->function_table[i], linked, fi_linked_ctx, exp, linked_local_idx, src);
+        WAH_CHECK_GOTO(wah_validate_function_import_type(module, fi->type_index, provider, provider_local_idx, src), cleanup);
+        wah_bind_function_import_slot(&ctx->function_table[i], provider, provider_ctx, exp, provider_local_idx, src);
     }
 
     // Resolve global imports from linked modules
@@ -16460,18 +16504,13 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     WAH_ENSURE_GOTO(local_k < linked->wasm_function_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
                     ctx->globals[slot].ref = wah_func_to_ref(&linked->functions[local_k].func);
                 } else {
-                    // ref.func to linked module's own import: resolve from another linked module
-                    wah_func_import_t *fi = &linked->func_imports[fidx];
-                    const wah_module_t *provider = NULL;
-                    wah_find_linked_module(ctx, &fi->name, &provider, NULL, NULL);
-                    WAH_ENSURE_GOTO(provider != NULL, WAH_ERROR_LINK_FAILED, cleanup);
-                    const wah_export_t *exp = wah_find_export(provider, WAH_KIND_FUNCTION, &fi->name);
-                    WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
-                    uint32_t provider_import_count = provider->import_function_count;
-                    WAH_ENSURE_GOTO(exp->index >= provider_import_count, WAH_ERROR_LINK_FAILED, cleanup);
-                    uint32_t provider_local_idx = exp->index - provider_import_count;
-                    WAH_ENSURE_GOTO(provider_local_idx < provider->local_function_count, WAH_ERROR_LINK_FAILED, cleanup);
-                    ctx->globals[slot].ref = wah_func_to_ref(&provider->functions[provider_local_idx].func);
+                    const wah_module_t *func_provider = NULL;
+                    wah_exec_context_t *func_provider_ctx = NULL;
+                    uint32_t func_local_idx = 0, func_global_idx = 0;
+                    const wah_function_t *func_src = NULL;
+                    WAH_CHECK_GOTO(wah_resolve_function_export(ctx, linked, NULL, fidx, &func_provider, &func_provider_ctx,
+                                                               &func_local_idx, &func_src, &func_global_idx), cleanup);
+                    ctx->globals[slot].ref = wah_func_to_ref((wah_function_t *)func_src);
                 }
             }
         }
@@ -16716,15 +16755,16 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
                     WAH_ENSURE_GOTO(found && provider != NULL, WAH_ERROR_LINK_FAILED, cleanup);
                     const wah_export_t *exp = wah_find_export(provider, 0, &lfi->name);
                     WAH_ENSURE_GOTO(exp != NULL, WAH_ERROR_LINK_FAILED, cleanup);
-                    uint32_t provider_import_count = provider->import_function_count;
-                    WAH_ENSURE_GOTO(exp->index >= provider_import_count, WAH_ERROR_LINK_FAILED, cleanup);
-                    uint32_t provider_local_idx = exp->index - provider_import_count;
-                    WAH_ENSURE_GOTO(provider_local_idx < provider->local_function_count, WAH_ERROR_LINK_FAILED, cleanup);
-                    const wah_function_t *src = &provider->functions[provider_local_idx].func;
+                    const wah_module_t *actual_provider = NULL;
+                    wah_exec_context_t *actual_ctx = NULL;
+                    uint32_t actual_local_idx = 0, actual_global_idx = 0;
+                    const wah_function_t *src = NULL;
+                    WAH_CHECK_GOTO(wah_resolve_function_export(ctx, provider, provider_ctx, exp->index, &actual_provider,
+                                                               &actual_ctx, &actual_local_idx, &src, &actual_global_idx), cleanup);
                     WAH_CHECK_GOTO(wah_validate_function_import_type(lmod, lfi->type_index,
-                                                                     provider, provider_local_idx, src), cleanup);
+                                                                     actual_provider, actual_local_idx, src), cleanup);
                     wah_bind_function_import_slot(&ictx->function_table[fi],
-                                                  provider, provider_ctx, exp, provider_local_idx, src);
+                                                  actual_provider, actual_ctx, exp, actual_local_idx, src);
                 }
                 for (uint32_t fi = 0; fi < lmod->local_function_count; fi++) {
                     ictx->function_table[lmod_ic + fi] = lmod->functions[fi];

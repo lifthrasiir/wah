@@ -2504,16 +2504,12 @@ int main() {
             exports {[ {'mem'} mem# 0, {'grow'} fn# 0 ]} \
             code {[ {[] local.get 0 memory.grow 0 end } ]}";
 
-        // Middle: imports memory and grow from provider, re-exports memory
-        // and wraps grow in a local function (re-exporting imported funcs is
-        // not supported by the linker).
+        // Middle: imports memory and grow from provider, re-exports both directly.
         const char *middle_spec = "wasm \
             types {[ fn [i32] [i32] ]} \
             imports {[ {'provider'} {'mem'} mem# limits.i32/2 1 100, \
                        {'provider'} {'grow'} fn# 0 ]} \
-            funcs {[ 0 ]} \
-            exports {[ {'mem'} mem# 0, {'grow'} fn# 1 ]} \
-            code {[ {[] local.get 0 call 0 end } ]}";
+            exports {[ {'mem'} mem# 0, {'grow'} fn# 0 ]}";
 
         // User: imports memory and grow from middle, stores/loads/grows.
         const char *user_spec = "wasm \
@@ -2581,15 +2577,12 @@ int main() {
             exports {[ {'tbl'} table# 0, {'grow'} fn# 0 ]} \
             code {[ {[] ref.null funcref local.get 0 table.grow 0 end } ]}";
 
-        // Middle: imports table and grow from provider, re-exports table
-        // and wraps grow in a local function.
+        // Middle: imports table and grow from provider, re-exports both directly.
         const char *middle_spec = "wasm \
             types {[ fn [i32] [i32] ]} \
             imports {[ {'provider'} {'tbl'} table# funcref limits.i32/2 1 100, \
                        {'provider'} {'grow'} fn# 0 ]} \
-            funcs {[ 0 ]} \
-            exports {[ {'tbl'} table# 0, {'grow'} fn# 1 ]} \
-            code {[ {[] local.get 0 call 0 end } ]}";
+            exports {[ {'tbl'} table# 0, {'grow'} fn# 0 ]}";
 
         // User: imports table and grow from middle, checks size after grow.
         const char *user_spec = "wasm \
@@ -2639,6 +2632,115 @@ int main() {
         wah_free_module(&user_mod);
         wah_free_module(&middle_mod);
         wah_free_module(&provider_mod);
+    }
+
+    // Re-exported imported function via wah_link_context.
+    printf("Test: re-exported imported function via link_context\n");
+    {
+        // Provider: exports an add function.
+        const char *provider_spec = "wasm \
+            types {[ fn [i32, i32] [i32] ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'add'} fn# 0 ]} \
+            code {[ {[] local.get 0 local.get 1 i32.add end } ]}";
+
+        // Middle: imports add from provider, re-exports it directly.
+        const char *middle_spec = "wasm \
+            types {[ fn [i32, i32] [i32] ]} \
+            imports {[ {'provider'} {'add'} fn# 0 ]} \
+            exports {[ {'add'} fn# 0 ]}";
+
+        // User: imports add from middle.
+        const char *user_spec = "wasm \
+            types {[ fn [i32, i32] [i32] ]} \
+            imports {[ {'middle'} {'add'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'call_add'} fn# 1 ]} \
+            code {[ {[] local.get 0 local.get 1 call 0 end } ]}";
+
+        wah_module_t provider_mod = {0}, middle_mod = {0}, user_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&provider_mod, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&middle_mod, middle_spec));
+        assert_ok(wah_parse_module_from_spec(&user_mod, user_spec));
+
+        wah_exec_context_t provider_ctx = {0};
+        assert_ok(wah_new_exec_context(&provider_ctx, &provider_mod, NULL));
+        assert_ok(wah_instantiate(&provider_ctx));
+
+        wah_exec_context_t middle_ctx = {0};
+        assert_ok(wah_new_exec_context(&middle_ctx, &middle_mod, NULL));
+        assert_ok(wah_link_context(&middle_ctx, "provider", &provider_ctx));
+        assert_ok(wah_instantiate(&middle_ctx));
+
+        wah_exec_context_t user_ctx = {0};
+        assert_ok(wah_new_exec_context(&user_ctx, &user_mod, NULL));
+        assert_ok(wah_link_context(&user_ctx, "middle", &middle_ctx));
+        assert_ok(wah_instantiate(&user_ctx));
+
+        wah_value_t args[2] = {{.i32 = 10}, {.i32 = 32}};
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&user_ctx, "call_add", args, 2, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_free_exec_context(&user_ctx);
+        wah_free_exec_context(&middle_ctx);
+        wah_free_exec_context(&provider_ctx);
+        wah_free_module(&user_mod);
+        wah_free_module(&middle_mod);
+        wah_free_module(&provider_mod);
+    }
+
+    // Re-exported imported host function via wah_link_context.
+    printf("Test: re-exported imported host function via link_context\n");
+    {
+        wah_module_t host_mod = {0};
+        assert_ok(wah_new_module(&host_mod, NULL));
+        assert_ok(wah_export_func(&host_mod, "func", "(i32, i32) -> (i32)", simple_host_func, NULL, NULL));
+
+        // Middle: imports func from host, re-exports it.
+        const char *middle_spec = "wasm \
+            types {[ fn [i32, i32] [i32] ]} \
+            imports {[ {'host'} {'func'} fn# 0 ]} \
+            exports {[ {'func'} fn# 0 ]}";
+
+        // User: imports func from middle.
+        const char *user_spec = "wasm \
+            types {[ fn [i32, i32] [i32] ]} \
+            imports {[ {'middle'} {'func'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'call_func'} fn# 1 ]} \
+            code {[ {[] local.get 0 local.get 1 call 0 end } ]}";
+
+        wah_module_t middle_mod = {0}, user_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&middle_mod, middle_spec));
+        assert_ok(wah_parse_module_from_spec(&user_mod, user_spec));
+
+        wah_exec_context_t host_ctx = {0};
+        assert_ok(wah_new_exec_context(&host_ctx, &host_mod, NULL));
+        assert_ok(wah_instantiate(&host_ctx));
+
+        wah_exec_context_t middle_ctx = {0};
+        assert_ok(wah_new_exec_context(&middle_ctx, &middle_mod, NULL));
+        assert_ok(wah_link_context(&middle_ctx, "host", &host_ctx));
+        assert_ok(wah_instantiate(&middle_ctx));
+
+        wah_exec_context_t user_ctx = {0};
+        assert_ok(wah_new_exec_context(&user_ctx, &user_mod, NULL));
+        assert_ok(wah_link_context(&user_ctx, "middle", &middle_ctx));
+        assert_ok(wah_instantiate(&user_ctx));
+
+        host_func_called = 0;
+        wah_value_t args[2] = {{.i32 = 5}, {.i32 = 7}};
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&user_ctx, "call_func", args, 2, &result));
+        assert_eq_i32(host_func_called, 1);
+
+        wah_free_exec_context(&user_ctx);
+        wah_free_exec_context(&middle_ctx);
+        wah_free_exec_context(&host_ctx);
+        wah_free_module(&user_mod);
+        wah_free_module(&middle_mod);
+        wah_free_module(&host_mod);
     }
 
     printf("All linkage tests passed!\n");
