@@ -2005,6 +2005,119 @@ int main() {
         wah_free_module(&primary_mod);
     }
 
+    // Regression: memory.grow on linked-owned memory must propagate to primary ctx.
+    // Uses wah_link_context so the primary module holds an imported alias to the
+    // linked module's local memory.
+    printf("Test: memory.grow on linked-owned memory propagates to primary (link_context)\n");
+    {
+        const char *linked_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            funcs {[ 0 ]} \
+            memories {[ limits.i32/2 1 100 ]} \
+            exports {[ {'mem'} mem# 0, {'grow'} fn# 0 ]} \
+            code {[ {[] local.get 0 memory.grow 0 end } ]}";
+
+        const char *primary_spec = "wasm \
+            types {[ fn [i32] [i32], fn [i32, i32] [], fn [i32] [i32] ]} \
+            imports {[ {'linked'} {'mem'} mem# limits.i32/2 1 100, \
+                       {'linked'} {'grow'} fn# 0 ]} \
+            funcs {[ 1, 2 ]} \
+            exports {[ {'store'} fn# 1, {'load'} fn# 2, {'do_grow'} fn# 0 ]} \
+            code {[ \
+                {[] local.get 0 local.get 1 i32.store 0 0 end }, \
+                {[] local.get 0 i32.load 0 0 end } \
+            ]}";
+
+        wah_module_t primary_mod = {0}, linked_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&linked_mod, linked_spec));
+        assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+
+        wah_exec_context_t linked_ctx = {0};
+        assert_ok(wah_new_exec_context(&linked_ctx, &linked_mod, NULL));
+        assert_ok(wah_instantiate(&linked_ctx));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary_mod, NULL));
+        assert_ok(wah_link_context(&ctx, "linked", &linked_ctx));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t store_args[2] = {{.i32 = 0}, {.i32 = 0x12345678}};
+        assert_ok(wah_call_by_name(&ctx, "store", store_args, 2, NULL));
+
+        wah_value_t grow_arg = {.i32 = 1};
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ctx, "do_grow", &grow_arg, 1, &result));
+        assert_eq_i32(result.i32, 1);
+
+        store_args[1].i32 = 0x87654321u;
+        assert_ok(wah_call_by_name(&ctx, "store", store_args, 2, NULL));
+        assert_ok(wah_call_by_name(&ctx, "load", &store_args[0], 1, &result));
+        assert_eq_i32(result.i32, (int32_t)0x87654321u);
+
+        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&linked_ctx);
+        wah_free_module(&linked_mod);
+        wah_free_module(&primary_mod);
+    }
+
+    // Regression: table.grow on linked-owned table must propagate to primary ctx.
+    // Uses wah_link_context so linked module has its own instantiated ictx with local tables.
+    printf("Test: table.grow on linked-owned table propagates to primary (link_context)\n");
+    {
+        // Linked module: owns a local table, exports it and a grow function.
+        const char *linked_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/2 1 100 ]} \
+            exports {[ {'tbl'} table# 0, {'grow'} fn# 0 ]} \
+            code {[ {[] ref.null funcref local.get 0 table.grow 0 end } ]}";
+
+        // Primary module: imports the table and grow func from linked module.
+        // Exports "size" (table.size on imported table) and "do_grow" (calls linked grow).
+        const char *primary_spec = "wasm \
+            types {[ fn [] [i32], fn [i32] [i32] ]} \
+            imports {[ {'linked'} {'tbl'} table# funcref limits.i32/2 1 100, \
+                       {'linked'} {'grow'} fn# 1 ]} \
+            funcs {[ 0, 1 ]} \
+            exports {[ {'size'} fn# 1, {'do_grow'} fn# 2 ]} \
+            code {[ \
+                {[] table.size 0 end }, \
+                {[] local.get 0 call 0 end } \
+            ]}";
+
+        wah_module_t primary_mod = {0}, linked_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&linked_mod, linked_spec));
+        assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+
+        // Instantiate the linked module separately, then link via wah_link_context.
+        wah_exec_context_t linked_ctx = {0};
+        assert_ok(wah_new_exec_context(&linked_ctx, &linked_mod, NULL));
+        assert_ok(wah_instantiate(&linked_ctx));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary_mod, NULL));
+        assert_ok(wah_link_context(&ctx, "linked", &linked_ctx));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ctx, "size", NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+
+        // Grow via linked module. Old size should be 1.
+        wah_value_t grow_arg = {.i32 = 5};
+        assert_ok(wah_call_by_name(&ctx, "do_grow", &grow_arg, 1, &result));
+        assert_eq_i32(result.i32, 1);
+
+        // Primary must see new size = 6 (stale pointer before fix).
+        assert_ok(wah_call_by_name(&ctx, "size", NULL, 0, &result));
+        assert_eq_i32(result.i32, 6);
+
+        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&linked_ctx);
+        wah_free_module(&linked_mod);
+        wah_free_module(&primary_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

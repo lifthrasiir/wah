@@ -11062,7 +11062,7 @@ static wah_error_t wah_table_grow_internal(
     }
 
     wah_exec_context_t *owner = (fctx->tables[table_idx].is_imported && fctx->tables[table_idx].import_ctx)
-        ? fctx->tables[table_idx].import_ctx : ctx;
+        ? fctx->tables[table_idx].import_ctx : fctx;
     const wah_alloc_t *grow_alloc = &owner->alloc;
     wah_value_t *new_table = NULL;
     wah_error_t err = wah_malloc(grow_alloc, (size_t)new_size, sizeof(wah_value_t), (void **)&new_table);
@@ -11098,6 +11098,16 @@ static wah_error_t wah_table_grow_internal(
                 fctx->tables[j].import_idx == src_idx) {
                 fctx->tables[j].entries = new_table;
                 fctx->tables[j].size = new_size;
+            }
+        }
+    }
+    if (ctx != fctx) {
+        for (uint32_t j = 0; j < ctx->table_count; j++) {
+            if (ctx->tables[j].is_imported &&
+                ctx->tables[j].import_ctx == owner_ctx &&
+                ctx->tables[j].import_idx == owner_idx) {
+                ctx->tables[j].entries = new_table;
+                ctx->tables[j].size = new_size;
             }
         }
     }
@@ -11180,6 +11190,20 @@ static bool wah_memory_grow_internal(
                 if (j == 0) {
                     fctx->memory_base = fctx->memories[0].data;
                     fctx->memory_size = fctx->memories[0].size;
+                }
+            }
+        }
+    }
+    if (ctx != fctx) {
+        for (uint32_t j = 0; j < ctx->memory_count; j++) {
+            if (ctx->memories[j].is_imported &&
+                ctx->memories[j].import_ctx == owner_ctx &&
+                ctx->memories[j].import_idx == owner_idx) {
+                ctx->memories[j].data = fctx->memories[mem_idx].data;
+                ctx->memories[j].size = (uint64_t)new_memory_size;
+                if (j == 0) {
+                    ctx->memory_base = ctx->memories[0].data;
+                    ctx->memory_size = ctx->memories[0].size;
                 }
             }
         }
