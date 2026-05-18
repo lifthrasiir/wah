@@ -1653,6 +1653,75 @@ int main() {
         printf("  PASSED\n");
     }
 
+    printf("Testing GC root scan includes linked module local tables...\n");
+    {
+        // Linked module "store" has a local anyref table and exports:
+        //   store(anyref) -> ()  : table.set 0, i32.const 0, local.get 0
+        //   load() -> anyref     : table.get 0, i32.const 0
+        // Primary module allocates a struct, calls store, triggers GC, calls load,
+        // then reads struct field. Without the fix, GC sweeps the struct since the
+        // only root is in the linked module's local table.
+        wah_module_t env_mod = {0}, store_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t ctx_lt = {0};
+
+        assert_ok(wah_new_module(&env_mod, NULL));
+        assert_ok(wah_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
+
+        // store_mod: type 0 = fn(anyref)->(), type 1 = fn()->(anyref)
+        // table 0: local anyref table, min 1
+        // func 0 (store): local.get 0, i32.const 0, table.set 0, end
+        // func 1 (load):  i32.const 0, table.get 0, end
+        const char *store_spec = "wasm \
+            types {[fn [anyref] [], fn [] [anyref]]} \
+            funcs {[0, 1]} \
+            tables {[anyref limits.i32/1 1]} \
+            exports {[{'store'} fn# 0, {'load'} fn# 1]} \
+            code {[ \
+                {[] i32.const 0 local.get 0 table.set 0 end}, \
+                {[] i32.const 0 table.get 0 end} \
+            ]}";
+        assert_ok(wah_parse_module_from_spec(&store_mod, store_spec));
+
+        // wasm_mod: type 0 = struct{i32 mut}, type 1 = fn()->(i32)
+        //           type 2 = fn(anyref)->(), type 3 = fn()->(anyref), type 4 = fn()->()
+        // imports: store.store (fn# type 2), store.load (fn# type 3), env.gc (fn# type 4)
+        // func 0: struct.new 0 (i32.const 42) -> call store -> call gc -> call load ->
+        //         ref.cast (ref 0) -> struct.get 0 0 -> return i32
+        const char *wasm_spec = "wasm \
+            types {[struct [i32 mut], fn [] [i32], fn [anyref] [], fn [] [anyref], fn [] []]} \
+            imports {[{'store'} {'store'} fn# 2, {'store'} {'load'} fn# 3, {'env'} {'gc'} fn# 4]} \
+            funcs {[1]} \
+            exports {[{'entry'} fn# 3]} \
+            code {[{[] \
+                i32.const 42 struct.new 0 \
+                call 0 \
+                call 2 \
+                call 1 \
+                ref.cast 0 \
+                struct.get 0 0 \
+                end}]}";
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, wasm_spec));
+
+        assert_ok(wah_new_exec_context(&ctx_lt, &wasm_mod, NULL));
+        assert_ok(wah_link_module(&ctx_lt, "store", &store_mod));
+        assert_ok(wah_link_module(&ctx_lt, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx_lt));
+        assert_ok(wah_instantiate(&ctx_lt));
+
+        ctx_lt.gc->allocation_threshold = 1;
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx_lt, 3, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_free_exec_context(&ctx_lt);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&store_mod);
+        wah_free_module(&env_mod);
+
+        printf("  PASSED\n");
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }

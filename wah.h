@@ -9683,12 +9683,28 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
         g_offset += wah_global_index_limit(linked);
     }
 
-    // 3. Table elements
+    // 3. Table elements (primary module)
     for (uint32_t t = 0; t < ctx->table_count; t++) {
         const wah_table_type_t *tt = wah_table_type(module, t);
         if (WAH_TYPE_IS_REF(tt->elem_type)) {
             for (uint64_t e = 0; e < ctx->tables[t].size; e++) {
                 visitor(&ctx->tables[t].entries[e], userdata);
+            }
+        }
+    }
+
+    // 3b. Table elements (linked module local tables)
+    for (uint32_t m = 0; m < ctx->linked_module_count; m++) {
+        wah_exec_context_t *lctx = ctx->linked_modules[m].ctx;
+        if (!lctx) continue;
+        const wah_module_t *lmod = ctx->linked_modules[m].module;
+        for (uint32_t t = 0; t < lctx->table_count; t++) {
+            if (lctx->tables[t].is_imported) continue;
+            const wah_table_type_t *tt = wah_table_type(lmod, t);
+            if (WAH_TYPE_IS_REF(tt->elem_type)) {
+                for (uint64_t e = 0; e < lctx->tables[t].size; e++) {
+                    visitor(&lctx->tables[t].entries[e], userdata);
+                }
             }
         }
     }
