@@ -16740,6 +16740,8 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                     .globals = go ? ctx->globals + go : ctx->globals, .global_count = wah_global_index_limit(lmod),
                     .gc = ctx->gc, .type_check_cache = ctx->type_check_cache,
                 };
+                ctx->linked_modules[j].ctx = ictx;
+                ctx->linked_modules[j].owns_ctx = true;
             }
             uint32_t lmod_total_memories = lmod->import_memory_count + lmod->memory_count;
             if (lmod_total_memories > 0) {
@@ -16862,8 +16864,6 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                     }
                 }
             }
-            ctx->linked_modules[j].ctx = ictx;
-            ctx->linked_modules[j].owns_ctx = true;
             ictx->is_instantiated = true;
         }
         wah_exec_context_t *ictx = ctx->linked_modules[j].ctx;
