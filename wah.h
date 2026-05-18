@@ -6173,6 +6173,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(wah_type_is_subtype(wah_table_type(vctx->module, table_idx)->elem_type,
                                            WAH_TYPE_FUNCREF, vctx->module), WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(type_idx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(vctx->module->type_defs[type_idx].kind == WAH_COMP_FUNC, WAH_ERROR_VALIDATION_FAILED);
             POP(_(wah_table_type(vctx->module, table_idx)->addr_type));
             const wah_func_type_t *expected_func_type = &vctx->module->types[type_idx];
             WAH_CHECK(wah_validation_pop_func_params(vctx, expected_func_type));
@@ -6211,6 +6212,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(wah_type_is_subtype(wah_table_type(vctx->module, table_idx)->elem_type,
                                            WAH_TYPE_FUNCREF, vctx->module), WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(type_idx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(vctx->module->type_defs[type_idx].kind == WAH_COMP_FUNC, WAH_ERROR_VALIDATION_FAILED);
             POP(_(wah_table_type(vctx->module, table_idx)->addr_type));
             const wah_func_type_t *expected_func_type = &vctx->module->types[type_idx];
             WAH_CHECK(wah_validation_check_return_types(vctx, expected_func_type));
@@ -8425,6 +8427,7 @@ static wah_error_t wah_parse_function_section(const uint8_t **ptr, const uint8_t
     for (uint32_t i = 0; i < count; ++i) {
         WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->function_type_indices[i]));
         WAH_ENSURE(module->function_type_indices[i] < module->type_count, WAH_ERROR_VALIDATION_FAILED);
+        WAH_ENSURE(module->type_defs[module->function_type_indices[i]].kind == WAH_COMP_FUNC, WAH_ERROR_VALIDATION_FAILED);
     }
     return WAH_OK;
 }
@@ -8857,6 +8860,7 @@ static wah_error_t wah_parse_tag_section(const uint8_t **ptr, const uint8_t *sec
         WAH_ENSURE_GOTO(attribute == 0, WAH_ERROR_MALFORMED, cleanup);
         WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &module->tags[i].type_index), cleanup);
         WAH_ENSURE_GOTO(module->tags[i].type_index < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+        WAH_ENSURE_GOTO(module->type_defs[module->tags[i].type_index].kind == WAH_COMP_FUNC, WAH_ERROR_VALIDATION_FAILED, cleanup);
         WAH_ENSURE_GOTO(module->types[module->tags[i].type_index].result_count == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
     }
     return WAH_OK;
@@ -8933,6 +8937,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             import_func_count++;
             WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &type_index), cleanup);
             WAH_ENSURE_GOTO(type_index < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            WAH_ENSURE_GOTO(module->type_defs[type_index].kind == WAH_COMP_FUNC, WAH_ERROR_VALIDATION_FAILED, cleanup);
 
             fi->type_index = type_index;
         } else if (kind == WAH_KIND_TABLE) {
@@ -9030,6 +9035,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             WAH_ENSURE_GOTO(attribute == 0, WAH_ERROR_MALFORMED, cleanup);
             WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &tgi->type_index), cleanup);
             WAH_ENSURE_GOTO(tgi->type_index < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            WAH_ENSURE_GOTO(module->type_defs[tgi->type_index].kind == WAH_COMP_FUNC, WAH_ERROR_VALIDATION_FAILED, cleanup);
             WAH_ENSURE_GOTO(module->types[tgi->type_index].result_count == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
         } else {
             wah_free(alloc, imp_name.module);

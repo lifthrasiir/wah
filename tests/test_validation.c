@@ -796,6 +796,47 @@ static void test_ref_cast_hierarchy_validation() {
     wah_free_module(&m5);
 }
 
+static void test_non_func_type_as_function_type() {
+    printf("Testing non-func type index rejected in function contexts...\n");
+
+    // Function section: struct type used as function type
+    const char *func_section = "wasm \
+        types {[ struct [i64 mut] ]} \
+        funcs {[ 0 ]} \
+        code {[{[] end}]}";
+    wah_module_t m1 = {0};
+    assert_err(wah_parse_module_from_spec(&m1, func_section), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m1);
+
+    // Function import: struct type used as function type
+    const char *func_import = "wasm \
+        types {[ struct [i64 mut] ]} \
+        imports {[ {'m'} {'f'} fn# 0 ]}";
+    wah_module_t m2 = {0};
+    assert_err(wah_parse_module_from_spec(&m2, func_import), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m2);
+
+    // call_indirect: struct type used as call target type
+    const char *call_indirect = "wasm \
+        types {[ struct [i64 mut], fn [] [] ]} \
+        funcs {[ 1 ]} \
+        tables {[ funcref 0 1 ]} \
+        code {[{[] i32.const 0 call_indirect 0 0 end}]}";
+    wah_module_t m3 = {0};
+    assert_err(wah_parse_module_from_spec(&m3, call_indirect), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m3);
+
+    // Tag section: struct type used as tag type
+    const char *tag_section = "wasm \
+        types {[ struct [i64 mut] ]} \
+        tags {[ 0 0 ]}";
+    wah_module_t m4 = {0};
+    wah_parse_options_t opts = {0};
+    opts.features = WAH_FEATURE_ALL;
+    assert_err(wah_parse_module_from_spec_ex(&m4, &opts, tag_section), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&m4);
+}
+
 int main() {
     test_block_type_not_skipped();
     test_if_complex_block_type();
@@ -817,6 +858,7 @@ int main() {
     test_non_nullable_field_store_validation();
     test_packed_field_get_validation();
     test_ref_cast_hierarchy_validation();
+    test_non_func_type_as_function_type();
     printf("All validation tests passed!\n");
     return 0;
 }
