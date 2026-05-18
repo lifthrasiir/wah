@@ -784,7 +784,7 @@ private:
         wah_error_t stop_reason;
         uint32_t entry_result_count;
         uint32_t entry_param_count;
-        const struct wah_function_s *entry_host_fn;
+        const struct wah_function_s *entry_fn;
         wah_value_t *base_sp;
         uint32_t base_call_depth;
         uint32_t base_handler_depth;
@@ -14861,7 +14861,7 @@ static wah_error_t wah_start_internal(
         ctx->sp += result_count;
         ctx->lifecycle.entry_param_count = param_count;
         ctx->lifecycle.entry_result_count = result_count;
-        ctx->lifecycle.entry_host_fn = fn;
+        ctx->lifecycle.entry_fn = fn;
         ctx->lifecycle.state = WAH_EXEC_SUSPENDED;
         ctx->lifecycle.stop_reason = WAH_OK;
         return WAH_OK;
@@ -14872,6 +14872,7 @@ static wah_error_t wah_start_internal(
     const wah_func_type_t *func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
     WAH_ENSURE(param_count == func_type->param_count, WAH_ERROR_VALIDATION_FAILED);
     ctx->lifecycle.entry_result_count = func_type->result_count;
+    ctx->lifecycle.entry_fn = fn;
 
     const wah_code_body_t *start_code = &fn_module->code_bodies[local_idx];
     wah_value_t *preflight_top = ctx->sp + param_count + start_code->max_frame_slots;
@@ -14906,8 +14907,8 @@ static wah_error_t wah_resume_internal(wah_exec_context_t *ctx) {
     ctx->lifecycle.state = WAH_EXEC_RUNNING;
     wah_timer_set_armed(ctx, true);
     wah_error_t err;
-    if (ctx->lifecycle.entry_host_fn) {
-        const wah_function_t *fn = ctx->lifecycle.entry_host_fn;
+    if (ctx->lifecycle.entry_fn && ctx->lifecycle.entry_fn->is_host) {
+        const wah_function_t *fn = ctx->lifecycle.entry_fn;
         wah_value_t *params = ctx->lifecycle.base_sp;
         wah_value_t *results = ctx->lifecycle.base_sp + ctx->lifecycle.entry_param_count;
         err = wah_call_host_function_internal(ctx, fn, params, ctx->lifecycle.entry_param_count, results);
@@ -14929,6 +14930,23 @@ static wah_error_t wah_resume_internal(wah_exec_context_t *ctx) {
     return err;
 }
 
+static void *wah_sanitize_host_ref(void *ref) {
+    if (ref != NULL && (wah_ref_is_i31(ref) || wah_gc_header(ref)->repr_id != WAH_REPR_HOST)) {
+        return (void *)(~(uintptr_t)0);
+    }
+    return ref;
+}
+
+static wah_value_t wah_sanitize_public_result(const wah_module_t *type_module,
+                                              wah_type_t result_type,
+                                              wah_value_t value) {
+    if (WAH_TYPE_IS_REF(result_type) &&
+        wah_type_hierarchy_top(result_type, type_module) == WAH_TYPE_EXTERN) {
+        value.ref = wah_sanitize_host_ref(value.ref);
+    }
+    return value;
+}
+
 static wah_error_t wah_finish_internal(
     wah_exec_context_t *ctx, wah_value_t *results,
     uint32_t max_result_count, uint32_t *actual_result_count
@@ -14936,13 +14954,30 @@ static wah_error_t wah_finish_internal(
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_FINISHED, WAH_ERROR_MISUSE);
     uint32_t result_count = ctx->lifecycle.entry_result_count;
     uint32_t copy_count = result_count < max_result_count ? result_count : max_result_count;
+    const wah_function_t *entry_fn = ctx->lifecycle.entry_fn;
+    const wah_type_t *result_types = NULL;
+    const wah_module_t *result_module = NULL;
+    if (entry_fn) {
+        if (entry_fn->is_host) {
+            result_types = entry_fn->result_types;
+            result_module = entry_fn->fn_module;
+        } else {
+            result_module = entry_fn->fn_module ? entry_fn->fn_module : ctx->module;
+            uint32_t type_idx = result_module->function_type_indices[entry_fn->local_idx];
+            result_types = result_module->types[type_idx].result_types;
+        }
+    }
 
     if (results) {
         if (result_count == 0 && max_result_count > 0) {
             memset(results, 0, sizeof(wah_value_t));
         } else if (copy_count > 0 && ctx->sp >= ctx->lifecycle.base_sp + result_count) {
             for (uint32_t i = 0; i < copy_count; ++i) {
-                results[i] = *(ctx->sp - result_count + i);
+                wah_value_t value = *(ctx->sp - result_count + i);
+                if (result_types && i < result_count) {
+                    value = wah_sanitize_public_result(result_module, result_types[i], value);
+                }
+                results[i] = value;
             }
         }
     }
@@ -15573,12 +15608,8 @@ void *wah_param_ref(const wah_call_context_t *ctx, size_t index) {
     WAH_ASSERT(ctx && "Call context is NULL");
     WAH_ASSERT(index < ctx->nparams && "Parameter index out of bounds");
     WAH_ASSERT(WAH_TYPE_IS_REF(ctx->param_types[index]) && "Parameter type mismatch");
-    void *ref = ctx->params[index].ref;
-    if (ref != NULL && (wah_ref_is_i31(ref) || wah_gc_header(ref)->repr_id != WAH_REPR_HOST)) {
-        // Due to the type confusion concern, we mask any non-host non-null pointer with a likely-invalid one.
-        return (void*)(~(uintptr_t)0);
-    }
-    return ref;
+    // Due to the type confusion concern, mask any non-host non-null pointer with a likely-invalid one.
+    return wah_sanitize_host_ref(ctx->params[index].ref);
 }
 
 size_t wah_result_count(const wah_call_context_t *ctx) {

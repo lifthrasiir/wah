@@ -230,9 +230,53 @@ static void host_externref_is_null(wah_call_context_t *ctx, void *userdata) {
     wah_return_i32(ctx, wah_param_ref(ctx, 0) == NULL ? 1 : 0);
 }
 
+static void *host_externref_value;
 static void host_return_externref(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
-    wah_result_ref(ctx, 0, (void *)(uintptr_t)0xDEADBEEF);
+    wah_result_ref(ctx, 0, host_externref_value);
+}
+
+static void test_public_externref_return_masks_wasm_gc_refs() {
+    printf("Running test_public_externref_return_masks_wasm_gc_refs...\n");
+
+    const void *masked = (void *)(~(uintptr_t)0);
+    const char *spec = "wasm \
+        types {[ struct [i32 mut], fn [] [externref], fn [] [externref, externref] ]} \
+        funcs {[ 1, 2 ]} \
+        exports {[ {'single'} fn# 0, {'multi'} fn# 1 ]} \
+        code {[ \
+            {[] struct.new_default 0 extern.convert_any end }, \
+            {[] struct.new_default 0 extern.convert_any struct.new_default 0 extern.convert_any end } \
+        ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
+
+    wah_value_t single = {0};
+    assert_ok(wah_call_by_name(&ctx, "single", NULL, 0, &single));
+    assert_eq_ptr(single.ref, masked);
+
+    wah_value_t multi[2] = {{0}};
+    uint32_t actual = 0;
+    wah_export_desc_t desc;
+    assert_ok(wah_export_by_name(&module, "multi", &desc));
+    assert_ok(wah_call_multi(&ctx, desc.index, NULL, 0, multi, 2, &actual));
+    assert_eq_u32(actual, 2);
+    assert_eq_ptr(multi[0].ref, masked);
+    assert_eq_ptr(multi[1].ref, masked);
+
+    wah_value_t resumed = {0};
+    assert_ok(wah_start(&ctx, 0, NULL, 0));
+    assert_ok(wah_resume(&ctx));
+    assert_ok(wah_finish(&ctx, &resumed, 1, &actual));
+    assert_eq_u32(actual, 1);
+    assert_eq_ptr(resumed.ref, masked);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&module);
 }
 
 static void test_externref_host_roundtrip() {
@@ -272,6 +316,8 @@ static void test_externref_host_roundtrip() {
     assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "host", &host_mod));
     assert_ok(wah_instantiate(&ctx));
+    host_externref_value = wah_gc_alloc_host(&ctx, 1);
+    assert_not_null(host_externref_value);
 
     wah_value_t result;
 
@@ -326,6 +372,8 @@ static void test_externref_table_host_boundary() {
     assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "host", &host_mod));
     assert_ok(wah_instantiate(&ctx));
+    host_externref_value = wah_gc_alloc_host(&ctx, 1);
+    assert_not_null(host_externref_value);
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
@@ -372,6 +420,8 @@ static void test_externref_global_host_boundary() {
     assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
     assert_ok(wah_link_module(&ctx, "host", &host_mod));
     assert_ok(wah_instantiate(&ctx));
+    host_externref_value = wah_gc_alloc_host(&ctx, 1);
+    assert_not_null(host_externref_value);
 
     wah_value_t result;
     assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
@@ -403,6 +453,8 @@ static void test_externref_ref_test() {
         assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
         assert_ok(wah_link_module(&ctx, "host", &host_mod));
         assert_ok(wah_instantiate(&ctx));
+        host_externref_value = wah_gc_alloc_host(&ctx, 1);
+        assert_not_null(host_externref_value);
         wah_value_t result;
         assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
         assert_eq_i32(result.i32, 1);
@@ -471,6 +523,8 @@ static void test_externref_ref_cast() {
         assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
         assert_ok(wah_link_module(&ctx, "host", &host_mod));
         assert_ok(wah_instantiate(&ctx));
+        host_externref_value = wah_gc_alloc_host(&ctx, 1);
+        assert_not_null(host_externref_value);
         wah_value_t result;
         assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
         assert_eq_i32(result.i32, 0);
@@ -523,6 +577,8 @@ static void test_externref_ref_cast() {
         assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
         assert_ok(wah_link_module(&ctx, "host", &host_mod));
         assert_ok(wah_instantiate(&ctx));
+        host_externref_value = wah_gc_alloc_host(&ctx, 1);
+        assert_not_null(host_externref_value);
         wah_value_t result;
         assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
         assert_eq_i32(result.i32, 1);
@@ -1770,6 +1826,7 @@ int main() {
 
     // --- Host-boundary behavior for externref ---
 
+    test_public_externref_return_masks_wasm_gc_refs();
     test_externref_host_roundtrip();
     test_externref_table_host_boundary();
     test_externref_global_host_boundary();
