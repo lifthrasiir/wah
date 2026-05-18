@@ -2492,6 +2492,155 @@ int main() {
         wah_free_module(&host_mod);
     }
 
+    // Regression: memory.grow alias must propagate through re-exported imports.
+    // provider -> middle -> user chain; grow on provider must update user's pointer.
+    printf("Test: memory.grow propagates through re-exported import chain (UAF regression)\n");
+    {
+        // Provider: owns memory, exports it and a grow function.
+        const char *provider_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            funcs {[ 0 ]} \
+            memories {[ limits.i32/2 1 100 ]} \
+            exports {[ {'mem'} mem# 0, {'grow'} fn# 0 ]} \
+            code {[ {[] local.get 0 memory.grow 0 end } ]}";
+
+        // Middle: imports memory and grow from provider, re-exports memory
+        // and wraps grow in a local function (re-exporting imported funcs is
+        // not supported by the linker).
+        const char *middle_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            imports {[ {'provider'} {'mem'} mem# limits.i32/2 1 100, \
+                       {'provider'} {'grow'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'mem'} mem# 0, {'grow'} fn# 1 ]} \
+            code {[ {[] local.get 0 call 0 end } ]}";
+
+        // User: imports memory and grow from middle, stores/loads/grows.
+        const char *user_spec = "wasm \
+            types {[ fn [i32] [i32], fn [i32, i32] [], fn [i32] [i32] ]} \
+            imports {[ {'middle'} {'mem'} mem# limits.i32/2 1 100, \
+                       {'middle'} {'grow'} fn# 0 ]} \
+            funcs {[ 1, 2 ]} \
+            exports {[ {'store'} fn# 1, {'load'} fn# 2, {'do_grow'} fn# 0 ]} \
+            code {[ \
+                {[] local.get 0 local.get 1 i32.store 0 0 end }, \
+                {[] local.get 0 i32.load 0 0 end } \
+            ]}";
+
+        wah_module_t provider_mod = {0}, middle_mod = {0}, user_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&provider_mod, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&middle_mod, middle_spec));
+        assert_ok(wah_parse_module_from_spec(&user_mod, user_spec));
+
+        wah_exec_context_t provider_ctx = {0};
+        assert_ok(wah_new_exec_context(&provider_ctx, &provider_mod, NULL));
+        assert_ok(wah_instantiate(&provider_ctx));
+
+        wah_exec_context_t middle_ctx = {0};
+        assert_ok(wah_new_exec_context(&middle_ctx, &middle_mod, NULL));
+        assert_ok(wah_link_context(&middle_ctx, "provider", &provider_ctx));
+        assert_ok(wah_instantiate(&middle_ctx));
+
+        wah_exec_context_t user_ctx = {0};
+        assert_ok(wah_new_exec_context(&user_ctx, &user_mod, NULL));
+        assert_ok(wah_link_context(&user_ctx, "middle", &middle_ctx));
+        assert_ok(wah_instantiate(&user_ctx));
+
+        // Store a value before grow.
+        wah_value_t store_args[2] = {{.i32 = 0}, {.i32 = 0x12345678}};
+        assert_ok(wah_call_by_name(&user_ctx, "store", store_args, 2, NULL));
+
+        // Grow via provider's grow function (called through middle's re-export).
+        wah_value_t grow_arg = {.i32 = 20};
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&user_ctx, "do_grow", &grow_arg, 1, &result));
+        assert_eq_i32(result.i32, 1);
+
+        // After grow, user must see the new memory (not a stale freed pointer).
+        store_args[1].i32 = (int32_t)0x87654321u;
+        assert_ok(wah_call_by_name(&user_ctx, "store", store_args, 2, NULL));
+        assert_ok(wah_call_by_name(&user_ctx, "load", &store_args[0], 1, &result));
+        assert_eq_i32(result.i32, (int32_t)0x87654321u);
+
+        wah_free_exec_context(&user_ctx);
+        wah_free_exec_context(&middle_ctx);
+        wah_free_exec_context(&provider_ctx);
+        wah_free_module(&user_mod);
+        wah_free_module(&middle_mod);
+        wah_free_module(&provider_mod);
+    }
+
+    // Regression: table.grow alias must propagate through re-exported imports.
+    printf("Test: table.grow propagates through re-exported import chain\n");
+    {
+        // Provider: owns table, exports it and a grow function.
+        const char *provider_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/2 1 100 ]} \
+            exports {[ {'tbl'} table# 0, {'grow'} fn# 0 ]} \
+            code {[ {[] ref.null funcref local.get 0 table.grow 0 end } ]}";
+
+        // Middle: imports table and grow from provider, re-exports table
+        // and wraps grow in a local function.
+        const char *middle_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            imports {[ {'provider'} {'tbl'} table# funcref limits.i32/2 1 100, \
+                       {'provider'} {'grow'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'tbl'} table# 0, {'grow'} fn# 1 ]} \
+            code {[ {[] local.get 0 call 0 end } ]}";
+
+        // User: imports table and grow from middle, checks size after grow.
+        const char *user_spec = "wasm \
+            types {[ fn [] [i32], fn [i32] [i32] ]} \
+            imports {[ {'middle'} {'tbl'} table# funcref limits.i32/2 1 100, \
+                       {'middle'} {'grow'} fn# 1 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'size'} fn# 1, {'do_grow'} fn# 0 ]} \
+            code {[ \
+                {[] table.size 0 end } \
+            ]}";
+
+        wah_module_t provider_mod = {0}, middle_mod = {0}, user_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&provider_mod, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&middle_mod, middle_spec));
+        assert_ok(wah_parse_module_from_spec(&user_mod, user_spec));
+
+        wah_exec_context_t provider_ctx = {0};
+        assert_ok(wah_new_exec_context(&provider_ctx, &provider_mod, NULL));
+        assert_ok(wah_instantiate(&provider_ctx));
+
+        wah_exec_context_t middle_ctx = {0};
+        assert_ok(wah_new_exec_context(&middle_ctx, &middle_mod, NULL));
+        assert_ok(wah_link_context(&middle_ctx, "provider", &provider_ctx));
+        assert_ok(wah_instantiate(&middle_ctx));
+
+        wah_exec_context_t user_ctx = {0};
+        assert_ok(wah_new_exec_context(&user_ctx, &user_mod, NULL));
+        assert_ok(wah_link_context(&user_ctx, "middle", &middle_ctx));
+        assert_ok(wah_instantiate(&user_ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&user_ctx, "size", NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+
+        wah_value_t grow_arg = {.i32 = 5};
+        assert_ok(wah_call_by_name(&user_ctx, "do_grow", &grow_arg, 1, &result));
+        assert_eq_i32(result.i32, 1);
+
+        // After grow, user must see updated table size.
+        assert_ok(wah_call_by_name(&user_ctx, "size", NULL, 0, &result));
+        assert_eq_i32(result.i32, 6);
+
+        wah_free_exec_context(&user_ctx);
+        wah_free_exec_context(&middle_ctx);
+        wah_free_exec_context(&provider_ctx);
+        wah_free_module(&user_mod);
+        wah_free_module(&middle_mod);
+        wah_free_module(&provider_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

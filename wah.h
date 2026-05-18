@@ -10641,6 +10641,19 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     wah_free(alloc, exec_ctx->dropped_elem_segments);
     wah_free(alloc, exec_ctx->dropped_data_segments);
     wah_free(alloc, exec_ctx->globals);
+
+    // Unregister from transitive owners of re-exported imports (before freeing arrays)
+    for (uint32_t i = 0; exec_ctx->memories && i < exec_ctx->memory_count; ++i) {
+        if (exec_ctx->memories[i].is_imported && exec_ctx->memories[i].import_ctx) {
+            wah_unregister_dependent(exec_ctx->memories[i].import_ctx, exec_ctx);
+        }
+    }
+    for (uint32_t i = 0; exec_ctx->tables && i < exec_ctx->table_count; ++i) {
+        if (exec_ctx->tables[i].is_imported && exec_ctx->tables[i].import_ctx) {
+            wah_unregister_dependent(exec_ctx->tables[i].import_ctx, exec_ctx);
+        }
+    }
+
     if (exec_ctx->memories) {
         for (uint32_t i = 0; i < exec_ctx->memory_count; ++i) {
             if (!exec_ctx->memories[i].is_imported) {
@@ -16325,8 +16338,19 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             ctx->tables[i].size = linked_ctx->tables[linked_table_idx].size;
             ctx->tables[i].max_size = linked_ctx->tables[linked_table_idx].max_size;
             ctx->tables[i].is_imported = true;
-            ctx->tables[i].import_ctx = linked_ctx;
-            ctx->tables[i].import_idx = linked_table_idx;
+            wah_exec_context_t *tbl_owner = linked_ctx;
+            uint32_t tbl_owner_idx = linked_table_idx;
+            while (tbl_owner->tables[tbl_owner_idx].is_imported && tbl_owner->tables[tbl_owner_idx].import_ctx) {
+                wah_exec_context_t *next = tbl_owner->tables[tbl_owner_idx].import_ctx;
+                uint32_t next_idx = tbl_owner->tables[tbl_owner_idx].import_idx;
+                tbl_owner = next;
+                tbl_owner_idx = next_idx;
+            }
+            ctx->tables[i].import_ctx = tbl_owner;
+            ctx->tables[i].import_idx = tbl_owner_idx;
+            if (tbl_owner != linked_ctx) {
+                WAH_CHECK_GOTO(wah_register_dependent(tbl_owner, ctx), cleanup);
+            }
             wah_budget_charge(ctx, imp_bytes);
         } else if (linked_table_idx >= linked->import_table_count) {
             WAH_ENSURE_GOTO(exp_tt->min_elements >= ti->type.min_elements, WAH_ERROR_LINK_FAILED, cleanup);
@@ -16379,8 +16403,19 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
             ctx->memories[i].size = linked_ctx->memories[linked_mem_idx].size;
             ctx->memories[i].max_pages = linked_ctx->memories[linked_mem_idx].max_pages;
             ctx->memories[i].is_imported = true;
-            ctx->memories[i].import_ctx = linked_ctx;
-            ctx->memories[i].import_idx = linked_mem_idx;
+            wah_exec_context_t *mem_owner = linked_ctx;
+            uint32_t mem_owner_idx = linked_mem_idx;
+            while (mem_owner->memories[mem_owner_idx].is_imported && mem_owner->memories[mem_owner_idx].import_ctx) {
+                wah_exec_context_t *next = mem_owner->memories[mem_owner_idx].import_ctx;
+                uint32_t next_idx = mem_owner->memories[mem_owner_idx].import_idx;
+                mem_owner = next;
+                mem_owner_idx = next_idx;
+            }
+            ctx->memories[i].import_ctx = mem_owner;
+            ctx->memories[i].import_idx = mem_owner_idx;
+            if (mem_owner != linked_ctx) {
+                WAH_CHECK_GOTO(wah_register_dependent(mem_owner, ctx), cleanup);
+            }
             wah_budget_charge(ctx, imp_bytes);
         } else if (linked_mem_idx >= linked->import_memory_count) {
             WAH_ENSURE_GOTO(exp_mt->min_pages >= mi->type.min_pages, WAH_ERROR_LINK_FAILED, cleanup);
