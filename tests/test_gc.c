@@ -44,6 +44,12 @@ static void host_trigger_gc(wah_call_context_t *cc, void *ud) {
     wah_gc_step(cc->exec);
 }
 
+static wah_exec_context_t *g_provider_ctx_for_gc;
+static void host_trigger_provider_gc(wah_call_context_t *cc, void *ud) {
+    (void)cc; (void)ud;
+    if (g_provider_ctx_for_gc) wah_gc_step(g_provider_ctx_for_gc);
+}
+
 static void host_gc_object_count(wah_call_context_t *cc, void *ud) {
     (void)ud;
     wah_gc_heap_stats_t stats;
@@ -1778,6 +1784,72 @@ int main() {
         assert_eq_i32(result.i32, 42);
 
         wah_free_exec_context(&ctx_lg);
+        wah_free_exec_context(&pctx);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&prov_mod);
+        wah_free_module(&env_mod);
+
+        printf("  PASSED\n");
+    }
+
+    printf("Testing wah_link_context reverse GC: provider must not collect object held by primary...\n");
+    {
+        // Provider "p" allocates a struct (in provider's heap), stores it in a mutable
+        // global, and exports create/clear functions. Primary links provider via
+        // wah_link_context, calls create() to obtain the struct, then calls clear()
+        // which nulls the provider global (removing the provider-side root), then
+        // triggers GC *on the provider context directly*. Without the cross-context
+        // dependent tracking fix, the provider GC would sweep the struct (only root
+        // is on primary's stack), causing a UAF when primary reads the field.
+        wah_module_t env_mod = {0}, prov_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t pctx = {0}, ctx = {0};
+
+        assert_ok(wah_new_module(&env_mod, NULL));
+        assert_ok(wah_export_func(&env_mod, "gc_provider", "()", host_trigger_provider_gc, NULL, NULL));
+
+        const char *prov_spec = "wasm \
+            types {[struct [i32 mut], fn [] [anyref], fn [] []]} \
+            funcs {[1, 2]} \
+            globals {[anyref mut ref.null anyref end]} \
+            exports {[{'create'} fn# 0, {'clear'} fn# 1]} \
+            code {[ \
+                {[] i32.const 42 struct.new 0 global.set 0 global.get 0 end}, \
+                {[] ref.null anyref global.set 0 end} \
+            ]}";
+        assert_ok(wah_parse_module_from_spec(&prov_mod, prov_spec));
+
+        assert_ok(wah_new_exec_context(&pctx, &prov_mod, NULL));
+        assert_ok(wah_instantiate(&pctx));
+        g_provider_ctx_for_gc = &pctx;
+
+        const char *wasm_spec = "wasm \
+            types {[struct [i32 mut], fn [] [anyref], fn [] [], fn [] [i32]]} \
+            imports {[{'p'} {'create'} fn# 1, {'p'} {'clear'} fn# 2, {'env'} {'gc_provider'} fn# 2]} \
+            funcs {[3]} \
+            exports {[{'entry'} fn# 3]} \
+            code {[{[] \
+                call 0 \
+                call 1 \
+                call 2 \
+                ref.cast 0 \
+                struct.get 0 0 \
+                end}]}";
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, wasm_spec));
+
+        assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
+        assert_ok(wah_link_context(&ctx, "p", &pctx));
+        assert_ok(wah_link_module(&ctx, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+
+        pctx.gc->allocation_threshold = 1;
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 3, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        g_provider_ctx_for_gc = NULL;
+        wah_free_exec_context(&ctx);
         wah_free_exec_context(&pctx);
         wah_free_module(&wasm_mod);
         wah_free_module(&prov_mod);

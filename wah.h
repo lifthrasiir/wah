@@ -2364,6 +2364,9 @@ typedef struct wah_gc_state_s {
     size_t allocated_bytes;
     size_t allocation_threshold;
     bool gc_pending;
+    struct wah_exec_context_s **gc_dependents;
+    uint32_t gc_dependent_count;
+    uint32_t gc_dependents_cap;
 #ifdef WAH_DEBUG
     uint32_t total_collections;
     uint32_t total_allocations;
@@ -9556,8 +9559,31 @@ static void wah_gc_end(wah_exec_context_t *ctx) {
     if (!ctx->gc) return;
     wah_budget_release(ctx, ctx->gc->allocated_bytes);
     wah_gc_free_all_objects(ctx, ctx->gc);
+    wah_free(&ctx->alloc, ctx->gc->gc_dependents);
     wah_free(&ctx->alloc, ctx->gc);
     ctx->gc = NULL;
+}
+
+static wah_error_t wah_gc_register_dependent(wah_gc_state_t *gc, wah_exec_context_t *dep, const wah_alloc_t *alloc) {
+    if (gc->gc_dependent_count >= gc->gc_dependents_cap) {
+        uint32_t new_cap = gc->gc_dependents_cap == 0 ? 4 : gc->gc_dependents_cap * 2;
+        void *new_ptr = gc->gc_dependents;
+        wah_error_t err = wah_realloc(alloc, new_cap, sizeof(wah_exec_context_t *), &new_ptr);
+        if (err != WAH_OK) return err;
+        gc->gc_dependents = (wah_exec_context_t **)new_ptr;
+        gc->gc_dependents_cap = new_cap;
+    }
+    gc->gc_dependents[gc->gc_dependent_count++] = dep;
+    return WAH_OK;
+}
+
+static void wah_gc_unregister_dependent(wah_gc_state_t *gc, const wah_exec_context_t *dep) {
+    for (uint32_t i = 0; i < gc->gc_dependent_count; i++) {
+        if (gc->gc_dependents[i] == dep) {
+            gc->gc_dependents[i] = gc->gc_dependents[--gc->gc_dependent_count];
+            return;
+        }
+    }
 }
 
 typedef char wah_gc_align_check_[(sizeof(wah_gc_object_t) % 2 == 0) ? 1 : -1];
@@ -9865,20 +9891,6 @@ static void wah_gc_scan_object(wah_gc_object_t *obj, const wah_module_t *module)
     }
 }
 
-static void wah_gc_drain_gray(wah_gc_state_t *gc, const wah_module_t *module) {
-    bool found_gray;
-    do {
-        found_gray = false;
-        for (wah_gc_object_t *obj = gc->all_objects; obj; obj = wah_gc_next(obj)) {
-            if (wah_gc_gray(obj)) {
-                wah_gc_set_gray(obj, false);
-                found_gray = true;
-                wah_gc_scan_object(obj, module);
-            }
-        }
-    } while (found_gray);
-}
-
 static void wah_gc_mark_visitor(wah_value_t *slot, void *userdata) {
     void *ref = slot->ref;
     if (!ref || wah_ref_is_i31(ref)) return;
@@ -9894,11 +9906,54 @@ static void wah_gc_step_mark(wah_exec_context_t *ctx) {
         wah_gc_set_gray(obj, false);
     }
 
+    // Clear stale marks on dependent contexts' GC objects so that intermediary
+    // objects (in dependent heaps) referencing our heap get properly re-traced.
+    for (uint32_t d = 0; d < gc->gc_dependent_count; d++) {
+        wah_gc_state_t *dep_gc = gc->gc_dependents[d]->gc;
+        if (!dep_gc || dep_gc == gc) continue;
+        for (wah_gc_object_t *obj = dep_gc->all_objects; obj; obj = wah_gc_next(obj)) {
+            wah_gc_set_mark(obj, false);
+            wah_gc_set_gray(obj, false);
+        }
+    }
+
     // Mark from roots (marks objects as gray)
     wah_gc_enumerate_roots(ctx, wah_gc_mark_visitor, (void *)ctx->module);
 
-    // Iteratively scan gray objects until no more remain
-    wah_gc_drain_gray(gc, ctx->module);
+    // Mark from dependent contexts' roots: objects in our heap may be reachable
+    // only through a dependent context's stack/globals/tables.
+    for (uint32_t d = 0; d < gc->gc_dependent_count; d++) {
+        wah_exec_context_t *dep = gc->gc_dependents[d];
+        if (!dep->is_instantiated) continue;
+        wah_gc_enumerate_roots(dep, wah_gc_mark_visitor, (void *)dep->module);
+    }
+
+    // Iteratively scan gray objects until no more remain.
+    // Must also drain dependent heaps: an object in a dependent's heap may
+    // contain fields pointing to objects in our heap (cross-context allocation).
+    bool found_gray;
+    do {
+        found_gray = false;
+        for (wah_gc_object_t *obj = gc->all_objects; obj; obj = wah_gc_next(obj)) {
+            if (wah_gc_gray(obj)) {
+                wah_gc_set_gray(obj, false);
+                found_gray = true;
+                wah_gc_scan_object(obj, ctx->module);
+            }
+        }
+        for (uint32_t d = 0; d < gc->gc_dependent_count; d++) {
+            wah_gc_state_t *dep_gc = gc->gc_dependents[d]->gc;
+            if (!dep_gc || dep_gc == gc) continue;
+            const wah_module_t *dep_mod = gc->gc_dependents[d]->module;
+            for (wah_gc_object_t *obj = dep_gc->all_objects; obj; obj = wah_gc_next(obj)) {
+                if (wah_gc_gray(obj)) {
+                    wah_gc_set_gray(obj, false);
+                    found_gray = true;
+                    wah_gc_scan_object(obj, dep_mod);
+                }
+            }
+        }
+    } while (found_gray);
 
     gc->phase = WAH_GC_PHASE_SWEEP;
     gc->sweep_cursor = NULL;
@@ -10010,6 +10065,13 @@ bool wah_gc_verify_heap(const wah_exec_context_t *ctx) {
 }
 
 #else // !WAH_FEATURE_GC
+
+static wah_error_t wah_gc_register_dependent(wah_gc_state_t *gc, wah_exec_context_t *dep, const wah_alloc_t *alloc) {
+    (void)gc; (void)dep; (void)alloc; return WAH_OK;
+}
+static void wah_gc_unregister_dependent(wah_gc_state_t *gc, const wah_exec_context_t *dep) {
+    (void)gc; (void)dep;
+}
 
 wah_error_t wah_gc_start(wah_exec_context_t *ctx) {
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
@@ -10565,6 +10627,16 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     }
 
     wah_free(alloc, exec_ctx->tag_instances);
+
+    // Unregister from linked contexts' GC dependent lists (wah_link_context path)
+    for (uint32_t i = 0; i < exec_ctx->linked_module_count; ++i) {
+        if (!exec_ctx->linked_modules[i].owns_ctx && exec_ctx->linked_modules[i].ctx) {
+            wah_gc_state_t *linked_gc = exec_ctx->linked_modules[i].ctx->gc;
+            if (linked_gc) {
+                wah_gc_unregister_dependent(linked_gc, exec_ctx);
+            }
+        }
+    }
 
     // Free linked modules
     if (exec_ctx->linked_modules) {
@@ -15775,6 +15847,14 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
 
     char *name_copy = wah_strdup(name, alloc);
     WAH_ENSURE(name_copy, WAH_ERROR_OUT_OF_MEMORY);
+
+    if (linked_ctx->gc) {
+        wah_error_t reg_err = wah_gc_register_dependent(linked_ctx->gc, ctx, &linked_ctx->alloc);
+        if (reg_err != WAH_OK) {
+            wah_free(alloc, name_copy);
+            return reg_err;
+        }
+    }
 
     ctx->linked_modules[ctx->linked_module_count++] =
         (wah_linked_module_t){ .name = name_copy, .module = linked_ctx->module, .ctx = linked_ctx, .owns_ctx = false };
