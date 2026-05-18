@@ -51,6 +51,14 @@ static void host_gc_object_count(wah_call_context_t *cc, void *ud) {
     wah_return_i32(cc, (int32_t)stats.object_count);
 }
 
+static void host_mk_externref(wah_call_context_t *cc, void *ud) {
+    (void)ud;
+    void *ptr = wah_gc_alloc_host(cc->exec, 256);
+    assert(ptr != NULL);
+    memset(ptr, 0xAB, 256);
+    wah_return_ref(cc, ptr);
+}
+
 int main() {
     wah_module_t module;
     wah_exec_context_t ctx;
@@ -1602,6 +1610,45 @@ int main() {
             code {[ {[] local.get 0 i31.get_s end} ]}"),
             WAH_ERROR_VALIDATION_FAILED);
         wah_free_module(&m);
+
+        printf("  PASSED\n");
+    }
+
+    printf("Testing GC mark: return_call ref-map captures operand refs...\n");
+    {
+        wah_module_t env_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t ctx_rc = {0};
+
+        assert_ok(wah_new_module(&env_mod, NULL));
+        assert_ok(wah_export_func(&env_mod, "mk", "() -> externref",
+            host_mk_externref, NULL, NULL));
+        assert_ok(wah_export_func(&env_mod, "sink", "(externref) -> i32",
+            host_gc_object_count, NULL, NULL));
+
+        // func 0 (mk_type): imported mk
+        // func 1 (sink_type): imported sink
+        // func 2 (entry): call mk -> externref on stack -> return_call sink
+        const char *spec = "wasm \
+            types {[ fn [] [externref], fn [externref] [i32], fn [] [i32] ]} \
+            imports {[ {'env'} {'mk'} fn# 0, {'env'} {'sink'} fn# 1 ]} \
+            funcs {[ 2 ]} \
+            exports {[ {'entry'} fn# 2 ]} \
+            code {[ {[] i32.const 0 drop call 0 return_call 1 end} ]}";
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, spec));
+        assert_ok(wah_new_exec_context(&ctx_rc, &wasm_mod, NULL));
+        assert_ok(wah_link_module(&ctx_rc, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx_rc));
+        assert_ok(wah_instantiate(&ctx_rc));
+
+        ctx_rc.gc->allocation_threshold = 1;
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx_rc, 2, NULL, 0, &result));
+        assert_true(result.i32 > 0);
+
+        wah_free_exec_context(&ctx_rc);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
 
         printf("  PASSED\n");
     }

@@ -8048,13 +8048,12 @@ static wah_error_t wah_analyze_stream(
             }
         }
 
-        if (is_func_body) {
-            if (opcode_val == WAH_OP_CALL || opcode_val == WAH_OP_CALL_INDIRECT || opcode_val == WAH_OP_CALL_REF) {
-                WAH_CAPTURE_REF_MAP();
-                poll_flags = WAH_INSTR_FLAG_POLL;
-            } else if (opcode_val == WAH_OP_RETURN_CALL || opcode_val == WAH_OP_RETURN_CALL_INDIRECT || opcode_val == WAH_OP_RETURN_CALL_REF) {
-                poll_flags = WAH_INSTR_FLAG_POLL;
-            }
+        if (is_func_body && (
+            opcode_val == WAH_OP_CALL || opcode_val == WAH_OP_CALL_INDIRECT || opcode_val == WAH_OP_CALL_REF ||
+            opcode_val == WAH_OP_RETURN_CALL || opcode_val == WAH_OP_RETURN_CALL_INDIRECT || opcode_val == WAH_OP_RETURN_CALL_REF
+        )) {
+            WAH_CAPTURE_REF_MAP();
+            poll_flags = WAH_INSTR_FLAG_POLL;
         }
 
         uint32_t instr_count_before = ac->instr_count;
