@@ -22,7 +22,7 @@ extern "C" {
 
 // Macro: WAH_VERSION
 //   The version of the WAH API. Incremented on any change to the API, including bug fixes.
-//   Based on (fractional Gregorian year - 2000) * 100, with a liberal rounding.
+//   Based on (fractional Gregorian year - 2000) * (dev version ? -100 : 100), with a liberal rounding.
 #define WAH_VERSION -2635
 
 // Macro: WAH_FORCE_PORTABLE [user-definable]
@@ -32,6 +32,7 @@ extern "C" {
 // Macro: WAH_X86_64
 // Macro: WAH_AARCH64
 //   Defined automatically based on compiler macros if WAH_FORCE_PORTABLE is not defined.
+#ifdef WAH_IMPLEMENTATION
 #ifndef WAH_FORCE_PORTABLE
 #if defined(__x86_64__) || defined(_M_X64)
 #define WAH_X86_64
@@ -39,6 +40,7 @@ extern "C" {
 #elif defined(__aarch64__) || defined(_M_ARM64)
 #define WAH_AARCH64
 #include <arm_neon.h>
+#endif
 #endif
 #endif
 
@@ -199,7 +201,8 @@ typedef union {
     // Field: ref
     //   Can hold any reference type (funcref, externref, structref, arrayref, exnref, ...).
     //   Pointers returned by `wah_gc_alloc_host` are always valid externrefs or anyrefs.
-    //   Other types have private representations and shouldn't be directly used.
+    //   Other types have private representations and shouldn't be directly used;
+    //   any incompatible pointer is masked to prevent an accidental type confusion in the public API.
     void* ref;
 
     // Internal fields
@@ -1165,7 +1168,6 @@ wah_v128_t wah_param_v128(const wah_call_context_t *ctx, size_t index);  // v128
 
 // Function: wah_param_ref
 //   Get a `wah_gc_alloc_host`-compatible reference parameter passed to a host function by index.
-//   Any incompatible pointer is masked to prevent an accidental type confusion.
 //   Valid only during the host function call.
 //
 //   - idx [in]: Index of the parameter to retrieve. Must be less than the number of parameters.
@@ -9703,7 +9705,7 @@ static void wah_gc_unregister_dependent(wah_gc_state_t *gc, const wah_exec_conte
     }
 }
 
-typedef char wah_gc_align_check_[(sizeof(wah_gc_object_t) % 2 == 0) ? 1 : -1];
+typedef char wah_gc_align_check_[WAH_ALIGNOF(wah_gc_object_t) > 1 ? 1 : -1];
 
 static void *wah_gc_alloc(wah_exec_context_t *ctx, const wah_module_t *module, wah_repr_t repr_id, uint32_t payload_size) {
     wah_gc_state_t *gc = ctx->gc;
