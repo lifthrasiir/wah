@@ -12385,7 +12385,7 @@ WAH_RUN(CALL) {
         if (!fn_module) fn_module = frame->module;
         uint32_t local_idx = called_fn->local_idx;
         const wah_func_type_t *called_func_type = &fn_module->types[fn_module->function_type_indices[local_idx]];
-        WAH_CALL_WASM_INLINE(fn_module, local_idx, called_func_type, NULL);
+        WAH_CALL_WASM_INLINE(fn_module, local_idx, called_func_type, called_fn->fn_ctx);
     }
 
     WAH_NEXT();
