@@ -6924,8 +6924,7 @@ cleanup_block:
             WAH_ENSURE(vctx->module->type_defs[src_typeidx].kind == WAH_COMP_ARRAY, WAH_ERROR_VALIDATION_FAILED);
             const wah_type_def_t *dst_td = &vctx->module->type_defs[dst_typeidx];
             const wah_type_def_t *src_td = &vctx->module->type_defs[src_typeidx];
-            WAH_CHECK(wah_validate_type_match(src_td->field_types[0],
-                WAH_TYPE_AS_NULLABLE(dst_td->field_types[0]), vctx->module));
+            WAH_CHECK(wah_validate_type_match(src_td->field_types[0], dst_td->field_types[0], vctx->module));
             POP(I32); POP(I32); POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(src_typeidx, 0))));
             POP(I32); POP(_(WAH_TYPE_AS_NULLABLE(WAH_TYPE_FROM_IDX(dst_typeidx, 0))));
             EMIT_INSTR_EX(opcode_val, _di->imm.type_length.type_idx = dst_typeidx; _di->imm.type_length.length = src_typeidx);

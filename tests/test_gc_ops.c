@@ -879,6 +879,28 @@ static void test_array_copy() {
     wah_free_module(&module);
 }
 
+static void test_array_copy_nonnull_reject() {
+    printf("Testing array.copy rejects null-to-nonnull element copy...\n");
+
+    // type 0: array (mut externref)       -- nullable elements
+    // type 1: array (mut (ref extern))    -- non-null elements
+    // A function that tries to array.copy from type 0 to type 1 should fail validation
+    // because externref is not a subtype of (ref extern).
+    const char *spec = "wasm \
+        types {[ array externref mut, array type.ref 22 mut, fn [] [] ]} \
+        funcs {[ 2 ]} \
+        code {[ {[2 type.ref.null 0, type.ref.null 1] \
+            i32.const 0 i32.const 1 array.new_default 0 local.set 0 \
+            i32.const 0 i32.const 1 array.new_default 1 local.set 1 \
+            local.get 1 i32.const 0 local.get 0 i32.const 0 i32.const 1 array.copy 1 0 \
+        end } ]}";
+
+    wah_module_t module = {0};
+    wah_error_t err = wah_parse_module_from_spec(&module, spec);
+    assert(err == WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&module);
+}
+
 static void test_array_new_data() {
     printf("Testing array.new_data...\n");
 
@@ -1361,6 +1383,7 @@ int main() {
     test_cross_module_array_new_default();
     test_cross_module_array_fill();
     test_array_copy();
+    test_array_copy_nonnull_reject();
     test_array_new_data();
     test_array_init_data();
     test_array_new_huge_i8_length_oom();
