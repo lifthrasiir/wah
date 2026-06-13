@@ -2073,7 +2073,7 @@ WAH_IF_SSE41(
     WAH_ASM_UNARY_M128D(_mm_round_pd_nearest, "roundpd $0x0,")
 )
 
-// SSE4.1 wrapper with implicit xmm0 operand (pblendvb)
+// SSE4.1 wrapper with implicit xmm0 operand (pblendvb, blendvps)
 #ifdef __GNUC__
 WAH_IF_SSE41(
     static WAH_ALWAYS_INLINE __m128i wah_mm_blendv_epi8(__m128i a, __m128i b, __m128i mask) {
@@ -2084,11 +2084,22 @@ WAH_IF_SSE41(
             : "xmm0");
         return res;
     }
+    static WAH_ALWAYS_INLINE __m128 wah_mm_blendv_ps(__m128 a, __m128 b, __m128 mask) {
+        __m128 res = a;
+        __asm__ __volatile__("movaps %2, %%xmm0; blendvps %1, %0"
+            : "+x"(res)
+            : "x"(b), "x"(mask)
+            : "xmm0");
+        return res;
+    }
 )
 #else
 WAH_IF_SSE41(
     static WAH_ALWAYS_INLINE __m128i wah_mm_blendv_epi8(__m128i a, __m128i b, __m128i mask) {
         return _mm_blendv_epi8(a, b, mask);
+    }
+    static WAH_ALWAYS_INLINE __m128 wah_mm_blendv_ps(__m128 a, __m128 b, __m128 mask) {
+        return _mm_blendv_ps(a, b, mask);
     }
 )
 #endif
@@ -3904,7 +3915,7 @@ WAH_IF_SSE41(
         __m128 half = _mm_set1_ps(2147483648.0f);
         __m128 cmp_hi = _mm_cmpge_ps(a, half);
         __m128 a_lo = _mm_sub_ps(a, half);
-        __m128 src = _mm_blendv_ps(a, a_lo, cmp_hi);
+        __m128 src = wah_mm_blendv_ps(a, a_lo, cmp_hi);
         __m128i truncated = _mm_cvttps_epi32(src);
         __m128i bias = _mm_and_si128(_mm_castps_si128(cmp_hi), _mm_set1_epi32((int32_t)0x80000000u));
         truncated = _mm_add_epi32(truncated, bias);
