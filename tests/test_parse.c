@@ -1082,6 +1082,49 @@ static void test_fuzz_ref_validation_regressions() {
     }
 }
 
+static void test_import_table_rejects_invalid_flags(void) {
+    printf("Running test_import_table_rejects_invalid_flags...\n");
+    wah_module_t module = {0};
+    // Table import with flags=0x02 (invalid, only 0x00/0x01/0x04/0x05 are valid)
+    assert_err(wah_parse_module_from_spec(&module,
+        "wasm types {[fn [] []]} imports {[{'m'} {'t'} export.table funcref %'02' 0]}"),
+        WAH_ERROR_MALFORMED);
+    wah_free_module(&module);
+}
+
+static void test_import_table_requires_memory64_feature(void) {
+    printf("Running test_import_table_requires_memory64_feature...\n");
+    wah_module_t module = {0};
+    wah_parse_options_t opts = { .features = WAH_FEATURE_WASM_V2 };
+    // Table import with flags=0x04 (table64) should require memory64 feature
+    assert_err(wah_parse_module_from_spec_ex(&module, &opts,
+        "wasm types {[fn [] []]} imports {[{'m'} {'t'} export.table funcref limits.i64/1 0]}"),
+        WAH_ERROR_DISABLED_FEATURE);
+    wah_free_module(&module);
+}
+
+static void test_import_memory_requires_memory64_feature(void) {
+    printf("Running test_import_memory_requires_memory64_feature...\n");
+    wah_module_t module = {0};
+    wah_parse_options_t opts = { .features = WAH_FEATURE_WASM_V2 };
+    // Memory import with flags=0x04 (memory64) should require memory64 feature
+    assert_err(wah_parse_module_from_spec_ex(&module, &opts,
+        "wasm types {[fn [] []]} imports {[{'m'} {'mem'} export.memory limits.i64/1 0]}"),
+        WAH_ERROR_DISABLED_FEATURE);
+    wah_free_module(&module);
+}
+
+static void test_import_tag_requires_exception_feature(void) {
+    printf("Running test_import_tag_requires_exception_feature...\n");
+    wah_module_t module = {0};
+    wah_parse_options_t opts = { .features = WAH_FEATURE_WASM_V2 };
+    // Tag import should require exception feature
+    assert_err(wah_parse_module_from_spec_ex(&module, &opts,
+        "wasm types {[fn [] []]} imports {[{'m'} {'tag'} export.tag 0 0]}"),
+        WAH_ERROR_DISABLED_FEATURE);
+    wah_free_module(&module);
+}
+
 int main(void) {
     test_parse_module_argument_errors();
     test_zero_params_zero_results_func_type();
@@ -1139,6 +1182,11 @@ int main(void) {
     test_unknown_data_segment_flags();
     test_count_overflow();
     test_fuzz_ref_validation_regressions();
+
+    test_import_table_rejects_invalid_flags();
+    test_import_table_requires_memory64_feature();
+    test_import_memory_requires_memory64_feature();
+    test_import_tag_requires_exception_feature();
 
     printf("All parser tests passed!\n");
     return 0;

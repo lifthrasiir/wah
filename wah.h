@@ -9069,6 +9069,8 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             WAH_CHECK_GOTO(wah_decode_ref_type(ptr, section_end, &ti->type.elem_type), cleanup);
             WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
             uint8_t flags = *(*ptr)++;
+            WAH_ENSURE_GOTO((flags & ~0x05) == 0, WAH_ERROR_MALFORMED, cleanup);
+            if (flags & 0x04) WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_MEMORY64), cleanup);
             ti->type.addr_type = (flags & 0x04) ? WAH_TYPE_I64 : WAH_TYPE_I32;
             if (flags & 0x04) {
                 WAH_CHECK_GOTO(wah_decode_uleb128_64(ptr, section_end, &ti->type.min_elements), cleanup);
@@ -9102,6 +9104,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             if (flags == 0x00 || flags == 0x01) {
                 mi->type.addr_type = WAH_TYPE_I32;
             } else if (flags == 0x04 || flags == 0x05) {
+                WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_MEMORY64), cleanup);
                 mi->type.addr_type = WAH_TYPE_I64;
             } else {
                 err = WAH_ERROR_MALFORMED;
@@ -9144,6 +9147,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             gi->is_mutable = (mut_byte == 1);
         } else if (kind == WAH_KIND_TAG) {
             // Tag import
+            WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_EXCEPTION), cleanup);
             wah_tag_import_t *tgi = &module->tag_imports[import_tag_count];
             tgi->name = imp_name;
             module->imports[i].index = import_tag_count;
