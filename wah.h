@@ -3990,7 +3990,11 @@ WAH_IF_AVX512(
     static WAH_ALWAYS_INLINE __m128i wah_mm_cmplt_epu8_avx512(__m128i a, __m128i b) {
         __m128i result;
         __asm__("vpcmpub $1, %[b], %[a], %%k1\n\t vpmovm2b %%k1, %[result]"
-            : [result] "=x" (result) : [a] "x" (a), [b] "x" (b));
+            : [result] "=x" (result) : [a] "x" (a), [b] "x" (b)
+#ifdef __AVX512F__
+            : "k1"
+#endif
+        );
         return result;
     }
 )
