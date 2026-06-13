@@ -1069,6 +1069,11 @@ void test_i32x4_trunc_sat_f32x4_u() {
     wah_v128_t operand = { .f32 = {1.5f, -2.5f, 4294967295.0f, 0.0f} };
     wah_v128_t expected = { .u32 = {1, 0, 4294967295U, 0} };
     run_simd_unary_op_test("i32x4.trunc_sat_f32x4_u", unary_op_wasm_spec, &operand, &expected);
+
+    // Regression: values in (2^31, 2^32) must not be clamped to 0x80000000
+    wah_v128_t operand2 = { .f32 = {3000000000.0f, 4294967040.0f, 2147483648.0f, 2500000000.0f} };
+    wah_v128_t expected2 = { .u32 = {3000000000U, 4294967040U, 2147483648U, 2500000000U} };
+    run_simd_unary_op_test("i32x4.trunc_sat_f32x4_u (>=2^31)", unary_op_wasm_spec, &operand2, &expected2);
 }
 
 void test_f32x4_convert_i32x4_s() {

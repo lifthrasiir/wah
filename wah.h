@@ -3896,19 +3896,19 @@ WAH_IF_SSE41(
     }
 
     static WAH_ALWAYS_INLINE __m128i wah_i32x4_trunc_sat_f32x4_u_sse41(__m128 a) {
-        // Check for NaN
         __m128 cmp_nan = _mm_cmpunord_ps(a, a);
-
-        // Check for negative
         __m128 cmp_lt = _mm_cmplt_ps(a, _mm_setzero_ps());
-
-        // Check for overflow (>= UINT32_MAX)
         __m128 cmp_gt = _mm_cmpge_ps(a, _mm_set1_ps((float)UINT32_MAX));
 
-        // Truncate
-        __m128i truncated = _mm_cvttps_epi32(a);
+        // Split-range: for values >= 2^31, subtract 2^31 before converting, then add back
+        __m128 half = _mm_set1_ps(2147483648.0f);
+        __m128 cmp_hi = _mm_cmpge_ps(a, half);
+        __m128 a_lo = _mm_sub_ps(a, half);
+        __m128 src = _mm_blendv_ps(a, a_lo, cmp_hi);
+        __m128i truncated = _mm_cvttps_epi32(src);
+        __m128i bias = _mm_and_si128(_mm_castps_si128(cmp_hi), _mm_set1_epi32((int32_t)0x80000000u));
+        truncated = _mm_add_epi32(truncated, bias);
 
-        // Select: if NaN or < 0 -> 0, if > max -> UINT32_MAX, else truncated
         __m128i result = truncated;
         __m128i invalid = _mm_or_si128(_mm_castps_si128(cmp_nan), _mm_castps_si128(cmp_lt));
         result = wah_mm_blendv_epi8(result, _mm_setzero_si128(), invalid);
