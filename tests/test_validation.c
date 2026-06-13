@@ -869,6 +869,43 @@ static void test_non_func_type_as_block_type() {
 
 }
 
+static void test_unreachable_end_restore() {
+    printf("Testing END restores is_unreachable from the popped frame...\n");
+
+    // (func (result i32) unreachable (block) i32.const 1 i32.add)
+    // The outer unreachable state must survive the inner block's end.
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] \
+            unreachable \
+            block void \
+            end \
+            i32.const 1 \
+            i32.add \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_free_module(&module);
+
+    // Negative: nested end inside dead code must not keep polymorphic state
+    // if the enclosing code was reachable when the block was entered.
+    const char *bad_spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] \
+            block void \
+                unreachable \
+            end \
+            i32.add \
+        end } ]}";
+
+    wah_module_t bad = {0};
+    assert_err(wah_parse_module_from_spec(&bad, bad_spec), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad);
+}
+
 int main() {
     test_block_type_not_skipped();
     test_if_complex_block_type();
@@ -892,6 +929,7 @@ int main() {
     test_ref_cast_hierarchy_validation();
     test_non_func_type_as_function_type();
     test_non_func_type_as_block_type();
+    test_unreachable_end_restore();
     printf("All validation tests passed!\n");
     return 0;
 }

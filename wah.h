@@ -6549,12 +6549,8 @@ cleanup_block:
             }
 
             vctx->control_sp--;
-            // Restore the unreachable state from the parent control frame
-            if (vctx->control_sp > 0) {
-                vctx->is_unreachable = vctx->control_stack[vctx->control_sp - 1].is_unreachable;
-            } else {
-                vctx->is_unreachable = false;
-            }
+            // Restore the unreachable state saved when this block was entered
+            vctx->is_unreachable = vctx->control_stack[vctx->control_sp].is_unreachable;
 
             // Push final results of the block with actual types (not ANY)
             for (uint32_t i = 0; i < frame->block_type.result_count; ++i) {
