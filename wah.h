@@ -16533,7 +16533,9 @@ static wah_error_t wah_resolve_primary_table_imports(wah_exec_context_t *ctx) {
 
         const wah_module_t *linked = NULL;
         wah_exec_context_t *linked_ctx = NULL;
-        WAH_ENSURE(wah_find_linked_module(ctx, &ti->name, &linked, &linked_ctx, NULL), WAH_ERROR_LINK_FAILED);
+        uint32_t linked_idx = 0;
+        WAH_ENSURE(wah_find_linked_module(ctx, &ti->name, &linked, &linked_ctx, &linked_idx), WAH_ERROR_LINK_FAILED);
+        if (linked_ctx && ctx->linked_modules[linked_idx].owns_ctx) linked_ctx = NULL;
 
         const wah_export_t *exp = wah_find_export(linked, 1, &ti->name);
         WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
@@ -16569,7 +16571,9 @@ static wah_error_t wah_resolve_primary_memory_imports(wah_exec_context_t *ctx) {
 
         const wah_module_t *linked = NULL;
         wah_exec_context_t *linked_ctx = NULL;
-        WAH_ENSURE(wah_find_linked_module(ctx, &mi->name, &linked, &linked_ctx, NULL), WAH_ERROR_LINK_FAILED);
+        uint32_t linked_idx = 0;
+        WAH_ENSURE(wah_find_linked_module(ctx, &mi->name, &linked, &linked_ctx, &linked_idx), WAH_ERROR_LINK_FAILED);
+        if (linked_ctx && ctx->linked_modules[linked_idx].owns_ctx) linked_ctx = NULL;
 
         const wah_export_t *exp = wah_find_export(linked, 2, &mi->name);
         WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);

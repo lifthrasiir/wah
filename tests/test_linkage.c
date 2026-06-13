@@ -3024,6 +3024,84 @@ int main() {
         wah_free_module(&host_mod);
     }
 
+    // Regression: tag-context creation poisons memory import resolution.
+    // wah_create_tag_contexts_for_linked_modules builds an owned ictx early for linked
+    // modules with tags, aliasing the primary's memories. When wah_resolve_primary_memory_imports
+    // runs later, it sees linked_ctx != NULL and binds against the aliased (zero-initialized)
+    // array, causing spurious WAH_ERROR_LINK_FAILED.
+    printf("Test: linked module with tag + exported memory imported by primary\n");
+    {
+        // Linked module: has a tag and 1 page of memory, exports both memory and a function.
+        wah_module_t linked_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&linked_mod, "wasm \
+            types {[fn [] [i32], fn [] []]} \
+            funcs {[0]} \
+            memories {[limits.i32/1 1]} \
+            tags {[tag.type# 1]} \
+            exports {[{'get42'} fn# 0, {'mem'} mem# 0]} \
+            code {[{[] i32.const 42 end}]}"));
+
+        // Primary module: imports the memory and the function from the linked module.
+        wah_module_t primary_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&primary_mod, "wasm \
+            types {[fn [] [i32]]} \
+            imports {[{'linked'} {'mem'} mem# limits.i32/1 1, \
+                      {'linked'} {'get42'} fn# 0]} \
+            funcs {[0]} \
+            exports {[{'run'} fn# 1]} \
+            code {[{[] call 0 end}]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary_mod, NULL));
+        assert_ok(wah_link_module(&ctx, "linked", &linked_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ctx, "run", NULL, 0, &result));
+        assert(result.i32 == 42);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&primary_mod);
+        wah_free_module(&linked_mod);
+    }
+
+    // Same regression with tables: tag-context creation poisons table import resolution.
+    printf("Test: linked module with tag + exported table imported by primary\n");
+    {
+        // Linked module: has a tag, a table with 1 funcref, exports the table and a function.
+        wah_module_t linked_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&linked_mod, "wasm \
+            types {[fn [] [i32], fn [] []]} \
+            funcs {[0]} \
+            tables {[funcref limits.i32/2 1 10]} \
+            tags {[tag.type# 1]} \
+            exports {[{'get42'} fn# 0, {'tab'} table# 0]} \
+            code {[{[] i32.const 42 end}]}"));
+
+        // Primary module: imports the table and the function from the linked module.
+        wah_module_t primary_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&primary_mod, "wasm \
+            types {[fn [] [i32]]} \
+            imports {[{'linked'} {'tab'} table# funcref limits.i32/2 1 10, \
+                      {'linked'} {'get42'} fn# 0]} \
+            funcs {[0]} \
+            exports {[{'run'} fn# 1]} \
+            code {[{[] call 0 end}]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary_mod, NULL));
+        assert_ok(wah_link_module(&ctx, "linked", &linked_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ctx, "run", NULL, 0, &result));
+        assert(result.i32 == 42);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&primary_mod);
+        wah_free_module(&linked_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
