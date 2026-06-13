@@ -3362,6 +3362,48 @@ int main() {
         wah_free_module(&primary);
     }
 
+    // Regression: wah_resolve_primary_global_imports copied funcref global values
+    // before wah_convert_linked_funcref_globals rewrote the _prefuncref sentinels,
+    // so the sentinel escaped into the primary's immutable import slot.
+    printf("Test: imported immutable funcref global from linked module\n");
+    {
+        // Linked module B: func 0 returns 42; global 0 = ref.func 0.
+        // Exports the funcref global as immutable.
+        const char *spec_b = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            globals {[ funcref 0 ref.func 0 end ]} \
+            exports {[ {'g'} global# 0, {'f'} fn# 0 ]} \
+            code {[ {[] i32.const 42 end} ]}";
+
+        // Primary module A: imports the immutable funcref global from B,
+        // stores it into table[0], and calls via call_indirect.
+        const char *spec_a = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'B'} {'g'} global# funcref 0 ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            exports {[ {'test'} fn# 0 ]} \
+            code {[ {[] i32.const 0 global.get 0 table.set 0 i32.const 0 call_indirect 0 0 end} ]}";
+
+        wah_module_t mod_a = {0}, mod_b = {0};
+        wah_exec_context_t ctx = {0};
+
+        assert_ok(wah_parse_module_from_spec(&mod_b, spec_b));
+        assert_ok(wah_parse_module_from_spec(&mod_a, spec_a));
+        assert_ok(wah_new_exec_context(&ctx, &mod_a, NULL));
+        assert_ok(wah_link_module(&ctx, "B", &mod_b));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ctx, "test", NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod_a);
+        wah_free_module(&mod_b);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

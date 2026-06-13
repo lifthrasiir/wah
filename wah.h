@@ -16792,6 +16792,37 @@ static wah_error_t wah_convert_linked_funcref_globals(wah_exec_context_t *ctx) {
     return WAH_OK;
 }
 
+// wah_resolve_primary_global_imports copies immutable global values before
+// wah_convert_linked_funcref_globals resolves _prefuncref sentinels.
+// Re-copy any primary import slots that still hold the sentinel.
+static wah_error_t wah_fixup_primary_funcref_global_imports(wah_exec_context_t *ctx) {
+    const wah_module_t *module = ctx->module;
+    for (uint32_t i = 0; i < module->import_global_count; i++) {
+        if (module->global_imports[i].is_mutable) continue;
+        if (ctx->globals[i].ref != wah_func_to_ref(&wah_funcref_sentinel->func)) continue;
+        wah_global_import_t *gi = &module->global_imports[i];
+        const wah_module_t *linked = NULL;
+        wah_exec_context_t *linked_ctx = NULL;
+        WAH_ENSURE(wah_find_linked_module(ctx, &gi->name, &linked, &linked_ctx, NULL), WAH_ERROR_LINK_FAILED);
+        const wah_export_t *exp = wah_find_export(linked, 3, &gi->name);
+        WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
+        uint32_t gidx = exp->index;
+        const wah_module_t *provider = linked;
+        wah_exec_context_t *provider_ctx = linked_ctx;
+        if (gidx < linked->import_global_count) {
+            uint32_t gl = 0;
+            WAH_CHECK(wah_resolve_global_export(ctx, linked, linked_ctx, gidx,
+                                                &provider, &provider_ctx, &gl, &gidx));
+        }
+        if (provider_ctx) {
+            ctx->globals[i] = provider_ctx->globals[gidx];
+        } else {
+            ctx->globals[i] = ctx->globals[wah_linked_globals_offset(ctx, provider) + gidx];
+        }
+    }
+    return WAH_OK;
+}
+
 static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
     const wah_alloc_t *alloc = &ctx->alloc;
     const wah_module_t *module = ctx->module;
@@ -17034,6 +17065,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     WAH_CHECK_GOTO(wah_resolve_primary_table_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_primary_memory_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_convert_linked_funcref_globals(ctx), cleanup);
+    WAH_CHECK_GOTO(wah_fixup_primary_funcref_global_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_init_table_init_exprs(ctx), cleanup);
     WAH_CHECK_GOTO(wah_init_active_elem_segments(ctx), cleanup);
     WAH_CHECK_GOTO(wah_init_active_data_segments(ctx), cleanup);
