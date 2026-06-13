@@ -14601,7 +14601,10 @@ WAH_RUN(I16X8_RELAXED_DOT_I8X16_I7X16_S) M128I_BINARY_OP(wah_i16x8_relaxed_dot_i
     for (int i = 0; i < 8; ++i) {
         int8_t a0 = a.i8[i * 2], a1 = a.i8[i * 2 + 1];
         int8_t b0 = b.i8[i * 2], b1 = b.i8[i * 2 + 1];
-        result.i16[i] = (int16_t)a0 * b0 + (int16_t)a1 * b1;
+        int32_t sum = (int32_t)a0 * b0 + (int32_t)a1 * b1;
+        if (sum > 32767) sum = 32767;
+        if (sum < -32768) sum = -32768;
+        result.i16[i] = (int16_t)sum;
     }
     sp[-2].v128 = result;
     sp--;
@@ -14615,7 +14618,7 @@ WAH_RUN(I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S) M128I_TERNARY_OP(wah_i32x4_relaxed_
     for (int i = 0; i < 4; ++i) {
         int8_t a0 = a.i8[i*4], a1 = a.i8[i*4+1], a2 = a.i8[i*4+2], a3 = a.i8[i*4+3];
         int8_t b0 = b.i8[i*4], b1 = b.i8[i*4+1], b2 = b.i8[i*4+2], b3 = b.i8[i*4+3];
-        result.i32[i] = c.i32[i] + (int32_t)a0*b0 + (int32_t)a1*b1 + (int32_t)a2*b2 + (int32_t)a3*b3;
+        result.u32[i] = (uint32_t)c.i32[i] + (uint32_t)((int32_t)a0*b0) + (uint32_t)((int32_t)a1*b1) + (uint32_t)((int32_t)a2*b2) + (uint32_t)((int32_t)a3*b3);
     }
     sp[-3].v128 = result;
     sp -= 2;
@@ -14647,7 +14650,15 @@ WAH_IF_X86_64(
             sp--;
             WAH_NEXT();
         }
-        WAH_RUN(I16X8_RELAXED_Q15MULR_S_ssse3) M128I_BINARY_OP(wah_mm_mulhrs_epi16)
+        WAH_RUN(I16X8_RELAXED_Q15MULR_S_ssse3) {
+            __m128i a = sp[-2]._m128i, b = sp[-1]._m128i;
+            __m128i result = wah_mm_mulhrs_epi16(a, b);
+            __m128i min16 = _mm_set1_epi16(INT16_MIN);
+            __m128i both_min = _mm_and_si128(_mm_cmpeq_epi16(a, min16), _mm_cmpeq_epi16(b, min16));
+            sp[-2]._m128i = _mm_xor_si128(result, both_min);
+            sp--;
+            WAH_NEXT();
+        }
     )
 
     WAH_IF_SSE41(

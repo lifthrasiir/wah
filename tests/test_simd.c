@@ -1369,6 +1369,12 @@ void test_i16x8_relaxed_q15mulr_s() {
     v2 = (wah_v128_t){{0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F, 0xFF, 0x7F}}; // 1.0 in Q15
     expected = (wah_v128_t){{0xFE, 0x7F, 0xFE, 0x7F, 0xFE, 0x7F, 0xFE, 0x7F, 0xFE, 0x7F, 0xFE, 0x7F, 0xFE, 0x7F, 0xFE, 0x7F}}; // 32766 in Q15 (saturated)
     run_simd_binary_op_test("i16x8.relaxed_q15mulr_s", binary_op_wasm_spec, &v1, &v2, &expected);
+
+    // INT16_MIN * INT16_MIN must saturate to INT16_MAX (deterministic profile)
+    v1 = (wah_v128_t){ .i16 = {INT16_MIN, INT16_MIN, INT16_MIN, INT16_MIN, INT16_MIN, INT16_MIN, INT16_MIN, INT16_MIN} };
+    v2 = (wah_v128_t){ .i16 = {INT16_MIN, INT16_MIN, INT16_MIN, INT16_MIN, INT16_MIN, INT16_MIN, INT16_MIN, INT16_MIN} };
+    expected = (wah_v128_t){ .i16 = {INT16_MAX, INT16_MAX, INT16_MAX, INT16_MAX, INT16_MAX, INT16_MAX, INT16_MAX, INT16_MAX} };
+    run_simd_binary_op_test("i16x8.relaxed_q15mulr_s (INT16_MIN*INT16_MIN)", binary_op_wasm_spec, &v1, &v2, &expected);
 }
 
 void test_simd_fp_nan_canonicalization() {
@@ -1444,6 +1450,12 @@ void test_i16x8_relaxed_dot_i8x16_i7x16_s() {
     b = (wah_v128_t){{0x01, 0x7F, 0x02, 0x7E, 0x03, 0x7D, 0x04, 0x7C, 0x05, 0x7B, 0x06, 0x7A, 0x07, 0x79, 0x08, 0x78}};
     expected = (wah_v128_t){{0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}};
     run_simd_binary_op_test("i16x8.relaxed_dot_i8x16_i7x16_s (zero a)", binary_op_wasm_spec, &a, &b, &expected);
+
+    // -128*-128 = 16384 per pair, two pairs = 32768 > INT16_MAX; must saturate like SSE2
+    a = (wah_v128_t){{ 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80 }};
+    b = (wah_v128_t){{ 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80 }};
+    expected = (wah_v128_t){ .i16 = {32767, 32767, 32767, 32767, 32767, 32767, 32767, 32767} };
+    run_simd_binary_op_test("i16x8.relaxed_dot_i8x16_i7x16_s (saturation)", binary_op_wasm_spec, &a, &b, &expected);
 }
 
 void test_i32x4_relaxed_dot_i8x16_i7x16_add_s() {
@@ -1467,6 +1479,14 @@ void test_i32x4_relaxed_dot_i8x16_i7x16_add_s() {
     c = (wah_v128_t){ .i32 = {0, 0, 0, 0} };
     expected = (wah_v128_t){ .i32 = {765, 1785, 2805, 3825} };
     run_simd_ternary_op_test("i32x4.relaxed_dot_i8x16_i7x16_add_s (zero acc)", ternary_op_wasm_spec, &a, &b, &c, &expected);
+
+    // -128*-128 = 16384 per pair, 4 pairs per lane = 65536; acc=INT32_MAX wraps in uint32_t
+    a = (wah_v128_t){{ 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80 }};
+    b = (wah_v128_t){{ 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80 }};
+    c = (wah_v128_t){ .i32 = {INT32_MAX, INT32_MAX, INT32_MAX, INT32_MAX} };
+    expected = (wah_v128_t){ .u32 = {(uint32_t)INT32_MAX + 65536, (uint32_t)INT32_MAX + 65536,
+                                     (uint32_t)INT32_MAX + 65536, (uint32_t)INT32_MAX + 65536} };
+    run_simd_ternary_op_test("i32x4.relaxed_dot_i8x16_i7x16_add_s (overflow)", ternary_op_wasm_spec, &a, &b, &c, &expected);
 }
 
 void test_v128_multi_memory() {
