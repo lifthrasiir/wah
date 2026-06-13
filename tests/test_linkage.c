@@ -3322,6 +3322,46 @@ int main() {
         wah_free_module(&c_mod);
     }
 
+    // Regression: linked module local globals initialized before global imports resolved,
+    // so (global i32 (global.get $imported)) reads 0 instead of the imported value.
+    {
+        printf("Testing linked module global init from imported global...\n");
+
+        // Primary: exports global g = 42, imports getH from linked module.
+        const char *primary_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'linked'} {'getH'} fn# 0 ]} \
+            globals {[ i32 immut i32.const 42 end ]} \
+            exports {[ {'g'} global# 0 ]}";
+
+        // Linked module: imports g (global#0) from primary, defines local global
+        // h (global#1) = global.get 0, exports getH returning h.
+        const char *linked_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'primary'} {'g'} global# i32 immut ]} \
+            funcs {[ 0 ]} \
+            globals {[ i32 immut global.get 0 end ]} \
+            exports {[ {'getH'} fn# 0 ]} \
+            code {[ {[] global.get 1 end } ]}";
+
+        wah_module_t primary = {0}, linked = {0};
+        assert_ok(wah_parse_module_from_spec(&primary, primary_spec));
+        assert_ok(wah_parse_module_from_spec(&linked, linked_spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "linked", &linked));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&linked);
+        wah_free_module(&primary);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

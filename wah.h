@@ -16220,6 +16220,44 @@ static wah_error_t wah_prepare_linked_globals(wah_exec_context_t *ctx) {
     return WAH_OK;
 }
 
+// Re-evaluate linked module local globals after their imports have been resolved.
+// wah_prepare_linked_globals already evaluates them once so that
+// wah_resolve_primary_global_imports can read linked exports, but at that point
+// linked import slots are zeroed. After wah_resolve_linked_global_imports fills
+// them in, globals initialized via (global.get $imported) must be re-evaluated.
+static wah_error_t wah_init_linked_globals(wah_exec_context_t *ctx) {
+    const wah_module_t *module = ctx->module;
+    wah_value_t *saved_globals = ctx->globals;
+    uint32_t saved_global_count = ctx->global_count;
+    const wah_module_t *saved_module = ctx->module;
+    uint32_t offset = wah_global_index_limit(module);
+    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+        const wah_module_t *linked = ctx->linked_modules[j].module;
+        wah_exec_context_t *lctx = ctx->linked_modules[j].ctx;
+        if (!lctx) {
+            ctx->globals = saved_globals + offset;
+            ctx->global_count = wah_global_index_limit(linked);
+            ctx->module = linked;
+            for (uint32_t k = 0; k < linked->global_count; k++) {
+                wah_error_t err = wah_eval_const_expr(ctx, linked->globals[k].init_expr.bytecode,
+                                                      linked->globals[k].init_expr.bytecode_size,
+                                                      &saved_globals[offset + linked->import_global_count + k]);
+                if (err != WAH_OK) {
+                    ctx->module = saved_module;
+                    ctx->globals = saved_globals;
+                    ctx->global_count = saved_global_count;
+                    return err;
+                }
+            }
+            ctx->module = saved_module;
+        }
+        offset += wah_global_index_limit(linked);
+    }
+    ctx->globals = saved_globals;
+    ctx->global_count = saved_global_count;
+    return WAH_OK;
+}
+
 static wah_error_t wah_resolve_primary_func_imports(wah_exec_context_t *ctx) {
     const wah_module_t *module = ctx->module;
     for (uint32_t i = 0; i < module->import_function_count; i++) {
@@ -16963,6 +17001,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
 
     WAH_CHECK_GOTO(wah_init_primary_globals(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_linked_global_imports(ctx), cleanup);
+    WAH_CHECK_GOTO(wah_init_linked_globals(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_primary_table_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_primary_memory_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_convert_linked_funcref_globals(ctx), cleanup);
