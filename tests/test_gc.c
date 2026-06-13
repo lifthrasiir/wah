@@ -1858,6 +1858,98 @@ int main() {
         printf("  PASSED\n");
     }
 
+    // Regression: ref map desync when function body starts with call.
+    // The first-instr POLL and call-site POLL are the same program point;
+    // a double WAH_CAPTURE_REF_MAP caused every subsequent POLL to read
+    // the wrong ref map entry, so GC could miss live references.
+    printf("Testing GC ref map: function body starting with call...\n");
+    {
+        wah_module_t env_mod = {0};
+        wah_new_module(&env_mod, NULL);
+        assert_ok(wah_export_func(&env_mod, "trigger_gc", "() -> ()", host_trigger_gc, NULL, NULL));
+
+        wah_module_t wasm_mod = {0};
+        // type 0: struct {i32 mut}
+        // type 1: fn () -> ()      (import: trigger_gc)
+        // type 2: fn () -> (i32)   (func 0)
+        // func 0: call trigger_gc as the FIRST instruction (empty stack),
+        //         then allocate a struct (structref on operand stack),
+        //         then call trigger_gc again — the second call's POLL reads
+        //         the wrong ref map if the first call caused a double capture.
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, "wasm \
+            types {[ struct [i32 mut], fn [] [], fn [] [i32] ]} \
+            imports {[ {'env'} {'trigger_gc'} fn# 1 ]} \
+            funcs {[2]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ {[] \
+                call 0 \
+                i32.const 99 struct.new 0 \
+                call 0 \
+                struct.get 0 0 \
+            end} ]}"));
+
+        wah_exec_context_t ctx2 = {0};
+        assert_ok(wah_new_exec_context(&ctx2, &wasm_mod, NULL));
+        assert_ok(wah_link_module(&ctx2, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx2));
+        ctx2.gc->allocation_threshold = 1;
+        assert_ok(wah_instantiate(&ctx2));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx2, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 99);
+
+        wah_free_exec_context(&ctx2);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
+    // Regression: ref map desync when function body starts with loop.
+    // Same root cause — the first-instr capture and loop-back-edge capture
+    // are the same program point; duplicate ref map entry caused desync.
+    printf("Testing GC ref map: function body starting with loop...\n");
+    {
+        wah_module_t env_mod = {0};
+        wah_new_module(&env_mod, NULL);
+        assert_ok(wah_export_func(&env_mod, "trigger_gc", "() -> ()", host_trigger_gc, NULL, NULL));
+
+        wah_module_t wasm_mod = {0};
+        // type 0: struct {i32 mut}
+        // type 1: fn () -> ()      (import: trigger_gc)
+        // type 2: fn () -> (i32)   (func 0)
+        // func 0: loop as the FIRST instruction (causes double capture),
+        //         then allocate struct and call trigger_gc with ref on stack.
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, "wasm \
+            types {[ struct [i32 mut], fn [] [], fn [] [i32] ]} \
+            imports {[ {'env'} {'trigger_gc'} fn# 1 ]} \
+            funcs {[2]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ {[1 i32] \
+                loop void \
+                    local.get 0 i32.const 1 i32.add local.set 0 \
+                    local.get 0 i32.const 2 i32.lt_s br_if 0 \
+                end \
+                i32.const 77 struct.new 0 \
+                call 0 \
+                struct.get 0 0 \
+            end} ]}"));
+
+        wah_exec_context_t ctx2 = {0};
+        assert_ok(wah_new_exec_context(&ctx2, &wasm_mod, NULL));
+        assert_ok(wah_link_module(&ctx2, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx2));
+        ctx2.gc->allocation_threshold = 1;
+        assert_ok(wah_instantiate(&ctx2));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx2, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 77);
+
+        wah_free_exec_context(&ctx2);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }

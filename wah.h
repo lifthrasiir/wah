@@ -8027,7 +8027,7 @@ static wah_error_t wah_analyze_stream(
             }
         }
 
-        if (is_func_body && (
+        if (is_func_body && !poll_flags && (
             opcode_val == WAH_OP_CALL || opcode_val == WAH_OP_CALL_INDIRECT || opcode_val == WAH_OP_CALL_REF ||
             opcode_val == WAH_OP_RETURN_CALL || opcode_val == WAH_OP_RETURN_CALL_INDIRECT || opcode_val == WAH_OP_RETURN_CALL_REF
         )) {
@@ -8044,8 +8044,8 @@ static wah_error_t wah_analyze_stream(
                 poll_flags = 0;
             }
             if (opcode_val == WAH_OP_LOOP) {
-                WAH_CAPTURE_REF_MAP();
-                if (ac->instr_count > 0) {
+                if (ac->instr_count > 0 && !(ac->instrs[ac->instr_count - 1].flags & WAH_INSTR_FLAG_POLL)) {
+                    WAH_CAPTURE_REF_MAP();
                     ac->instrs[ac->instr_count - 1].flags |= WAH_INSTR_FLAG_POLL;
                 }
             }
