@@ -8,12 +8,11 @@ int main(void) {
     printf("Testing switch-based dispatch...\n");
 
     wah_module_t module = {0};
-    assert_ok(wah_parse_module_from_spec(&module,
-        "wasm "
-        "types {[ fn [i32, i32] [i32] ]} "
-        "funcs {[ 0 ]} "
-        "exports {[ {'add'} fn# 0 ]} "
-        "code {[ {[] local.get 0 local.get 1 i32.add end} ]}"));
+    assert_ok(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [i32, i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'add'} fn# 0 ]} \
+        code {[ {[] local.get 0 local.get 1 i32.add end} ]}"));
 
     wah_exec_context_t ctx = {0};
     assert_ok(wah_new_exec_context(&ctx, &module, NULL));

@@ -460,10 +460,11 @@ static void test_memory64_validation() {
 static void test_memory64_large_limits() {
     printf("Running test_memory64_large_limits (regression for uint32 overflow)...\n");
     wah_module_t module = {0};
-    const char *spec = "wasm memories {[ limits.i64/2 1 8589934592 ]}";
-    assert_ok(wah_parse_module_from_spec(&module, spec));
-    { wah_memory_desc_t md; assert_ok(wah_module_memory(&module, 0, &md));
-      assert_eq_u64(md.min_pages, 1); assert_eq_u64(md.max_pages, 8589934592ULL); }
+    assert_ok(wah_parse_module_from_spec(&module, "wasm memories {[ limits.i64/2 1 8589934592 ]}"));
+    wah_memory_desc_t md;
+    assert_ok(wah_module_memory(&module, 0, &md));
+    assert_eq_u64(md.min_pages, 1);
+    assert_eq_u64(md.max_pages, 8589934592ULL);
     wah_free_module(&module);
 }
 

@@ -8,13 +8,10 @@ static uint64_t f64_bits(double f) { uint64_t u; memcpy(&u, &f, 8); return u; }
 
 // Helper: run a two-arg f32 op and return bit pattern
 static uint32_t run_f32_binop(const char *op, float a, float b) {
-    char spec[512];
-    snprintf(spec, sizeof(spec),
-        "wasm types {[ fn [f32, f32] [f32] ]} funcs {[ 0 ]} "
-        "code {[ {[] local.get 0 local.get 1 %s end } ]}", op);
-
     wah_module_t module = {0};
-    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_ok(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [f32, f32] [f32] ]} funcs {[ 0 ]} \
+        code {[ {[] local.get 0 local.get 1 %t end } ]}", op));
     wah_exec_context_t ctx = {0};
     assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
@@ -31,13 +28,10 @@ static uint32_t run_f32_binop(const char *op, float a, float b) {
 }
 
 static uint64_t run_f64_binop(const char *op, double a, double b) {
-    char spec[512];
-    snprintf(spec, sizeof(spec),
-        "wasm types {[ fn [f64, f64] [f64] ]} funcs {[ 0 ]} "
-        "code {[ {[] local.get 0 local.get 1 %s end } ]}", op);
-
     wah_module_t module = {0};
-    assert_ok(wah_parse_module_from_spec(&module, spec));
+    assert_ok(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [f64, f64] [f64] ]} funcs {[ 0 ]} \
+        code {[ {[] local.get 0 local.get 1 %t end } ]}", op));
     wah_exec_context_t ctx = {0};
     assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_ok(wah_instantiate(&ctx));
@@ -93,10 +87,10 @@ static void test_fp_no_canonicalize_nan() {
     (void)neg_result;
 
     // Use a single-arg helper for unary ops
-    const char *neg_spec = "wasm types {[ fn [f32] [f32] ]} funcs {[ 0 ]} "
-        "code {[ {[] local.get 0 f32.neg end } ]}";
     wah_module_t m1 = {0};
-    assert_ok(wah_parse_module_from_spec(&m1, neg_spec));
+    assert_ok(wah_parse_module_from_spec(&m1, "wasm \
+        types {[ fn [f32] [f32] ]} funcs {[ 0 ]} \
+        code {[ {[] local.get 0 f32.neg end } ]}"));
     wah_exec_context_t c1 = {0};
     assert_ok(wah_new_exec_context(&c1, &m1, NULL));
     assert_ok(wah_instantiate(&c1));
@@ -109,10 +103,10 @@ static void test_fp_no_canonicalize_nan() {
 
     // f32.abs should clear sign bit, preserving NaN payload
     uint32_t neg_nan32 = 0xFFC00001u;
-    const char *abs_spec = "wasm types {[ fn [f32] [f32] ]} funcs {[ 0 ]} "
-        "code {[ {[] local.get 0 f32.abs end } ]}";
     wah_module_t m2 = {0};
-    assert_ok(wah_parse_module_from_spec(&m2, abs_spec));
+    assert_ok(wah_parse_module_from_spec(&m2, "wasm \
+        types {[ fn [f32] [f32] ]} funcs {[ 0 ]} \
+        code {[ {[] local.get 0 f32.abs end } ]}"));
     wah_exec_context_t c2 = {0};
     assert_ok(wah_new_exec_context(&c2, &m2, NULL));
     assert_ok(wah_instantiate(&c2));
@@ -128,8 +122,9 @@ static void test_fp_no_canonicalize_nan() {
 static void test_nearest_neg_zero() {
     printf("Testing f32/f64 nearest preserves -0 (a7c6d65)...\n");
 
-    const char *f32_spec = "wasm types {[ fn [f32] [f32] ]} funcs {[ 0 ]} "
-        "code {[ {[] local.get 0 f32.nearest end } ]}";
+    const char *f32_spec = "wasm \
+        types {[ fn [f32] [f32] ]} funcs {[ 0 ]} \
+        code {[ {[] local.get 0 f32.nearest end } ]}";
     wah_module_t m1 = {0};
     assert_ok(wah_parse_module_from_spec(&m1, f32_spec));
     wah_exec_context_t c1 = {0};
@@ -158,8 +153,9 @@ static void test_nearest_neg_zero() {
     wah_free_exec_context(&c1b);
     wah_free_module(&m1b);
 
-    const char *f64_spec = "wasm types {[ fn [f64] [f64] ]} funcs {[ 0 ]} "
-        "code {[ {[] local.get 0 f64.nearest end } ]}";
+    const char *f64_spec = "wasm \
+        types {[ fn [f64] [f64] ]} funcs {[ 0 ]} \
+        code {[ {[] local.get 0 f64.nearest end } ]}";
     wah_module_t m2 = {0};
     assert_ok(wah_parse_module_from_spec(&m2, f64_spec));
     wah_exec_context_t c2 = {0};

@@ -529,9 +529,9 @@ static void test_unknown_opcode() {
     printf("Testing unknown opcode validation...\n");
     wah_module_t module = {0};
     // Use raw hex for code body: 0x06 is an unrecognized opcode
-    assert_err(wah_parse_module_from_spec(&module,
-        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} "
-        "code {[ {[] %'06' end } ]}"),
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} funcs {[ 0 ]} \
+        code {[ {[] %'06' end } ]}"),
         WAH_ERROR_MALFORMED);
     wah_free_module(&module);
 }

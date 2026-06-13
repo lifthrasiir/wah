@@ -136,12 +136,13 @@ static void test_array_stride_unchanged(void) {
 static void test_parse_rebuild_path(void) {
     printf("Testing parsed module metadata uses aligned struct layout...\n");
 
-    const char *spec = "wasm types {[ struct [i8 mut, v128 mut, i8 mut], fn [] [] ]} funcs {[1]} code {[ {[] end} ]}";
     wah_module_t mod = {0};
     wah_debug_repr_info_t info;
     wah_debug_repr_field_t fields[3] = {{0}};
 
-    assert_ok(wah_parse_module_from_spec(&mod, spec));
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[ struct [i8 mut, v128 mut, i8 mut], fn [] [] ]} \
+        funcs {[1]} code {[ {[] end} ]}"));
     get_repr(&mod, wah_debug_type_from_idx(0, false), &info, fields, 3);
     assert_eq_u32(info.type, DEBUG_REPR_STRUCT);
     assert_eq_u32(info.size, 32);

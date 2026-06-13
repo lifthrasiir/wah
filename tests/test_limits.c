@@ -35,9 +35,9 @@ static void test_set_limits(void) {
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
 
-    assert_ok(wah_parse_module_from_spec(&mod,
-        "wasm types {[fn [] []]} funcs {[0]} "
-        "code {[{[] end}]}"));
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] []]} funcs {[0]} \
+        code {[{[] end}]}"));
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
 
     wah_limits_t lim = { .max_stack_bytes = 4096 };

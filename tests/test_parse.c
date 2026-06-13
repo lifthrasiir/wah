@@ -996,9 +996,9 @@ static void test_elem_oob_table_idx() {
 static void test_unknown_export_kind() {
     printf("Running test_unknown_export_kind...\n");
     wah_module_t module = {0};
-    assert_err(wah_parse_module_from_spec(&module,
-        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} code {[ {[] end} ]} "
-        "exports {%'01 01 78 05 00'}"),
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} funcs {[ 0 ]} code {[ {[] end} ]} \
+        exports {%'01 01 78 05 00'}"),
         WAH_ERROR_MALFORMED);
     wah_free_module(&module);
 }
@@ -1007,19 +1007,19 @@ static void test_unknown_element_segment_flags() {
     printf("Running test_unknown_element_segment_flags...\n");
     wah_module_t module = {0};
     // flags=4 (elem.active.expr.table#0) should succeed as a baseline
-    assert_ok(wah_parse_module_from_spec(&module,
-        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} "
-        "tables {[ funcref limits.i32/1 1 ]} "
-        "elements {[ elem.active.expr.table#0 i32.const 0 end [ref.func 0 end] ]} "
-        "code {[ {[] end} ]}"));
+    assert_ok(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        elements {[ elem.active.expr.table#0 i32.const 0 end [ref.func 0 end] ]} \
+        code {[ {[] end} ]}"));
     wah_free_module(&module);
     module = (wah_module_t){0};
     // flags=8 has same binary layout as flags=4 but is invalid per spec
-    assert_err(wah_parse_module_from_spec(&module,
-        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} "
-        "tables {[ funcref limits.i32/1 1 ]} "
-        "elements {[ %'08' i32.const 0 end [ref.func 0 end] ]} "
-        "code {[ {[] end} ]}"),
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/1 1 ]} \
+        elements {[ %'08' i32.const 0 end [ref.func 0 end] ]} \
+        code {[ {[] end} ]}"),
         WAH_ERROR_MALFORMED);
     wah_free_module(&module);
 }
@@ -1027,9 +1027,9 @@ static void test_unknown_element_segment_flags() {
 static void test_unknown_data_segment_flags() {
     printf("Running test_unknown_data_segment_flags...\n");
     wah_module_t module = {0};
-    assert_err(wah_parse_module_from_spec(&module,
-        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} memories {[ limits.i32/1 1 ]} "
-        "code {[ {[] end} ]} datacount { 1 } data {%'01 03 00'}"),
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} funcs {[ 0 ]} memories {[ limits.i32/1 1 ]} \
+        code {[ {[] end} ]} datacount { 1 } data {%'01 03 00'}"),
         WAH_ERROR_MALFORMED);
     wah_free_module(&module);
 }
@@ -1037,8 +1037,8 @@ static void test_unknown_data_segment_flags() {
 static void test_count_overflow() {
     printf("Running test_count_overflow...\n");
     wah_module_t module = {0};
-    assert_err(wah_parse_module_from_spec(&module,
-        "wasm types {%'80 80 80 80 08'}"),
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        types {%'80 80 80 80 08'}"),
         WAH_ERROR_MALFORMED);
     wah_free_module(&module);
 }

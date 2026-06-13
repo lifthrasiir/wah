@@ -152,11 +152,11 @@ int main(void) {
 #define I32x10 "i32,i32,i32,i32,i32,i32,i32,i32,i32,i32"
 #define I32x100 I32x10 "," I32x10 "," I32x10 "," I32x10 "," I32x10 "," \
                 I32x10 "," I32x10 "," I32x10 "," I32x10 "," I32x10
-        assert_ok(wah_parse_module_from_spec(&module,
-            "wasm types {[fn [" I32x100 "] [i32]]} "
-            "funcs {[0]} "
-            "exports {[{'run'} fn# 0]} "
-            "code {[{[] local.get 0 end}]}"));
+        assert_ok(wah_parse_module_from_spec(&module, "wasm \
+            types {[fn [" I32x100 "] [i32]]} \
+            funcs {[0]} \
+            exports {[{'run'} fn# 0]} \
+            code {[{[] local.get 0 end}]}"));
 
         wah_exec_options_t opts = {0};
         opts.limits.max_stack_bytes = 512;
