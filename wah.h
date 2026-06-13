@@ -8574,6 +8574,62 @@ static wah_error_t wah_resolve_global_export(
     return WAH_ERROR_TOO_LARGE;
 }
 
+static wah_error_t wah_resolve_table_export(
+    wah_exec_context_t *ctx,
+    const wah_module_t *linked, wah_exec_context_t *linked_ctx, uint32_t table_idx,
+    const wah_module_t **out_provider, wah_exec_context_t **out_provider_ctx,
+    uint32_t *out_idx
+) {
+    for (int depth = 0; depth < WAH_REEXPORT_MAX_DEPTH; depth++) {
+        if (table_idx >= linked->import_table_count) {
+            WAH_ENSURE(table_idx - linked->import_table_count < linked->table_count, WAH_ERROR_LINK_FAILED);
+            *out_provider = linked;
+            *out_provider_ctx = linked_ctx;
+            *out_idx = table_idx;
+            return WAH_OK;
+        }
+        wah_table_import_t *ti = &linked->table_imports[table_idx];
+        const wah_module_t *next = NULL;
+        wah_exec_context_t *next_ctx = NULL;
+        WAH_ENSURE(wah_find_linked_module(ctx, &ti->name, &next, &next_ctx, NULL), WAH_ERROR_LINK_FAILED);
+        const wah_export_t *exp = wah_find_export(next, 1, &ti->name);
+        WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
+        WAH_ENSURE(exp->index < wah_table_index_limit(next), WAH_ERROR_LINK_FAILED);
+        linked = next;
+        linked_ctx = next_ctx;
+        table_idx = exp->index;
+    }
+    return WAH_ERROR_TOO_LARGE;
+}
+
+static wah_error_t wah_resolve_memory_export(
+    wah_exec_context_t *ctx,
+    const wah_module_t *linked, wah_exec_context_t *linked_ctx, uint32_t mem_idx,
+    const wah_module_t **out_provider, wah_exec_context_t **out_provider_ctx,
+    uint32_t *out_idx
+) {
+    for (int depth = 0; depth < WAH_REEXPORT_MAX_DEPTH; depth++) {
+        if (mem_idx >= linked->import_memory_count) {
+            WAH_ENSURE(mem_idx - linked->import_memory_count < linked->memory_count, WAH_ERROR_LINK_FAILED);
+            *out_provider = linked;
+            *out_provider_ctx = linked_ctx;
+            *out_idx = mem_idx;
+            return WAH_OK;
+        }
+        wah_memory_import_t *mi = &linked->memory_imports[mem_idx];
+        const wah_module_t *next = NULL;
+        wah_exec_context_t *next_ctx = NULL;
+        WAH_ENSURE(wah_find_linked_module(ctx, &mi->name, &next, &next_ctx, NULL), WAH_ERROR_LINK_FAILED);
+        const wah_export_t *exp = wah_find_export(next, 2, &mi->name);
+        WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
+        WAH_ENSURE(exp->index < wah_memory_index_limit(next), WAH_ERROR_LINK_FAILED);
+        linked = next;
+        linked_ctx = next_ctx;
+        mem_idx = exp->index;
+    }
+    return WAH_ERROR_TOO_LARGE;
+}
+
 static wah_error_t wah_bind_memory_import_slot(
     wah_memory_inst_t *slot, const wah_module_t *provider, wah_exec_context_t *provider_ctx,
     uint32_t mem_idx, const wah_memory_type_t *import_type
@@ -16721,6 +16777,19 @@ static wah_error_t wah_resolve_primary_table_imports(wah_exec_context_t *ctx) {
             WAH_CHECK(wah_import_existing_table(ctx, i, linked_ctx, linked_table_idx, ti->type.min_elements));
         } else if (linked_table_idx >= linked->import_table_count) {
             WAH_CHECK(wah_alloc_local_table_import(ctx, i, exp_tt, ti->type.min_elements));
+        } else {
+            const wah_module_t *tprov = NULL;
+            wah_exec_context_t *tprov_ctx = NULL;
+            uint32_t tprov_idx = 0;
+            WAH_CHECK(wah_resolve_table_export(ctx, linked, linked_ctx, linked_table_idx,
+                                               &tprov, &tprov_ctx, &tprov_idx));
+            if (tprov_ctx && tprov_idx < tprov_ctx->table_count) {
+                WAH_CHECK(wah_import_existing_table(ctx, i, tprov_ctx, tprov_idx, ti->type.min_elements));
+            } else {
+                WAH_ENSURE(tprov_idx >= tprov->import_table_count, WAH_ERROR_LINK_FAILED);
+                WAH_CHECK(wah_alloc_local_table_import(ctx, i,
+                    &tprov->tables[tprov_idx - tprov->import_table_count], ti->type.min_elements));
+            }
         }
     }
     return WAH_OK;
@@ -16757,6 +16826,19 @@ static wah_error_t wah_resolve_primary_memory_imports(wah_exec_context_t *ctx) {
             WAH_CHECK(wah_import_existing_memory(ctx, i, linked_ctx, linked_mem_idx, mi->type.min_pages));
         } else if (linked_mem_idx >= linked->import_memory_count) {
             WAH_CHECK(wah_alloc_local_memory_import(ctx, i, exp_mt, mi->type.min_pages));
+        } else {
+            const wah_module_t *mprov = NULL;
+            wah_exec_context_t *mprov_ctx = NULL;
+            uint32_t mprov_idx = 0;
+            WAH_CHECK(wah_resolve_memory_export(ctx, linked, linked_ctx, linked_mem_idx,
+                                                &mprov, &mprov_ctx, &mprov_idx));
+            if (mprov_ctx && mprov_idx < mprov_ctx->memory_count) {
+                WAH_CHECK(wah_import_existing_memory(ctx, i, mprov_ctx, mprov_idx, mi->type.min_pages));
+            } else {
+                WAH_ENSURE(mprov_idx >= mprov->import_memory_count, WAH_ERROR_LINK_FAILED);
+                WAH_CHECK(wah_alloc_local_memory_import(ctx, i,
+                    &mprov->memories[mprov_idx - mprov->import_memory_count], mi->type.min_pages));
+            }
         }
     }
     if (module->import_memory_count > 0) {
@@ -16891,6 +16973,35 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                             mem_found = true;
                         }
                     }
+                    if (!mem_found && mprov) {
+                        const wah_export_t *mexp = wah_find_export(mprov, 2, &mim->name);
+                        if (mexp) {
+                            const wah_module_t *rprov = NULL;
+                            wah_exec_context_t *rprov_ctx = NULL;
+                            uint32_t rprov_idx = 0;
+                            WAH_CHECK(wah_resolve_memory_export(ctx, mprov, mprov_ctx, mexp->index,
+                                                                &rprov, &rprov_ctx, &rprov_idx));
+                            if (rprov_ctx && rprov_idx < rprov_ctx->memory_count) {
+                                WAH_CHECK(wah_bind_memory_import_slot(&ictx->memories[mi], rprov, rprov_ctx,
+                                                                      rprov_idx, &mim->type));
+                                WAH_FOLLOW_IMPORT_CHAIN(ictx, mi, rprov_ctx, rprov_idx, wah_memory_inst_t, memories);
+                                mem_found = true;
+                            } else if (rprov_idx >= rprov->import_memory_count) {
+                                const wah_memory_type_t *mtype = &rprov->memories[rprov_idx - rprov->import_memory_count];
+                                WAH_ENSURE(mtype->min_pages >= mim->type.min_pages, WAH_ERROR_LINK_FAILED);
+                                WAH_ENSURE(mtype->min_pages <= SIZE_MAX / WAH_WASM_PAGE_SIZE, WAH_ERROR_TOO_LARGE);
+                                uint64_t byte_size = mtype->min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
+                                ictx->memories[mi].is_imported = false;
+                                ictx->memories[mi].max_pages = mtype->max_pages;
+                                ictx->memories[mi].size = byte_size;
+                                if (byte_size > 0) {
+                                    WAH_MALLOC_ARRAY(ictx->memories[mi].data, byte_size);
+                                    memset(ictx->memories[mi].data, 0, (size_t)byte_size);
+                                }
+                                mem_found = true;
+                            }
+                        }
+                    }
                     WAH_ENSURE(mem_found, WAH_ERROR_LINK_FAILED);
                 }
                 for (uint32_t mi = 0; mi < lmod->memory_count; mi++) {
@@ -16940,6 +17051,33 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                                                                  module, ctx, pexp->index));
                             WAH_FOLLOW_IMPORT_CHAIN(ictx, ti, ctx, pexp->index, wah_table_inst_t, tables);
                             tbl_found = true;
+                        }
+                    }
+                    if (!tbl_found && tprov) {
+                        const wah_export_t *texp = wah_find_export(tprov, 1, &tim->name);
+                        if (texp) {
+                            const wah_module_t *rprov = NULL;
+                            wah_exec_context_t *rprov_ctx = NULL;
+                            uint32_t rprov_idx = 0;
+                            WAH_CHECK(wah_resolve_table_export(ctx, tprov, tprov_ctx, texp->index,
+                                                               &rprov, &rprov_ctx, &rprov_idx));
+                            if (rprov_ctx && rprov_idx < rprov_ctx->table_count) {
+                                WAH_CHECK(wah_bind_table_import_slot(&ictx->tables[ti], lmod, &tim->type,
+                                                                     rprov, rprov_ctx, rprov_idx));
+                                WAH_FOLLOW_IMPORT_CHAIN(ictx, ti, rprov_ctx, rprov_idx, wah_table_inst_t, tables);
+                                tbl_found = true;
+                            } else if (rprov_idx >= rprov->import_table_count) {
+                                const wah_table_type_t *ttype = &rprov->tables[rprov_idx - rprov->import_table_count];
+                                WAH_ENSURE(ttype->min_elements >= tim->type.min_elements, WAH_ERROR_LINK_FAILED);
+                                uint64_t tbytes = 0;
+                                WAH_CHECK(wah_table_byte_size(ttype->min_elements, &tbytes));
+                                ictx->tables[ti].is_imported = false;
+                                ictx->tables[ti].size = ttype->min_elements;
+                                ictx->tables[ti].max_size = ttype->max_elements;
+                                WAH_MALLOC_ARRAY(ictx->tables[ti].entries, ttype->min_elements > 0 ? ttype->min_elements : 1);
+                                memset(ictx->tables[ti].entries, 0, (size_t)tbytes);
+                                tbl_found = true;
+                            }
                         }
                     }
                     WAH_ENSURE(tbl_found, WAH_ERROR_LINK_FAILED);

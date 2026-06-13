@@ -3404,6 +3404,91 @@ int main() {
         wah_free_module(&mod_b);
     }
 
+    // Regression: primary table import resolving to a re-exported import of an
+    // uninstantiated linked module was silently skipped (slot stayed zeroed).
+    printf("Test: primary table import through re-exported import of uninstantiated module\n");
+    {
+        // Provider: defines a table with min=2, exports it.
+        const char *provider_spec = "wasm \
+            tables {[ funcref limits.i32/1 2 ]} \
+            exports {[ {'tbl'} table# 0 ]}";
+
+        // Middle: imports table from provider, re-exports it.
+        const char *middle_spec = "wasm \
+            imports {[ {'provider'} {'tbl'} table# funcref limits.i32/1 0 ]} \
+            exports {[ {'tbl'} table# 0 ]}";
+
+        // User: imports table from middle, checks table.size.
+        const char *user_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'middle'} {'tbl'} table# funcref limits.i32/1 0 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'test'} fn# 0 ]} \
+            code {[ {[] table.size 0 end} ]}";
+
+        wah_module_t provider_mod = {0}, middle_mod = {0}, user_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&provider_mod, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&middle_mod, middle_spec));
+        assert_ok(wah_parse_module_from_spec(&user_mod, user_spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &user_mod, NULL));
+        assert_ok(wah_link_module(&ctx, "middle", &middle_mod));
+        assert_ok(wah_link_module(&ctx, "provider", &provider_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ctx, "test", NULL, 0, &result));
+        assert_eq_i32(result.i32, 2);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&user_mod);
+        wah_free_module(&middle_mod);
+        wah_free_module(&provider_mod);
+    }
+
+    // Regression: primary memory import resolving to a re-exported import of an
+    // uninstantiated linked module was silently skipped (slot stayed zeroed).
+    printf("Test: primary memory import through re-exported import of uninstantiated module\n");
+    {
+        // Provider: exports a memory with min=1.
+        wah_module_t provider_mod = {0};
+        assert_ok(wah_new_module(&provider_mod, NULL));
+        assert_ok(wah_export_memory(&provider_mod, "mem", 1, 1));
+
+        // Middle: imports memory from provider, re-exports it.
+        const char *middle_spec = "wasm \
+            imports {[ {'provider'} {'mem'} mem# limits.i32/1 0 ]} \
+            exports {[ {'mem'} mem# 0 ]}";
+
+        // User: imports memory from middle, checks memory.size.
+        const char *user_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'middle'} {'mem'} mem# limits.i32/1 0 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'test'} fn# 0 ]} \
+            code {[ {[] memory.size 0 end} ]}";
+
+        wah_module_t middle_mod = {0}, user_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&middle_mod, middle_spec));
+        assert_ok(wah_parse_module_from_spec(&user_mod, user_spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &user_mod, NULL));
+        assert_ok(wah_link_module(&ctx, "middle", &middle_mod));
+        assert_ok(wah_link_module(&ctx, "provider", &provider_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ctx, "test", NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&user_mod);
+        wah_free_module(&middle_mod);
+        wah_free_module(&provider_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
