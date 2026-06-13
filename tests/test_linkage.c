@@ -3102,6 +3102,226 @@ int main() {
         wah_free_module(&linked_mod);
     }
 
+    // Regression: memory.grow by an external consumer must propagate to the
+    // provider's owned linked contexts (wah_link_module path).
+    // Before the fix, wah_propagate_memory_import_aliases did not iterate
+    // owner_ctx->linked_modules, leaving owned contexts with stale pointers.
+    printf("Test: memory.grow propagates to provider's owned linked contexts\n");
+    {
+        // Provider: 1-page memory (max 10), exports "mem" and "grow".
+        const char *provider_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            funcs {[ 0 ]} \
+            memories {[ limits.i32/2 1 10 ]} \
+            exports {[ {'mem'} mem# 0, {'grow'} fn# 0 ]} \
+            code {[ {[] local.get 0 memory.grow 0 end } ]}";
+
+        // Helper: imports provider's memory, exports load(addr)->i32.
+        const char *helper_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            imports {[ {'prov'} {'mem'} mem# limits.i32/2 1 10 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'load'} fn# 0 ]} \
+            code {[ {[] local.get 0 i32.load 0 0 end } ]}";
+
+        // Primary: imports provider's mem+grow, wraps grow as do_grow, wraps
+        // helper's load as do_load. Calls go cross-module.
+        // Fn indices: 0=imported grow, 1=imported load, 2..4=local.
+        const char *primary_spec = "wasm \
+            types {[ fn [i32] [i32], fn [i32, i32] [] ]} \
+            imports {[ {'prov'} {'mem'} mem# limits.i32/2 1 10, \
+                       {'prov'} {'grow'} fn# 0, \
+                       {'helper'} {'load'} fn# 0 ]} \
+            funcs {[ 0, 1, 0 ]} \
+            exports {[ {'do_grow'} fn# 2, {'store'} fn# 3, {'do_load'} fn# 4 ]} \
+            code {[ \
+                {[] local.get 0 call 0 end }, \
+                {[] local.get 0 local.get 1 i32.store 0 0 end }, \
+                {[] local.get 0 call 1 end } \
+            ]}";
+
+        wah_module_t prov_mod = {0}, helper_mod = {0}, primary_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&prov_mod, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&helper_mod, helper_spec));
+        assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+
+        // Provider is instantiated separately (wah_link_context).
+        wah_exec_context_t prov_ctx = {0};
+        assert_ok(wah_new_exec_context(&prov_ctx, &prov_mod, NULL));
+        assert_ok(wah_instantiate(&prov_ctx));
+
+        // Primary links provider via wah_link_context and helper via
+        // wah_link_module.  Helper's owned context imports prov's memory.
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary_mod, NULL));
+        assert_ok(wah_link_context(&ctx, "prov", &prov_ctx));
+        assert_ok(wah_link_module(&ctx, "helper", &helper_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        // Store a value into the original memory.
+        wah_value_t store_args[2] = {{.i32 = 0}, {.i32 = 0xBEEF}};
+        assert_ok(wah_call_by_name(&ctx, "store", store_args, 2, NULL));
+
+        // Grow by 2 pages (realloc may move the buffer).
+        wah_value_t grow_arg = {.i32 = 2};
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ctx, "do_grow", &grow_arg, 1, &result));
+        assert_eq_i32(result.i32, 1);  // old size
+
+        // Load through the helper's owned context -- must see the grown memory.
+        wah_value_t load_arg = {.i32 = 0};
+        assert_ok(wah_call_by_name(&ctx, "do_load", &load_arg, 1, &result));
+        assert_eq_i32(result.i32, (int32_t)0xBEEF);
+
+        // Also verify the grown region is accessible.
+        store_args[0].i32 = 1 * 65536 + 4;
+        store_args[1].i32 = 0xCAFE;
+        assert_ok(wah_call_by_name(&ctx, "store", store_args, 2, NULL));
+        load_arg.i32 = 1 * 65536 + 4;
+        assert_ok(wah_call_by_name(&ctx, "do_load", &load_arg, 1, &result));
+        assert_eq_i32(result.i32, (int32_t)0xCAFE);
+
+        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&prov_ctx);
+        wah_free_module(&primary_mod);
+        wah_free_module(&helper_mod);
+        wah_free_module(&prov_mod);
+    }
+
+    // Regression: table.grow by an external consumer must propagate to the
+    // provider's owned linked contexts.
+    printf("Test: table.grow propagates to provider's owned linked contexts\n");
+    {
+        // Provider: local table, exports it and a grow function.
+        const char *provider_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/2 1 100 ]} \
+            exports {[ {'tbl'} table# 0, {'grow'} fn# 0 ]} \
+            code {[ {[] ref.null funcref local.get 0 table.grow 0 end } ]}";
+
+        // Helper: imports the table, exports its size.
+        const char *helper_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'prov'} {'tbl'} table# funcref limits.i32/2 1 100 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'size'} fn# 0 ]} \
+            code {[ {[] table.size 0 end } ]}";
+
+        // Primary: imports provider's table+grow and helper's size.
+        const char *primary_spec = "wasm \
+            types {[ fn [i32] [i32], fn [] [i32] ]} \
+            imports {[ {'prov'} {'tbl'} table# funcref limits.i32/2 1 100, \
+                       {'prov'} {'grow'} fn# 0, \
+                       {'helper'} {'size'} fn# 1 ]} \
+            funcs {[ 0, 1 ]} \
+            exports {[ {'do_grow'} fn# 2, {'do_size'} fn# 3 ]} \
+            code {[ \
+                {[] local.get 0 call 0 end }, \
+                {[] call 1 end } \
+            ]}";
+
+        wah_module_t prov_mod = {0}, helper_mod = {0}, primary_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&prov_mod, provider_spec));
+        assert_ok(wah_parse_module_from_spec(&helper_mod, helper_spec));
+        assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+
+        wah_exec_context_t prov_ctx = {0};
+        assert_ok(wah_new_exec_context(&prov_ctx, &prov_mod, NULL));
+        assert_ok(wah_instantiate(&prov_ctx));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary_mod, NULL));
+        assert_ok(wah_link_context(&ctx, "prov", &prov_ctx));
+        assert_ok(wah_link_module(&ctx, "helper", &helper_mod));
+        assert_ok(wah_instantiate(&ctx));
+
+        // Initial table size.
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&ctx, "do_size", NULL, 0, &result));
+        assert_eq_i32(result.i32, 1);
+
+        // Grow by 5.
+        wah_value_t grow_arg = {.i32 = 5};
+        assert_ok(wah_call_by_name(&ctx, "do_grow", &grow_arg, 1, &result));
+        assert_eq_i32(result.i32, 1);  // old size
+
+        // Helper's owned context must see the updated table size.
+        assert_ok(wah_call_by_name(&ctx, "do_size", NULL, 0, &result));
+        assert_eq_i32(result.i32, 6);
+
+        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&prov_ctx);
+        wah_free_module(&primary_mod);
+        wah_free_module(&helper_mod);
+        wah_free_module(&prov_mod);
+    }
+
+    // Regression: transitive import resolution (A->B->C) must register A in C's
+    // gc_dependents so that C's GC does not free objects reachable from A.
+    printf("Test: transitive gc_dependent registration via re-exported imports\n");
+    {
+        // C: exports a memory.
+        const char *c_spec = "wasm \
+            memories {[ limits.i32/2 1 10 ]} \
+            exports {[ {'mem'} mem# 0 ]}";
+
+        // B: re-exports C's memory.
+        const char *b_spec = "wasm \
+            imports {[ {'c'} {'mem'} mem# limits.i32/2 1 10 ]} \
+            exports {[ {'mem'} mem# 0 ]}";
+
+        // A: imports from B (transitively resolved to C).
+        const char *a_spec = "wasm \
+            types {[ fn [i32] [i32], fn [i32, i32] [] ]} \
+            imports {[ {'b'} {'mem'} mem# limits.i32/2 1 10 ]} \
+            funcs {[ 0, 1 ]} \
+            exports {[ {'load'} fn# 0, {'store'} fn# 1 ]} \
+            code {[ \
+                {[] local.get 0 i32.load 0 0 end }, \
+                {[] local.get 0 local.get 1 i32.store 0 0 end } \
+            ]}";
+
+        wah_module_t c_mod = {0}, b_mod = {0}, a_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&c_mod, c_spec));
+        assert_ok(wah_parse_module_from_spec(&b_mod, b_spec));
+        assert_ok(wah_parse_module_from_spec(&a_mod, a_spec));
+
+        // C instantiated first.
+        wah_exec_context_t c_ctx = {0};
+        assert_ok(wah_new_exec_context(&c_ctx, &c_mod, NULL));
+        assert_ok(wah_instantiate(&c_ctx));
+
+        // B links C.
+        wah_exec_context_t b_ctx = {0};
+        assert_ok(wah_new_exec_context(&b_ctx, &b_mod, NULL));
+        assert_ok(wah_link_context(&b_ctx, "c", &c_ctx));
+        assert_ok(wah_instantiate(&b_ctx));
+
+        // A links B. A's memory should transitively resolve to C.
+        wah_exec_context_t a_ctx = {0};
+        assert_ok(wah_new_exec_context(&a_ctx, &a_mod, NULL));
+        assert_ok(wah_link_context(&a_ctx, "b", &b_ctx));
+        assert_ok(wah_instantiate(&a_ctx));
+
+        // Verify A can use C's memory (basic sanity).
+        wah_value_t store_args[2] = {{.i32 = 0}, {.i32 = 0xDEAD}};
+        assert_ok(wah_call_by_name(&a_ctx, "store", store_args, 2, NULL));
+        wah_value_t result;
+        assert_ok(wah_call_by_name(&a_ctx, "load", &(wah_value_t){.i32 = 0}, 1, &result));
+        assert_eq_i32(result.i32, (int32_t)0xDEAD);
+
+        // The key invariant: A must be registered in C's dependent lists
+        // (both dependents and gc_dependents) since its memory resolves to C.
+        // Freeing in correct order should not crash or leak.
+        wah_free_exec_context(&a_ctx);
+        wah_free_exec_context(&b_ctx);
+        wah_free_exec_context(&c_ctx);
+        wah_free_module(&a_mod);
+        wah_free_module(&b_mod);
+        wah_free_module(&c_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

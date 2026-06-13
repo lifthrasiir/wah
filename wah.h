@@ -10696,12 +10696,16 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     // Unregister from transitive owners of re-exported imports (before freeing arrays)
     for (uint32_t i = 0; exec_ctx->memories && i < exec_ctx->memory_count; ++i) {
         if (exec_ctx->memories[i].is_imported && exec_ctx->memories[i].import_ctx) {
-            wah_unregister_dependent(exec_ctx->memories[i].import_ctx, exec_ctx);
+            wah_exec_context_t *imp_owner = exec_ctx->memories[i].import_ctx;
+            wah_unregister_dependent(imp_owner, exec_ctx);
+            if (imp_owner->gc) wah_gc_unregister_dependent(imp_owner->gc, exec_ctx);
         }
     }
     for (uint32_t i = 0; exec_ctx->tables && i < exec_ctx->table_count; ++i) {
         if (exec_ctx->tables[i].is_imported && exec_ctx->tables[i].import_ctx) {
-            wah_unregister_dependent(exec_ctx->tables[i].import_ctx, exec_ctx);
+            wah_exec_context_t *imp_owner = exec_ctx->tables[i].import_ctx;
+            wah_unregister_dependent(imp_owner, exec_ctx);
+            if (imp_owner->gc) wah_gc_unregister_dependent(imp_owner->gc, exec_ctx);
         }
     }
 
@@ -10737,6 +10741,31 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     }
 
     wah_free(alloc, exec_ctx->dependents);
+
+    // Unregister owned contexts from their transitive import owners (before freeing)
+    for (uint32_t i = 0; exec_ctx->linked_modules && i < exec_ctx->linked_module_count; ++i) {
+        if (!exec_ctx->linked_modules[i].owns_ctx) continue;
+        wah_exec_context_t *ictx = exec_ctx->linked_modules[i].ctx;
+        if (!ictx) continue;
+        if (ictx->memories && ictx->memories != exec_ctx->memories) {
+            for (uint32_t m = 0; m < ictx->memory_count; ++m) {
+                if (ictx->memories[m].is_imported && ictx->memories[m].import_ctx) {
+                    wah_exec_context_t *imp_owner = ictx->memories[m].import_ctx;
+                    wah_unregister_dependent(imp_owner, ictx);
+                    if (imp_owner->gc) wah_gc_unregister_dependent(imp_owner->gc, ictx);
+                }
+            }
+        }
+        if (ictx->tables && ictx->tables != exec_ctx->tables) {
+            for (uint32_t t = 0; t < ictx->table_count; ++t) {
+                if (ictx->tables[t].is_imported && ictx->tables[t].import_ctx) {
+                    wah_exec_context_t *imp_owner = ictx->tables[t].import_ctx;
+                    wah_unregister_dependent(imp_owner, ictx);
+                    if (imp_owner->gc) wah_gc_unregister_dependent(imp_owner->gc, ictx);
+                }
+            }
+        }
+    }
 
     // Free linked modules
     if (exec_ctx->linked_modules) {
@@ -11348,6 +11377,13 @@ static void wah_propagate_table_import_aliases(wah_exec_context_t *ctx, wah_exec
         if (dep == ctx || dep == fctx) continue;
         wah_update_table_import_aliases(dep, UINT32_MAX, owner_ctx, owner_idx, entries, size);
     }
+    if (owner_ctx != ctx) {
+        for (uint32_t m = 0; m < owner_ctx->linked_module_count; m++) {
+            wah_exec_context_t *lctx = owner_ctx->linked_modules[m].ctx;
+            if (!lctx || lctx == ctx || lctx == fctx) continue;
+            wah_update_table_import_aliases(lctx, UINT32_MAX, owner_ctx, owner_idx, entries, size);
+        }
+    }
 }
 
 static void wah_propagate_memory_import_aliases(wah_exec_context_t *ctx, wah_exec_context_t *fctx,
@@ -11365,6 +11401,13 @@ static void wah_propagate_memory_import_aliases(wah_exec_context_t *ctx, wah_exe
         wah_exec_context_t *dep = owner_ctx->dependents[d];
         if (dep == ctx || dep == fctx) continue;
         wah_update_memory_import_aliases(dep, UINT32_MAX, owner_ctx, owner_idx, data, size);
+    }
+    if (owner_ctx != ctx) {
+        for (uint32_t m = 0; m < owner_ctx->linked_module_count; m++) {
+            wah_exec_context_t *lctx = owner_ctx->linked_modules[m].ctx;
+            if (!lctx || lctx == ctx || lctx == fctx) continue;
+            wah_update_memory_import_aliases(lctx, UINT32_MAX, owner_ctx, owner_idx, data, size);
+        }
     }
 }
 
@@ -16504,7 +16547,10 @@ static wah_error_t wah_resolve_linked_global_imports(wah_exec_context_t *ctx) {
     ctx->entities[dst_idx].is_imported = true; \
     ctx->entities[dst_idx].import_ctx = owner; \
     ctx->entities[dst_idx].import_idx = owner_idx; \
-    if (owner != linked_ctx) WAH_CHECK(wah_register_dependent(owner, ctx)); \
+    if (owner != linked_ctx) { \
+        WAH_CHECK(wah_register_dependent(owner, ctx)); \
+        if (owner->gc) WAH_CHECK(wah_gc_register_dependent(owner->gc, ctx, &owner->alloc)); \
+    } \
 } while (0)
 
 static wah_error_t wah_import_existing_table(wah_exec_context_t *ctx, uint32_t dst_idx,
@@ -16730,6 +16776,7 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                         if (mexp && mprov_ctx && mexp->index < mprov_ctx->memory_count) {
                             WAH_CHECK(wah_bind_memory_import_slot(&ictx->memories[mi], mprov, mprov_ctx,
                                                                   mexp->index, &mim->type));
+                            WAH_FOLLOW_IMPORT_CHAIN(ictx, mi, mprov_ctx, mexp->index, wah_memory_inst_t, memories);
                             mem_found = true;
                         }
                     }
@@ -16738,6 +16785,7 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                         if (pexp && pexp->index < ctx->memory_count) {
                             WAH_CHECK(wah_bind_memory_import_slot(&ictx->memories[mi], module, ctx,
                                                                   pexp->index, &mim->type));
+                            WAH_FOLLOW_IMPORT_CHAIN(ictx, mi, ctx, pexp->index, wah_memory_inst_t, memories);
                             mem_found = true;
                         }
                     }
@@ -16779,6 +16827,7 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                         if (texp && tprov_ctx && texp->index < tprov_ctx->table_count) {
                             WAH_CHECK(wah_bind_table_import_slot(&ictx->tables[ti], lmod, &tim->type,
                                                                  tprov, tprov_ctx, texp->index));
+                            WAH_FOLLOW_IMPORT_CHAIN(ictx, ti, tprov_ctx, texp->index, wah_table_inst_t, tables);
                             tbl_found = true;
                         }
                     }
@@ -16787,6 +16836,7 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                         if (pexp && pexp->index < ctx->table_count) {
                             WAH_CHECK(wah_bind_table_import_slot(&ictx->tables[ti], lmod, &tim->type,
                                                                  module, ctx, pexp->index));
+                            WAH_FOLLOW_IMPORT_CHAIN(ictx, ti, ctx, pexp->index, wah_table_inst_t, tables);
                             tbl_found = true;
                         }
                     }
