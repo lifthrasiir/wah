@@ -8168,7 +8168,7 @@ static wah_error_t wah_parse_name(const uint8_t **ptr, const uint8_t *section_en
     *out_len = 0;
 
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &name_len));
-    WAH_ENSURE(*ptr + name_len <= section_end, WAH_ERROR_UNEXPECTED_EOF);
+    WAH_ENSURE(name_len <= (size_t)(section_end - *ptr), WAH_ERROR_UNEXPECTED_EOF);
     WAH_ENSURE(wah_is_valid_utf8((const char *)*ptr, name_len), WAH_ERROR_MALFORMED);
 
     WAH_MALLOC_ARRAY(name_copy, (size_t)name_len + 1);
@@ -8929,7 +8929,7 @@ static wah_error_t wah_parse_custom_section(const uint8_t **ptr, const uint8_t *
     (void)module;
     uint32_t name_len;
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &name_len));
-    WAH_ENSURE(*ptr + name_len <= section_end, WAH_ERROR_UNEXPECTED_EOF);
+    WAH_ENSURE(name_len <= (size_t)(section_end - *ptr), WAH_ERROR_UNEXPECTED_EOF);
     WAH_ENSURE(wah_is_valid_utf8((const char *)*ptr, name_len), WAH_ERROR_MALFORMED);
     *ptr = section_end;
     return WAH_OK;
@@ -9403,7 +9403,7 @@ static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *se
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->data_len));
 
-            WAH_ENSURE(*ptr + segment->data_len <= section_end, WAH_ERROR_UNEXPECTED_EOF);
+            WAH_ENSURE(segment->data_len <= (size_t)(section_end - *ptr), WAH_ERROR_UNEXPECTED_EOF);
             if (segment->data_len > 0) {
                 uint8_t *data_copy;
                 WAH_MALLOC_ARRAY(data_copy, segment->data_len);
@@ -9471,7 +9471,7 @@ wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t
     WAH_ENSURE(magic == 0x6D736100, WAH_ERROR_INVALID_MAGIC_NUMBER);
 
     // 2. Check Version
-    WAH_ENSURE(ptr + 4 <= end, WAH_ERROR_UNEXPECTED_EOF);
+    WAH_ENSURE(4 <= (size_t)(end - ptr), WAH_ERROR_UNEXPECTED_EOF);
     uint32_t version = wah_read_u32_le(ptr);
     ptr += 4;
     WAH_ENSURE(version == 0x01, WAH_ERROR_INVALID_VERSION);
