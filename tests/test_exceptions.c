@@ -850,6 +850,71 @@ static void test_exception_oom() {
     wah_free_module(&mod);
 }
 
+static void test_cancel_does_not_free_exnref_in_global() {
+    printf("Testing wah_cancel_internal does not free exnref held in a global...\n");
+
+    // Regression: wah_cancel_internal used to walk all GC objects and free every
+    // exception unconditionally. If an exnref was stored in a global via catch_ref
+    // + global.set, a subsequent failed call (which invokes wah_cancel_internal)
+    // freed it, leaving a dangling pointer. Reading the global afterwards is UAF.
+    //
+    // func 0 (store_exn): throw 0 with 42, catch_ref, global.set 0, return i32
+    // func 1 (do_trap): unreachable
+    // func 2 (read_exn): global.get 0, throw_ref inside try_table, catch, return i32
+    const char *spec = "wasm \
+        types {[ fn [] [i32], fn [i32] [], fn [] [i32, exnref], fn [] [] ]} \
+        funcs {[ 0, 3, 0 ]} \
+        tags {[ tag.type# 1 ]} \
+        globals {[ exnref mut ref.null exnref end ]} \
+        exports {[ {'store_exn'} fn# 0, {'do_trap'} fn# 1, {'read_exn'} fn# 2 ]} \
+        code {[ \
+            {[] \
+                block 2 \
+                    try_table void [catch_ref 0 0] \
+                        i32.const 42 \
+                        throw 0 \
+                    end \
+                    i32.const 0 \
+                    ref.null exnref \
+                end \
+                global.set 0 \
+            end }, \
+            {[] unreachable end }, \
+            {[] \
+                block i32 \
+                    try_table void [catch 0 0] \
+                        global.get 0 \
+                        throw_ref \
+                    end \
+                    i32.const -1 \
+                end \
+            end } \
+        ]}";
+
+    wah_module_t mod = {0};
+    assert_ok(wah_parse_module_from_spec(&mod, spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_instantiate(&ctx));
+
+    // Step 1: store exception in global
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+
+    // Step 2: trap — triggers wah_cancel_internal
+    wah_error_t err = wah_call(&ctx, 1, NULL, 0, &result);
+    assert(err == WAH_ERROR_TRAP);
+
+    // Step 3: read exnref from global and re-throw — UAF if cancel freed it
+    assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 int main() {
     test_try_table_catch_label_types();
     test_catch_all();
@@ -870,6 +935,7 @@ int main() {
     test_try_table_handler_overflow();
     test_exception_survives_gc_on_stack();
     test_exception_oom();
+    test_cancel_does_not_free_exnref_in_global();
     printf("All exception tests passed!\n");
     return 0;
 }

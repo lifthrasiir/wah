@@ -15073,29 +15073,6 @@ static void wah_cancel_internal(wah_exec_context_t *ctx) {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
     ctx->pending_exception = NULL;
 #endif
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-    if (ctx->gc) {
-        wah_gc_state_t *gc = ctx->gc;
-        wah_gc_object_t *prev = NULL;
-        wah_gc_object_t *obj = gc->all_objects;
-        while (obj) {
-            wah_gc_object_t *next = wah_gc_next(obj);
-            if (obj->repr_id == WAH_TYPE_EXN) {
-                if (prev)
-                    wah_gc_set_next(prev, next);
-                else
-                    gc->all_objects = next;
-                gc->allocated_bytes -= obj->size_bytes;
-                gc->object_count--;
-                wah_budget_release(ctx, obj->size_bytes);
-                wah_free(&ctx->alloc, obj);
-            } else {
-                prev = obj;
-            }
-            obj = next;
-        }
-    }
-#endif
     if (ctx->lifecycle.state == WAH_EXEC_READY) return;
     ctx->sp = ctx->lifecycle.base_sp;
     ctx->call_depth = ctx->lifecycle.base_call_depth;
