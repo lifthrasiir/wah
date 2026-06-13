@@ -1003,6 +1003,27 @@ static void test_unknown_export_kind() {
     wah_free_module(&module);
 }
 
+static void test_unknown_element_segment_flags() {
+    printf("Running test_unknown_element_segment_flags...\n");
+    wah_module_t module = {0};
+    // flags=4 (elem.active.expr.table#0) should succeed as a baseline
+    assert_ok(wah_parse_module_from_spec(&module,
+        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} "
+        "tables {[ funcref limits.i32/1 1 ]} "
+        "elements {[ elem.active.expr.table#0 i32.const 0 end [ref.func 0 end] ]} "
+        "code {[ {[] end} ]}"));
+    wah_free_module(&module);
+    module = (wah_module_t){0};
+    // flags=8 has same binary layout as flags=4 but is invalid per spec
+    assert_err(wah_parse_module_from_spec(&module,
+        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} "
+        "tables {[ funcref limits.i32/1 1 ]} "
+        "elements {[ %'08' i32.const 0 end [ref.func 0 end] ]} "
+        "code {[ {[] end} ]}"),
+        WAH_ERROR_MALFORMED);
+    wah_free_module(&module);
+}
+
 static void test_unknown_data_segment_flags() {
     printf("Running test_unknown_data_segment_flags...\n");
     wah_module_t module = {0};
@@ -1114,6 +1135,7 @@ int main(void) {
     test_start_function_type();
     test_elem_oob_table_idx();
     test_unknown_export_kind();
+    test_unknown_element_segment_flags();
     test_unknown_data_segment_flags();
     test_count_overflow();
     test_fuzz_ref_validation_regressions();

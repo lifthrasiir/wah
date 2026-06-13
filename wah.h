@@ -9244,6 +9244,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
 
             uint32_t flags;
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &flags));
+            WAH_ENSURE(flags <= 7, WAH_ERROR_MALFORMED);
 
             uint32_t mode = flags & 3;
             bool is_expr_elem = (flags & 4) != 0;
