@@ -15062,6 +15062,43 @@ cleanup:
 // Public API implementation ///////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+// Sweep only unreachable exception objects after a mark pass.
+// Unlike a full wah_gc_step, this leaves non-exception GC objects (e.g.
+// function holders) intact even if they are not reachable from the
+// enumerated roots at this point.
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+static void wah_gc_sweep_unreachable_exceptions(wah_exec_context_t *ctx) {
+    wah_gc_state_t *gc = ctx->gc;
+    if (!gc) return;
+
+    wah_gc_step_mark(ctx);
+
+    wah_gc_object_t *prev = NULL;
+    wah_gc_object_t *obj = gc->all_objects;
+    while (obj) {
+        wah_gc_object_t *next = wah_gc_next(obj);
+        if (!wah_gc_marked(obj) && obj->repr_id == WAH_TYPE_EXN) {
+            if (prev)
+                wah_gc_set_next(prev, next);
+            else
+                gc->all_objects = next;
+            gc->allocated_bytes -= obj->size_bytes;
+            gc->object_count--;
+            wah_budget_release(ctx, obj->size_bytes);
+#ifdef WAH_DEBUG
+            gc->total_frees++;
+#endif
+            wah_free(&ctx->alloc, obj);
+        } else {
+            prev = obj;
+        }
+        obj = next;
+    }
+
+    gc->phase = WAH_GC_PHASE_IDLE;
+}
+#endif
+
 static void wah_cancel_internal(wah_exec_context_t *ctx) {
     wah_timer_set_armed(ctx, false);
     WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0);
@@ -15069,12 +15106,20 @@ static void wah_cancel_internal(wah_exec_context_t *ctx) {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
     ctx->pending_exception = NULL;
 #endif
-    if (ctx->lifecycle.state == WAH_EXEC_READY) return;
+    if (ctx->lifecycle.state == WAH_EXEC_READY) {
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+        wah_gc_sweep_unreachable_exceptions(ctx);
+#endif
+        return;
+    }
     ctx->sp = ctx->lifecycle.base_sp;
     ctx->call_depth = ctx->lifecycle.base_call_depth;
     ctx->frame_ptr = ctx->lifecycle.base_frame_ptr;
     ctx->exception_handler_depth = ctx->lifecycle.base_handler_depth;
     ctx->lifecycle = (struct wah_exec_lifecycle_s){0};
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+    wah_gc_sweep_unreachable_exceptions(ctx);
+#endif
 }
 
 static wah_error_t wah_start_internal(
