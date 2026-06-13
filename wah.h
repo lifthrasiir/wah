@@ -293,6 +293,7 @@ typedef uint64_t wah_features_t;
 #define WAH_FEATURE_TYPED_FUNCREF    (UINT64_C(1) << 11)  // Typed funcrefs (3.0)
 #define WAH_FEATURE_MEMORY64         (UINT64_C(1) << 12)  // Memory64 & table64 (3.0)
 #define WAH_FEATURE_RELAXED_SIMD     (UINT64_C(1) << 13)  // Relaxed SIMD (3.0)
+#define WAH_FEATURE_EXTENDED_CONST   (UINT64_C(1) << 14)  // Extended const expressions (3.0)
 
 // Macro: WAH_FEATURE_WASM_V2
 //   WebAssembly 2.0 features.
@@ -303,7 +304,8 @@ typedef uint64_t wah_features_t;
 //   WebAssembly 3.0 features.
 #define WAH_FEATURE_WASM_V3 ( \
     WAH_FEATURE_WASM_V2 | WAH_FEATURE_TAIL_CALL | WAH_FEATURE_EXCEPTION | \
-    WAH_FEATURE_GC | WAH_FEATURE_TYPED_FUNCREF | WAH_FEATURE_MEMORY64 | WAH_FEATURE_RELAXED_SIMD)
+    WAH_FEATURE_GC | WAH_FEATURE_TYPED_FUNCREF | WAH_FEATURE_MEMORY64 | WAH_FEATURE_RELAXED_SIMD | \
+    WAH_FEATURE_EXTENDED_CONST)
 // Macro: WAH_FEATURE_ALL
 //   A bitmap containing every supported feature.
 #define WAH_FEATURE_ALL WAH_FEATURE_WASM_V3
@@ -1506,6 +1508,7 @@ static inline wah_features_t wah_feature_closure(wah_features_t f) {
 #define WAH_FEATURE_SHIFT_TYPED_FUNCREF      11
 #define WAH_FEATURE_SHIFT_MEMORY64           12
 #define WAH_FEATURE_SHIFT_RELAXED_SIMD       13
+#define WAH_FEATURE_SHIFT_EXTENDED_CONST     14
 
 static inline wah_error_t wah_require_feature(wah_module_t *module, int8_t shift) {
     if (shift == 0) return WAH_OK;
@@ -5921,10 +5924,12 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
     if (vctx->mode == WAH_ANALYZE_CONST_EXPR) {
         switch (opcode_val) {
-            case WAH_OP_I32_CONST: case WAH_OP_I64_CONST: case WAH_OP_F32_CONST:
-            case WAH_OP_F64_CONST: case WAH_OP_V128_CONST:
             case WAH_OP_I32_ADD: case WAH_OP_I32_SUB: case WAH_OP_I32_MUL:
             case WAH_OP_I64_ADD: case WAH_OP_I64_SUB: case WAH_OP_I64_MUL:
+                WAH_CHECK(wah_require_feature(vctx->module, WAH_FEATURE_SHIFT_EXTENDED_CONST));
+                break;
+            case WAH_OP_I32_CONST: case WAH_OP_I64_CONST: case WAH_OP_F32_CONST:
+            case WAH_OP_F64_CONST: case WAH_OP_V128_CONST:
             case WAH_OP_REF_NULL: case WAH_OP_REF_FUNC: case WAH_OP_REF_I31:
             case WAH_OP_GLOBAL_GET:
             case WAH_OP_STRUCT_NEW: case WAH_OP_STRUCT_NEW_DEFAULT:

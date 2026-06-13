@@ -64,6 +64,9 @@ static const char detect_typed_funcref[] = "wasm \
         {[] ref.func 1 call 0 end}, \
     ]}";
 
+static const char detect_extended_const[] = "wasm \
+    globals {[i32 immut i32.const 10 i32.const 20 i32.add end]}";
+
 static const char detect_mvp_add[] = "wasm \
     types {[fn [i32, i32] [i32]]} funcs {[0]} \
     code {[{[] local.get 0 local.get 1 i32.add end}]}";
@@ -76,19 +79,20 @@ struct feature_detect_test {
 };
 
 static const struct feature_detect_test detect_tests[] = {
-    { "bulk-memory",             WAH_FEATURE_BULK_MEMORY,     0, detect_bulk_memory },
-    { "multi-value",             WAH_FEATURE_MULTI_VALUE,     0, detect_multi_value },
-    { "mutable-globals",         WAH_FEATURE_MUTABLE_GLOBALS, 0, detect_mutable_globals },
-    { "reference-types",         WAH_FEATURE_REF_TYPES,       WAH_FEATURE_GC | WAH_FEATURE_TYPED_FUNCREF, detect_reference_types },
-    { "relaxed-simd",            WAH_FEATURE_RELAXED_SIMD,    0, detect_relaxed_simd },
-    { "saturated-float-to-int",  WAH_FEATURE_NONTRAPPING_F2I, 0, detect_nontrapping_f2i },
-    { "sign-extensions",         WAH_FEATURE_SIGN_EXT,        0, detect_sign_ext },
-    { "simd",                    WAH_FEATURE_SIMD,            WAH_FEATURE_RELAXED_SIMD, detect_simd },
-    { "tail-call",               WAH_FEATURE_TAIL_CALL,       0, detect_tail_call },
-    { "memory64",                WAH_FEATURE_MEMORY64,        0, detect_memory64 },
-    { "exceptions-final",        WAH_FEATURE_EXCEPTION,       0, detect_exception },
-    { "gc",                      WAH_FEATURE_GC,              0, detect_gc },
-    { "typed-function-references", WAH_FEATURE_TYPED_FUNCREF, 0, detect_typed_funcref },
+    { "bulk-memory",               WAH_FEATURE_BULK_MEMORY,     0, detect_bulk_memory },
+    { "multi-value",               WAH_FEATURE_MULTI_VALUE,     0, detect_multi_value },
+    { "mutable-globals",           WAH_FEATURE_MUTABLE_GLOBALS, 0, detect_mutable_globals },
+    { "reference-types",           WAH_FEATURE_REF_TYPES,       WAH_FEATURE_GC | WAH_FEATURE_TYPED_FUNCREF, detect_reference_types },
+    { "relaxed-simd",              WAH_FEATURE_RELAXED_SIMD,    0, detect_relaxed_simd },
+    { "saturated-float-to-int",    WAH_FEATURE_NONTRAPPING_F2I, 0, detect_nontrapping_f2i },
+    { "sign-extensions",           WAH_FEATURE_SIGN_EXT,        0, detect_sign_ext },
+    { "simd",                      WAH_FEATURE_SIMD,            WAH_FEATURE_RELAXED_SIMD, detect_simd },
+    { "tail-call",                 WAH_FEATURE_TAIL_CALL,       0, detect_tail_call },
+    { "memory64",                  WAH_FEATURE_MEMORY64,        0, detect_memory64 },
+    { "exceptions-final",          WAH_FEATURE_EXCEPTION,       0, detect_exception },
+    { "gc",                        WAH_FEATURE_GC,              0, detect_gc },
+    { "typed-function-references", WAH_FEATURE_TYPED_FUNCREF,   0, detect_typed_funcref },
+    { "extended-const",            WAH_FEATURE_EXTENDED_CONST,  0, detect_extended_const },
 };
 #define NUM_DETECT_TESTS (sizeof(detect_tests) / sizeof(detect_tests[0]))
 
