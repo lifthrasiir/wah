@@ -932,6 +932,58 @@ void wah_test_nonnull_table_no_init() {
     wah_free_module(&nullable);
 }
 
+static int table_grow_oom_fail;
+
+static void *table_grow_oom_malloc(size_t size, void *userdata) {
+    (void)userdata;
+    if (table_grow_oom_fail) return NULL;
+    return malloc(size);
+}
+
+static void *table_grow_oom_realloc(void *ptr, size_t size, void *userdata) {
+    (void)userdata;
+    if (table_grow_oom_fail) return NULL;
+    return realloc(ptr, size);
+}
+
+static void table_grow_oom_free(void *ptr, void *userdata) {
+    (void)userdata;
+    free(ptr);
+}
+
+void wah_test_table_grow_oom_returns_minus_one() {
+    printf("Running wah_test_table_grow_oom_returns_minus_one...\n");
+
+    wah_module_t module = {0};
+    const char *spec = "wasm \
+        types {[ fn [] [i32] ]} \
+        funcs {[ 0 ]} \
+        tables {[ funcref limits.i32/2 0 10 ]} \
+        exports {[ {'grow'} fn# 0 ]} \
+        code {[ {[] ref.null funcref i32.const 5 table.grow 0 end} ]}";
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+
+    table_grow_oom_fail = 0;
+    wah_alloc_t alloc = {
+        .malloc = table_grow_oom_malloc,
+        .realloc = table_grow_oom_realloc,
+        .free = table_grow_oom_free,
+    };
+    wah_exec_options_t opts = { .alloc = &alloc };
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &module, &opts));
+    assert_ok(wah_instantiate(&ctx));
+
+    table_grow_oom_fail = 1;
+    wah_value_t result;
+    wah_error_t err = wah_call(&ctx, 0, NULL, 0, &result);
+    assert_eq_i32(err, WAH_OK);
+    assert_eq_i32(result.i32, -1);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&module);
+}
+
 int main() {
     wah_test_table_indirect_call();
     wah_test_table_size();
@@ -964,5 +1016,6 @@ int main() {
     wah_test_active_elem_oob_trap();
     wah_test_active_elem_dropped_after_init();
     wah_test_table_init_expr();
+    wah_test_table_grow_oom_returns_minus_one();
     return 0;
 }

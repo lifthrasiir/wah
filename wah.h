@@ -11452,7 +11452,7 @@ static wah_error_t wah_table_grow_internal(
     const wah_alloc_t *grow_alloc = &owner->alloc;
     wah_value_t *new_table = NULL;
     wah_error_t err = wah_malloc(grow_alloc, (size_t)new_size, sizeof(wah_value_t), (void **)&new_table);
-    if (err != WAH_OK) return err;
+    if (err != WAH_OK) return WAH_OK;
 
     if (*old_size > 0) {
         memcpy(new_table, fctx->tables[table_idx].entries, sizeof(wah_value_t) * *old_size);
