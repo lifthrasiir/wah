@@ -162,6 +162,35 @@ static void test_fast_call_disarms_deadline(void) {
     wah_free_module(&mod);
 }
 
+static void test_uint64_max_deadline_is_no_deadline(void) {
+    printf("Testing UINT64_MAX deadline does not arm timer...\n");
+    fflush(stdout);
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+    wah_exec_options_t options = {0};
+    options.limits.deadline_us = UINT64_MAX;
+
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32]]} funcs {[0]} \
+        code {[{[] i32.const 42 end}]}"));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
+
+    wah_value_t result = {0};
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+    assert_false(wah_is_interrupted(&ctx));
+
+    wah_limits_t lim = {0};
+    lim.deadline_us = UINT64_MAX;
+    assert_ok(wah_set_limits(&ctx, &lim));
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+    assert_false(wah_is_interrupted(&ctx));
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 static void test_destroy_while_deadline_armed(void) {
     printf("Testing destroy while deadline timer is armed...\n");
     fflush(stdout);
@@ -186,6 +215,7 @@ int main(void) {
     test_interrupt_and_fuel_priority();
     test_short_deadline_yields_and_rearms();
     test_fast_call_disarms_deadline();
+    test_uint64_max_deadline_is_no_deadline();
     test_destroy_while_deadline_armed();
 
     printf("\n=== All interrupt/deadline tests passed ===\n");

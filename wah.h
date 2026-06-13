@@ -10317,11 +10317,17 @@ static void *wah_timer_main(void *arg) {
 #else
         struct timespec deadline;
         clock_gettime(CLOCK_MONOTONIC, &deadline);
-        deadline.tv_sec += (time_t)(timer->deadline_us / 1000000);
-        deadline.tv_nsec += (long)((timer->deadline_us % 1000000) * 1000);
-        if (deadline.tv_nsec >= 1000000000L) {
-            deadline.tv_sec++;
-            deadline.tv_nsec -= 1000000000L;
+        uint64_t add_sec = timer->deadline_us / 1000000;
+        uint64_t sec_headroom = (uint64_t)((sizeof(time_t) >= 8 ? INT64_MAX : INT32_MAX) - deadline.tv_sec);
+        if (add_sec >= sec_headroom) {
+            deadline.tv_sec = (time_t)(sizeof(time_t) >= 8 ? INT64_MAX : INT32_MAX);
+        } else {
+            deadline.tv_sec += (time_t)add_sec;
+            deadline.tv_nsec += (long)((timer->deadline_us % 1000000) * 1000);
+            if (deadline.tv_nsec >= 1000000000L) {
+                deadline.tv_sec++;
+                deadline.tv_nsec -= 1000000000L;
+            }
         }
         int rc = 0;
         while (!WAH_POLL_FLAG_LOAD(timer->cancelled) && WAH_POLL_FLAG_LOAD(timer->armed) && rc != ETIMEDOUT) {
@@ -10391,7 +10397,7 @@ cleanup:
 static void wah_timer_set_armed(wah_exec_context_t *ctx, bool armed) {
     wah_timer_t *timer = ctx->timer;
     if (!timer) return;
-    if (armed && ctx->deadline_us == 0) return;
+    if (armed && (ctx->deadline_us == 0 || ctx->deadline_us == UINT64_MAX)) return;
 #if defined(_WIN32)
     if (armed) timer->deadline_us = ctx->deadline_us;
     WAH_POLL_FLAG_STORE(timer->armed, armed ? 1 : 0);
@@ -10497,7 +10503,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
     } else {
         exec_ctx->fuel = INT64_MAX;
     }
-    if (limits->deadline_us > 0) {
+    if (limits->deadline_us > 0 && limits->deadline_us != UINT64_MAX) {
         WAH_CHECK_GOTO(wah_new_timer(exec_ctx), cleanup);
         exec_ctx->deadline_us = limits->deadline_us;
     }
@@ -10667,7 +10673,7 @@ wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *lim
         exec_ctx->fuel = limits->fuel <= INT64_MAX ? (int64_t)limits->fuel : INT64_MAX;
     }
 
-    if (limits->deadline_us != 0) {
+    if (limits->deadline_us != 0 && limits->deadline_us != UINT64_MAX) {
         WAH_CHECK(wah_new_timer(exec_ctx));
         exec_ctx->deadline_us = limits->deadline_us;
     }
