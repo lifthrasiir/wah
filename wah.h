@@ -2859,7 +2859,7 @@ static inline wah_function_t *wah_ref_to_func(void *ref) {
 // -- Forward declarations --
 
 // Const expression functions
-static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, const uint8_t *bytecode, uint32_t bytecode_size, wah_value_t *result);
+static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, int64_t *fuel, const uint8_t *bytecode, uint32_t bytecode_size, wah_value_t *result);
 
 // Helpers to look up types across import+local index spaces
 static inline uint32_t wah_func_index_limit(const wah_module_t *m) { return m->import_function_count + m->wasm_function_count; }
@@ -11571,7 +11571,7 @@ static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, wah_exec_context_t 
             } else {
                 wah_value_t elem_val;
                 if (src_offset + i >= segment->num_elems) { *out_err = WAH_ERROR_TRAP; return done + j; }
-                wah_error_t e = wah_eval_const_expr(fctx, segment->u.expr.bytecodes[src_offset + i],
+                wah_error_t e = wah_eval_const_expr(fctx, &ctx->fuel, segment->u.expr.bytecodes[src_offset + i],
                                                     segment->u.expr.bytecode_sizes[src_offset + i], &elem_val);
                 if (e != WAH_OK) { *out_err = e; return done + j; }
                 store_val = wah_materialize_elem_ref(fctx, elem_val);
@@ -11614,7 +11614,7 @@ static uint32_t wah_bulk_array_init_elem(wah_exec_context_t *ctx, wah_exec_conte
                     wah_func_to_ref(wah_materialize_funcref(fctx, seg->u.func_indices[src_offset + i]));
             } else {
                 wah_value_t ev;
-                wah_error_t e = wah_eval_const_expr(fctx, seg->u.expr.bytecodes[src_offset + i],
+                wah_error_t e = wah_eval_const_expr(fctx, &ctx->fuel, seg->u.expr.bytecodes[src_offset + i],
                                                     seg->u.expr.bytecode_sizes[src_offset + i], &ev);
                 if (e != WAH_OK) { *out_err = e; return done + j; }
                 ((void **)(elems))[dst_offset + i] = wah_materialize_elem_ref(fctx, ev).ref;
@@ -12607,7 +12607,7 @@ WAH_RUN(ARRAY_NEW_ELEM) {
             ((void **)elems)[i] = wah_func_to_ref(fn);
         } else {
             wah_value_t ev;
-            WAH_CHECK_GOTO(wah_eval_const_expr(fctx, seg->u.expr.bytecodes[offset + i],
+            WAH_CHECK_GOTO(wah_eval_const_expr(fctx, &ctx->fuel, seg->u.expr.bytecodes[offset + i],
                                                seg->u.expr.bytecode_sizes[offset + i], &ev), cleanup);
             if (ev.ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
                 uint32_t gfi = ev._prefuncref.func_idx;
@@ -16469,7 +16469,8 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
 
 // --- Const Expression Evaluator ---
 // Evaluates a preparsed const expression via the main interpreter.
-static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, const uint8_t *bytecode, uint32_t bytecode_size, wah_value_t *result) {
+// Allocations are charged to `fuel`, which belongs to the running context and may differ from `ctx`.
+static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, int64_t *fuel, const uint8_t *bytecode, uint32_t bytecode_size, wah_value_t *result) {
     wah_code_body_t dummy_code = { .parsed_code = { .bytecode = (uint8_t *)bytecode, .bytecode_size = bytecode_size } };
     wah_value_t local_stack[WAH_MAX_TYPE_STACK_SIZE];
     wah_call_frame_t local_frame = { .code = &dummy_code, .bytecode_ip = bytecode, .locals = local_stack,
@@ -16477,11 +16478,13 @@ static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, const uint8_t *b
     wah_exec_context_t cctx = { .module = ctx->module, .globals = ctx->globals, .global_count = ctx->global_count,
                                 .value_stack = local_stack, .sp = local_stack, .frame_ptr = &local_frame,
                                 .call_depth = 1, .gc = ctx->gc, .max_memory_bytes = ctx->max_memory_bytes,
-                                .memory_bytes_committed = ctx->memory_bytes_committed, .alloc = ctx->alloc };
+                                .memory_bytes_committed = ctx->memory_bytes_committed, .alloc = ctx->alloc,
+                                .fuel = *fuel };
     local_frame.frame_ctx = &cctx;
 
     wah_error_t err = wah_run_interpreter(&cctx);
     ctx->memory_bytes_committed = cctx.memory_bytes_committed;
+    *fuel = cctx.fuel;
     if (err != WAH_OK) return err;
     WAH_ASSERT(cctx.sp == local_stack + 1 && "Const expression should leave exactly one value on the stack");
     *result = local_stack[0];
@@ -16494,7 +16497,7 @@ static wah_error_t wah_init_table_init_exprs(wah_exec_context_t *ctx) {
         if (module->tables[i].init_expr.bytecode) {
             uint32_t slot = module->import_table_count + i;
             wah_value_t init_val;
-            WAH_CHECK(wah_eval_const_expr(ctx, module->tables[i].init_expr.bytecode,
+            WAH_CHECK(wah_eval_const_expr(ctx, &ctx->fuel, module->tables[i].init_expr.bytecode,
                                           module->tables[i].init_expr.bytecode_size, &init_val));
             if (init_val.ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
                 uint32_t func_idx = init_val._prefuncref.func_idx;
@@ -16516,7 +16519,7 @@ static wah_error_t wah_init_active_elem_segments(wah_exec_context_t *ctx) {
         if (!segment->is_active || segment->is_declarative) continue;
         WAH_ASSERT(segment->table_idx < ctx->table_count);
         wah_value_t offset_val;
-        WAH_CHECK(wah_eval_const_expr(ctx, segment->offset_expr.bytecode, segment->offset_expr.bytecode_size, &offset_val));
+        WAH_CHECK(wah_eval_const_expr(ctx, &ctx->fuel, segment->offset_expr.bytecode, segment->offset_expr.bytecode_size, &offset_val));
         uint64_t offset;
         if (segment->table_idx < wah_table_index_limit(module) &&
             wah_table_type(module, segment->table_idx)->addr_type == WAH_TYPE_I64) {
@@ -16535,7 +16538,7 @@ static wah_error_t wah_init_active_elem_segments(wah_exec_context_t *ctx) {
                 ctx->tables[segment->table_idx].entries[offset + j].ref = wah_func_to_ref(fn);
             } else {
                 wah_value_t elem_val;
-                WAH_CHECK(wah_eval_const_expr(ctx, segment->u.expr.bytecodes[j],
+                WAH_CHECK(wah_eval_const_expr(ctx, &ctx->fuel, segment->u.expr.bytecodes[j],
                                               segment->u.expr.bytecode_sizes[j], &elem_val));
                 if (elem_val.ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
                     uint32_t global_func_idx = elem_val._prefuncref.func_idx;
@@ -16560,7 +16563,7 @@ static wah_error_t wah_init_active_data_segments(wah_exec_context_t *ctx) {
         if (segment->flags == 0x00 || segment->flags == 0x02) {
             WAH_ENSURE(segment->memory_idx < ctx->memory_count, WAH_ERROR_VALIDATION_FAILED);
             wah_value_t offset_val;
-            WAH_CHECK(wah_eval_const_expr(ctx, segment->offset_expr.bytecode, segment->offset_expr.bytecode_size, &offset_val));
+            WAH_CHECK(wah_eval_const_expr(ctx, &ctx->fuel, segment->offset_expr.bytecode, segment->offset_expr.bytecode_size, &offset_val));
             uint64_t offset;
             if (wah_memory_type(module, segment->memory_idx)->addr_type == WAH_TYPE_I64) {
                 offset = (uint64_t)offset_val.i64;
@@ -16647,7 +16650,7 @@ static wah_error_t wah_prepare_linked_globals(wah_exec_context_t *ctx) {
             ctx->global_count = wah_global_index_limit(linked);
             ctx->module = linked;
             for (uint32_t k = 0; k < linked->global_count; k++) {
-                wah_error_t err = wah_eval_const_expr(ctx, linked->globals[k].init_expr.bytecode,
+                wah_error_t err = wah_eval_const_expr(ctx, &ctx->fuel, linked->globals[k].init_expr.bytecode,
                                                       linked->globals[k].init_expr.bytecode_size,
                                                       &new_globals[offset + linked->import_global_count + k]);
                 if (err != WAH_OK) {
@@ -16689,7 +16692,7 @@ static wah_error_t wah_init_linked_globals(wah_exec_context_t *ctx) {
             ctx->global_count = wah_global_index_limit(linked);
             ctx->module = linked;
             for (uint32_t k = 0; k < linked->global_count; k++) {
-                wah_error_t err = wah_eval_const_expr(ctx, linked->globals[k].init_expr.bytecode,
+                wah_error_t err = wah_eval_const_expr(ctx, &ctx->fuel, linked->globals[k].init_expr.bytecode,
                                                       linked->globals[k].init_expr.bytecode_size,
                                                       &saved_globals[offset + linked->import_global_count + k]);
                 if (err != WAH_OK) {
@@ -16963,7 +16966,7 @@ static wah_error_t wah_init_primary_globals(wah_exec_context_t *ctx) {
     uint32_t ig_count = module->import_global_count;
     for (uint32_t i = 0; i < module->global_count; ++i) {
         uint32_t slot = ig_count + i;
-        WAH_CHECK(wah_eval_const_expr(ctx, module->globals[i].init_expr.bytecode,
+        WAH_CHECK(wah_eval_const_expr(ctx, &ctx->fuel, module->globals[i].init_expr.bytecode,
                                       module->globals[i].init_expr.bytecode_size, &ctx->globals[slot]));
         if (ctx->globals[slot].ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
             uint32_t fidx = ctx->globals[slot]._prefuncref.func_idx;

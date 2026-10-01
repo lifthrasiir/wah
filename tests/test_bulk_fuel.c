@@ -551,6 +551,40 @@ static void test_array_new_fuel_proportional(void) {
 }
 
 // ============================================================
+// Allocations made by element expressions should be charged
+// ============================================================
+static void test_elem_expr_alloc_fuel(void) {
+    printf("Testing fuel for allocations in element expressions...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // Each element expression allocates a 1024-byte array
+    PARSE_FUEL(&mod, "wasm \
+        types {[array i8 mut, sub [] array anyref mut, fn [] []]} \
+        funcs {[2, 2, 2]} \
+        tables {[anyref limits.i32/2 1 1]} \
+        elements {[ elem.passive.expr anyref [ i32.const 1024 array.new_default 0 end ] ]} \
+        code {[ \
+            {[] i32.const 0 i32.const 1 array.new_elem 1 0 drop end}, \
+            {[] i32.const 0 i32.const 0 i32.const 1 table.init 0 0 end}, \
+            {[] ref.null anyref i32.const 1 array.new 1 i32.const 0 i32.const 0 i32.const 1 array.init_elem 1 0 end}, \
+        ]}");
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    for (uint32_t f = 0; f < 3; ++f) {
+        assert_ok(wah_set_fuel(&ctx, 10000));
+        assert_ok(wah_call(&ctx, f, NULL, 0, NULL));
+        // At least one fuel per WAH_BULK_ITEMS_PER_FUEL (= 16) bytes allocated
+        assert_true(10000 - wah_get_fuel(&ctx) >= 1024 / 16);
+    }
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
 // Fuel cost proportionality: fill(0) vs fill(N) should differ
 // ============================================================
 static void test_bulk_fuel_proportional(void) {
@@ -918,6 +952,7 @@ static void test_bulk_fuel_int64_max(void) {
 
 int main(void) {
     test_array_new_fuel_proportional();
+    test_elem_expr_alloc_fuel();
     test_memory_fill_fuel();
     test_memory_fill_fuel_resume();
     test_memory_copy_fuel_resume();
