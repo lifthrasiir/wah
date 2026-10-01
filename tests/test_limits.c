@@ -643,6 +643,58 @@ static void test_memory_budget_linked_module(void) {
     }
 }
 
+// Owned contexts of linked modules share the primary's GC heap, so their allocations count toward its budget.
+static void test_memory_budget_linked_module_gc(void) {
+    printf("Testing memory budget charges GC objects of linked module element segments...\n");
+    #define ARRAY_64K "i32.const 8192 array.new_default 0 end"
+    wah_module_t linked = {0}, primary = {0};
+    assert_ok(wah_parse_module_from_spec(&linked, "wasm \
+        types {[ sub [] array i64 mut ]} tables {[ anyref limits.i32/1 4 ]} \
+        elements {[ elem.active.expr.table# 0 i32.const 0 end anyref \
+            [ " ARRAY_64K ", " ARRAY_64K ", " ARRAY_64K ", " ARRAY_64K " ] ]}"));
+    #undef ARRAY_64K
+    assert_ok(wah_parse_module_from_spec(&primary, "wasm types {[]}"));
+    for (int ok = 0; ok < 2; ++ok) {
+        wah_exec_context_t ctx = {0};
+        wah_exec_options_t options = { .limits = { .max_memory_bytes = ok ? 1024 * 1024 : 128 * 1024 } };
+        assert_ok(wah_new_exec_context(&ctx, &primary, &options));
+        assert_ok(wah_link_module(&ctx, "linked", &linked));
+        wah_error_t err = wah_instantiate(&ctx);
+        if (ok) assert_ok(err); else assert_true(err != WAH_OK);
+        wah_free_exec_context(&ctx);
+    }
+    wah_free_module(&primary);
+    wah_free_module(&linked);
+
+    printf("Testing memory budget charges GC objects of array.new_elem in linked modules...\n");
+    #define S "i32.const 1 struct.new 0 end"
+    #define S8 S ", " S ", " S ", " S ", " S ", " S ", " S ", " S
+    #define S64 S8 ", " S8 ", " S8 ", " S8 ", " S8 ", " S8 ", " S8 ", " S8
+    assert_ok(wah_parse_module_from_spec(&linked, "wasm \
+        types {[ struct [i32 mut], array type.ref.null 0 mut, fn [] [] ]} \
+        funcs {[ 2 ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        elements {[ elem.passive.expr type.ref.null 0 [ " S64 " ] ]} \
+        code {[ {[] i32.const 0 i32.const 64 array.new_elem 1 0 drop end} ]}"));
+    #undef S64
+    #undef S8
+    #undef S
+    assert_ok(wah_parse_module_from_spec(&primary, "wasm \
+        types {[ fn [] [] ]} imports {[ {'linked'} {'f'} fn# 0 ]}"));
+    for (int ok = 0; ok < 2; ++ok) {
+        wah_exec_context_t ctx = {0};
+        wah_exec_options_t options = { .limits = { .max_memory_bytes = ok ? 1024 * 1024 : 1024 } };
+        assert_ok(wah_new_exec_context(&ctx, &primary, &options));
+        assert_ok(wah_link_module(&ctx, "linked", &linked));
+        assert_ok(wah_instantiate(&ctx));
+        wah_error_t err = wah_call(&ctx, 0, NULL, 0, NULL);
+        if (ok) assert_ok(err); else assert_true(err != WAH_OK);
+        wah_free_exec_context(&ctx);
+    }
+    wah_free_module(&primary);
+    wah_free_module(&linked);
+}
+
 // --- Phase 3: Fuel connection ---
 
 static const wah_parse_options_t fuel_opts = { .features = WAH_FEATURE_ALL, .enable_fuel_metering = true };
@@ -878,6 +930,7 @@ int main(void) {
     test_memory_budget_combined();
     test_memory_grow_budget();
     test_memory_budget_linked_module();
+    test_memory_budget_linked_module_gc();
     test_table_grow_budget();
     test_memory_grow_returns_neg1_not_trap();
     test_no_memory_bytes();

@@ -276,6 +276,9 @@ void wah_debug_relocate_exec_refs(wah_exec_context_t *ctx, void *old_base, size_
         ctx->memories[i].import_ctx = relocate_ctx_ptr(ctx->memories[i].import_ctx, old_base, byte_size, delta);
     }
     relocate_dependents(ctx, old_base, byte_size, delta);
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+    if (ctx->gc) ctx->gc->owner = relocate_ctx_ptr(ctx->gc->owner, old_base, byte_size, delta);
+#endif
     for (uint32_t i = 0; i < ctx->linked_module_count; i++) {
         if (ctx->linked_modules[i].owns_ctx && ctx->linked_modules[i].ctx) {
             relocate_dependents(ctx->linked_modules[i].ctx, old_base, byte_size, delta);

@@ -2377,6 +2377,7 @@ typedef struct wah_gc_state_s {
     size_t allocation_threshold;
     size_t other_heap_bytes; // Bytes in other heaps of the domain at the last mark
     bool gc_pending;
+    struct wah_exec_context_s *owner; // Its budget accounts for this heap, which owned linked contexts share
     struct wah_exec_context_s **gc_dependents;
     uint32_t gc_dependent_count;
     uint32_t gc_dependents_cap;
@@ -10012,13 +10013,13 @@ wah_error_t wah_gc_start(wah_exec_context_t *ctx) {
     if (ctx->gc) return WAH_OK;
     const wah_alloc_t *alloc = &ctx->alloc;
     WAH_MALLOC(ctx->gc);
-    *ctx->gc = (wah_gc_state_t){ .allocation_threshold = WAH_GC_DEFAULT_THRESHOLD };
+    *ctx->gc = (wah_gc_state_t){ .allocation_threshold = WAH_GC_DEFAULT_THRESHOLD, .owner = ctx };
     return WAH_OK;
 }
 
 static void wah_gc_end(wah_exec_context_t *ctx) {
     if (!ctx->gc) return;
-    wah_budget_release(ctx, ctx->gc->allocated_bytes);
+    wah_budget_release(ctx->gc->owner, ctx->gc->allocated_bytes);
     wah_gc_free_all_objects(ctx, ctx->gc);
     wah_free(&ctx->alloc, ctx->gc->gc_dependents);
     wah_free(&ctx->alloc, ctx->gc);
@@ -10055,7 +10056,7 @@ static void *wah_gc_alloc(wah_exec_context_t *ctx, const wah_module_t *module, w
 
     if (payload_size > UINT32_MAX - sizeof(wah_gc_object_t)) return NULL;
     uint32_t total = (uint32_t)sizeof(wah_gc_object_t) + payload_size;
-    if (!wah_budget_check(ctx, total)) return NULL;
+    if (!wah_budget_check(gc->owner, total)) return NULL;
     wah_gc_object_t *obj = NULL;
     if (wah_malloc(&ctx->alloc, total, 1, (void **)&obj) != WAH_OK) return NULL;
     WAH_ASSERT(((uintptr_t)obj & WAH_I31_TAG) == 0 && "malloc returned unaligned pointer");
@@ -10068,7 +10069,7 @@ static void *wah_gc_alloc(wah_exec_context_t *ctx, const wah_module_t *module, w
     gc->all_objects = obj;
     gc->object_count++;
     gc->allocated_bytes += total;
-    wah_budget_charge(ctx, total);
+    wah_budget_charge(gc->owner, total);
 #ifdef WAH_DEBUG
     gc->total_allocations++;
 #endif
@@ -10488,7 +10489,7 @@ static void wah_gc_step_sweep(wah_exec_context_t *ctx) {
                 gc->all_objects = next;
             gc->allocated_bytes -= obj->size_bytes;
             gc->object_count--;
-            wah_budget_release(ctx, obj->size_bytes);
+            wah_budget_release(gc->owner, obj->size_bytes);
 #ifdef WAH_DEBUG
             gc->total_frees++;
 #endif
@@ -15639,7 +15640,7 @@ static void wah_gc_sweep_unreachable_exceptions(wah_exec_context_t *ctx) {
                 gc->all_objects = next;
             gc->allocated_bytes -= obj->size_bytes;
             gc->object_count--;
-            wah_budget_release(ctx, obj->size_bytes);
+            wah_budget_release(gc->owner, obj->size_bytes);
 #ifdef WAH_DEBUG
             gc->total_frees++;
 #endif
@@ -16586,13 +16587,11 @@ static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, int64_t *fuel, c
                                      .result_count = 1, .frame_globals = ctx->globals, .module = ctx->module };
     wah_exec_context_t cctx = { .module = ctx->module, .globals = ctx->globals, .global_count = ctx->global_count,
                                 .value_stack = local_stack, .sp = local_stack, .frame_ptr = &local_frame,
-                                .call_depth = 1, .gc = ctx->gc, .max_memory_bytes = ctx->max_memory_bytes,
-                                .memory_bytes_committed = ctx->memory_bytes_committed, .alloc = ctx->alloc,
-                                .fuel = *fuel };
+                                .call_depth = 1, .gc = ctx->gc, .alloc = ctx->alloc, .fuel = *fuel };
     local_frame.frame_ctx = &cctx;
 
+    // GC allocations are charged to the owner of the heap, not cctx
     wah_error_t err = wah_run_interpreter(&cctx);
-    ctx->memory_bytes_committed = cctx.memory_bytes_committed;
     *fuel = cctx.fuel;
     if (err != WAH_OK) return err;
     WAH_ASSERT(cctx.sp == local_stack + 1 && "Const expression should leave exactly one value on the stack");
