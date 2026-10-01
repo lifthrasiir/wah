@@ -1195,6 +1195,20 @@ static void test_local_decls_memory_amplification(void) {
     assert_true(parse_peak_bytes(spec) < 2 * 1024 * 1024);
 }
 
+// Each type used to have a bitset over all GC types for casts, taking memory quadratic to the type count.
+static void test_cast_metadata_memory_amplification(void) {
+    printf("Running test_cast_metadata_memory_amplification...\n");
+    enum { N = 10000 };
+    static char spec[64 + N * 12];
+    static const char head[] = "wasm types {[struct []", item[] = ",struct []";
+    char *p = spec;
+    memcpy(p, head, sizeof(head) - 1); p += sizeof(head) - 1;
+    for (int i = 1; i < N; i++) { memcpy(p, item, sizeof(item) - 1); p += sizeof(item) - 1; }
+    strcpy(p, "]}");
+    // Bitsets would take N * N / 8 = 12.5 MB
+    assert_true(parse_peak_bytes(spec) < 4 * 1024 * 1024);
+}
+
 // Saved initialization states of non-defaultable locals should grow only as blocks get nested.
 static void test_local_init_stack_memory_amplification(void) {
     printf("Running test_local_init_stack_memory_amplification...\n");
@@ -1205,6 +1219,7 @@ static void test_local_init_stack_memory_amplification(void) {
 
 int main(void) {
     test_local_decls_memory_amplification();
+    test_cast_metadata_memory_amplification();
     test_local_init_stack_memory_amplification();
     test_v128_locals_and_block_types_require_simd_feature();
     test_parse_module_argument_errors();

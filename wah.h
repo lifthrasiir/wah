@@ -673,7 +673,6 @@ private:
     uint32_t repr_count;
     struct wah_repr_info_s **repr_infos;
     int32_t *typeidx_to_repr; // int32_t = wah_repr_t (private)
-    struct wah_repr_set_s *type_cast_sets;
 
     // Canonical type map: canonical_map[i] = j means type i is canonically equal to type j
     uint32_t *canonical_map;
@@ -2305,12 +2304,6 @@ typedef struct {
 static inline bool wah_repr_field_is_ref(const wah_repr_field_t *f) {
     return f->repr_id == WAH_REPR_REF || f->repr_id >= 0;
 }
-
-typedef struct wah_repr_set_s {
-    uint32_t word_count;
-    uint64_t *bits;
-    bool accepts_i31;
-} wah_repr_set_t;
 
 #define WAH_NO_SUPERTYPE UINT32_MAX
 #define WAH_MAX_SUBTYPE_DEPTH 63 // Same as the JS API limit
@@ -4478,53 +4471,16 @@ static void wah_budget_release(wah_exec_context_t *ctx, uint64_t bytes) {
 // Subtyping ///////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
-static inline wah_error_t wah_repr_set_init(wah_repr_set_t *set, uint32_t repr_count, const wah_alloc_t *alloc) {
-    *set = (wah_repr_set_t){0};
-    set->word_count = (repr_count + 63) / 64;
-    if (set->word_count == 0) return WAH_OK;
-    wah_error_t err = wah_malloc(alloc, set->word_count, sizeof(set->bits[0]), (void **)&set->bits);
-    if (err != WAH_OK) return err;
-    memset(set->bits, 0, (size_t)set->word_count * sizeof(set->bits[0]));
-    return WAH_OK;
-}
-
-static inline wah_error_t wah_repr_set_resize(wah_repr_set_t *set, uint32_t repr_count, const wah_alloc_t *alloc) {
-    uint32_t new_word_count = (repr_count + 63) / 64;
-    if (new_word_count == set->word_count) return WAH_OK;
-    if (new_word_count == 0) {
-        wah_free(alloc, set->bits);
-        set->bits = NULL;
-        set->word_count = 0;
-        return WAH_OK;
-    }
-    uint64_t *new_bits = set->bits;
-    wah_error_t err = wah_realloc(alloc, new_word_count, sizeof(set->bits[0]), (void **)&new_bits);
-    if (err != WAH_OK) return err;
-    if (new_word_count > set->word_count) {
-        memset(new_bits + set->word_count, 0, (size_t)(new_word_count - set->word_count) * sizeof(new_bits[0]));
-    }
-    set->bits = new_bits;
-    set->word_count = new_word_count;
-    return WAH_OK;
-}
-
-static inline void wah_repr_set_add(wah_repr_set_t *set, wah_repr_t repr_id) {
-    if (!set || repr_id < 0) return;
-    uint32_t word = (uint32_t)repr_id / 64;
-    if (word >= set->word_count || !set->bits) return;
-    set->bits[word] |= UINT64_C(1) << ((uint32_t)repr_id & 63);
-}
-
-static inline bool wah_repr_set_contains(const wah_repr_set_t *set, wah_repr_t repr_id) {
-    if (!set || repr_id < 0) return false;
-    uint32_t word = (uint32_t)repr_id / 64;
-    if (word >= set->word_count || !set->bits) return false;
-    return (set->bits[word] & (UINT64_C(1) << ((uint32_t)repr_id & 63))) != 0;
-}
-
+// Whether objects of `repr_id` can be cast to `typeidx`, both from the same module.
+// This walks the supertype chain, which is at most WAH_MAX_SUBTYPE_DEPTH long.
 static inline bool wah_type_accepts_repr(const wah_module_t *module, uint32_t typeidx, wah_repr_t repr_id) {
-    if (!module->type_cast_sets || typeidx >= module->type_count) return false;
-    return wah_repr_set_contains(&module->type_cast_sets[typeidx], repr_id);
+    if (repr_id < 0 || (uint32_t)repr_id >= module->repr_count || typeidx >= module->type_count) return false;
+    const uint32_t *canon = module->canonical_map;
+    uint32_t target = canon ? canon[typeidx] : typeidx;
+    for (uint32_t t = module->repr_infos[repr_id]->typeidx; t != WAH_NO_SUPERTYPE; t = module->type_defs[t].supertype) {
+        if ((canon ? canon[t] : t) == target) return true;
+    }
+    return false;
 }
 
 // Helper function to validate if an actual type matches an expected type, considering WAH_TYPE_BOT
@@ -5138,11 +5094,6 @@ static void wah_module_clear_type_metadata(wah_module_t *module) {
     }
     module->repr_infos = NULL;
     module->repr_count = 0;
-    if (module->type_cast_sets) {
-        for (uint32_t i = 0; i < module->type_count; ++i) wah_free(alloc, module->type_cast_sets[i].bits);
-        wah_free(alloc, module->type_cast_sets);
-    }
-    module->type_cast_sets = NULL;
 }
 
 static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
@@ -5257,29 +5208,6 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
         }
     }
 
-    WAH_MALLOC_ARRAY_GOTO(module->type_cast_sets, module->type_count, cleanup);
-    memset(module->type_cast_sets, 0, (size_t)module->type_count * sizeof(module->type_cast_sets[0]));
-    for (uint32_t i = 0; i < module->type_count; ++i) {
-        WAH_CHECK_GOTO(wah_repr_set_init(&module->type_cast_sets[i], module->repr_count, alloc), cleanup);
-    }
-    for (uint32_t i = 0; i < module->type_count; ++i) {
-        wah_repr_t repr_id = module->typeidx_to_repr[i];
-        if (repr_id == WAH_REPR_NONE) continue;
-        uint32_t t = i;
-        while (t != WAH_NO_SUPERTYPE) {
-            wah_repr_set_add(&module->type_cast_sets[canonical_map[t]], repr_id);
-            t = module->type_defs[t].supertype;
-        }
-    }
-    for (uint32_t i = 0; i < module->type_count; ++i) {
-        uint32_t canonical = canonical_map[i];
-        if (canonical == i) continue;
-        if (module->type_cast_sets[i].word_count > 0) {
-            memcpy(module->type_cast_sets[i].bits,
-                   module->type_cast_sets[canonical].bits,
-                   (size_t)module->type_cast_sets[i].word_count * sizeof(module->type_cast_sets[i].bits[0]));
-        }
-    }
 #endif
 
     module->canonical_map = canonical_map;
@@ -5295,12 +5223,8 @@ cleanup:
 }
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-static void wah_module_rollback_last_type_metadata(wah_module_t *module, uint32_t idx, bool cast_slot_ready) {
+static void wah_module_rollback_last_type_metadata(wah_module_t *module, uint32_t idx) {
     const wah_alloc_t *alloc = &module->alloc;
-    if (cast_slot_ready && module->type_cast_sets && idx < module->type_count) {
-        wah_free(alloc, module->type_cast_sets[idx].bits);
-        module->type_cast_sets[idx] = (wah_repr_set_t){0};
-    }
     if (module->typeidx_to_repr && idx < module->type_count && module->typeidx_to_repr[idx] >= 0) {
         uint32_t repr_id = (uint32_t)module->typeidx_to_repr[idx];
         if (repr_id + 1 == module->repr_count && module->repr_infos) {
@@ -5321,7 +5245,6 @@ static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     wah_repr_info_t *info = NULL;
     wah_repr_t repr_id = WAH_REPR_NONE;
-    bool cast_slot_ready = false;
 #endif
 
     WAH_ASSERT(module->type_count > 0);
@@ -5338,12 +5261,10 @@ static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
     module->canonical_map[idx] = idx;
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-    uint32_t target_repr_count = module->repr_count;
     wah_type_def_t *td = &module->type_defs[idx];
 
     if (td->kind == WAH_COMP_STRUCT) {
         WAH_CHECK_GOTO(wah_build_struct_repr_info(idx, td, &info, alloc), cleanup);
-        target_repr_count++;
     } else if (td->kind == WAH_COMP_ARRAY) {
         uint32_t elem_size;
         wah_repr_t elem_repr;
@@ -5355,24 +5276,11 @@ static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
         info->size = elem_size;
         info->count = 1;
         info->fields[0] = (wah_repr_field_t){ .offset = 0, .repr_id = elem_repr };
-        target_repr_count++;
     }
 
     if (info) {
         WAH_CHECK_GOTO(wah_module_alloc_repr(module, idx, info, &repr_id), cleanup);
     }
-
-    new_ptr = module->type_cast_sets;
-    WAH_CHECK_GOTO(wah_realloc(alloc, module->type_count, sizeof(module->type_cast_sets[0]), &new_ptr), cleanup);
-    module->type_cast_sets = (wah_repr_set_t *)new_ptr;
-    module->type_cast_sets[idx] = (wah_repr_set_t){0};
-    cast_slot_ready = true;
-    for (uint32_t i = 0; i + 1 < module->type_count; ++i) {
-        WAH_CHECK_GOTO(wah_repr_set_resize(&module->type_cast_sets[i], target_repr_count, alloc), cleanup);
-    }
-    WAH_CHECK_GOTO(wah_repr_set_init(&module->type_cast_sets[idx], target_repr_count, alloc), cleanup);
-
-    if (repr_id != WAH_REPR_NONE) wah_repr_set_add(&module->type_cast_sets[idx], repr_id);
 #endif
 
     err = WAH_OK;
@@ -5380,7 +5288,7 @@ static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 cleanup:
-    wah_module_rollback_last_type_metadata(module, idx, cast_slot_ready);
+    wah_module_rollback_last_type_metadata(module, idx);
 #endif
 done:
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
@@ -15825,12 +15733,6 @@ void wah_free_module(wah_module_t *module) {
     }
     wah_free(alloc, module->typeidx_to_repr);
     wah_free(alloc, module->canonical_map);
-    if (module->type_cast_sets) {
-        for (uint32_t i = 0; i < module->type_count; ++i) {
-            wah_free(alloc, module->type_cast_sets[i].bits);
-        }
-        wah_free(alloc, module->type_cast_sets);
-    }
     wah_free(alloc, module->declared_funcs);
 
     *module = (wah_module_t){0};

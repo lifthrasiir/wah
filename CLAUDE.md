@@ -93,7 +93,7 @@ The GC uses a mark-sweep collector (`wah_gc_step`). Objects are allocated with `
 
 ### Type System
 
-`wah_type_t` is `int32_t`: negative values are built-in types (`WAH_TYPE_I32 = -2`, ..., `WAH_TYPE_NOEXN = -54`), non-negative values are type indices into `module->types[]` / `module->type_defs[]`. `wah_type_def_t` describes composite types (func/struct/array) with subtyping, rec-groups, and finality. In both cases odd numbers denote a nullable variant of even numbers (`WAH_TYPE_FUNC = -32, WAH_TYPE_FUNCREF = -31`). A `canonical_map[]` maps each type index to its canonical representative for structural equality. `type_cast_sets[]` precompute which repr IDs are accepted by each type as sparse bitsets for O(1) `ref.test`/`ref.cast`. Cross-module subtype checks are cached in a 64-entry direct-mapped `type_check_cache[]` (collisions overwrite).
+`wah_type_t` is `int32_t`: negative values are built-in types (`WAH_TYPE_I32 = -2`, ..., `WAH_TYPE_NOEXN = -54`), non-negative values are type indices into `module->types[]` / `module->type_defs[]`. `wah_type_def_t` describes composite types (func/struct/array) with subtyping, rec-groups, and finality. In both cases odd numbers denote a nullable variant of even numbers (`WAH_TYPE_FUNC = -32, WAH_TYPE_FUNCREF = -31`). A `canonical_map[]` maps each type index to its canonical representative for structural equality. Same-module `ref.test`/`ref.cast` walk the canonical supertype chain (`wah_type_accepts_repr`), which is bounded by `WAH_MAX_SUBTYPE_DEPTH = 63`. Cross-module subtype checks are cached in a 64-entry direct-mapped `type_check_cache[]` (collisions overwrite).
 
 ### Deterministic Profile
 
