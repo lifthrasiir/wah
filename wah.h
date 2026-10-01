@@ -11080,6 +11080,15 @@ wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *lim
     WAH_ENSURE(exec_ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
     WAH_ENSURE(exec_ctx->call_depth == 0 && exec_ctx->sp == exec_ctx->value_stack, WAH_ERROR_MISUSE);
 
+    // Check and allocate everything before changing anything
+    WAH_ENSURE(!(limits->no_memory_bytes && limits->max_memory_bytes > 0), WAH_ERROR_MISUSE);
+    bool set_max_mem = limits->no_memory_bytes || limits->max_memory_bytes > 0;
+    uint64_t new_max_mem = limits->no_memory_bytes ? 0 : limits->max_memory_bytes;
+    WAH_ENSURE(!set_max_mem || new_max_mem >= exec_ctx->memory_bytes_committed, WAH_ERROR_TOO_LARGE);
+    WAH_ENSURE(limits->fuel == 0 || exec_ctx->module->fuel_metering, WAH_ERROR_DISABLED_FEATURE);
+    bool set_deadline = limits->deadline_us != 0 && limits->deadline_us != UINT64_MAX;
+    if (set_deadline) WAH_CHECK(wah_new_timer(exec_ctx)); // Stays idle until a deadline is set
+
     if (limits->max_stack_bytes != 0 && limits->max_stack_bytes != exec_ctx->stack_buffer_size) {
         uint64_t new_size = limits->max_stack_bytes;
         if (new_size > SIZE_MAX) return WAH_ERROR_TOO_LARGE;
@@ -11095,24 +11104,9 @@ wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *lim
         exec_ctx->frame_ptr = (wah_call_frame_t *)buf_end;
     }
 
-    WAH_ENSURE(!(limits->no_memory_bytes && limits->max_memory_bytes > 0), WAH_ERROR_MISUSE);
-    if (limits->no_memory_bytes || limits->max_memory_bytes > 0) {
-        uint64_t new_max_mem = limits->no_memory_bytes ? 0 : limits->max_memory_bytes;
-        if (new_max_mem < exec_ctx->memory_bytes_committed) {
-            return WAH_ERROR_TOO_LARGE;
-        }
-        exec_ctx->max_memory_bytes = new_max_mem;
-    }
-
-    if (limits->fuel != 0) {
-        WAH_ENSURE(exec_ctx->module->fuel_metering, WAH_ERROR_DISABLED_FEATURE);
-        exec_ctx->fuel = limits->fuel <= INT64_MAX ? (int64_t)limits->fuel : INT64_MAX;
-    }
-
-    if (limits->deadline_us != 0 && limits->deadline_us != UINT64_MAX) {
-        WAH_CHECK(wah_new_timer(exec_ctx));
-        exec_ctx->deadline_us = limits->deadline_us;
-    }
+    if (set_max_mem) exec_ctx->max_memory_bytes = new_max_mem;
+    if (limits->fuel != 0) exec_ctx->fuel = limits->fuel <= INT64_MAX ? (int64_t)limits->fuel : INT64_MAX;
+    if (set_deadline) exec_ctx->deadline_us = limits->deadline_us;
 
     return WAH_OK;
 }

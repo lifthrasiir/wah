@@ -740,6 +740,33 @@ static void test_grow_budget_linked_module_import(void) {
     wah_free_module(&linked);
 }
 
+static void test_set_limits_atomic(void) {
+    printf("Testing set_limits leaves limits unchanged on error...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm types {[]} memories {[ limits.i32/1 1 ]}"));
+    wah_exec_options_t options = { .limits = { .max_stack_bytes = 65536, .max_memory_bytes = 4 * PAGE_SIZE } };
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_limits_t before, after;
+    wah_get_limits(&ctx, &before);
+    // Below the committed memory
+    wah_limits_t lim = { .max_stack_bytes = 8192, .max_memory_bytes = PAGE_SIZE - 1 };
+    assert_err(wah_set_limits(&ctx, &lim), WAH_ERROR_TOO_LARGE);
+    wah_get_limits(&ctx, &after);
+    assert_eq_u64(after.max_stack_bytes, before.max_stack_bytes);
+    // Fuel metering is not enabled
+    lim = (wah_limits_t){ .max_stack_bytes = 8192, .max_memory_bytes = 2 * PAGE_SIZE, .fuel = 10 };
+    assert_err(wah_set_limits(&ctx, &lim), WAH_ERROR_DISABLED_FEATURE);
+    wah_get_limits(&ctx, &after);
+    assert_eq_u64(after.max_stack_bytes, before.max_stack_bytes);
+    assert_eq_u64(after.max_memory_bytes, before.max_memory_bytes);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 // --- Phase 3: Fuel connection ---
 
 static const wah_parse_options_t fuel_opts = { .features = WAH_FEATURE_ALL, .enable_fuel_metering = true };
@@ -984,6 +1011,7 @@ int main(void) {
     test_zero_budget_default();
     test_set_limits_memory_budget();
     test_set_limits_rejects_below_committed();
+    test_set_limits_atomic();
     test_get_limits_reports_memory_budget();
     test_zero_page_memory_budget();
     test_imported_memory_budget();
