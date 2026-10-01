@@ -16961,7 +16961,6 @@ static wah_error_t wah_resolve_linked_tag_imports(wah_exec_context_t *ctx) {
                 }
                 WAH_ENSURE(found, WAH_ERROR_LINK_FAILED);
                 const wah_export_t *exp = wah_find_export(provider, 4, &lti->name);
-                if (!exp) exp = wah_find_export(module, 4, &lti->name);
                 WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
                 uint32_t prov_tag_idx = exp->index;
                 WAH_ENSURE(prov_tag_idx < provider->import_tag_count + provider->tag_count, WAH_ERROR_LINK_FAILED);

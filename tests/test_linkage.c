@@ -3892,6 +3892,30 @@ int main() {
         wah_free_module(&l);
     }
 
+    // A tag import from a linked module not exporting that tag should not bind to an unrelated tag
+    // through an export of the primary module with the same name.
+    printf("Testing tag import missing from the named linked module...\n");
+    {
+        wah_module_t m = {0}, p = {0}, l = {0};
+        assert_ok(wah_parse_module_from_spec(&m, "wasm \
+            types {[ fn [] [] ]} tags {[ tag.type# 0, tag.type# 0 ]} exports {[ {'x'} tag# 1 ]}"));
+        assert_ok(wah_parse_module_from_spec(&p, "wasm \
+            types {[ fn [] [] ]} tags {[ tag.type# 0, tag.type# 0 ]}"));
+        assert_ok(wah_parse_module_from_spec(&l, "wasm \
+            types {[ fn [] [] ]} imports {[ {'p'} {'x'} tag# 0 0 ]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &m, NULL));
+        assert_ok(wah_link_module(&ctx, "p", &p));
+        assert_ok(wah_link_module(&ctx, "l", &l));
+        assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&l);
+        wah_free_module(&p);
+        wah_free_module(&m);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
