@@ -1962,12 +1962,11 @@ int main() {
         assert_ok(wah_call(&cctx, 0, &arg, 1, &result));
         assert_eq_i32(result.i32, 1);
 
-        // Free consumer first (simulates per-request teardown).
+        // Free consumer first. The provider can't be used anymore, but freeing it
+        // must not free the memory again (would double free before fix).
         wah_free_exec_context(&cctx);
-
-        // Provider must still be able to use its memory (would UAF before fix).
         wah_value_t store_args[2] = {{.i32 = 0}, {.i32 = 0xCAFE}};
-        assert_ok(wah_call(&pctx, 0, store_args, 2, NULL));
+        assert_err(wah_call(&pctx, 0, store_args, 2, NULL), WAH_ERROR_MISUSE);
 
         wah_free_exec_context(&pctx);
         wah_free_module(&consumer);
@@ -2015,13 +2014,11 @@ int main() {
         assert_ok(wah_call(&cctx, 0, &arg, 1, &result));
         assert_eq_i32(result.i32, 2);
 
-        // Free consumer first.
+        // Free consumer first. The provider can't be used anymore, but freeing it
+        // must not free the table again (would double free before fix).
         wah_free_exec_context(&cctx);
-
-        // Provider must still be able to query its table (would UAF before fix).
         wah_value_t size_result;
-        assert_ok(wah_call(&pctx, 0, NULL, 0, &size_result));
-        assert_eq_i32(size_result.i32, 5);
+        assert_err(wah_call(&pctx, 0, NULL, 0, &size_result), WAH_ERROR_MISUSE);
 
         wah_free_exec_context(&pctx);
         wah_free_module(&consumer);
@@ -4015,6 +4012,140 @@ int main() {
         wah_free_module(&prim);
         wah_free_module(&l);
         wah_free_module(&p);
+    }
+
+    // A consumer can leave its own objects and funcrefs in a provider, so freeing any context
+    // linked by wah_link_context makes every other context in the domain unusable except for freeing.
+    printf("Testing freeing a consumer poisons its provider (GC object in a provider global)...\n");
+    {
+        wah_module_t lmod = {0}, pmod = {0};
+        assert_ok(wah_parse_module_from_spec(&lmod, "wasm \
+            types {[ struct [i32 mut], fn [anyref] [], fn [] [i32] ]} funcs {[ 1, 2 ]} \
+            globals {[ anyref mut ref.null anyref end ]} \
+            exports {[ {'put'} fn# 0, {'read'} fn# 1 ]} \
+            code {[ {[] local.get 0 global.set 0 end}, \
+                    {[] global.get 0 ref.cast 0 struct.get 0 0 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&pmod, "wasm \
+            types {[ struct [i32 mut], fn [anyref] [], fn [] [] ]} \
+            imports {[ {'l'} {'put'} fn# 1 ]} funcs {[ 2 ]} \
+            code {[ {[] i32.const 1234 struct.new 0 call 0 end} ]}"));
+        wah_exec_context_t lctx = {0}, pctx = {0}, other = {0};
+        assert_ok(wah_new_exec_context(&lctx, &lmod, NULL));
+        assert_ok(wah_instantiate(&lctx));
+        assert_ok(wah_new_exec_context(&pctx, &pmod, NULL));
+        assert_ok(wah_link_context(&pctx, "l", &lctx));
+        assert_ok(wah_instantiate(&pctx));
+        assert_ok(wah_call(&pctx, 1, NULL, 0, NULL));
+        wah_free_exec_context(&pctx);
+
+        wah_value_t r;
+        assert_err(wah_call(&lctx, 1, NULL, 0, &r), WAH_ERROR_MISUSE);
+        assert_err(wah_call_by_name(&lctx, "read", NULL, 0, &r), WAH_ERROR_MISUSE);
+        assert_err(wah_start(&lctx, 1, NULL, 0), WAH_ERROR_MISUSE);
+        assert_err(wah_gc_start(&lctx), WAH_ERROR_MISUSE);
+        assert_null(wah_gc_alloc_host(&lctx, 8));
+        assert_ok(wah_new_exec_context(&other, &pmod, NULL));
+        assert_err(wah_link_context(&other, "l", &lctx), WAH_ERROR_MISUSE);
+        wah_free_exec_context(&other);
+        wah_free_exec_context(&lctx);
+        wah_free_module(&pmod);
+        wah_free_module(&lmod);
+    }
+
+    printf("Testing freeing a provider poisons consumers, which can still be freed (funcref in a provider table)...\n");
+    {
+        wah_module_t lmod = {0}, pmod = {0}, qmod = {0};
+        assert_ok(wah_parse_module_from_spec(&lmod, "wasm \
+            types {[ fn [] [i32] ]} funcs {[ 0 ]} tables {[ funcref limits.i32/1 1 ]} \
+            exports {[ {'t'} table# 0, {'run'} fn# 0 ]} \
+            code {[ {[] i32.const 0 call_indirect 0 0 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&pmod, "wasm \
+            types {[ fn [] [i32] ]} imports {[ {'l'} {'t'} table# funcref limits.i32/1 1 ]} funcs {[ 0 ]} \
+            elements {[ elem.active.table#0 i32.const 0 end [0] ]} \
+            code {[ {[] i32.const 777 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&qmod, "wasm \
+            types {[ fn [] [i32] ]} imports {[ {'l'} {'run'} fn# 0 ]} funcs {[ 0 ]} \
+            code {[ {[] call 0 end} ]}"));
+        wah_exec_context_t lctx = {0}, pctx = {0}, qctx = {0};
+        assert_ok(wah_new_exec_context(&lctx, &lmod, NULL));
+        assert_ok(wah_instantiate(&lctx));
+        assert_ok(wah_new_exec_context(&pctx, &pmod, NULL));
+        assert_ok(wah_link_context(&pctx, "l", &lctx));
+        assert_ok(wah_instantiate(&pctx));
+        assert_ok(wah_new_exec_context(&qctx, &qmod, NULL));
+        assert_ok(wah_link_context(&qctx, "l", &lctx));
+        assert_ok(wah_instantiate(&qctx));
+        wah_value_t r;
+        assert_ok(wah_call(&qctx, 1, NULL, 0, &r));
+        assert_eq_i32(r.i32, 777);
+
+        wah_free_exec_context(&lctx);
+        assert_err(wah_call(&pctx, 0, NULL, 0, &r), WAH_ERROR_MISUSE);
+        assert_err(wah_call(&qctx, 1, NULL, 0, &r), WAH_ERROR_MISUSE);
+        wah_free_exec_context(&pctx);
+        wah_free_exec_context(&qctx);
+        wah_free_module(&qmod);
+        wah_free_module(&pmod);
+        wah_free_module(&lmod);
+    }
+
+    printf("Testing freeing a context poisons its whole link domain transitively...\n");
+    {
+        wah_module_t lmod = {0}, mmod = {0}, pmod = {0};
+        assert_ok(wah_parse_module_from_spec(&lmod, "wasm \
+            types {[ fn [] [i32] ]} funcs {[ 0 ]} exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] i32.const 5 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&mmod, "wasm \
+            types {[ fn [] [i32] ]} imports {[ {'l'} {'f'} fn# 0 ]} exports {[ {'f'} fn# 0 ]}"));
+        assert_ok(wah_parse_module_from_spec(&pmod, "wasm \
+            types {[ fn [] [i32] ]} imports {[ {'m'} {'f'} fn# 0 ]}"));
+        wah_exec_context_t lctx = {0}, mctx = {0}, pctx = {0};
+        assert_ok(wah_new_exec_context(&lctx, &lmod, NULL));
+        assert_ok(wah_instantiate(&lctx));
+        assert_ok(wah_new_exec_context(&mctx, &mmod, NULL));
+        assert_ok(wah_link_context(&mctx, "l", &lctx));
+        assert_ok(wah_instantiate(&mctx));
+        assert_ok(wah_new_exec_context(&pctx, &pmod, NULL));
+        assert_ok(wah_link_context(&pctx, "m", &mctx));
+        assert_ok(wah_instantiate(&pctx));
+
+        wah_free_exec_context(&mctx);
+        wah_value_t r;
+        assert_err(wah_call(&lctx, 0, NULL, 0, &r), WAH_ERROR_MISUSE);
+        assert_err(wah_call(&pctx, 0, NULL, 0, &r), WAH_ERROR_MISUSE);
+        wah_free_exec_context(&lctx);
+        wah_free_exec_context(&pctx);
+        wah_free_module(&pmod);
+        wah_free_module(&mmod);
+        wah_free_module(&lmod);
+    }
+
+    // Consumers that never got to initialize anything can't have shared references.
+    printf("Testing freeing a consumer that failed to link or never instantiated keeps the provider usable...\n");
+    {
+        wah_module_t lmod = {0}, pmod = {0};
+        assert_ok(wah_parse_module_from_spec(&lmod, "wasm \
+            types {[ fn [] [i32] ]} funcs {[ 0 ]} exports {[ {'f'} fn# 0 ]} \
+            code {[ {[] i32.const 5 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&pmod, "wasm \
+            types {[ fn [] [i32] ]} imports {[ {'l'} {'nope'} fn# 0 ]}"));
+        wah_exec_context_t lctx = {0}, pctx = {0};
+        assert_ok(wah_new_exec_context(&lctx, &lmod, NULL));
+        assert_ok(wah_instantiate(&lctx));
+        assert_ok(wah_new_exec_context(&pctx, &pmod, NULL));
+        assert_ok(wah_link_context(&pctx, "l", &lctx));
+        assert_err(wah_instantiate(&pctx), WAH_ERROR_LINK_FAILED);
+        wah_free_exec_context(&pctx);
+        assert_ok(wah_new_exec_context(&pctx, &pmod, NULL));
+        assert_ok(wah_link_context(&pctx, "l", &lctx));
+        wah_free_exec_context(&pctx);
+
+        wah_value_t r;
+        assert_ok(wah_call(&lctx, 0, NULL, 0, &r));
+        assert_eq_i32(r.i32, 5);
+        wah_free_exec_context(&lctx);
+        wah_free_module(&pmod);
+        wah_free_module(&lmod);
     }
 
     printf("All linkage tests passed!\n");

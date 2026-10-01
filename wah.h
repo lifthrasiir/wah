@@ -758,6 +758,8 @@ private:
     uint32_t linked_modules_cap;
     bool is_instantiated;
     bool instantiate_failed; // Partially instantiated states can't be reused
+    bool may_share_refs; // Instantiation got far enough to possibly leave references in linked contexts
+    bool poisoned; // A context in the same link domain was freed, so only freeing is allowed
 
     // Runtime dispatch table (global function index space: imports + locals + hosts)
     struct wah_function_holder_s *function_table;
@@ -962,6 +964,12 @@ void wah_get_limits(const wah_exec_context_t *exec_ctx, wah_limits_t *out);
 
 // Function: wah_free_exec_context
 //   Frees resources of an execution context.
+//
+//   If the context was linked with others via `wah_link_context` (in either direction, transitively)
+//   and its instantiation has started initializing state, every other context in that link domain
+//   becomes unusable: any further use returns WAH_ERROR_MISUSE (or does nothing), and they can
+//   only be freed, in any order. Contexts that failed to link or were never instantiated are exempt.
+//   It must not be called while any context in the link domain is running, e.g. from a host function.
 void wah_free_exec_context(wah_exec_context_t *exec_ctx);
 
 // Function: wah_call
@@ -1242,8 +1250,12 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
 //   This allows sharing already-instantiated module instances, including runtime state
 //   such as memories, tables, globals, and tags, between contexts.
 //
+//   Both contexts can leave references to their own objects and functions in each other,
+//   so their lifetimes are tied: once any context in the link domain is freed, the remaining
+//   contexts can only be freed (see `wah_free_exec_context`). Free them together.
+//
 //   - name [in, borrowed]: Name to link the context under. Must be unique among linked modules.
-//   - linked_ctx [in, borrowed]: Execution context to link. Must outlive the primary context.
+//   - linked_ctx [in, borrowed]: Execution context to link.
 wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec_context_t *linked_ctx);
 
 // Function: wah_instantiate
@@ -10009,6 +10021,24 @@ static void wah_unregister_dependent(wah_exec_context_t *provider, const wah_exe
     }
 }
 
+// Poisons every context reachable from `ctx` through links and dependents (its link domain).
+// They may hold references into each other, so once one of them is freed, the others can only be freed.
+// Poisoned contexts never touch other contexts again, so they can be freed in any order.
+// GC dependents are always dependents as well. Recursion depth is bounded by the domain size.
+static void wah_poison_link_domain(wah_exec_context_t *ctx);
+
+static void wah_poison_context(wah_exec_context_t *ctx) {
+    if (!ctx || ctx->poisoned) return;
+    WAH_ASSERT(ctx->lifecycle.state != WAH_EXEC_RUNNING && "Freed a context linked with a running context");
+    ctx->poisoned = true;
+    wah_poison_link_domain(ctx);
+}
+
+static void wah_poison_link_domain(wah_exec_context_t *ctx) {
+    for (uint32_t i = 0; i < ctx->linked_module_count; i++) wah_poison_context(ctx->linked_modules[i].ctx);
+    for (uint32_t i = 0; i < ctx->dependent_count; i++) wah_poison_context(ctx->dependents[i]);
+}
+
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 
 #define WAH_GC_DEFAULT_THRESHOLD (256 * 1024)
@@ -10030,6 +10060,7 @@ static void wah_gc_free_all_objects(wah_exec_context_t *ctx, wah_gc_state_t *gc)
 
 wah_error_t wah_gc_start(wah_exec_context_t *ctx) {
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!ctx->poisoned, WAH_ERROR_MISUSE);
     if (ctx->gc) return WAH_OK;
     const wah_alloc_t *alloc = &ctx->alloc;
     WAH_MALLOC(ctx->gc);
@@ -10121,7 +10152,7 @@ static void *wah_gc_alloc_array(wah_exec_context_t *ctx, const wah_module_t *mod
 }
 
 void *wah_gc_alloc_host(wah_exec_context_t *ctx, size_t size) {
-    if (!ctx) return NULL;
+    if (!ctx || ctx->poisoned) return NULL;
     if (size > UINT32_MAX) return NULL;
     return wah_gc_alloc(ctx, NULL, WAH_REPR_HOST, (uint32_t)size);
 }
@@ -10614,6 +10645,7 @@ static void wah_gc_unregister_dependent(wah_gc_state_t *gc, const wah_exec_conte
 
 wah_error_t wah_gc_start(wah_exec_context_t *ctx) {
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!ctx->poisoned, WAH_ERROR_MISUSE);
     return WAH_OK;
 }
 static void wah_gc_end(wah_exec_context_t *ctx) { (void)ctx; }
@@ -11113,6 +11145,7 @@ cleanup:
 wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *limits) {
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(limits, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!exec_ctx->poisoned, WAH_ERROR_MISUSE);
     const wah_alloc_t *alloc = &exec_ctx->alloc;
     WAH_ENSURE(exec_ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
     WAH_ENSURE(exec_ctx->call_depth == 0 && exec_ctx->sp == exec_ctx->value_stack, WAH_ERROR_MISUSE);
@@ -11168,6 +11201,12 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     if (!exec_ctx) return;
     wah_alloc_t alloc_storage = wah_resolve_alloc(&exec_ctx->alloc);
     const wah_alloc_t *alloc = &alloc_storage;
+    // Other contexts in the link domain may be freed already if this one is poisoned
+    bool detached = exec_ctx->poisoned;
+    if (!detached && (exec_ctx->is_instantiated || exec_ctx->may_share_refs)) {
+        exec_ctx->poisoned = true;
+        wah_poison_link_domain(exec_ctx);
+    }
     wah_free_timer(exec_ctx);
     exec_ctx->lifecycle = (struct wah_exec_lifecycle_s){0};
     wah_free(alloc, exec_ctx->stack_buffer);
@@ -11178,14 +11217,14 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     wah_free(alloc, exec_ctx->globals);
 
     // Unregister from transitive owners of re-exported imports (before freeing arrays)
-    for (uint32_t i = 0; exec_ctx->memories && i < exec_ctx->memory_count; ++i) {
+    for (uint32_t i = 0; !detached && exec_ctx->memories && i < exec_ctx->memory_count; ++i) {
         if (exec_ctx->memories[i].is_imported && exec_ctx->memories[i].import_ctx) {
             wah_exec_context_t *imp_owner = exec_ctx->memories[i].import_ctx;
             wah_unregister_dependent(imp_owner, exec_ctx);
             if (imp_owner->gc) wah_gc_unregister_dependent(imp_owner->gc, exec_ctx);
         }
     }
-    for (uint32_t i = 0; exec_ctx->tables && i < exec_ctx->table_count; ++i) {
+    for (uint32_t i = 0; !detached && exec_ctx->tables && i < exec_ctx->table_count; ++i) {
         if (exec_ctx->tables[i].is_imported && exec_ctx->tables[i].import_ctx) {
             wah_exec_context_t *imp_owner = exec_ctx->tables[i].import_ctx;
             wah_unregister_dependent(imp_owner, exec_ctx);
@@ -11214,7 +11253,7 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     wah_free(alloc, exec_ctx->tag_instances);
 
     // Unregister from linked contexts' GC and grow-alias dependent lists (wah_link_context path)
-    for (uint32_t i = 0; i < exec_ctx->linked_module_count; ++i) {
+    for (uint32_t i = 0; !detached && i < exec_ctx->linked_module_count; ++i) {
         if (!exec_ctx->linked_modules[i].owns_ctx && exec_ctx->linked_modules[i].ctx) {
             wah_exec_context_t *provider = exec_ctx->linked_modules[i].ctx;
             if (provider->gc) {
@@ -11226,7 +11265,7 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
 
     // Unregister owned contexts from their transitive import owners (before freeing),
     // which may include this context itself
-    for (uint32_t i = 0; exec_ctx->linked_modules && i < exec_ctx->linked_module_count; ++i) {
+    for (uint32_t i = 0; !detached && exec_ctx->linked_modules && i < exec_ctx->linked_module_count; ++i) {
         if (!exec_ctx->linked_modules[i].owns_ctx) continue;
         wah_exec_context_t *ictx = exec_ctx->linked_modules[i].ctx;
         if (!ictx) continue;
@@ -11291,6 +11330,7 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
 
 wah_error_t wah_set_fuel(wah_exec_context_t *ctx, int64_t fuel) {
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!ctx->poisoned, WAH_ERROR_MISUSE);
     WAH_ENSURE(ctx->module, WAH_ERROR_MISUSE);
     WAH_ENSURE(ctx->module->fuel_metering, WAH_ERROR_DISABLED_FEATURE);
     ctx->fuel = fuel;
@@ -15895,6 +15935,7 @@ static wah_error_t wah_finish_internal(
 
 wah_error_t wah_start(wah_exec_context_t *ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count) {
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!ctx->poisoned, WAH_ERROR_MISUSE);
     WAH_ENSURE(ctx->module, WAH_ERROR_MISUSE);
     if (!ctx->is_instantiated) {
         WAH_CHECK(wah_instantiate(ctx));
@@ -15905,16 +15946,18 @@ wah_error_t wah_start(wah_exec_context_t *ctx, uint64_t func_idx, const wah_valu
 
 wah_error_t wah_resume(wah_exec_context_t *ctx) {
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!ctx->poisoned, WAH_ERROR_MISUSE);
     return wah_resume_internal(ctx);
 }
 
 wah_error_t wah_finish(wah_exec_context_t *ctx, wah_value_t *results, uint32_t max_results, uint32_t *actual_results) {
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!ctx->poisoned, WAH_ERROR_MISUSE);
     return wah_finish_internal(ctx, results, max_results, actual_results);
 }
 
 void wah_cancel(wah_exec_context_t *ctx) {
-    if (!ctx) return;
+    if (!ctx || ctx->poisoned) return; // The exception sweep would visit the link domain
     wah_cancel_internal(ctx);
 }
 
@@ -15963,6 +16006,7 @@ static wah_error_t wah_call_module(wah_exec_context_t *exec_ctx, uint32_t func_i
 wah_error_t wah_call(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(exec_ctx->module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!exec_ctx->poisoned, WAH_ERROR_MISUSE);
     WAH_ENSURE(func_idx <= UINT32_MAX, WAH_ERROR_NOT_FOUND);
 
     if (!exec_ctx->is_instantiated) WAH_CHECK(wah_instantiate(exec_ctx));
@@ -15975,6 +16019,7 @@ wah_error_t wah_call_multi(
 ) {
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(exec_ctx->module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!exec_ctx->poisoned, WAH_ERROR_MISUSE);
     WAH_ENSURE(func_idx <= UINT32_MAX, WAH_ERROR_NOT_FOUND);
 
     if (!exec_ctx->is_instantiated) WAH_CHECK(wah_instantiate(exec_ctx));
@@ -15984,6 +16029,7 @@ wah_error_t wah_call_multi(
 wah_error_t wah_call_by_name(wah_exec_context_t *exec_ctx, const char *name, const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(exec_ctx->module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!exec_ctx->poisoned, WAH_ERROR_MISUSE);
     wah_export_desc_t desc;
     WAH_CHECK(wah_export_by_name(exec_ctx->module, name, &desc));
     WAH_ENSURE(desc.kind == WAH_KIND_FUNCTION, WAH_ERROR_NOT_FOUND);
@@ -16563,6 +16609,7 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
     const wah_alloc_t *alloc = &ctx->alloc;
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!ctx->poisoned, WAH_ERROR_MISUSE);
     WAH_ENSURE(!ctx->is_instantiated, WAH_ERROR_MISUSE);
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
 
@@ -16590,6 +16637,7 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
     const wah_alloc_t *alloc = &ctx->alloc;
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(linked_ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!ctx->poisoned && !linked_ctx->poisoned, WAH_ERROR_MISUSE);
     WAH_ENSURE(!ctx->is_instantiated, WAH_ERROR_MISUSE);
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
     WAH_ENSURE(linked_ctx->is_instantiated, WAH_ERROR_MISUSE);
@@ -17719,6 +17767,7 @@ static wah_error_t wah_call_linked_start_functions(wah_exec_context_t *ctx) {
 wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     wah_error_t err = WAH_OK;
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!ctx->poisoned, WAH_ERROR_MISUSE);
     WAH_ENSURE(!ctx->is_instantiated, WAH_ERROR_MISUSE);
     WAH_ENSURE(!ctx->instantiate_failed, WAH_ERROR_MISUSE);
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
@@ -17746,6 +17795,8 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     WAH_CHECK_GOTO(wah_resolve_primary_memory_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_finalize_owned_linked_contexts(ctx), cleanup);
     WAH_CHECK_GOTO(wah_fixup_primary_global_imports(ctx), cleanup);
+    // Everything after this may store references to this context into linked contexts
+    ctx->may_share_refs = true;
     WAH_CHECK_GOTO(wah_init_table_init_exprs(ctx), cleanup);
     WAH_CHECK_GOTO(wah_init_active_elem_segments(ctx), cleanup);
     WAH_CHECK_GOTO(wah_init_active_data_segments(ctx), cleanup);
