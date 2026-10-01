@@ -356,6 +356,37 @@ static void test_subtype_validation() {
     wah_free_module(&good_mod);
 }
 
+// Declared subtyping must take nullability of reference fields/params/results into account.
+static void test_subtype_validation_nullability() {
+    printf("Testing subtype validation with nullability...\n");
+    static const char *const bad[] = {
+        // Immutable field: (ref null 0) is not a subtype of (ref 0)
+        "wasm types {[ struct [], sub [] struct [type.ref 0 immut], sub [1] struct [type.ref.null 0 immut] ]}",
+        // Mutable field: nullability must match exactly
+        "wasm types {[ struct [], sub [] struct [type.ref.null 0 mut], sub [1] struct [type.ref 0 mut] ]}",
+        "wasm types {[ struct [], sub [] array type.ref.null 0 mut, sub [1] array type.ref 0 mut ]}",
+        // Function result (covariant) and param (contravariant)
+        "wasm types {[ struct [], sub [] fn [] [type.ref 0], sub [1] fn [] [type.ref.null 0] ]}",
+        "wasm types {[ struct [], sub [] fn [type.ref.null 0] [], sub [1] fn [type.ref 0] [] ]}",
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); ++i) {
+        wah_module_t mod = {0};
+        assert_err(wah_parse_module_from_spec(&mod, bad[i]), WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&mod);
+    }
+    static const char *const good[] = {
+        "wasm types {[ struct [], sub [] struct [type.ref.null 0 immut], sub [1] struct [type.ref 0 immut] ]}",
+        "wasm types {[ struct [], sub [] struct [type.ref 0 mut], sub [1] struct [type.ref 0 mut] ]}",
+        "wasm types {[ struct [], sub [] fn [] [type.ref.null 0], sub [1] fn [] [type.ref 0] ]}",
+        "wasm types {[ struct [], sub [] fn [type.ref 0] [], sub [1] fn [type.ref.null 0] [] ]}",
+    };
+    for (size_t i = 0; i < sizeof(good) / sizeof(*good); ++i) {
+        wah_module_t mod = {0};
+        assert_ok(wah_parse_module_from_spec(&mod, good[i]));
+        wah_free_module(&mod);
+    }
+}
+
 // Regression: supertype cycle within a rec group caused infinite loops in chain walks.
 // Validate that supertype index must be strictly less than current type index.
 static void test_supertype_cycle() {
@@ -569,6 +600,7 @@ int main() {
     test_call_ref();
     test_uninit_local_tracking();
     test_subtype_validation();
+    test_subtype_validation_nullability();
     test_supertype_cycle();
     test_forward_ref_across_rec_groups();
     test_gc_mutability_check();
