@@ -7091,14 +7091,10 @@ cleanup_block:
                 WAH_ENSURE(vctx->current_stack_depth >= br_stack_height + prefix_result_count, WAH_ERROR_VALIDATION_FAILED);
                 adj_keep = br_result_count;
                 adj_drop = vctx->current_stack_depth - br_stack_height - prefix_result_count;
-                if (br_result_count > 1) {
-                    for (uint32_t k = 0; k < prefix_result_count; ++k) {
-                        uint32_t stack_pos = vctx->type_stack.sp - 1 - k;
-                        WAH_ENSURE(vctx->type_stack.data[stack_pos] == br_result_types[prefix_result_count - 1 - k],
-                                   WAH_ERROR_VALIDATION_FAILED);
-                    }
-                }
             }
+            // Same as br_if: the t* prefix gets label types
+            for (int32_t k = (int32_t)prefix_result_count - 1; k >= 0; --k) POP(_(br_result_types[k]));
+            for (uint32_t k = 0; k < prefix_result_count; ++k) PUSH(_(br_result_types[k]));
 
             if (opcode_val == WAH_OP_BR_ON_CAST) {
                 PUSH(_(dst_nullable ? WAH_TYPE_AS_NON_NULL(src_type) : src_type));

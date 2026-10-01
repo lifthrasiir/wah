@@ -573,7 +573,7 @@ static void test_br_on_cast_multi_value() {
 
     // Positive: multi-value target: block (i32, anyref) -> (i32, anyref).
     // br_on_cast success sends (i32, eqref) to the label.
-    // The i32 on stack must exactly match the label's first result.
+    // The i32 on stack must match the label's first result.
     const char *good_multi = "wasm \
         types {[ fn [] [i32, anyref], fn [i32, anyref] [i32, anyref] ]} \
         funcs {[ 0 ]} \
@@ -606,6 +606,60 @@ static void test_br_on_cast_oob_heap_type() {
     }
 }
 
+// The t* prefix of br_on_cast[_fail] labels must be popped with subtyping and respect the block floor.
+static void test_br_on_cast_prefix() {
+    printf("Testing br_on_cast prefix values...\n");
+
+    // The i32 prefix lives outside of the inner block.
+    wah_module_t bad = {0};
+    assert_err(wah_parse_module_from_spec(&bad, "wasm \
+        types {[ fn [] [], fn [] [i32, anyref] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] \
+            block 1 \
+                i32.const 1 \
+                block void \
+                    ref.null anyref \
+                    br_on_cast.null.null 1 anyref eqref \
+                    drop \
+                end \
+                ref.null anyref \
+            end \
+            drop drop \
+        end } ]}"), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad);
+
+    // eqref prefix is a subtype of the label's anyref, and becomes anyref afterwards.
+    wah_module_t good = {0};
+    assert_ok(wah_parse_module_from_spec(&good, "wasm \
+        types {[ fn [] [anyref, anyref] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] \
+            block 0 \
+                ref.null eqref \
+                ref.null anyref \
+                br_on_cast_fail.null.null 0 anyref eqref \
+            end \
+        end } ]}"));
+    wah_free_module(&good);
+
+    // ...so the prefix can't be used as eqref after br_on_cast.
+    assert_err(wah_parse_module_from_spec(&bad, "wasm \
+        types {[ fn [] [anyref, anyref], fn [] [eqref] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] \
+            block 0 \
+                ref.null eqref \
+                ref.null anyref \
+                br_on_cast_fail.null.null 0 anyref eqref \
+                drop \
+                return \
+            end \
+            unreachable \
+        end } ]}"), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad);
+}
+
 int main() {
     test_typed_select_i32();
     test_typed_select_funcref();
@@ -624,6 +678,7 @@ int main() {
     test_br_on_cast_label_type();
     test_br_on_cast_multi_value();
     test_br_on_cast_oob_heap_type();
+    test_br_on_cast_prefix();
     printf("All references_validation tests passed!\n");
     return 0;
 }
