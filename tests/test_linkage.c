@@ -3616,6 +3616,38 @@ int main() {
         wah_free_module(&b);
     }
 
+    // Linked module globals can be initialized with GC objects, and imports of them keep their identity.
+    printf("Testing linked module globals initialized with GC objects...\n");
+    {
+        wah_module_t l = {0}, p = {0};
+        assert_ok(wah_parse_module_from_spec(&l, "wasm \
+            types {[ struct [i32 immut], fn [] [eqref] ]} \
+            funcs {[ 1 ]} \
+            globals {[ type.ref.null 0 immut i32.const 42 struct.new 0 end ]} \
+            exports {[ {'g'} global# 0, {'get'} fn# 0 ]} \
+            code {[ {[] global.get 0 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&p, "wasm \
+            types {[ struct [i32 immut], fn [] [eqref], fn [] [i32] ]} \
+            imports {[ {'l'} {'get'} fn# 1, {'l'} {'g'} global# type.ref.null 0 immut ]} \
+            funcs {[ 2, 2 ]} \
+            code {[ \
+                {[] global.get 0 struct.get 0 0 end}, \
+                {[] global.get 0 call 0 ref.eq end} \
+            ]}"));
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &p, NULL));
+        assert_ok(wah_link_module(&ctx, "l", &l));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t r;
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &r));
+        assert_eq_i32(r.i32, 42);
+        assert_ok(wah_call(&ctx, 2, NULL, 0, &r));
+        assert_eq_i32(r.i32, 1);
+        wah_free_exec_context(&ctx);
+        wah_free_module(&p);
+        wah_free_module(&l);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

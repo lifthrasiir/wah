@@ -17103,18 +17103,18 @@ static wah_error_t wah_convert_linked_funcref_globals(wah_exec_context_t *ctx) {
     return WAH_OK;
 }
 
-// wah_resolve_primary_global_imports copies immutable global values before
-// wah_convert_linked_funcref_globals resolves _prefuncref sentinels.
-// Re-copy any primary import slots that still hold the sentinel.
-static wah_error_t wah_fixup_primary_funcref_global_imports(wah_exec_context_t *ctx) {
+// wah_resolve_primary_global_imports copies immutable global values before linked globals are
+// finalized by wah_init_linked_globals (which may allocate new GC objects) and
+// wah_convert_linked_funcref_globals (which resolves _prefuncref sentinels). Re-copy them.
+static wah_error_t wah_fixup_primary_global_imports(wah_exec_context_t *ctx) {
     const wah_module_t *module = ctx->module;
     for (uint32_t i = 0; i < module->import_global_count; i++) {
         if (module->global_imports[i].is_mutable) continue;
-        if (ctx->globals[i].ref != wah_func_to_ref(&wah_funcref_sentinel->func)) continue;
         wah_global_import_t *gi = &module->global_imports[i];
         const wah_module_t *linked = NULL;
         wah_exec_context_t *linked_ctx = NULL;
         WAH_ENSURE(wah_find_linked_module(ctx, &gi->name, &linked, &linked_ctx, NULL), WAH_ERROR_LINK_FAILED);
+        if (linked_ctx && !wah_is_owned_linked_ctx(ctx, linked_ctx)) continue; // Already instantiated
         const wah_export_t *exp = wah_find_export(linked, 3, &gi->name);
         WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
         uint32_t gidx = exp->index;
@@ -17443,14 +17443,13 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     const wah_module_t *module = ctx->module;
     WAH_ENSURE((module->required_features & ~ctx->enabled_features) == 0, WAH_ERROR_DISABLED_FEATURE);
 
+    if (!ctx->gc) WAH_CHECK_GOTO(wah_gc_start(ctx), cleanup); // Linked globals may allocate GC objects
     WAH_CHECK_GOTO(wah_prepare_linked_globals(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_primary_func_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_primary_global_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_create_tag_contexts_for_linked_modules(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_linked_tag_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_primary_tag_imports(ctx), cleanup);
-
-    if (!ctx->gc) WAH_CHECK_GOTO(wah_gc_start(ctx), cleanup);
     wah_fixup_linked_gc_contexts(ctx);
 
     WAH_CHECK_GOTO(wah_init_primary_globals(ctx), cleanup);
@@ -17462,7 +17461,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     WAH_CHECK_GOTO(wah_resolve_primary_memory_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_finalize_owned_linked_contexts(ctx), cleanup);
     WAH_CHECK_GOTO(wah_convert_linked_funcref_globals(ctx), cleanup);
-    WAH_CHECK_GOTO(wah_fixup_primary_funcref_global_imports(ctx), cleanup);
+    WAH_CHECK_GOTO(wah_fixup_primary_global_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_init_table_init_exprs(ctx), cleanup);
     WAH_CHECK_GOTO(wah_init_active_elem_segments(ctx), cleanup);
     WAH_CHECK_GOTO(wah_init_active_data_segments(ctx), cleanup);
