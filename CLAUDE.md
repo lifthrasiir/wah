@@ -208,7 +208,7 @@ Keep in mind that this DSL is very basic and you are required to produce a corre
 
 - **Overflow Checks:** Explicitly check for numeric overflow during arithmetic operations in parsing, using `__builtin_mul_overflow` where available. Report with `WAH_ERROR_TOO_LARGE`. `table.init` ranges and other bulk ops verify ranges without overflowing. `WAH_ENSURE_CAP` receives `size_t` for capacity management.
 
-- **Preparsed Bytecode Format:** Each opcode is a 16-bit value (little-endian). Immediates follow in native sizes: `uint32_t` for indices, `uint64_t` for offsets, etc. Branch targets are absolute byte offsets into the preparsed bytecode. The `operand_ref_map` bitmap tracks which value stack slots hold GC references at each POLL point.
+- **Preparsed Bytecode Format:** Each opcode is a 16-bit value (little-endian). Immediates follow in native sizes: `uint32_t` for indices, `uint64_t` for offsets, etc. Branch targets are absolute byte offsets into the preparsed bytecode. `poll_ref_tops` and `ref_nodes` track which value stack slots hold GC references at each POLL point; reference slots form a tree shared between POLL points, so each POLL point only stores its topmost slot.
 
 - **POLL/TICK/METER Opcodes:** POLL is inserted at loop back-edges and function entry; it drives stop-the-world GC and checks `poll_flag`. TICK checks `interrupt_flag` (set by deadline timer or external threads). METER decrements fuel per basic block; bulk ops charge fuel proportional to the work performed and reset their accounting at chunk boundaries. The GC cannot run between POLL points, so reference tracking only needs to be precise at these points.
 

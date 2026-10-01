@@ -1260,6 +1260,27 @@ static void test_block_entry_with_many_locals_time(void) {
     assert_true(many < few * 1.8 + 0.05); // Used to be about 3x
 }
 
+// Each POLL used to store a full bitmap and types of all references on the operand stack.
+static void test_poll_ref_map_memory_amplification(void) {
+    printf("Running test_poll_ref_map_memory_amplification...\n");
+    enum { REFS = 1000, LOOPS = 10000 };
+    static const char ref[] = " ref.null anyref", loop[] = " loop void end", alt[] = " i32.const 0 loop void end drop";
+    char *spec = (char *)malloc(256 + REFS * sizeof(ref) + LOOPS * sizeof(alt));
+    assert_true(spec != NULL);
+    for (int k = 0; k < 2; k++) { // Same or alternating stack states
+        char *p = spec + snprintf(spec, 256, "wasm types {[fn [] []]} funcs {[0]} code {[{[]");
+        for (int i = 0; i < REFS; i++) { memcpy(p, ref, sizeof(ref) - 1); p += sizeof(ref) - 1; }
+        for (int i = 0; i < LOOPS; i++) {
+            if (k) { memcpy(p, alt, sizeof(alt) - 1); p += sizeof(alt) - 1; }
+            else { memcpy(p, loop, sizeof(loop) - 1); p += sizeof(loop) - 1; }
+        }
+        strcpy(p, " return end}]}");
+        // Full ref maps would take LOOPS * ~4 KB = 40 MB
+        assert_true(parse_peak_bytes(spec) < 4 * 1024 * 1024);
+    }
+    free(spec);
+}
+
 // Tracking initialization of non-defaultable locals shouldn't take memory proportional to the nesting.
 static void test_local_init_tracking_memory_amplification(void) {
     printf("Running test_local_init_tracking_memory_amplification...\n");
@@ -1270,6 +1291,7 @@ static void test_local_init_tracking_memory_amplification(void) {
 
 int main(void) {
     test_local_decls_memory_amplification();
+    test_poll_ref_map_memory_amplification();
     test_block_entry_with_many_locals_time();
     test_rec_group_canonicalization_time();
     test_cast_metadata_memory_amplification();
