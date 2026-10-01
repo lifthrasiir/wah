@@ -182,6 +182,20 @@ void test_duplicate_export_names() {
     wah_free_module(&module); // Should be safe to call even if parsing failed
 }
 
+void test_export_names_differing_after_nul() {
+    printf("Running test_export_names_differing_after_nul...\n");
+
+    // "a\0b" and "a\0c" are distinct (and valid UTF-8) names.
+    wah_module_t module;
+    assert_ok(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        exports {[ {%'610062'} fn# 0, {%'610063'} fn# 0 ]} \
+        code {[ {[] end } ]}"));
+    assert_eq_u32(wah_module_export_count(&module), 2);
+    wah_free_module(&module);
+}
+
 void test_invalid_export_kind_or_index() {
     printf("Running test_invalid_export_kind_or_index...\n");
 
@@ -325,6 +339,7 @@ int main() {
     test_basic_exports();
     test_import_descriptors();
     test_duplicate_export_names();
+    test_export_names_differing_after_nul();
     test_invalid_export_kind_or_index();
     test_non_utf8_export_name();
     test_module_no_exports();

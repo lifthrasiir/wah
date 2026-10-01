@@ -9245,7 +9245,7 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
         // Check for duplicate export names
         for (uint32_t j = 0; j < i; ++j) {
             if (module->exports[j].name_len == export_entry->name_len &&
-                strncmp(module->exports[j].name, export_entry->name, export_entry->name_len) == 0) {
+                memcmp(module->exports[j].name, export_entry->name, export_entry->name_len) == 0) {
                 err = WAH_ERROR_VALIDATION_FAILED; // Duplicate export name
                 goto cleanup;
             }
