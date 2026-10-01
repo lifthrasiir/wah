@@ -560,7 +560,7 @@ static void test_ref_test_cast_set_bitset_multiword() {
 
     APPEND_SPEC("wasm types {[ sub [] struct [i32 mut]");
     for (int i = 1; i < TYPE_COUNT; ++i) {
-        APPEND_SPEC(", sub [%d] struct [i32 mut]", i - 1);
+        APPEND_SPEC(", sub [%d] struct [i32 mut]", (i - 1) / 2); // Keeps subtype depth low
     }
     APPEND_SPEC(", fn [] [i32] ]} funcs {[ %d ]} code {[ {[] ", TYPE_COUNT);
     APPEND_SPEC("struct.new_default %d ref.test 0 ", TYPE_COUNT - 1);

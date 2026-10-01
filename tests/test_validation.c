@@ -925,7 +925,27 @@ static void test_func_type_arity_limit() {
     }
 }
 
+// Subtype chains deeper than 63 are rejected, otherwise subtype checks get quadratic.
+static void test_subtype_depth_limit() {
+    printf("Testing subtype depth limit...\n");
+    static char spec[64 + 66 * 32];
+    for (int n = 64; n <= 65; n++) { // n types make a chain of depth n - 1
+        strcpy(spec, "wasm types {[ sub [] struct []");
+        for (int i = 1; i < n; i++) {
+            char buf[32];
+            snprintf(buf, sizeof(buf), ", sub [%d] struct []", i - 1);
+            strcat(spec, buf);
+        }
+        strcat(spec, " ]}");
+        wah_module_t mod = {0};
+        wah_error_t err = wah_parse_module_from_spec(&mod, spec);
+        if (n == 64) assert_ok(err); else assert_err(err, WAH_ERROR_TOO_LARGE);
+        wah_free_module(&mod);
+    }
+}
+
 int main() {
+    test_subtype_depth_limit();
     test_func_type_arity_limit();
     test_block_type_not_skipped();
     test_if_complex_block_type();

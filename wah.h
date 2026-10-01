@@ -2307,6 +2307,7 @@ typedef struct wah_repr_set_s {
 } wah_repr_set_t;
 
 #define WAH_NO_SUPERTYPE UINT32_MAX
+#define WAH_MAX_SUBTYPE_DEPTH 63 // Same as the JS API limit
 
 typedef struct wah_type_def_s {
     wah_comp_type_kind_t kind;
@@ -8409,6 +8410,11 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
             const wah_type_def_t *super_td = &module->type_defs[td->supertype];
             WAH_ENSURE(!super_td->is_final, WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(td->kind == super_td->kind, WAH_ERROR_VALIDATION_FAILED);
+            // Supertypes have been already checked, so this walks at most WAH_MAX_SUBTYPE_DEPTH + 1 steps
+            uint32_t depth = 1;
+            for (uint32_t t = td->supertype; module->type_defs[t].supertype != WAH_NO_SUPERTYPE; t = module->type_defs[t].supertype) {
+                WAH_ENSURE(++depth <= WAH_MAX_SUBTYPE_DEPTH, WAH_ERROR_TOO_LARGE);
+            }
         }
         if (td->kind == WAH_COMP_STRUCT || td->kind == WAH_COMP_ARRAY) {
             for (uint32_t j = 0; j < td->field_count; ++j) WAH_VALIDATE_HEAP_TYPE_IDX(td->field_types[j]);
