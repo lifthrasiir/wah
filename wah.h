@@ -7513,6 +7513,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
         if (opcode == WAH_OP_TRY_TABLE) {
             uint32_t try_catch_count = instr->imm.try_table.catch_count;
 
+            if (emit_poll && (instr->flags & WAH_INSTR_FLAG_POLL)) WAH_EMIT_POLL();
             WAH_METER_START_CHUNK();
             WAH_METER_RECORD_INSTR_START();
             WAH_LOWER_U16(WAH_OP_TRY_TABLE);
@@ -7875,6 +7876,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
             }
         }
     }
+    WAH_ASSERT(!emit_poll || !parsed_code->operand_ref_map || poll_ref_cursor == parsed_code->operand_ref_map_size);
 
     // --- Phase 2: append slow-path islands ---
     if (emit_meter && meter_chunk_count > 0) {
@@ -7979,7 +7981,7 @@ static wah_error_t wah_analyze_stream(
     wah_error_t err = WAH_OK;
     const wah_alloc_t *alloc = &vctx->module->alloc;
     uint8_t *ref_map = NULL;
-    uint32_t ref_map_size = 0, ref_map_cap = 0;
+    uint32_t ref_map_size = 0, ref_map_cap = 0, last_ref_map_size = 0;
     bool is_func_body = (code_body != NULL);
 
     #define WAH_CAPTURE_REF_MAP() do { \
@@ -7991,6 +7993,7 @@ static wah_error_t wah_analyze_stream(
         } \
         uint32_t _entry_bytes = sizeof(uint16_t) * (1 + _words) + _ref_count * sizeof(wah_type_t); \
         WAH_ENSURE_CAP_GOTO(ref_map, ref_map_size + _entry_bytes, cleanup); \
+        last_ref_map_size = ref_map_size; \
         wah_write_u16_le(ref_map + ref_map_size, (uint16_t)depth); \
         memset(ref_map + ref_map_size + sizeof(uint16_t), 0, _words * sizeof(uint16_t)); \
         uint8_t *_type_ptr = ref_map + ref_map_size + sizeof(uint16_t) * (1 + _words); \
@@ -8030,6 +8033,7 @@ static wah_error_t wah_analyze_stream(
                     WAH_ENSURE_GOTO(vctx->current_stack_depth == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
                     WAH_ENSURE_GOTO(*code_ptr == code_end, WAH_ERROR_VALIDATION_FAILED, cleanup);
                     WAH_CHECK_GOTO(wah_analyzed_append_end(ac, &vctx->module->alloc), cleanup);
+                    if (poll_flags) ref_map_size = last_ref_map_size; // e.g. `nop end`, no POLL to consume it
                     goto done;
                 }
             } else {

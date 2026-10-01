@@ -1950,6 +1950,43 @@ int main() {
         wah_free_module(&env_mod);
     }
 
+    // Regression: function body starting with try_table didn't emit the entry POLL,
+    // so every subsequent POLL read the ref map entry of its predecessor.
+    printf("Testing GC ref map: function body starting with try_table...\n");
+    {
+        wah_module_t env_mod = {0};
+        wah_new_module(&env_mod, NULL);
+        assert_ok(wah_export_func(&env_mod, "trigger_gc", "() -> ()", host_trigger_gc, NULL, NULL));
+
+        wah_module_t wasm_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, "wasm \
+            types {[ struct [i32 mut], fn [] [], fn [] [i32] ]} \
+            imports {[ {'env'} {'trigger_gc'} fn# 1 ]} \
+            funcs {[2]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ {[] \
+                try_table void [] end \
+                i32.const 42 struct.new 0 \
+                call 0 \
+                struct.get 0 0 \
+            end} ]}"));
+
+        wah_exec_context_t ctx2 = {0};
+        assert_ok(wah_new_exec_context(&ctx2, &wasm_mod, NULL));
+        assert_ok(wah_link_module(&ctx2, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx2));
+        ctx2.gc->allocation_threshold = 1;
+        assert_ok(wah_instantiate(&ctx2));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx2, 1, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_free_exec_context(&ctx2);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }
