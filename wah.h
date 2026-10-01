@@ -7519,10 +7519,10 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
             .opcode = (op), .continuation_offset = buf_size, .try_depth = cur_try_depth }; \
     } while (0)
 
-    #define WAH_LOWER_FINISH_FRAME() do { \
+    #define WAH_LOWER_FINISH_FRAME(end_pos) do { \
         WAH_ASSERT(control_sp > 0); \
         wah_lower_cf_t *_cf = &control_stack[--control_sp]; \
-        uint32_t _end_pos = buf_size; \
+        uint32_t _end_pos = (end_pos); \
         WAH_LOWER_APPLY_PATCHES(_cf->patch_offsets, _cf->patch_count, _end_pos); \
         if (_cf->opcode == WAH_OP_IF) { \
             WAH_LOWER_PATCH_U32(_cf->if_false_patch, _end_pos); \
@@ -7645,22 +7645,35 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
         }
         if (opcode == WAH_OP_END) {
             if (control_sp > 0) {
-                WAH_METER_START_CHUNK();
-                WAH_METER_RECORD_INSTR_START();
                 wah_lower_cf_t *cf = &control_stack[control_sp - 1];
                 bool trim = cf->needs_trim && cf->opcode != WAH_OP_LOOP;
                 uint32_t trim_depth = cf->try_depth;
-                if (cf->opcode == WAH_OP_TRY_TABLE) {
-                    WAH_LOWER_U16(WAH_OP_END_TRY_TABLE);
-                    cur_try_depth--;
+                // Branches and the false edge of `if` without `else` land here
+                bool is_target = cf->patch_count > 0 || cf->opcode == WAH_OP_IF;
+                WAH_METER_START_CHUNK();
+                {
+                    WAH_METER_RECORD_INSTR_START();
+                    if (cf->opcode == WAH_OP_TRY_TABLE) {
+                        WAH_LOWER_U16(WAH_OP_END_TRY_TABLE);
+                        cur_try_depth--;
+                    }
+                    WAH_METER_RECORD_INSTR_END();
                 }
-                WAH_LOWER_FINISH_FRAME();
+                // Branch targets should be at the start of a chunk, or the rest of that chunk would go uncharged
+                uint32_t end_pos = buf_size;
+                if (emit_meter && is_target) {
+                    WAH_METER_END_CHUNK();
+                    WAH_METER_START_CHUNK();
+                    end_pos = meter_chunks[meter_chunk_count].meter_offset;
+                }
+                WAH_LOWER_FINISH_FRAME(end_pos);
                 if (trim) {
                     // Branches from inside try_tables land here
+                    WAH_METER_RECORD_INSTR_START();
                     WAH_LOWER_U16(WAH_OP_TRIM_HANDLERS);
                     WAH_LOWER_U32(trim_depth);
+                    WAH_METER_RECORD_INSTR_END();
                 }
-                WAH_METER_RECORD_INSTR_END();
                 continue;
             }
             // Function-level END
@@ -7983,12 +7996,16 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                 case WAH_OP_CALL: case WAH_OP_CALL_INDIRECT: case WAH_OP_CALL_REF:
                 case WAH_OP_RETURN_CALL: case WAH_OP_RETURN_CALL_INDIRECT:
                 case WAH_OP_RETURN: case WAH_OP_RETURN_CALL_REF:
-                case WAH_OP_IF: case WAH_OP_ELSE:
+                case WAH_OP_IF:
                 case WAH_OP_THROW: case WAH_OP_THROW_REF:
                 WAH_IF_MEMORY64(case WAH_OP_CALL_INDIRECT_i64: case WAH_OP_RETURN_CALL_INDIRECT_i64:)
                     if (meter_current_cost >= WAH_METER_MAX_CHUNK_COST) {
                         WAH_METER_END_CHUNK();
                     }
+                    break;
+                case WAH_OP_ELSE:
+                    // The false edge of `if` lands right after `else`, which should start a new chunk
+                    WAH_METER_END_CHUNK();
                     break;
                 default:
                     break;

@@ -1017,6 +1017,48 @@ static void test_long_straight_line_chunk(void) {
     }
 }
 
+#define PAD10 "i32.const 0 drop i32.const 0 drop i32.const 0 drop i32.const 0 drop i32.const 0 drop " \
+              "i32.const 0 drop i32.const 0 drop i32.const 0 drop i32.const 0 drop i32.const 0 drop "
+#define PAD50 PAD10 PAD10 PAD10 PAD10 PAD10
+
+// Code reached by a branch must be charged like any other code.
+static void check_branch_target_metered(const char *prefix, const char *suffix) {
+    char pre[2048];
+    snprintf(pre, sizeof(pre), "wasm types {[fn [] [i32], fn [] []]} funcs {[0]} tags {[ tag.type# 1 ]} "
+                               "code {[{[1 i32] %s ", prefix);
+    char post[256];
+    snprintf(post, sizeof(post), "%s local.get 0 end}]}", suffix);
+    char *spec = repeat_spec(pre, "local.get 0 i32.const 1 i32.add local.set 0 ", 1000, post);
+    wah_module_t mod = {0};
+    PARSE_FUEL(&mod, spec);
+    free(spec);
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+
+    wah_value_t result;
+    assert_ok(wah_set_fuel(&ctx, 1000000));
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 1000);
+    int64_t used = 1000000 - wah_get_fuel(&ctx);
+    if (used < 4000) {
+        fprintf(stderr, "only %lld fuel used for 4000+ instructions after a branch\n", (long long)used);
+        exit(1);
+    }
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_branch_targets_are_metered(void) {
+    printf("Testing code at branch targets is metered...\n");
+    check_branch_target_metered("block void i32.const 1 br_if 0 " PAD50 "i32.const 0 br_if 0 end", "");
+    check_branch_target_metered("block void i32.const 1 br_if 0 " PAD50 "i32.const 0 br_if 0 i32.const 0 drop end", "");
+    check_branch_target_metered("block void " PAD50 "i32.const 0 br_table [] 0 i32.const 0 drop end", "");
+    check_branch_target_metered(PAD50 "i32.const 0 if void i32.const 0 drop end", "");
+    check_branch_target_metered(PAD50 "i32.const 0 if void i32.const 0 drop else", "end");
+    check_branch_target_metered("block void try_table void [catch_all 0] " PAD50 "throw 0 end end", "");
+}
+
 int main(void) {
     test_straight_line_exact_fuel();
     test_zero_fuel();
@@ -1042,6 +1084,7 @@ int main(void) {
     test_multi_value_resume();
     test_meter_chunk_reset_before_polled_loop();
     test_long_straight_line_chunk();
+    test_branch_targets_are_metered();
 
     printf("\n=== All fuel tests passed ===\n");
     return 0;
