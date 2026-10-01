@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "../wah.h"
 #include "common.h"
 
@@ -98,6 +99,45 @@ static int tracking_ok(const char *name, const tracking_alloc_t *t) {
 static void host_id(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
     wah_result_i32(ctx, 0, wah_param_i32(ctx, 0));
+}
+
+// Tracks the peak of live bytes, with the size stored before each block.
+typedef struct {
+    size_t live;
+    size_t peak;
+} peak_alloc_t;
+
+#define PEAK_HEADER 16
+
+static void *peak_malloc(size_t size, void *userdata) {
+    peak_alloc_t *t = (peak_alloc_t *)userdata;
+    unsigned char *p = (unsigned char *)malloc(PEAK_HEADER + size);
+    if (!p) return NULL;
+    memcpy(p, &size, sizeof(size));
+    t->live += size;
+    if (t->live > t->peak) t->peak = t->live;
+    return p + PEAK_HEADER;
+}
+
+static void peak_free(void *ptr, void *userdata) {
+    peak_alloc_t *t = (peak_alloc_t *)userdata;
+    if (!ptr) return;
+    unsigned char *p = (unsigned char *)ptr - PEAK_HEADER;
+    size_t size;
+    memcpy(&size, p, sizeof(size));
+    t->live -= size;
+    free(p);
+}
+
+static void *peak_realloc(void *ptr, size_t size, void *userdata) {
+    if (!ptr) return peak_malloc(size, userdata);
+    size_t old;
+    memcpy(&old, (unsigned char *)ptr - PEAK_HEADER, sizeof(old));
+    void *q = peak_malloc(size, userdata);
+    if (!q) return NULL;
+    memcpy(q, ptr, old < size ? old : size);
+    peak_free(ptr, userdata);
+    return q;
 }
 
 int main(void) {
@@ -227,6 +267,31 @@ int main(void) {
         if (!tracking_ok("rejected-tag", &mc)) {
             return 1;
         }
+    }
+
+    // Regression: each import took an entry of every import kind.
+    printf("Testing parse memory of many imports...\n");
+    {
+        enum { N = 1000 };
+        static uint8_t bin[16 + N * 7];
+        size_t n = 0, body = 2 + N * 7;
+        memcpy(bin, "\0asm\1\0\0\0", 8); n = 8;
+        bin[n++] = 2; // Import section
+        bin[n++] = (uint8_t)(0x80 | (body & 0x7f)); bin[n++] = (uint8_t)(body >> 7);
+        bin[n++] = (uint8_t)(0x80 | (N & 0x7f)); bin[n++] = (uint8_t)(N >> 7);
+        for (int i = 0; i < N; i++) {
+            static const uint8_t entry[] = { 1, 'm', 1, 'g', 3 /* global */, 0x7f /* i32 */, 0 };
+            memcpy(bin + n, entry, sizeof(entry));
+            n += sizeof(entry);
+        }
+        peak_alloc_t pc = {0};
+        wah_alloc_t pa = { peak_malloc, peak_realloc, peak_free, &pc };
+        wah_parse_options_t po = { .alloc = &pa };
+        wah_module_t m = {0};
+        assert_ok(wah_parse_module(&m, bin, n, &po));
+        wah_free_module(&m);
+        printf("  input %zu bytes, peak %zu bytes\n", n, pc.peak);
+        assert_true(pc.peak < 32 * n);
     }
 
     printf("custom allocator API tests passed\n");

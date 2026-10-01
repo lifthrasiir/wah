@@ -9290,6 +9290,14 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
     uint32_t import_memory_count = 0;
     uint32_t import_global_count = 0;
     uint32_t import_tag_count = 0;
+    // Grown on demand, so that a few bytes of input don't take an entry of every kind
+    wah_func_import_t *func_imports = NULL;
+    wah_table_import_t *table_imports = NULL;
+    wah_memory_import_t *memory_imports = NULL;
+    wah_global_import_t *global_imports = NULL;
+    wah_tag_import_t *tag_imports = NULL;
+    uint32_t func_imports_cap = 0, table_imports_cap = 0, memory_imports_cap = 0;
+    uint32_t global_imports_cap = 0, tag_imports_cap = 0;
 
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 4));
 
@@ -9297,15 +9305,11 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
 
     module->import_count = count;
     WAH_MALLOC_ARRAY_GOTO(module->imports, count, cleanup);
-    WAH_MALLOC_ARRAY_GOTO(module->func_imports, count, cleanup);
-    WAH_MALLOC_ARRAY_GOTO(module->table_imports, count, cleanup);
-    WAH_MALLOC_ARRAY_GOTO(module->memory_imports, count, cleanup);
-    WAH_MALLOC_ARRAY_GOTO(module->global_imports, count, cleanup);
-    WAH_MALLOC_ARRAY_GOTO(module->tag_imports, count, cleanup);
 
+    wah_import_name_t imp_name = {0}; // Owned by the per-kind entry once it's stored there
     for (uint32_t i = 0; i < count; ++i) {
         // Parse import name (module_name + field_name)
-        wah_import_name_t imp_name = {0};
+        imp_name = (wah_import_name_t){0};
         WAH_CHECK_GOTO(wah_parse_name(ptr, section_end, &imp_name.module, &imp_name.module_len, alloc), cleanup);
         err = wah_parse_name(ptr, section_end, &imp_name.field, &imp_name.field_len, alloc);
         if (err != WAH_OK) {
@@ -9331,7 +9335,8 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
         if (kind == WAH_KIND_FUNCTION) {
             // Function import
             uint32_t type_index;
-            wah_func_import_t *fi = &module->func_imports[import_func_count];
+            WAH_ENSURE_CAP_GOTO(func_imports, import_func_count + 1, cleanup_name);
+            wah_func_import_t *fi = &func_imports[import_func_count];
             fi->name = imp_name;
             module->imports[i].index = import_func_count;
             import_func_count++;
@@ -9342,7 +9347,8 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             fi->type_index = type_index;
         } else if (kind == WAH_KIND_TABLE) {
             // Table import
-            wah_table_import_t *ti = &module->table_imports[import_table_count];
+            WAH_ENSURE_CAP_GOTO(table_imports, import_table_count + 1, cleanup_name);
+            wah_table_import_t *ti = &table_imports[import_table_count];
             ti->name = imp_name;
             module->imports[i].index = import_table_count;
             import_table_count++;
@@ -9375,7 +9381,8 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             WAH_ENSURE_GOTO(ti->type.min_elements <= ti->type.max_elements, WAH_ERROR_VALIDATION_FAILED, cleanup);
         } else if (kind == WAH_KIND_MEMORY) {
             // Memory import
-            wah_memory_import_t *mi = &module->memory_imports[import_memory_count];
+            WAH_ENSURE_CAP_GOTO(memory_imports, import_memory_count + 1, cleanup_name);
+            wah_memory_import_t *mi = &memory_imports[import_memory_count];
             mi->name = imp_name;
             module->imports[i].index = import_memory_count;
             import_memory_count++;
@@ -9416,7 +9423,8 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             WAH_ENSURE_GOTO(mi->type.min_pages <= mi->type.max_pages, WAH_ERROR_VALIDATION_FAILED, cleanup);
         } else if (kind == WAH_KIND_GLOBAL) {
             // Global import
-            wah_global_import_t *gi = &module->global_imports[import_global_count];
+            WAH_ENSURE_CAP_GOTO(global_imports, import_global_count + 1, cleanup_name);
+            wah_global_import_t *gi = &global_imports[import_global_count];
             gi->name = imp_name;
             module->imports[i].index = import_global_count;
             import_global_count++;
@@ -9428,7 +9436,8 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             gi->is_mutable = (mut_byte == 1);
         } else if (kind == WAH_KIND_TAG) {
             // Tag import
-            wah_tag_import_t *tgi = &module->tag_imports[import_tag_count];
+            WAH_ENSURE_CAP_GOTO(tag_imports, import_tag_count + 1, cleanup_name);
+            wah_tag_import_t *tgi = &tag_imports[import_tag_count];
             tgi->name = imp_name;
             module->imports[i].index = import_tag_count;
             import_tag_count++;
@@ -9449,6 +9458,11 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
         }
     }
 
+    module->func_imports = func_imports;
+    module->table_imports = table_imports;
+    module->memory_imports = memory_imports;
+    module->global_imports = global_imports;
+    module->tag_imports = tag_imports;
     module->import_function_count = import_func_count;
     module->import_table_count = import_table_count;
     module->import_memory_count = import_memory_count;
@@ -9456,6 +9470,9 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
     module->import_tag_count = import_tag_count;
     return WAH_OK;
 
+cleanup_name:
+    wah_free(alloc, imp_name.module);
+    wah_free(alloc, imp_name.field);
 cleanup:
 #define WAH_FREE_IMPORTS(arr, count) do { \
     if (arr) { \
@@ -9467,11 +9484,11 @@ cleanup:
         (arr) = NULL; \
     } \
 } while(0)
-    WAH_FREE_IMPORTS(module->func_imports, import_func_count);
-    WAH_FREE_IMPORTS(module->table_imports, import_table_count);
-    WAH_FREE_IMPORTS(module->memory_imports, import_memory_count);
-    WAH_FREE_IMPORTS(module->global_imports, import_global_count);
-    WAH_FREE_IMPORTS(module->tag_imports, import_tag_count);
+    WAH_FREE_IMPORTS(func_imports, import_func_count);
+    WAH_FREE_IMPORTS(table_imports, import_table_count);
+    WAH_FREE_IMPORTS(memory_imports, import_memory_count);
+    WAH_FREE_IMPORTS(global_imports, import_global_count);
+    WAH_FREE_IMPORTS(tag_imports, import_tag_count);
 #undef WAH_FREE_IMPORTS
     wah_free(alloc, module->imports);
     module->imports = NULL;
