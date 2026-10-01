@@ -1792,6 +1792,109 @@ int main() {
         printf("  PASSED\n");
     }
 
+    printf("Testing wah_link_context GC: objects in provider heap are traced by primary GC...\n");
+    {
+        // Provider "p" stores the given anyref into a box allocated in the provider's own heap
+        // (by its global initializer). Primary GC must trace through the box, which is in
+        // a different heap, to keep the primary-heap struct alive.
+        wah_module_t env_mod = {0}, prov_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t pctx = {0}, ctx = {0};
+
+        assert_ok(wah_new_module(&env_mod, NULL));
+        assert_ok(wah_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
+
+        assert_ok(wah_parse_module_from_spec(&prov_mod, "wasm \
+            types {[struct [anyref mut], fn [anyref] [], fn [] [anyref]]} \
+            funcs {[1, 2]} \
+            globals {[type.ref.null 0 immut ref.null anyref struct.new 0 end]} \
+            exports {[{'put'} fn# 0, {'take'} fn# 1]} \
+            code {[ \
+                {[] global.get 0 local.get 0 struct.set 0 0 end}, \
+                {[] global.get 0 struct.get 0 0 end} \
+            ]}"));
+        assert_ok(wah_new_exec_context(&pctx, &prov_mod, NULL));
+        assert_ok(wah_gc_start(&pctx));
+        assert_ok(wah_instantiate(&pctx));
+
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, "wasm \
+            types {[struct [i32 mut], fn [] [i32], fn [anyref] [], fn [] [anyref], fn [] []]} \
+            imports {[{'p'} {'put'} fn# 2, {'p'} {'take'} fn# 3, {'env'} {'gc'} fn# 4]} \
+            funcs {[1]} \
+            exports {[{'entry'} fn# 3]} \
+            code {[{[] \
+                i32.const 42 struct.new 0 call 0 \
+                call 2 \
+                call 1 ref.cast 0 struct.get 0 0 \
+                end}]}"));
+        assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
+        assert_ok(wah_link_context(&ctx, "p", &pctx));
+        assert_ok(wah_link_module(&ctx, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 3, NULL, 0, &result));
+        assert_eq_i32(result.i32, 42);
+
+        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&pctx);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&prov_mod);
+        wah_free_module(&env_mod);
+
+        printf("  PASSED\n");
+    }
+
+    printf("Testing GC over many linked contexts...\n");
+    {
+        // More contexts than the inline GC domain buffer; each provider keeps a struct in its global.
+        enum { N = 10 };
+        wah_module_t env_mod = {0}, prov_mod = {0}, wasm_mod = {0};
+        wah_exec_context_t pctx[N] = {{0}}, ctx = {0};
+
+        assert_ok(wah_new_module(&env_mod, NULL));
+        assert_ok(wah_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
+        assert_ok(wah_parse_module_from_spec(&prov_mod, "wasm \
+            types {[struct [i32 mut], fn [] [i32]]} \
+            funcs {[1]} \
+            globals {[type.ref.null 0 immut i32.const 7 struct.new 0 end]} \
+            exports {[{'get'} fn# 0]} \
+            code {[{[] global.get 0 struct.get 0 0 end}]}"));
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, "wasm \
+            types {[fn [] [i32], fn [] []]} \
+            imports {[{'p9'} {'get'} fn# 0, {'env'} {'gc'} fn# 1]} \
+            funcs {[0]} \
+            code {[{[] call 1 call 0 end}]}"));
+
+        assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
+        for (int i = 0; i < N; ++i) {
+            char name[8];
+            snprintf(name, sizeof(name), "p%d", i);
+            assert_ok(wah_new_exec_context(&pctx[i], &prov_mod, NULL));
+            assert_ok(wah_gc_start(&pctx[i]));
+            assert_ok(wah_instantiate(&pctx[i]));
+            assert_ok(wah_link_context(&ctx, name, &pctx[i]));
+        }
+        assert_ok(wah_link_module(&ctx, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+        assert_eq_i32(result.i32, 7);
+        wah_gc_step(&pctx[0]);
+        assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+        assert_eq_i32(result.i32, 7);
+
+        wah_free_exec_context(&ctx);
+        for (int i = 0; i < N; ++i) wah_free_exec_context(&pctx[i]);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&prov_mod);
+        wah_free_module(&env_mod);
+
+        printf("  PASSED\n");
+    }
+
     printf("Testing wah_link_context reverse GC: provider must not collect object held by primary...\n");
     {
         // Provider "p" allocates a struct (in provider's heap), stores it in a mutable

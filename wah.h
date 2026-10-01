@@ -10101,66 +10101,112 @@ static void wah_gc_mark_visitor(wah_value_t *slot, void *userdata) {
     wah_gc_mark_object(wah_gc_header(ref), (const wah_module_t *)userdata);
 }
 
-static void wah_gc_step_mark(wah_exec_context_t *ctx) {
-    wah_gc_state_t *gc = ctx->gc;
+#define WAH_GC_INLINE_DOMAIN_SIZE 8
 
-    // Clear all marks and gray bits
-    for (wah_gc_object_t *obj = gc->all_objects; obj; obj = wah_gc_next(obj)) {
-        wah_gc_set_mark(obj, false);
-        wah_gc_set_gray(obj, false);
+typedef struct {
+    wah_exec_context_t **list;
+    uint32_t count, cap;
+    wah_exec_context_t *inline_list[WAH_GC_INLINE_DOMAIN_SIZE]; // Avoids allocation in typical cases
+} wah_gc_domain_t;
+
+static wah_error_t wah_gc_domain_add(wah_gc_domain_t *d, wah_exec_context_t *c, const wah_alloc_t *alloc) {
+    if (!c) return WAH_OK;
+    for (uint32_t i = 0; i < d->count; i++) if (d->list[i] == c) return WAH_OK;
+    if (d->count >= d->cap) {
+        uint32_t new_cap = d->cap * 2;
+        void *new_ptr = d->list == d->inline_list ? NULL : d->list;
+        WAH_CHECK(wah_realloc(alloc, new_cap, sizeof(*d->list), &new_ptr));
+        if (d->list == d->inline_list) memcpy(new_ptr, d->inline_list, sizeof(d->inline_list));
+        d->list = (wah_exec_context_t **)new_ptr;
+        d->cap = new_cap;
     }
+    d->list[d->count++] = c;
+    return WAH_OK;
+}
 
-    // Clear stale marks on dependent contexts' GC objects so that intermediary
-    // objects (in dependent heaps) referencing our heap get properly re-traced.
-    for (uint32_t d = 0; d < gc->gc_dependent_count; d++) {
-        wah_gc_state_t *dep_gc = gc->gc_dependents[d]->gc;
-        if (!dep_gc || dep_gc == gc) continue;
-        for (wah_gc_object_t *obj = dep_gc->all_objects; obj; obj = wah_gc_next(obj)) {
+static void wah_gc_domain_free(wah_gc_domain_t *d, const wah_alloc_t *alloc) {
+    if (d->list != d->inline_list) wah_free(alloc, d->list);
+}
+
+// Collects every context whose heap or roots may refer to each other's objects, i.e. the
+// transitive closure of linked contexts (providers) and dependents (consumers) from `ctx`.
+static wah_error_t wah_gc_collect_domain(wah_exec_context_t *ctx, wah_gc_domain_t *d) {
+    const wah_alloc_t *alloc = &ctx->alloc;
+    d->list = d->inline_list;
+    d->count = 0;
+    d->cap = WAH_GC_INLINE_DOMAIN_SIZE;
+    wah_error_t err = wah_gc_domain_add(d, ctx, alloc);
+    for (uint32_t i = 0; i < d->count && err == WAH_OK; i++) {
+        wah_exec_context_t *c = d->list[i];
+        for (uint32_t m = 0; m < c->linked_module_count && err == WAH_OK; m++) {
+            err = wah_gc_domain_add(d, c->linked_modules[m].ctx, alloc);
+        }
+        for (uint32_t k = 0; k < c->dependent_count && err == WAH_OK; k++) {
+            err = wah_gc_domain_add(d, c->dependents[k], alloc);
+        }
+        for (uint32_t k = 0; c->gc && k < c->gc->gc_dependent_count && err == WAH_OK; k++) {
+            err = wah_gc_domain_add(d, c->gc->gc_dependents[k], alloc);
+        }
+    }
+    if (err != WAH_OK) wah_gc_domain_free(d, alloc);
+    return err;
+}
+
+// Whether domain[i] is the first context in the domain with its heap.
+static bool wah_gc_domain_first_heap(wah_exec_context_t **domain, uint32_t i) {
+    if (!domain[i]->gc) return false;
+    for (uint32_t j = 0; j < i; j++) if (domain[j]->gc == domain[i]->gc) return false;
+    return true;
+}
+
+// Marks all heaps in the domain of `ctx`, because objects in any of them may refer to each other.
+// Returns false if the domain couldn't be computed; skipping the collection is always safe.
+static bool wah_gc_step_mark(wah_exec_context_t *ctx) {
+    wah_gc_state_t *gc = ctx->gc;
+    wah_gc_domain_t d;
+    if (wah_gc_collect_domain(ctx, &d) != WAH_OK) {
+        gc->phase = WAH_GC_PHASE_IDLE;
+        return false;
+    }
+    wah_exec_context_t **domain = d.list;
+    uint32_t domain_count = d.count;
+
+    // Clear all marks and gray bits, otherwise stale marks in other heaps would stop tracing
+    for (uint32_t i = 0; i < domain_count; i++) {
+        if (!wah_gc_domain_first_heap(domain, i)) continue;
+        for (wah_gc_object_t *obj = domain[i]->gc->all_objects; obj; obj = wah_gc_next(obj)) {
             wah_gc_set_mark(obj, false);
             wah_gc_set_gray(obj, false);
         }
     }
 
-    // Mark from roots (marks objects as gray)
-    wah_gc_enumerate_roots(ctx, wah_gc_mark_visitor, (void *)ctx->module);
-
-    // Mark from dependent contexts' roots: objects in our heap may be reachable
-    // only through a dependent context's stack/globals/tables.
-    for (uint32_t d = 0; d < gc->gc_dependent_count; d++) {
-        wah_exec_context_t *dep = gc->gc_dependents[d];
-        if (!dep->is_instantiated) continue;
-        wah_gc_enumerate_roots(dep, wah_gc_mark_visitor, (void *)dep->module);
+    // Mark from roots of every context in the domain (marks objects as gray)
+    for (uint32_t i = 0; i < domain_count; i++) {
+        wah_exec_context_t *c = domain[i];
+        if (c != ctx && !c->is_instantiated) continue;
+        wah_gc_enumerate_roots(c, wah_gc_mark_visitor, (void *)c->module);
     }
 
-    // Iteratively scan gray objects until no more remain.
-    // Must also drain dependent heaps: an object in a dependent's heap may
-    // contain fields pointing to objects in our heap (cross-context allocation).
+    // Iteratively scan gray objects in all heaps until no more remain.
     bool found_gray;
     do {
         found_gray = false;
-        for (wah_gc_object_t *obj = gc->all_objects; obj; obj = wah_gc_next(obj)) {
-            if (wah_gc_gray(obj)) {
-                wah_gc_set_gray(obj, false);
-                found_gray = true;
-                wah_gc_scan_object(obj, ctx->module);
-            }
-        }
-        for (uint32_t d = 0; d < gc->gc_dependent_count; d++) {
-            wah_gc_state_t *dep_gc = gc->gc_dependents[d]->gc;
-            if (!dep_gc || dep_gc == gc) continue;
-            const wah_module_t *dep_mod = gc->gc_dependents[d]->module;
-            for (wah_gc_object_t *obj = dep_gc->all_objects; obj; obj = wah_gc_next(obj)) {
+        for (uint32_t i = 0; i < domain_count; i++) {
+            if (!wah_gc_domain_first_heap(domain, i)) continue;
+            for (wah_gc_object_t *obj = domain[i]->gc->all_objects; obj; obj = wah_gc_next(obj)) {
                 if (wah_gc_gray(obj)) {
                     wah_gc_set_gray(obj, false);
                     found_gray = true;
-                    wah_gc_scan_object(obj, dep_mod);
+                    wah_gc_scan_object(obj, domain[i]->module);
                 }
             }
         }
     } while (found_gray);
 
+    wah_gc_domain_free(&d, &ctx->alloc);
     gc->phase = WAH_GC_PHASE_SWEEP;
     gc->sweep_cursor = NULL;
+    return true;
 }
 
 static void wah_gc_step_sweep(wah_exec_context_t *ctx) {
@@ -10204,12 +10250,10 @@ static void wah_gc_step(wah_exec_context_t *ctx) {
 #ifdef WAH_DEBUG
             gc->total_collections++;
 #endif
-            wah_gc_step_mark(ctx);
-            wah_gc_step_sweep(ctx);
+            if (wah_gc_step_mark(ctx)) wah_gc_step_sweep(ctx);
             break;
         case WAH_GC_PHASE_MARK:
-            wah_gc_step_mark(ctx);
-            wah_gc_step_sweep(ctx);
+            if (wah_gc_step_mark(ctx)) wah_gc_step_sweep(ctx);
             break;
         case WAH_GC_PHASE_SWEEP:
             wah_gc_step_sweep(ctx);
@@ -15257,7 +15301,7 @@ static void wah_gc_sweep_unreachable_exceptions(wah_exec_context_t *ctx) {
     wah_gc_state_t *gc = ctx->gc;
     if (!gc) return;
 
-    wah_gc_step_mark(ctx);
+    if (!wah_gc_step_mark(ctx)) return;
 
     wah_gc_object_t *prev = NULL;
     wah_gc_object_t *obj = gc->all_objects;

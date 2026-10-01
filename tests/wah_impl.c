@@ -232,6 +232,19 @@ static const wah_module_t *relocate_module_ptr(const wah_module_t *p, void *old_
     return (const wah_module_t *)((const char *)p + delta);
 }
 
+static void relocate_dependents(wah_exec_context_t *ctx, void *old_base, size_t byte_size, ptrdiff_t delta) {
+    for (uint32_t i = 0; i < ctx->dependent_count; i++) {
+        ctx->dependents[i] = relocate_ctx_ptr(ctx->dependents[i], old_base, byte_size, delta);
+    }
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+    if (ctx->gc) {
+        for (uint32_t i = 0; i < ctx->gc->gc_dependent_count; i++) {
+            ctx->gc->gc_dependents[i] = relocate_ctx_ptr(ctx->gc->gc_dependents[i], old_base, byte_size, delta);
+        }
+    }
+#endif
+}
+
 void wah_debug_relocate_exec_refs(wah_exec_context_t *ctx, void *old_base, size_t byte_size, ptrdiff_t delta) {
     if (!ctx || !old_base || byte_size == 0 || delta == 0) return;
     ctx->module = relocate_module_ptr(ctx->module, old_base, byte_size, delta);
@@ -268,6 +281,12 @@ void wah_debug_relocate_exec_refs(wah_exec_context_t *ctx, void *old_base, size_
     }
     for (uint32_t i = 0; i < ctx->memory_count; i++) {
         ctx->memories[i].import_ctx = relocate_ctx_ptr(ctx->memories[i].import_ctx, old_base, byte_size, delta);
+    }
+    relocate_dependents(ctx, old_base, byte_size, delta);
+    for (uint32_t i = 0; i < ctx->linked_module_count; i++) {
+        if (ctx->linked_modules[i].owns_ctx && ctx->linked_modules[i].ctx) {
+            relocate_dependents(ctx->linked_modules[i].ctx, old_base, byte_size, delta);
+        }
     }
 }
 
