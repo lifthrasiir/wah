@@ -48,6 +48,10 @@ static void count_fake_ref_visitor(wah_value_t *slot, void *ud) {
     if (slot->i64 == FAKE_REF_I64) g_fake_ref_visits++;
 }
 
+static void count_nonnull_visitor(wah_value_t *slot, void *ud) {
+    if (slot->ref) (*(uint32_t *)ud)++;
+}
+
 static void host_scan_fake_ref(wah_call_context_t *cc, void *ud) {
     (void)ud;
     g_fake_ref_visits = 0;
@@ -2272,6 +2276,123 @@ int main() {
         wah_free_exec_context(&ctx2);
         wah_free_module(&wasm_mod);
         wah_free_module(&env_mod);
+    }
+
+    #define REP8(x) x x x x x x x x
+    #define REP64(x) REP8(REP8(x))
+
+    // Regression: a context suspended at a TICK in a slow island kept the ref map of its last POLL,
+    // so roots enumerated by another context of the same GC domain used a stale map.
+    printf("Testing GC ref map: non-reference slot of a context suspended in a slow island...\n");
+    {
+        static const wah_parse_options_t fuel_opts = { .features = WAH_FEATURE_ALL, .enable_fuel_metering = true };
+        wah_module_t amod = {0}, bmod = {0};
+        wah_exec_context_t actx = {0}, bctx = {0};
+        assert_ok(wah_parse_module_from_spec(&amod, "wasm \
+            types {[ struct [i32 mut], fn [] [] ]} funcs {[ 1 ]} \
+            code {[ {[] i32.const 0 struct.new 0 drop end} ]}"));
+        assert_ok(wah_new_exec_context(&actx, &amod, NULL));
+        assert_ok(wah_instantiate(&actx));
+        // The POLL before `call 0` records slot 0 as funcref; it holds an i64 when suspended.
+        assert_ok(wah_parse_module_from_spec_ex(&bmod, &fuel_opts, "wasm \
+            types {[ fn [funcref] [], fn [] [] ]} funcs {[ 0, 1 ]} \
+            code {[ {[] end}, \
+                    {[] ref.null funcref call 0 i64.const %d64 " REP64("i32.const 1 drop ") " drop end} ]}",
+            FAKE_REF_I64));
+        assert_ok(wah_new_exec_context(&bctx, &bmod, NULL));
+        assert_ok(wah_link_context(&bctx, "a", &actx));
+        assert_ok(wah_instantiate(&bctx));
+
+        assert_ok(wah_set_fuel(&bctx, 40));
+        assert_ok(wah_start(&bctx, 1, NULL, 0));
+        assert_err(wah_resume(&bctx), WAH_STATUS_FUEL_EXHAUSTED);
+        g_fake_ref_visits = 0;
+        wah_gc_enumerate_roots(&bctx, count_fake_ref_visitor, NULL);
+        assert_eq_u32(g_fake_ref_visits, 0);
+        wah_gc_step(&actx);
+
+        assert_ok(wah_set_fuel(&bctx, 1000));
+        assert_ok(wah_resume(&bctx));
+        assert_ok(wah_finish(&bctx, NULL, 0, NULL));
+        wah_free_exec_context(&bctx);
+        wah_free_exec_context(&actx);
+        wah_free_module(&bmod);
+        wah_free_module(&amod);
+    }
+
+    printf("Testing GC ref map: non-reference slot of a context suspended in a bulk op...\n");
+    {
+        static const wah_parse_options_t fuel_opts = { .features = WAH_FEATURE_ALL, .enable_fuel_metering = true };
+        wah_module_t bmod = {0};
+        wah_exec_context_t bctx = {0};
+        assert_ok(wah_parse_module_from_spec_ex(&bmod, &fuel_opts, "wasm \
+            types {[ fn [funcref] [], fn [] [] ]} funcs {[ 0, 1 ]} memories {[ limits.i32/1 4 ]} \
+            code {[ {[] end}, \
+                    {[] ref.null funcref call 0 i64.const %d64 \
+                        i32.const 0 i32.const 0 i32.const 262144 memory.fill 0 drop end} ]}",
+            FAKE_REF_I64));
+        assert_ok(wah_new_exec_context(&bctx, &bmod, NULL));
+        assert_ok(wah_gc_start(&bctx));
+        assert_ok(wah_instantiate(&bctx));
+
+        assert_ok(wah_set_fuel(&bctx, 20));
+        assert_ok(wah_start(&bctx, 1, NULL, 0));
+        assert_err(wah_resume(&bctx), WAH_STATUS_FUEL_EXHAUSTED);
+        g_fake_ref_visits = 0;
+        wah_gc_enumerate_roots(&bctx, count_fake_ref_visitor, NULL);
+        assert_eq_u32(g_fake_ref_visits, 0);
+
+        assert_ok(wah_set_fuel(&bctx, 1000));
+        assert_ok(wah_resume(&bctx));
+        assert_ok(wah_finish(&bctx, NULL, 0, NULL));
+        wah_free_exec_context(&bctx);
+        wah_free_module(&bmod);
+    }
+
+    printf("Testing GC ref map: reference pushed after the last POLL of a suspended context...\n");
+    {
+        static const wah_parse_options_t fuel_opts = { .features = WAH_FEATURE_ALL, .enable_fuel_metering = true };
+        wah_module_t amod = {0}, bmod = {0};
+        wah_exec_context_t actx = {0}, bctx = {0};
+        assert_ok(wah_parse_module_from_spec(&amod, "wasm \
+            types {[ struct [i32 mut], fn [] [], fn [anyref] [i32] ]} \
+            funcs {[ 1, 1, 2 ]} \
+            globals {[ anyref mut ref.null anyref end ]} \
+            exports {[ {'set'} fn# 0, {'clear'} fn# 1, {'read'} fn# 2, {'g'} global# 0 ]} \
+            code {[ {[] i32.const 1234 struct.new 0 global.set 0 end}, \
+                    {[] ref.null anyref global.set 0 end}, \
+                    {[] local.get 0 ref.cast 0 struct.get 0 0 end} ]}"));
+        assert_ok(wah_new_exec_context(&actx, &amod, NULL));
+        assert_ok(wah_instantiate(&actx));
+        assert_ok(wah_parse_module_from_spec_ex(&bmod, &fuel_opts, "wasm \
+            types {[ fn [anyref] [i32], fn [] [i32] ]} \
+            imports {[ {'a'} {'g'} global# anyref mut, {'a'} {'read'} fn# 0 ]} \
+            funcs {[ 1 ]} \
+            code {[ {[] global.get 0 " REP64("i32.const 1 drop ") " call 0 end} ]}"));
+        assert_ok(wah_new_exec_context(&bctx, &bmod, NULL));
+        assert_ok(wah_link_context(&bctx, "a", &actx));
+        assert_ok(wah_instantiate(&bctx));
+
+        assert_ok(wah_call(&actx, 0, NULL, 0, NULL));
+        assert_ok(wah_set_fuel(&bctx, 40));
+        assert_ok(wah_start(&bctx, 1, NULL, 0));
+        assert_err(wah_resume(&bctx), WAH_STATUS_FUEL_EXHAUSTED);
+        // Only the suspended stack slot holds the struct now.
+        assert_ok(wah_call(&actx, 1, NULL, 0, NULL));
+        uint32_t nonnull = 0;
+        wah_gc_enumerate_roots(&bctx, count_nonnull_visitor, &nonnull);
+        assert_eq_u32(nonnull, 1);
+        wah_gc_step(&actx);
+
+        assert_ok(wah_set_fuel(&bctx, 1000));
+        assert_ok(wah_resume(&bctx));
+        wah_value_t r;
+        assert_ok(wah_finish(&bctx, &r, 1, NULL));
+        assert_eq_i32(r.i32, 1234);
+        wah_free_exec_context(&bctx);
+        wah_free_exec_context(&actx);
+        wah_free_module(&bmod);
+        wah_free_module(&amod);
     }
 
     printf("All GC tests passed.\n");

@@ -2465,7 +2465,7 @@ typedef struct wah_ref_node_s {
 typedef struct {
     uint8_t *bytecode;
     uint32_t bytecode_size;
-    uint32_t *poll_ref_tops; // Per POLL point, index + 1 of the topmost reference slot, 0 if none
+    uint32_t *poll_ref_tops; // Per ref map (POLL point, or any instruction if metered), index + 1 of the topmost reference slot, 0 if none
     uint32_t poll_count;
     wah_ref_node_t *ref_nodes;
     uint32_t ref_node_count;
@@ -2535,6 +2535,7 @@ typedef struct {
 typedef struct {
     wah_type_t data[WAH_MAX_TYPE_STACK_SIZE];
     uint32_t sp; // Stack pointer
+    uint32_t lwm; // Lowest sp since the last ref map capture; slots below it are unchanged since then
 } wah_type_stack_t;
 
 // --- Execution Context ---
@@ -2548,7 +2549,7 @@ typedef struct wah_call_frame_s {
     uint32_t result_count;       // Number of return values (used by RETURN/END)
     const struct wah_module_s *module; // The module this function belongs to (for cross-module calls)
     wah_value_t *frame_globals;  // Pointer to the globals array for this frame's module
-    uint32_t poll_idx;           // Index into parsed_code.poll_ref_tops for current POLL point
+    uint32_t poll_idx;           // Index into parsed_code.poll_ref_tops for the last POLL or the suspension point
     struct wah_function_holder_s *frame_function_table; // Function table for this frame
     uint32_t frame_function_table_count; // Number of entries in frame_function_table
     struct wah_exec_context_s *frame_ctx; // Exec context for this frame
@@ -2777,6 +2778,7 @@ typedef struct {
 typedef struct {
     uint16_t opcode;
     uint16_t flags;
+    uint32_t ref_map; // Function bodies only: ref map index of the stack before this instruction, if captured
     union {
         uint32_t u32;
         int32_t i32;
@@ -5822,8 +5824,14 @@ static inline wah_error_t wah_type_stack_push(wah_type_stack_t *stack, wah_type_
 static inline wah_error_t wah_type_stack_pop(wah_type_stack_t *stack, wah_type_t *out_type) {
     WAH_ENSURE(stack->sp > 0, WAH_ERROR_VALIDATION_FAILED);
     --stack->sp;
+    if (stack->sp < stack->lwm) stack->lwm = stack->sp;
     *out_type = stack->data[stack->sp];
     return WAH_OK;
+}
+
+static inline void wah_type_stack_truncate(wah_type_stack_t *stack, uint32_t sp) {
+    stack->sp = sp;
+    if (sp < stack->lwm) stack->lwm = sp;
 }
 
 static inline wah_error_t wah_validate_type_match(wah_type_t actual, wah_type_t expected, const wah_module_t *module) {
@@ -5903,7 +5911,7 @@ static wah_error_t wah_validation_check_return_types(const wah_validation_contex
 static inline void wah_validation_mark_unreachable(wah_validation_context_t *vctx) {
     uint32_t base = wah_validation_block_base_height(vctx);
     if (vctx->current_stack_depth > base) {
-        vctx->type_stack.sp -= (vctx->current_stack_depth - base);
+        wah_type_stack_truncate(&vctx->type_stack, vctx->type_stack.sp - (vctx->current_stack_depth - base));
         vctx->current_stack_depth = base;
     }
     vctx->is_unreachable = true;
@@ -6640,7 +6648,7 @@ cleanup_block:
             for (int32_t i = frame->block_type.result_count - 1; i >= 0; --i) POP(_(frame->block_type.result_types[i]));
             WAH_ENSURE(vctx->current_stack_depth == frame->stack_height, WAH_ERROR_VALIDATION_FAILED);
 
-            vctx->type_stack.sp = frame->type_stack_sp;
+            wah_type_stack_truncate(&vctx->type_stack, frame->type_stack_sp);
             vctx->current_stack_depth = frame->type_stack_sp;
 
             wah_validation_restore_local_inits(vctx, frame);
@@ -6672,7 +6680,7 @@ cleanup_block:
             WAH_ENSURE(vctx->current_stack_depth == frame->stack_height, WAH_ERROR_VALIDATION_FAILED);
 
             // Reset stack to the state before the block
-            vctx->type_stack.sp = frame->type_stack_sp;
+            wah_type_stack_truncate(&vctx->type_stack, frame->type_stack_sp);
             vctx->current_stack_depth = frame->type_stack_sp;
 
             wah_validation_restore_local_inits(vctx, frame);
@@ -7386,6 +7394,28 @@ cleanup_try_table:
     return WAH_OK;
 }
 
+static bool wah_opcode_is_call(uint16_t opcode) {
+    switch (opcode) {
+        case WAH_OP_CALL: case WAH_OP_CALL_INDIRECT: case WAH_OP_CALL_REF:
+        case WAH_OP_RETURN_CALL: case WAH_OP_RETURN_CALL_INDIRECT: case WAH_OP_RETURN_CALL_REF:
+            return true;
+        default:
+            return false;
+    }
+}
+
+// Bulk ops that can be suspended midway. They carry the ref map as their last immediate.
+static bool wah_opcode_is_resumable_bulk(uint16_t opcode) {
+    switch (opcode) {
+        case WAH_OP_MEMORY_FILL: case WAH_OP_MEMORY_COPY: case WAH_OP_MEMORY_INIT:
+        case WAH_OP_TABLE_FILL: case WAH_OP_TABLE_COPY: case WAH_OP_TABLE_INIT:
+        case WAH_OP_ARRAY_FILL: case WAH_OP_ARRAY_COPY: case WAH_OP_ARRAY_INIT_DATA: case WAH_OP_ARRAY_INIT_ELEM:
+            return true;
+        default:
+            return false;
+    }
+}
+
 // Lowering function that consumes analyzed IR instead of raw Wasm bytes
 static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah_analyzed_code_t *ac, wah_parsed_code_t *parsed_code) {
     const wah_alloc_t *alloc = &module->alloc;
@@ -7434,6 +7464,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
     typedef struct {
         uint32_t fast_offset;
         uint32_t byte_length;
+        uint32_t ref_map; // For the TICK before this record in slow islands
     } wah_meter_instr_record_t;
     wah_meter_chunk_t *meter_chunks = NULL;
     uint32_t meter_chunk_count = 0, meter_chunks_cap = 0;
@@ -7572,8 +7603,6 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
     wah_x86_64_features_t features = wah_x86_64_features();
     #endif
 
-    uint32_t poll_ref_cursor = 0;
-
     // --- Fuel metering state ---
     bool emit_meter = emit_poll && module->fuel_metering;
     bool meter_need_new_chunk = emit_meter;
@@ -7598,14 +7627,15 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
     } while (0)
 
     #define WAH_METER_RECORD_INSTR_START() \
-        uint32_t _meter_instr_start = buf_size
+        uint32_t _meter_instr_start = buf_size, _meter_ref_map = instr->ref_map
 
     // Chunks are split before their cost and record count overflow uint16_t.
     #define WAH_METER_RECORD_INSTR_END() do { \
         if (emit_meter) { \
             WAH_ENSURE_CAP_GOTO(meter_instr_records, meter_instr_record_count + 1, cleanup); \
             meter_instr_records[meter_instr_record_count++] = (wah_meter_instr_record_t){ \
-                .fast_offset = _meter_instr_start, .byte_length = buf_size - _meter_instr_start \
+                .fast_offset = _meter_instr_start, .byte_length = buf_size - _meter_instr_start, \
+                .ref_map = _meter_ref_map, \
             }; \
             if (++meter_current_cost == UINT16_MAX) WAH_METER_END_CHUNK(); \
         } \
@@ -7625,8 +7655,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
 
     #define WAH_EMIT_POLL() do { \
         WAH_LOWER_U16(WAH_OP_POLL); \
-        WAH_LOWER_U32(poll_ref_cursor); \
-        if (poll_ref_cursor < parsed_code->poll_count) poll_ref_cursor++; \
+        WAH_LOWER_U32(instr->ref_map); \
     } while (0)
 
     // --- Single pass: emit bytecode with backpatching ---
@@ -7707,6 +7736,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                 if (trim) {
                     // Branches from inside try_tables land here
                     WAH_METER_RECORD_INSTR_START();
+                    _meter_ref_map = ac->instrs[ii + 1].ref_map; // The stack after this END
                     WAH_LOWER_U16(WAH_OP_TRIM_HANDLERS);
                     WAH_LOWER_U32(trim_depth);
                     WAH_METER_RECORD_INSTR_END();
@@ -8022,6 +8052,8 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
             }
         }
 
+        if (wah_opcode_is_resumable_bulk(opcode)) WAH_LOWER_U32(instr->ref_map); // For WAH_BULK_YIELD
+
         WAH_METER_RECORD_INSTR_END();
 
         if (emit_meter && meter_current_cost > 0) {
@@ -8049,7 +8081,6 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
             }
         }
     }
-    WAH_ASSERT(!emit_poll || !parsed_code->poll_ref_tops || poll_ref_cursor == parsed_code->poll_count);
 
     // --- Phase 2: append slow-path islands ---
     if (emit_meter && meter_chunk_count > 0) {
@@ -8065,6 +8096,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                 uint32_t tick_offset = buf_size;
                 WAH_LOWER_U16(WAH_OP_TICK);
                 WAH_LOWER_U32(tick_offset);
+                WAH_LOWER_U32(rec->ref_map);
                 if (rec->byte_length > 0) {
                     WAH_LOWER_ENSURE(rec->byte_length);
                     memcpy(buf + buf_size, buf + rec->fast_offset, rec->byte_length);
@@ -8166,38 +8198,57 @@ static wah_error_t wah_analyze_stream(
     uint32_t captured_depth = 0;
     captured_tops[0] = 0;
 
+    // Only slots at or above type_stack.lwm can differ from the previous capture.
+    // Unreachable code has an empty map, which leaves the previous capture in place.
     #define WAH_CAPTURE_REF_MAP() do { \
-        uint32_t _depth = vctx->is_unreachable ? 0 : vctx->type_stack.sp; \
-        uint32_t _common = 0; \
-        while (_common < _depth && _common < captured_depth && \
-               captured_types[_common] == vctx->type_stack.data[_common]) _common++; \
-        for (uint32_t _j = _common; _j < _depth; _j++) { \
-            wah_type_t _t = vctx->type_stack.data[_j]; \
-            captured_types[_j] = _t; \
-            captured_tops[_j + 1] = captured_tops[_j]; \
-            if (WAH_TYPE_IS_REF(_t)) { \
-                WAH_ENSURE_CAP_GOTO(ref_nodes, ref_node_count + 1, cleanup); \
-                ref_nodes[ref_node_count++] = (wah_ref_node_t){ .parent = captured_tops[_j], .pos = _j }; \
-                captured_tops[_j + 1] = ref_node_count; \
+        uint32_t _top = 0; \
+        if (!vctx->is_unreachable) { \
+            wah_type_stack_t *_ts = &vctx->type_stack; \
+            uint32_t _depth = _ts->sp; \
+            uint32_t _common = _ts->lwm < captured_depth ? _ts->lwm : captured_depth; \
+            while (_common < _depth && _common < captured_depth && \
+                   captured_types[_common] == _ts->data[_common]) _common++; \
+            for (uint32_t _j = _common; _j < _depth; _j++) { \
+                wah_type_t _t = _ts->data[_j]; \
+                captured_types[_j] = _t; \
+                captured_tops[_j + 1] = captured_tops[_j]; \
+                if (WAH_TYPE_IS_REF(_t)) { \
+                    WAH_ENSURE_CAP_GOTO(ref_nodes, ref_node_count + 1, cleanup); \
+                    ref_nodes[ref_node_count++] = (wah_ref_node_t){ .parent = captured_tops[_j], .pos = _j }; \
+                    captured_tops[_j + 1] = ref_node_count; \
+                } \
             } \
+            captured_depth = _depth; \
+            _ts->lwm = _depth; \
+            _top = captured_tops[_depth]; \
         } \
-        captured_depth = _depth; \
         WAH_ENSURE_CAP_GOTO(poll_ref_tops, poll_count + 1, cleanup); \
-        poll_ref_tops[poll_count++] = captured_tops[_depth]; \
+        poll_ref_tops[poll_count++] = _top; \
     } while (0)
 
+    // Slow-path islands of fuel metering can suspend before any instruction, so each one needs a ref map
+    bool capture_all = is_func_body && vctx->module->fuel_metering;
     bool is_first_instr = true;
     uint16_t poll_flags = 0;
+    uint32_t poll_map = UINT32_MAX;
 
     while (*code_ptr < code_end) {
         uint16_t opcode_val;
         WAH_CHECK_GOTO(wah_decode_opcode(code_ptr, code_end, &opcode_val), cleanup);
         WAH_CHECK_GOTO(wah_require_feature(vctx->module, wah_opcode_features[opcode_val]), cleanup);
 
-        if (is_func_body && is_first_instr) {
-            WAH_CAPTURE_REF_MAP();
-            poll_flags = WAH_INSTR_FLAG_POLL;
-            is_first_instr = false;
+        uint32_t cur_map = poll_flags ? poll_map : UINT32_MAX;
+        if (is_func_body) {
+            // Frames inside calls rely on the ref map of the POLL right before them
+            if (is_first_instr || (!poll_flags && wah_opcode_is_call(opcode_val))) {
+                WAH_CAPTURE_REF_MAP();
+                poll_map = cur_map = poll_count - 1;
+                poll_flags = WAH_INSTR_FLAG_POLL;
+                is_first_instr = false;
+            } else if (capture_all || wah_opcode_is_resumable_bulk(opcode_val)) {
+                WAH_CAPTURE_REF_MAP();
+                cur_map = poll_count - 1;
+            }
         }
 
         if (opcode_val == WAH_OP_END) {
@@ -8209,7 +8260,7 @@ static wah_error_t wah_analyze_stream(
                     WAH_ENSURE_GOTO(vctx->current_stack_depth == 0, WAH_ERROR_VALIDATION_FAILED, cleanup);
                     WAH_ENSURE_GOTO(*code_ptr == code_end, WAH_ERROR_VALIDATION_FAILED, cleanup);
                     WAH_CHECK_GOTO(wah_analyzed_append_end(ac, &vctx->module->alloc), cleanup);
-                    if (poll_flags) poll_count--; // e.g. `nop end`, no POLL to consume it
+                    ac->instrs[ac->instr_count - 1].ref_map = cur_map;
                     goto done;
                 }
             } else {
@@ -8222,19 +8273,13 @@ static wah_error_t wah_analyze_stream(
             }
         }
 
-        if (is_func_body && !poll_flags && (
-            opcode_val == WAH_OP_CALL || opcode_val == WAH_OP_CALL_INDIRECT || opcode_val == WAH_OP_CALL_REF ||
-            opcode_val == WAH_OP_RETURN_CALL || opcode_val == WAH_OP_RETURN_CALL_INDIRECT || opcode_val == WAH_OP_RETURN_CALL_REF
-        )) {
-            WAH_CAPTURE_REF_MAP();
-            poll_flags = WAH_INSTR_FLAG_POLL;
-        }
-
         uint32_t instr_count_before = ac->instr_count;
         WAH_CHECK_GOTO(wah_validate_opcode(opcode_val, code_ptr, code_end, vctx, code_body, ac), cleanup);
 
         if (is_func_body) {
-            if (poll_flags && ac->instr_count > instr_count_before) {
+            WAH_ASSERT(ac->instr_count - instr_count_before <= 1 && "ref maps assume one instruction per opcode");
+            if (ac->instr_count > instr_count_before) {
+                ac->instrs[instr_count_before].ref_map = cur_map;
                 ac->instrs[instr_count_before].flags |= poll_flags;
                 poll_flags = 0;
             }
@@ -8242,6 +8287,7 @@ static wah_error_t wah_analyze_stream(
                 if (ac->instr_count > 0 && !(ac->instrs[ac->instr_count - 1].flags & WAH_INSTR_FLAG_POLL)) {
                     WAH_CAPTURE_REF_MAP();
                     ac->instrs[ac->instr_count - 1].flags |= WAH_INSTR_FLAG_POLL;
+                    ac->instrs[ac->instr_count - 1].ref_map = poll_count - 1;
                 }
             }
         }
@@ -11264,7 +11310,9 @@ static inline bool wah_bulk_should_stop(const wah_exec_context_t *ctx) {
 
 // Yield from a bulk op: rewind IP to instruction start, return appropriate status.
 // Caller must have already pushed remaining args onto sp before this.
-#define WAH_BULK_YIELD(instr_start) do { \
+// ref_map describes the stack before the instruction, which those args restore.
+#define WAH_BULK_YIELD(instr_start, ref_map) do { \
+    frame->poll_idx = (ref_map); \
     if (ctx->module->fuel_metering && ctx->fuel < 0) { \
         err = WAH_STATUS_FUEL_EXHAUSTED; \
     } else { \
@@ -12103,6 +12151,7 @@ WAH_RUN(METER) {
 
 WAH_RUN(TICK) {
     uint32_t resume_offset = wah_decode_u32_le(&bytecode_ip);
+    uint32_t poll_idx = wah_decode_u32_le(&bytecode_ip);
     ctx->fuel--;
     if (ctx->fuel < 0) {
         err = WAH_STATUS_FUEL_EXHAUSTED;
@@ -12114,6 +12163,7 @@ WAH_RUN(TICK) {
     if (err != WAH_OK) {
         bytecode_ip = bytecode_base + resume_offset;
         frame->bytecode_ip = bytecode_ip;
+        frame->poll_idx = poll_idx; // Describes the stack here, unlike the last POLL
         ctx->sp = sp;
         WAH_CLEANUP();
     }
@@ -12675,6 +12725,7 @@ WAH_RUN(ARRAY_NEW_ELEM) {
 WAH_RUN(ARRAY_FILL) {
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t ref_map = wah_decode_u32_le(&bytecode_ip);
     uint32_t size = (uint32_t)(--sp)->i32;
     wah_value_t fill_val = *--sp;
     uint32_t offset = (uint32_t)(--sp)->i32;
@@ -12693,7 +12744,7 @@ WAH_RUN(ARRAY_FILL) {
         (*sp++).i32 = (int32_t)(offset + done);
         *sp++ = fill_val;
         (*sp++).i32 = (int32_t)(size - done);
-        WAH_BULK_YIELD(instr_start);
+        WAH_BULK_YIELD(instr_start, ref_map);
     }
 
     WAH_NEXT();
@@ -12702,6 +12753,7 @@ WAH_RUN(ARRAY_FILL) {
 
 WAH_RUN(ARRAY_COPY) {
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
+    uint32_t ref_map = wah_decode_u32_le(&bytecode_ip);
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t src_offset = (uint32_t)(--sp)->i32;
     void *src_obj = (--sp)->ref;
@@ -12753,7 +12805,7 @@ WAH_RUN(ARRAY_COPY) {
                 (*sp++).i32 = (int32_t)(src_offset + elem_done);
                 (*sp++).i32 = (int32_t)(size - elem_done);
             }
-            WAH_BULK_YIELD(instr_start);
+            WAH_BULK_YIELD(instr_start, ref_map);
         }
     }
 
@@ -12765,6 +12817,7 @@ WAH_RUN(ARRAY_INIT_DATA) {
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
     uint32_t dataidx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t ref_map = wah_decode_u32_le(&bytecode_ip);
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t src_offset = (uint32_t)(--sp)->i32;
     uint32_t dst_offset = (uint32_t)(--sp)->i32;
@@ -12794,7 +12847,7 @@ WAH_RUN(ARRAY_INIT_DATA) {
             (*sp++).i32 = (int32_t)(dst_offset + elem_done);
             (*sp++).i32 = (int32_t)(src_offset + done);
             (*sp++).i32 = (int32_t)(size - elem_done);
-            WAH_BULK_YIELD(instr_start);
+            WAH_BULK_YIELD(instr_start, ref_map);
         }
     }
     WAH_NEXT();
@@ -12804,6 +12857,7 @@ WAH_RUN(ARRAY_INIT_DATA) {
 WAH_RUN(ARRAY_INIT_ELEM) {
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t elemidx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t ref_map = wah_decode_u32_le(&bytecode_ip);
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t src_offset = (uint32_t)(--sp)->i32;
     uint32_t dst_offset = (uint32_t)(--sp)->i32;
@@ -12824,7 +12878,7 @@ WAH_RUN(ARRAY_INIT_ELEM) {
         (*sp++).i32 = (int32_t)(dst_offset + done);
         (*sp++).i32 = (int32_t)(src_offset + done);
         (*sp++).i32 = (int32_t)(size - done);
-        WAH_BULK_YIELD(instr_start);
+        WAH_BULK_YIELD(instr_start, ref_map);
     }
     WAH_NEXT();
     WAH_CLEANUP();
@@ -12940,6 +12994,7 @@ WAH_RUN(GLOBAL_SET) {
 #define WAH_TABLE_FILL_IMPL(N) { \
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
     uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t ref_map = wah_decode_u32_le(&bytecode_ip); \
     uint64_t size = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     wah_value_t val = *--sp; \
     uint64_t offset = (uint64_t)(uint##N##_t)(*--sp).i##N; \
@@ -12950,7 +13005,7 @@ WAH_RUN(GLOBAL_SET) {
         (*sp++).i##N = (int##N##_t)(offset + done); \
         *sp++ = val; \
         (*sp++).i##N = (int##N##_t)(size - done); \
-        WAH_BULK_YIELD(instr_start); \
+        WAH_BULK_YIELD(instr_start, ref_map); \
     } \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
@@ -12960,6 +13015,7 @@ WAH_RUN(GLOBAL_SET) {
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
     uint32_t dst_table_idx = wah_decode_u32_le(&bytecode_ip); \
     uint32_t src_table_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t ref_map = wah_decode_u32_le(&bytecode_ip); \
     uint64_t size = (uint64_t)(uint##Z##_t)(*--sp).i##Z; \
     uint64_t src_offset = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     uint64_t dst_offset = (uint64_t)(uint##M##_t)(*--sp).i##M; \
@@ -12978,7 +13034,7 @@ WAH_RUN(GLOBAL_SET) {
             (*sp++).i##N = (int##N##_t)(src_offset + done); \
         } \
         (*sp++).i##Z = (int##Z##_t)(size - done); \
-        WAH_BULK_YIELD(instr_start); \
+        WAH_BULK_YIELD(instr_start, ref_map); \
     } \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
@@ -12988,6 +13044,7 @@ WAH_RUN(GLOBAL_SET) {
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
     uint32_t elem_idx = wah_decode_u32_le(&bytecode_ip); \
     uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t ref_map = wah_decode_u32_le(&bytecode_ip); \
     uint32_t size = (*--sp).i32; \
     uint32_t src_offset = (*--sp).i32; \
     uint64_t dst_offset = (uint64_t)(uint##N##_t)(*--sp).i##N; \
@@ -13008,7 +13065,7 @@ WAH_RUN(GLOBAL_SET) {
         (*sp++).i##N = (int##N##_t)(dst_offset + done); \
         (*sp++).i32 = src_offset + done; \
         (*sp++).i32 = size - done; \
-        WAH_BULK_YIELD(instr_start); \
+        WAH_BULK_YIELD(instr_start, ref_map); \
     } \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
@@ -13692,6 +13749,7 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
 #define WAH_MEMORY_FILL_IMPL(N) { \
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
     uint32_t mem_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t ref_map = wah_decode_u32_le(&bytecode_ip); \
     WAH_ASSERT(mem_idx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); \
     \
     uint64_t size = (uint64_t)(uint##N##_t)(*--sp).i##N; \
@@ -13704,7 +13762,7 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
         (*sp++).i##N = (int##N##_t)(dst + done); \
         (*sp++).i32 = (int32_t)val; \
         (*sp++).i##N = (int##N##_t)(size - done); \
-        WAH_BULK_YIELD(instr_start); \
+        WAH_BULK_YIELD(instr_start, ref_map); \
     } \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
@@ -13714,6 +13772,7 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
     uint32_t data_idx = wah_decode_u32_le(&bytecode_ip); \
     uint32_t mem_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t ref_map = wah_decode_u32_le(&bytecode_ip); \
     \
     WAH_ASSERT(mem_idx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); \
     WAH_ASSERT(data_idx < fctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index"); \
@@ -13735,7 +13794,7 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
         (*sp++).i##N = (int##N##_t)(dest_offset + done); \
         (*sp++).i32 = (int32_t)(src_offset + done); \
         (*sp++).i32 = (int32_t)(size - done); \
-        WAH_BULK_YIELD(instr_start); \
+        WAH_BULK_YIELD(instr_start, ref_map); \
     } \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
@@ -13745,6 +13804,7 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
     uint32_t dest_mem_idx = wah_decode_u32_le(&bytecode_ip); \
     uint32_t src_mem_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t ref_map = wah_decode_u32_le(&bytecode_ip); \
     \
     WAH_ASSERT(dest_mem_idx < fctx->memory_count); \
     WAH_ASSERT(src_mem_idx < fctx->memory_count); \
@@ -13768,7 +13828,7 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
             (*sp++).i##N = (int##N##_t)(src + done); \
         } \
         (*sp++).i##Z = (int##Z##_t)(size - done); \
-        WAH_BULK_YIELD(instr_start); \
+        WAH_BULK_YIELD(instr_start, ref_map); \
     } \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
