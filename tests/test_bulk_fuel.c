@@ -635,6 +635,33 @@ static void test_table_grow_fuel(void) {
 }
 
 // ============================================================
+// memory.grow: zeroing new pages should be charged
+// ============================================================
+static void test_memory_grow_fuel(void) {
+    printf("Testing memory.grow fuel...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [i32] [i32]]} \
+        funcs {[0]} \
+        memories {[limits.i32/2 0 100]} \
+        code {[{[] local.get 0 memory.grow 0 end}]}");
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t p = { .i32 = 4 }, r;
+    assert_ok(wah_set_fuel(&ctx, 100000));
+    assert_ok(wah_call(&ctx, 0, &p, 1, &r));
+    assert_eq_i32(r.i32, 0);
+    // At least one fuel per WAH_BULK_ITEMS_PER_FUEL (= 16) bytes
+    assert_true(100000 - wah_get_fuel(&ctx) >= 4 * 65536 / 16);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
 // Allocations made by element expressions should be charged
 // ============================================================
 static void test_elem_expr_alloc_fuel(void) {
@@ -1040,6 +1067,7 @@ int main(void) {
     test_struct_new_fuel_proportional();
     test_call_locals_fuel();
     test_table_grow_fuel();
+    test_memory_grow_fuel();
     test_memory_fill_fuel();
     test_memory_fill_fuel_resume();
     test_memory_copy_fuel_resume();

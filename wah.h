@@ -11899,6 +11899,7 @@ static bool wah_memory_grow_internal(
     if (new_memory_size > fctx->memories[mem_idx].size) {
         memset(fctx->memories[mem_idx].data + fctx->memories[mem_idx].size, 0, new_memory_size - fctx->memories[mem_idx].size);
     }
+    wah_bulk_fuel_charge(ctx, delta_bytes);
 
     wah_budget_charge(ctx, delta_bytes);
     fctx->memories[mem_idx].size = (uint64_t)new_memory_size;
