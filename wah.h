@@ -10157,19 +10157,12 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
 
         // 1c. Operand stack slots (using ref map from POLL points)
         wah_value_t *operand_base = frame->locals + ftype->param_count + code->local_count;
+        // Every call is preceded by a POLL, so a frame inside a call still has the ref map of that call.
+        // Note that bytecode_ip may point to the POLL of the *next* call, which must not be used.
         uint32_t poll_idx = frame->poll_idx;
-
-        // If bytecode_ip points to a POLL (frame suspended at a call site),
-        // read the POLL index from the POLL operands directly.
-        const uint8_t *ip = frame->bytecode_ip;
-        if (ip && wah_read_u16_le(ip) == WAH_OP_POLL) {
-            poll_idx = wah_read_u32_le(ip + sizeof(uint16_t));
-        }
-
         if (poll_idx < code->parsed_code.poll_count) {
-            // The ref map describes the post-POLL type stack. Clamp to the
-            // actual operand stack depth to handle frames suspended mid-call
-            // (where callee results haven't been pushed yet).
+            // The ref map describes the stack before the call, including arguments. Clamp to the
+            // actual operand stack depth, which excludes arguments moved into a callee frame.
             wah_value_t *next_frame_base = (d < ctx->call_depth - 1) ? WAH_FRAME(ctx, d + 1).locals : ctx->sp;
             uint32_t actual_depth = (next_frame_base > operand_base)
                 ? (uint32_t)(next_frame_base - operand_base) : 0;

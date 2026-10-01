@@ -40,6 +40,21 @@ static void host_count_structref(wah_call_context_t *cc, void *ud) {
     wah_return_i32(cc, (int32_t)g_structref_count);
 }
 
+#define FAKE_REF_I64 INT64_C(0x4141414141414140)
+
+static uint32_t g_fake_ref_visits;
+static void count_fake_ref_visitor(wah_value_t *slot, void *ud) {
+    (void)ud;
+    if (slot->i64 == FAKE_REF_I64) g_fake_ref_visits++;
+}
+
+static void host_scan_fake_ref(wah_call_context_t *cc, void *ud) {
+    (void)ud;
+    g_fake_ref_visits = 0;
+    wah_gc_enumerate_roots(cc->exec, count_fake_ref_visitor, NULL);
+    wah_result_ref(cc, 0, NULL);
+}
+
 static void host_trigger_gc(wah_call_context_t *cc, void *ud) {
     (void)ud;
     wah_gc_step(cc->exec);
@@ -2229,6 +2244,32 @@ int main() {
         printf("  forward %.3fs, reverse %.3fs\n", elapsed[0], elapsed[1]);
         assert_true(elapsed[0] < elapsed[1] * 20 + 0.1);
 
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
+    // Regression: a frame inside a host call used the ref map of the POLL right after the call,
+    // which describes the stack with the host call's result rather than its arguments.
+    printf("Testing GC ref map: frame inside a host call followed by another call...\n");
+    {
+        wah_module_t env_mod = {0}, wasm_mod = {0};
+        assert_ok(wah_new_module(&env_mod, NULL));
+        assert_ok(wah_export_func(&env_mod, "scan", "(i64) -> anyref", host_scan_fake_ref, NULL, NULL));
+        assert_ok(wah_export_func(&env_mod, "sink", "(anyref) -> ()", host_trigger_gc, NULL, NULL));
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, "wasm \
+            types {[ fn [i64] [anyref], fn [anyref] [], fn [] [] ]} \
+            imports {[ {'env'} {'scan'} fn# 0, {'env'} {'sink'} fn# 1 ]} \
+            funcs {[ 2 ]} \
+            code {[ {[] i64.const %d64 call 0 call 1 end} ]}", FAKE_REF_I64));
+        wah_exec_context_t ctx2 = {0};
+        assert_ok(wah_new_exec_context(&ctx2, &wasm_mod, NULL));
+        assert_ok(wah_link_module(&ctx2, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx2));
+        assert_ok(wah_instantiate(&ctx2));
+        g_fake_ref_visits = 0;
+        assert_ok(wah_call(&ctx2, 2, NULL, 0, NULL));
+        assert_eq_u32(g_fake_ref_visits, 0);
+        wah_free_exec_context(&ctx2);
         wah_free_module(&wasm_mod);
         wah_free_module(&env_mod);
     }
