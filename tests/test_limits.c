@@ -607,6 +607,42 @@ static void test_imported_memory_budget(void) {
     wah_free_module(&provider);
 }
 
+static void test_memory_budget_linked_module(void) {
+    printf("Testing memory budget charges memories and tables of linked modules...\n");
+    uint64_t table_bytes = 10 * sizeof(wah_value_t);
+    static const char *const specs[] = {
+        "wasm types {[]} memories {[limits.i32/1 2]}",
+        "wasm types {[]} tables {[funcref limits.i32/1 10]}",
+        // Has a tag, so tables are allocated twice through a different path
+        "wasm types {[fn [] []]} tables {[funcref limits.i32/1 10]} tags {[tag.type# 0]}",
+        // Imported by the primary, which shouldn't be charged twice
+        "wasm types {[]} memories {[limits.i32/1 2]} exports {[{'mem'} mem# 0]}",
+    };
+    static const char *const primary_specs[] = {
+        "wasm types {[]}",
+        "wasm types {[]}",
+        "wasm types {[]}",
+        "wasm types {[]} imports {[{'linked'} {'mem'} mem# limits.i32/1 1]}",
+    };
+    uint64_t needed[] = { 2 * PAGE_SIZE, table_bytes, table_bytes, 2 * PAGE_SIZE };
+
+    for (size_t i = 0; i < sizeof(specs) / sizeof(*specs); ++i) {
+        wah_module_t linked = {0}, primary = {0};
+        assert_ok(wah_parse_module_from_spec(&linked, specs[i]));
+        assert_ok(wah_parse_module_from_spec(&primary, primary_specs[i]));
+        for (int ok = 0; ok < 2; ++ok) {
+            wah_exec_context_t ctx = {0};
+            wah_exec_options_t options = { .limits = { .max_memory_bytes = needed[i] - (ok ? 0 : 1) } };
+            assert_ok(wah_new_exec_context(&ctx, &primary, &options));
+            assert_ok(wah_link_module(&ctx, "linked", &linked));
+            if (ok) assert_ok(wah_instantiate(&ctx)); else assert_err(wah_instantiate(&ctx), WAH_ERROR_TOO_LARGE);
+            wah_free_exec_context(&ctx);
+        }
+        wah_free_module(&primary);
+        wah_free_module(&linked);
+    }
+}
+
 // --- Phase 3: Fuel connection ---
 
 static const wah_parse_options_t fuel_opts = { .features = WAH_FEATURE_ALL, .enable_fuel_metering = true };
@@ -841,6 +877,7 @@ int main(void) {
     test_memory_budget_table_initial();
     test_memory_budget_combined();
     test_memory_grow_budget();
+    test_memory_budget_linked_module();
     test_table_grow_budget();
     test_memory_grow_returns_neg1_not_trap();
     test_no_memory_bytes();

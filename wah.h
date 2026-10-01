@@ -4469,12 +4469,10 @@ static void wah_budget_charge(wah_exec_context_t *ctx, uint64_t bytes) {
     ctx->memory_bytes_committed += bytes;
 }
 
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 static void wah_budget_release(wah_exec_context_t *ctx, uint64_t bytes) {
     WAH_ASSERT(ctx->memory_bytes_committed >= bytes);
     ctx->memory_bytes_committed -= bytes;
 }
-#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 // Subtyping ///////////////////////////////////////////////////////////////////
@@ -11506,13 +11504,17 @@ static uint64_t wah_memory_copy_internal(wah_exec_context_t *ctx,
     return size;
 }
 
+// Allocations are charged to `budget_ctx`.
 static wah_error_t wah_init_local_tables(wah_table_inst_t *tables, const wah_module_t *lmod,
-                                         uint32_t total_tables, const wah_alloc_t *alloc) {
+                                         uint32_t total_tables, wah_exec_context_t *budget_ctx) {
+    const wah_alloc_t *alloc = &budget_ctx->alloc;
     for (uint32_t ti = lmod->import_table_count; ti < total_tables; ti++) {
         uint32_t li = ti - lmod->import_table_count;
         uint64_t min_elements = lmod->tables[li].min_elements;
         uint64_t table_bytes = 0;
         WAH_CHECK(wah_table_byte_size(min_elements, &table_bytes));
+        WAH_ENSURE(wah_budget_check(budget_ctx, table_bytes), WAH_ERROR_TOO_LARGE);
+        wah_budget_charge(budget_ctx, table_bytes);
         tables[ti] = (wah_table_inst_t){ .size = min_elements, .max_size = lmod->tables[li].max_elements };
         if (min_elements > 0) {
             WAH_MALLOC_ARRAY(tables[ti].entries, min_elements);
@@ -16615,7 +16617,7 @@ static wah_error_t wah_create_tag_contexts_for_linked_modules(wah_exec_context_t
                         ictx->tables[ti] = ctx->tables[ti];
                         ictx->tables[ti].is_imported = true;
                     }
-                    WAH_CHECK(wah_init_local_tables(ictx->tables, lmod, lmod_total_tables, alloc));
+                    WAH_CHECK(wah_init_local_tables(ictx->tables, lmod, lmod_total_tables, ctx));
                 }
                 uint32_t lmod_ic = lmod->import_function_count;
                 uint32_t lmod_ft_size = lmod_ic + lmod->local_function_count;
@@ -16810,18 +16812,28 @@ static wah_error_t wah_resolve_linked_global_imports(wah_exec_context_t *ctx) {
     } \
 } while (0)
 
+// Owned contexts have been already charged to `ctx`.
+static bool wah_is_owned_linked_ctx(const wah_exec_context_t *ctx, const wah_exec_context_t *c) {
+    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+        if (ctx->linked_modules[j].ctx == c) return ctx->linked_modules[j].owns_ctx;
+    }
+    return false;
+}
+
 static wah_error_t wah_import_existing_table(wah_exec_context_t *ctx, uint32_t dst_idx,
                                              wah_exec_context_t *linked_ctx, uint32_t linked_table_idx,
                                              uint64_t min_elements) {
     WAH_ENSURE(linked_ctx->tables[linked_table_idx].size >= min_elements, WAH_ERROR_LINK_FAILED);
     uint64_t imp_bytes = 0;
     WAH_CHECK(wah_table_byte_size(linked_ctx->tables[linked_table_idx].size, &imp_bytes));
-    WAH_ENSURE(wah_budget_check(ctx, imp_bytes), WAH_ERROR_TOO_LARGE);
     ctx->tables[dst_idx].entries = linked_ctx->tables[linked_table_idx].entries;
     ctx->tables[dst_idx].size = linked_ctx->tables[linked_table_idx].size;
     ctx->tables[dst_idx].max_size = linked_ctx->tables[linked_table_idx].max_size;
     WAH_FOLLOW_IMPORT_CHAIN(ctx, dst_idx, linked_ctx, linked_table_idx, wah_table_inst_t, tables);
-    wah_budget_charge(ctx, imp_bytes);
+    if (!wah_is_owned_linked_ctx(ctx, ctx->tables[dst_idx].import_ctx)) {
+        WAH_ENSURE(wah_budget_check(ctx, imp_bytes), WAH_ERROR_TOO_LARGE);
+        wah_budget_charge(ctx, imp_bytes);
+    }
     return WAH_OK;
 }
 
@@ -16831,12 +16843,14 @@ static wah_error_t wah_import_existing_memory(wah_exec_context_t *ctx, uint32_t 
     uint64_t cur_pages = linked_ctx->memories[linked_mem_idx].size / WAH_WASM_PAGE_SIZE;
     WAH_ENSURE(cur_pages >= min_pages, WAH_ERROR_LINK_FAILED);
     uint64_t imp_bytes = linked_ctx->memories[linked_mem_idx].size;
-    WAH_ENSURE(wah_budget_check(ctx, imp_bytes), WAH_ERROR_TOO_LARGE);
     ctx->memories[dst_idx].data = linked_ctx->memories[linked_mem_idx].data;
     ctx->memories[dst_idx].size = linked_ctx->memories[linked_mem_idx].size;
     ctx->memories[dst_idx].max_pages = linked_ctx->memories[linked_mem_idx].max_pages;
     WAH_FOLLOW_IMPORT_CHAIN(ctx, dst_idx, linked_ctx, linked_mem_idx, wah_memory_inst_t, memories);
-    wah_budget_charge(ctx, imp_bytes);
+    if (!wah_is_owned_linked_ctx(ctx, ctx->memories[dst_idx].import_ctx)) {
+        WAH_ENSURE(wah_budget_check(ctx, imp_bytes), WAH_ERROR_TOO_LARGE);
+        wah_budget_charge(ctx, imp_bytes);
+    }
     return WAH_OK;
 }
 
@@ -17062,6 +17076,7 @@ static wah_error_t wah_create_owned_linked_contexts(wah_exec_context_t *ctx) {
                 if (ictx->tables && ictx->tables != ctx->tables) {
                     for (uint32_t ti = lmod->import_table_count; ti < ictx->table_count; ti++) {
                         if (ictx->tables[ti].entries) wah_free(alloc, ictx->tables[ti].entries);
+                        wah_budget_release(ctx, ictx->tables[ti].size * sizeof(wah_value_t));
                     }
                     wah_free(alloc, ictx->tables);
                 }
@@ -17088,7 +17103,10 @@ static wah_error_t wah_create_owned_linked_contexts(wah_exec_context_t *ctx) {
                 for (uint32_t mi = 0; mi < lmod->memory_count; mi++) {
                     uint32_t slot = lmod->import_memory_count + mi;
                     uint64_t min_pages = lmod->memories[mi].min_pages;
+                    WAH_ENSURE(min_pages <= SIZE_MAX / WAH_WASM_PAGE_SIZE, WAH_ERROR_TOO_LARGE);
                     uint64_t byte_size = min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
+                    WAH_ENSURE(wah_budget_check(ctx, byte_size), WAH_ERROR_TOO_LARGE);
+                    wah_budget_charge(ctx, byte_size);
                     ictx->memories[slot].max_pages = lmod->memories[mi].max_pages;
                     ictx->memories[slot].size = byte_size;
                     if (byte_size > 0) {
@@ -17107,7 +17125,7 @@ static wah_error_t wah_create_owned_linked_contexts(wah_exec_context_t *ctx) {
                 WAH_MALLOC_ARRAY(ictx->tables, lmod_total_tables);
                 memset(ictx->tables, 0, lmod_total_tables * sizeof(wah_table_inst_t));
                 ictx->table_count = lmod_total_tables;
-                WAH_CHECK(wah_init_local_tables(ictx->tables, lmod, lmod_total_tables, alloc));
+                WAH_CHECK(wah_init_local_tables(ictx->tables, lmod, lmod_total_tables, ctx));
             } else {
                 ictx->tables = NULL;
                 ictx->table_count = 0;
@@ -17169,6 +17187,8 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                             WAH_ENSURE(mtype->min_pages >= mim->type.min_pages, WAH_ERROR_LINK_FAILED);
                             WAH_ENSURE(mtype->min_pages <= SIZE_MAX / WAH_WASM_PAGE_SIZE, WAH_ERROR_TOO_LARGE);
                             uint64_t byte_size = mtype->min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
+                            WAH_ENSURE(wah_budget_check(ctx, byte_size), WAH_ERROR_TOO_LARGE);
+                            wah_budget_charge(ctx, byte_size);
                             ictx->memories[mi].is_imported = false;
                             ictx->memories[mi].max_pages = mtype->max_pages;
                             ictx->memories[mi].size = byte_size;
@@ -17228,6 +17248,8 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                             WAH_ENSURE(ttype->min_elements >= tim->type.min_elements, WAH_ERROR_LINK_FAILED);
                             uint64_t tbytes = 0;
                             WAH_CHECK(wah_table_byte_size(ttype->min_elements, &tbytes));
+                            WAH_ENSURE(wah_budget_check(ctx, tbytes), WAH_ERROR_TOO_LARGE);
+                            wah_budget_charge(ctx, tbytes);
                             ictx->tables[ti].is_imported = false;
                             ictx->tables[ti].size = ttype->min_elements;
                             ictx->tables[ti].max_size = ttype->max_elements;
