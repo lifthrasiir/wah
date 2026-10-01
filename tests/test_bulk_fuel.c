@@ -577,6 +577,33 @@ static void test_struct_new_fuel_proportional(void) {
 }
 
 // ============================================================
+// Calls: zeroing locals should be charged
+// ============================================================
+static void test_call_locals_fuel(void) {
+    printf("Testing fuel for zeroing locals on calls...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // 1024 locals = 16384 bytes zeroed per call
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] []]} \
+        funcs {[0, 0, 0]} \
+        code {[ {[1024 i32] end}, {[] call 0 end}, {[] return_call 0 end} ]}");
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_instantiate(&ctx));
+
+    for (uint32_t f = 1; f < 3; ++f) {
+        assert_ok(wah_set_fuel(&ctx, 10000));
+        assert_ok(wah_call(&ctx, f, NULL, 0, NULL));
+        // At least one fuel per WAH_BULK_ITEMS_PER_FUEL (= 16) bytes
+        assert_true(10000 - wah_get_fuel(&ctx) >= 16384 / 16);
+    }
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
 // Allocations made by element expressions should be charged
 // ============================================================
 static void test_elem_expr_alloc_fuel(void) {
@@ -980,6 +1007,7 @@ int main(void) {
     test_array_new_fuel_proportional();
     test_elem_expr_alloc_fuel();
     test_struct_new_fuel_proportional();
+    test_call_locals_fuel();
     test_memory_fill_fuel();
     test_memory_fill_fuel_resume();
     test_memory_copy_fuel_resume();

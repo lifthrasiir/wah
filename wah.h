@@ -11222,6 +11222,12 @@ static inline void wah_bulk_fuel_charge(wah_exec_context_t *ctx, uint64_t chunk)
         ctx->fuel -= (int64_t)((chunk + WAH_BULK_ITEMS_PER_FUEL - 1) / WAH_BULK_ITEMS_PER_FUEL);
 }
 
+// Charges for zeroing locals on calls, rounded down so that functions with few locals cost nothing extra.
+static inline void wah_locals_fuel_charge(wah_exec_context_t *ctx, uint32_t num_locals) {
+    if (ctx->module->fuel_metering)
+        ctx->fuel -= (int64_t)(sizeof(wah_value_t) * (uint64_t)num_locals / WAH_BULK_ITEMS_PER_FUEL);
+}
+
 static inline bool wah_bulk_should_stop(const wah_exec_context_t *ctx) {
     return WAH_POLL_FLAG_LOAD(ctx->interrupt_flag) != 0 ||
            (ctx->module->fuel_metering && ctx->fuel < 0);
@@ -13030,6 +13036,7 @@ WAH_RUN(ELEM_DROP) {
         if (num_locals_ > 0) { \
             memset(sp, 0, sizeof(wah_value_t) * num_locals_); \
             sp += num_locals_; \
+            wah_locals_fuel_charge(ctx, num_locals_); \
         } \
         RELOAD_FRAME(); \
     } while (0)
@@ -13162,6 +13169,7 @@ WAH_RUN(CALL_REF) {
         if (tc_num_locals > 0) { \
             memset(sp, 0, sizeof(wah_value_t) * tc_num_locals); \
             sp += tc_num_locals; \
+            wah_locals_fuel_charge(ctx, tc_num_locals); \
         } \
         WAH_CHECK_GOTO(wah_init_wasm_frame(ctx, frame, tc_module, tc_local_idx, tc_code, tc_locals_dst, (result_count_), tc_ctx), cleanup); \
         bytecode_ip = frame->bytecode_ip; \
