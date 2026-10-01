@@ -5765,6 +5765,11 @@ static inline wah_error_t wah_validation_pop_type(wah_validation_context_t *vctx
     return WAH_OK;
 }
 
+// Popping from here always yields BOT which matches anything, so type checks can be skipped.
+static inline bool wah_validation_at_unreachable_base(const wah_validation_context_t *vctx) {
+    return vctx->is_unreachable && vctx->current_stack_depth <= wah_validation_block_base_height(vctx);
+}
+
 static inline wah_error_t wah_validation_pop_and_match_type(wah_validation_context_t *vctx, wah_type_t expected_type) {
     wah_type_t actual_type;
     WAH_CHECK(wah_validation_pop_type(vctx, &actual_type));
@@ -6615,7 +6620,9 @@ cleanup_block:
                 adj_drop = vctx->current_stack_depth - br_stack_height - br_result_count;
             }
 
-            for (int32_t i = br_result_count - 1; i >= 0; --i) POP(_(br_result_types[i]));
+            if (!wah_validation_at_unreachable_base(vctx)) {
+                for (int32_t i = br_result_count - 1; i >= 0; --i) POP(_(br_result_types[i]));
+            }
             if (is_br_if) {
                 for (uint32_t i = 0; i < br_result_count; ++i) PUSH(_(br_result_types[i]));
             } else {
@@ -6677,14 +6684,14 @@ cleanup_block:
             }
 
             wah_type_t *popped_types = NULL;
-            if (default_result_count > 0) {
+            if (default_result_count > 0 && !wah_validation_at_unreachable_base(vctx)) {
                 WAH_MALLOC_ARRAY_GOTO(popped_types, default_result_count, cleanup_br_table_popped);
             }
-            for (int32_t i = default_result_count - 1; i >= 0; --i) {
+            for (int32_t i = popped_types ? (int32_t)default_result_count - 1 : -1; i >= 0; --i) {
                 WAH_CHECK_GOTO(wah_validation_pop_type(vctx, &popped_types[i]), cleanup_br_table_popped);
                 WAH_CHECK_GOTO(wah_validate_type_match(popped_types[i], default_result_types[i], vctx->module), cleanup_br_table_popped);
             }
-            for (uint32_t i = 0; i < num_targets; ++i) {
+            for (uint32_t i = 0; popped_types && i < num_targets; ++i) {
                 uint32_t cur_result_count;
                 const wah_type_t *cur_result_types;
                 wah_validation_resolve_br_target(vctx, label_indices[i],
@@ -6723,7 +6730,9 @@ cleanup_block:
                 uint32_t block_floor = (vctx->control_sp > 0) ? vctx->control_stack[vctx->control_sp - 1].stack_height : 0;
                 WAH_ENSURE(vctx->current_stack_depth >= block_floor + vctx->func_type->result_count, WAH_ERROR_VALIDATION_FAILED);
             }
-            for (int32_t j = vctx->func_type->result_count - 1; j >= 0; --j) POP(_(vctx->func_type->result_types[j]));
+            if (!wah_validation_at_unreachable_base(vctx)) {
+                for (int32_t j = vctx->func_type->result_count - 1; j >= 0; --j) POP(_(vctx->func_type->result_types[j]));
+            }
             wah_validation_mark_unreachable(vctx);
             EMIT_SIMPLE();
             return WAH_OK;
@@ -8228,8 +8237,10 @@ static void wah_type_section_init_slot(wah_module_t *module, uint32_t idx) {
 }
 
 static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end, wah_func_type_t *ft, const wah_alloc_t *alloc) {
+    // Larger arities can't be used in validation anyway, but would make branch validation quadratic
     uint32_t param_count;
     WAH_CHECK(wah_decode_and_validate_count(ptr, end, &param_count, 1));
+    WAH_ENSURE(param_count <= WAH_MAX_TYPE_STACK_SIZE, WAH_ERROR_TOO_LARGE);
     ft->param_count = param_count;
     WAH_MALLOC_ARRAY(ft->param_types, param_count);
     for (uint32_t j = 0; j < param_count; ++j) {
@@ -8238,6 +8249,7 @@ static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end, 
 
     uint32_t result_count;
     WAH_CHECK(wah_decode_and_validate_count(ptr, end, &result_count, 1));
+    WAH_ENSURE(result_count <= WAH_MAX_TYPE_STACK_SIZE, WAH_ERROR_TOO_LARGE);
     ft->result_count = result_count;
     WAH_MALLOC_ARRAY(ft->result_types, result_count);
     for (uint32_t j = 0; j < result_count; ++j) {

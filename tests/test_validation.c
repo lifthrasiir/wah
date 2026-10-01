@@ -1,6 +1,7 @@
 #include "../wah.h"
 #include "common.h"
 #include <stdio.h>
+#include <string.h>
 
 // b13c680: Fix a validation bug where some block types are entirely skipped.
 // Nested block/if/loop with complex block type (multi-param) must validate correctly.
@@ -906,7 +907,26 @@ static void test_unreachable_end_restore() {
     wah_free_module(&bad);
 }
 
+// Function types with too many params or results would make branch validation quadratic.
+static void test_func_type_arity_limit() {
+    printf("Testing function type param/result count limit...\n");
+    enum { N = 1025 };
+    static char spec[64 + N * 4];
+    for (int results = 0; results < 2; results++) {
+        for (int n = N - 1; n <= N; n++) {
+            strcpy(spec, results ? "wasm types {[ fn [] [i32" : "wasm types {[ fn [i32");
+            for (int i = 1; i < n; i++) strcat(spec, ",i32");
+            strcat(spec, results ? "] ]}" : "] [] ]}");
+            wah_module_t mod = {0};
+            wah_error_t err = wah_parse_module_from_spec(&mod, spec);
+            if (n < N) assert_ok(err); else assert_err(err, WAH_ERROR_TOO_LARGE);
+            wah_free_module(&mod);
+        }
+    }
+}
+
 int main() {
+    test_func_type_arity_limit();
     test_block_type_not_skipped();
     test_if_complex_block_type();
     test_if_no_else_complex_block_type();
