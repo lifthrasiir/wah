@@ -949,6 +949,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
 //
 //   - limits [in, borrowed]: Pointer to a `wah_limits_t` struct containing the new limits.
 //     Any zero or false field is ignored (i.e. the corresponding limit is unchanged).
+//     `deadline_us = UINT64_MAX` removes the deadline.
 wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *limits);
 
 // Function: wah_get_limits
@@ -11106,7 +11107,7 @@ wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *lim
 
     if (set_max_mem) exec_ctx->max_memory_bytes = new_max_mem;
     if (limits->fuel != 0) exec_ctx->fuel = limits->fuel <= INT64_MAX ? (int64_t)limits->fuel : INT64_MAX;
-    if (set_deadline) exec_ctx->deadline_us = limits->deadline_us;
+    if (limits->deadline_us != 0) exec_ctx->deadline_us = limits->deadline_us;
 
     return WAH_OK;
 }

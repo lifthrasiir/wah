@@ -767,6 +767,26 @@ static void test_set_limits_atomic(void) {
     wah_free_module(&mod);
 }
 
+#ifndef WAH_NO_THREADS
+static void test_set_limits_clears_deadline(void) {
+    printf("Testing set_limits clears the deadline with UINT64_MAX...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm types {[]}"));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    wah_limits_t lim = { .deadline_us = 1000 }, out;
+    assert_ok(wah_set_limits(&ctx, &lim));
+    wah_get_limits(&ctx, &out);
+    assert_eq_u64(out.deadline_us, 1000);
+    lim.deadline_us = UINT64_MAX;
+    assert_ok(wah_set_limits(&ctx, &lim));
+    wah_get_limits(&ctx, &out);
+    assert_eq_u64(out.deadline_us, UINT64_MAX);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+#endif
+
 // --- Phase 3: Fuel connection ---
 
 static const wah_parse_options_t fuel_opts = { .features = WAH_FEATURE_ALL, .enable_fuel_metering = true };
@@ -1012,6 +1032,9 @@ int main(void) {
     test_set_limits_memory_budget();
     test_set_limits_rejects_below_committed();
     test_set_limits_atomic();
+#ifndef WAH_NO_THREADS
+    test_set_limits_clears_deadline();
+#endif
     test_get_limits_reports_memory_budget();
     test_zero_page_memory_budget();
     test_imported_memory_budget();
