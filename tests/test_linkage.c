@@ -3528,6 +3528,94 @@ int main() {
         wah_free_module(&linked_mod);
     }
 
+    // Memories and tables imported from a linked (not yet instantiated) module must be shared with it.
+    printf("Testing memories and tables imported from linked modules are shared...\n");
+    {
+        wah_module_t prov = {0}, cons = {0};
+        assert_ok(wah_parse_module_from_spec(&prov, "wasm \
+            types {[ fn [] [i32], fn [i32] [] ]} \
+            funcs {[ 0, 1, 0 ]} \
+            tables {[ funcref limits.i32/1 2 ]} \
+            memories {[ limits.i32/1 1 ]} \
+            exports {[ {'mem'} mem# 0, {'peek'} fn# 0, {'poke'} fn# 1, {'grow'} fn# 2, {'tab'} export.table 0 ]} \
+            elements {[ elem.active.table#0 i32.const 1 end [ 0 ] ]} \
+            code {[ \
+                {[] i32.const 1 i32.load8_u 0 0 end}, \
+                {[] i32.const 0 local.get 0 i32.store8 0 0 end}, \
+                {[] ref.null funcref i32.const 1 table.grow 0 drop i32.const 1 memory.grow 0 end} \
+            ]} \
+            data {[ data.active.table#0 i32.const 1 end {'A'} ]}"));
+        assert_ok(wah_parse_module_from_spec(&cons, "wasm \
+            types {[ fn [] [i32], fn [i32] [] ]} \
+            imports {[ {'p'} {'mem'} mem# limits.i32/1 1, {'p'} {'peek'} fn# 0, {'p'} {'poke'} fn# 1, \
+                       {'p'} {'grow'} fn# 0, {'p'} {'tab'} export.table funcref limits.i32/1 2 ]} \
+            funcs {[ 0, 0, 0, 0, 1 ]} \
+            code {[ \
+                {[] i32.const 1 i32.load8_u 0 0 end}, \
+                {[] i32.const 0 i32.load8_u 0 0 end}, \
+                {[] memory.size 0 table.size 0 i32.add end}, \
+                {[] i32.const 1 table.get 0 ref.is_null end}, \
+                {[] i32.const 1 local.get 0 i32.store8 0 0 end} \
+            ]}"));
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &cons, NULL));
+        assert_ok(wah_link_module(&ctx, "p", &prov));
+        assert_ok(wah_instantiate(&ctx));
+
+        // Functions: 0 = peek, 1 = poke, 2 = grow (provider), 3 = mem[1], 4 = mem[0], 5 = sizes,
+        //            6 = table[1] is null, 7 = mem[1] = x (consumer)
+        wah_value_t r, v = { .i32 = 66 };
+        assert_ok(wah_call(&ctx, 3, NULL, 0, &r)); // Provider's data segment
+        assert_eq_i32(r.i32, 'A');
+        assert_ok(wah_call(&ctx, 6, NULL, 0, &r)); // Provider's element segment
+        assert_eq_i32(r.i32, 0);
+        assert_ok(wah_call(&ctx, 1, &v, 1, NULL)); // Provider writes, consumer reads
+        assert_ok(wah_call(&ctx, 4, NULL, 0, &r));
+        assert_eq_i32(r.i32, 66);
+        v.i32 = 67;
+        assert_ok(wah_call(&ctx, 7, &v, 1, NULL)); // Consumer writes, provider reads
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
+        assert_eq_i32(r.i32, 67);
+        assert_ok(wah_call(&ctx, 2, NULL, 0, &r)); // Provider grows both
+        assert_ok(wah_call(&ctx, 5, NULL, 0, &r));
+        assert_eq_i32(r.i32, 2 + 3);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&cons);
+        wah_free_module(&prov);
+    }
+
+    // A linked module importing a memory of another linked module shares it regardless of the link order.
+    printf("Testing memories shared between linked modules regardless of link order...\n");
+    {
+        wah_module_t a = {0}, b = {0}, p = {0};
+        assert_ok(wah_parse_module_from_spec(&b, "wasm \
+            types {[ fn [] [i32] ]} funcs {[ 0 ]} memories {[ limits.i32/1 1 ]} \
+            exports {[ {'mem'} mem# 0, {'peek'} fn# 0 ]} \
+            code {[ {[] i32.const 0 i32.load8_u 0 0 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&a, "wasm \
+            types {[ fn [] [] ]} imports {[ {'b'} {'mem'} mem# limits.i32/1 1 ]} funcs {[ 0 ]} \
+            exports {[ {'poke'} fn# 0 ]} \
+            code {[ {[] i32.const 0 i32.const 77 i32.store8 0 0 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&p, "wasm \
+            types {[ fn [] [], fn [] [i32] ]} imports {[ {'a'} {'poke'} fn# 0, {'b'} {'peek'} fn# 1 ]}"));
+        for (int order = 0; order < 2; ++order) {
+            wah_exec_context_t ctx = {0};
+            assert_ok(wah_new_exec_context(&ctx, &p, NULL));
+            assert_ok(wah_link_module(&ctx, order ? "b" : "a", order ? &b : &a));
+            assert_ok(wah_link_module(&ctx, order ? "a" : "b", order ? &a : &b));
+            assert_ok(wah_instantiate(&ctx));
+            wah_value_t r;
+            assert_ok(wah_call(&ctx, 0, NULL, 0, NULL));
+            assert_ok(wah_call(&ctx, 1, NULL, 0, &r));
+            assert_eq_i32(r.i32, 77);
+            wah_free_exec_context(&ctx);
+        }
+        wah_free_module(&p);
+        wah_free_module(&a);
+        wah_free_module(&b);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
