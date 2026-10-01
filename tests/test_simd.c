@@ -573,6 +573,13 @@ void test_i8x16_add() {
     run_simd_binary_op_test("i8x16.add", binary_op_wasm_spec, &operand1, &operand2, &expected);
 }
 
+void test_i16x8_mul() {
+    wah_v128_t operand1 = { .u16 = {0xFFFF, 0xFFFF, 0x8000, 0x0100, 3, 0, 0x7FFF, 0x1234} };
+    wah_v128_t operand2 = { .u16 = {0xFFFF, 2, 0x8000, 0x0100, 5, 0xFFFF, 0x7FFF, 0x10} };
+    wah_v128_t expected = { .u16 = {1, 0xFFFE, 0, 0, 15, 0, 1, 0x2340} };
+    run_simd_binary_op_test("i16x8.mul", binary_op_wasm_spec, &operand1, &operand2, &expected);
+}
+
 void test_f32x4_add() {
     wah_v128_t operand1 = { .f32 = {1.0f, 2.0f, 3.0f, 4.0f} }, operand2 = { .f32 = {5.0, 6.0, 7.0, 8.0} };
     wah_v128_t expected = { .f32 = {6.0f, 8.0f, 10.0f, 12.0f} };
@@ -1545,6 +1552,7 @@ int main() {
     test_v128_i32_store_lanes();
     test_v128_not();
     test_i8x16_add();
+    test_i16x8_mul();
     test_f32x4_add();
     test_v128_and();
     test_v128_andnot();

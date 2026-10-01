@@ -14289,7 +14289,7 @@ WAH_RUN(F64X2_SPLAT) SPLAT_OP(f64, double, f64)
 #define V128_BINARY_OP_LANE_WRAP(N, op, field) { \
     wah_v128_t b = sp[-1].v128, a = sp[-2].v128; \
     for (int i = 0; i < 128/N; ++i) { \
-        a.field[i] = (uint##N##_t)(a.field[i] op b.field[i]); \
+        a.field[i] = (uint##N##_t)((a.field[i] + 0u) op b.field[i]); /* No promotion to signed int */ \
     } \
     sp[-2].v128 = a; \
     sp--; \
