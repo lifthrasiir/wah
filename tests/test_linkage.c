@@ -3957,6 +3957,40 @@ int main() {
         wah_free_module(&prov);
     }
 
+    // The same module linked both as a context and as a module: imports from the latter should be bound to
+    // its own instance, not to the globals of the former.
+    printf("Testing module linked both as a context and as a module...\n");
+    {
+        wah_module_t m = {0}, user = {0};
+        assert_ok(wah_parse_module_from_spec(&m, "wasm \
+            types {[ fn [i32] [] ]} funcs {[ 0 ]} \
+            globals {[ i32 1 i32.const 1 end ]} \
+            exports {[ {'g'} global# 0, {'set'} fn# 0 ]} \
+            code {[ {[] local.get 0 global.set 0 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&user, "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'b'} {'g'} global# i32 1 ]} funcs {[ 0 ]} \
+            code {[ {[] global.get 0 end} ]}"));
+
+        wah_exec_context_t mctx = {0}, uctx = {0};
+        assert_ok(wah_new_exec_context(&mctx, &m, NULL));
+        assert_ok(wah_instantiate(&mctx));
+        wah_value_t v = { .i32 = 5 }, r;
+        assert_ok(wah_call(&mctx, 0, &v, 1, NULL));
+
+        assert_ok(wah_new_exec_context(&uctx, &user, NULL));
+        assert_ok(wah_link_context(&uctx, "a", &mctx));
+        assert_ok(wah_link_module(&uctx, "b", &m));
+        assert_ok(wah_instantiate(&uctx));
+        assert_ok(wah_call(&uctx, 0, NULL, 0, &r));
+        assert_eq_i32(r.i32, 1);
+
+        wah_free_exec_context(&uctx);
+        wah_free_exec_context(&mctx);
+        wah_free_module(&user);
+        wah_free_module(&m);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

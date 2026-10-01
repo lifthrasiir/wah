@@ -16855,10 +16855,13 @@ static wah_error_t wah_validate_global_import_type(
     return WAH_OK;
 }
 
+// Globals of a module linked without its own context are part of ctx->globals.
+// Contexts linked with wah_link_context also get slots there, which must not be used.
 static uint32_t wah_linked_globals_offset(const wah_exec_context_t *ctx, const wah_module_t *target) {
     uint32_t offset = wah_global_index_limit(ctx->module);
     for (uint32_t i = 0; i < ctx->linked_module_count; i++) {
-        if (ctx->linked_modules[i].module == target) break;
+        const wah_linked_module_t *lm = &ctx->linked_modules[i];
+        if (lm->module == target && (!lm->ctx || lm->owns_ctx)) break;
         offset += wah_global_index_limit(ctx->linked_modules[i].module);
     }
     return offset;
