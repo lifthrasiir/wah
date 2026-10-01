@@ -757,6 +757,7 @@ private:
     uint32_t linked_module_count;
     uint32_t linked_modules_cap;
     bool is_instantiated;
+    bool instantiate_failed; // Partially instantiated states can't be reused
 
     // Runtime dispatch table (global function index space: imports + locals + hosts)
     struct wah_function_holder_s *function_table;
@@ -1250,6 +1251,10 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
 //   but it can be used as an early verification step after linking and before execution.
 //
 //   After instantiation, any `wah_link_*` calls are invalid since the module is finalized.
+//
+//   If instantiation fails for any reason (including fuel exhaustion or interruption during
+//   start functions), the context is left partially instantiated and can't be instantiated or
+//   called again; any such attempt returns WAH_ERROR_MISUSE. It can still be freed as usual.
 wah_error_t wah_instantiate(wah_exec_context_t *ctx);
 
 // --- GC Management ---
@@ -17283,6 +17288,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     wah_error_t err = WAH_OK;
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(!ctx->is_instantiated, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!ctx->instantiate_failed, WAH_ERROR_MISUSE);
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
     WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0);
     wah_recompute_poll_flag(ctx);
@@ -17321,6 +17327,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     return WAH_OK;
 
 cleanup:
+    ctx->instantiate_failed = true;
     return err;
 }
 

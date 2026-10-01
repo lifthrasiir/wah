@@ -3489,6 +3489,45 @@ int main() {
         wah_free_module(&provider_mod);
     }
 
+    // A failed instantiation (here, fuel exhaustion in the start function) can't be retried.
+    // Retrying used to re-allocate the unified globals, leaving owned linked contexts dangling.
+    printf("Testing instantiation can't be retried after failure...\n");
+    {
+        static const wah_parse_options_t fuel_opts = { .features = WAH_FEATURE_ALL, .enable_fuel_metering = true };
+        wah_module_t linked_mod = {0}, primary_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&linked_mod, "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            globals {[ i32 mut i32.const 42 end ]} \
+            exports {[ {'get'} fn# 0 ]} \
+            code {[ {[] global.get 0 end} ]}"));
+        assert_ok(wah_parse_module_from_spec_ex(&primary_mod, &fuel_opts, "wasm \
+            types {[ fn [] [i32], fn [] [] ]} \
+            imports {[ {'linked'} {'get'} fn# 0 ]} \
+            funcs {[ 1, 0 ]} \
+            exports {[ {'f'} fn# 2 ]} \
+            start { 1 } \
+            code {[ \
+                {[1 i32] loop void local.get 0 i32.const 1 i32.add local.tee 0 i32.const 1000 i32.lt_s br_if 0 end end}, \
+                {[] call 0 end} \
+            ]}"));
+
+        wah_exec_context_t ctx = {0};
+        wah_exec_options_t opts = { .limits = { .fuel = 50 } };
+        assert_ok(wah_new_exec_context(&ctx, &primary_mod, &opts));
+        assert_ok(wah_link_module(&ctx, "linked", &linked_mod));
+        assert_err(wah_instantiate(&ctx), WAH_STATUS_FUEL_EXHAUSTED);
+
+        assert_ok(wah_set_fuel(&ctx, 1000000));
+        wah_value_t result;
+        assert_err(wah_call_by_name(&ctx, "f", NULL, 0, &result), WAH_ERROR_MISUSE);
+        assert_err(wah_instantiate(&ctx), WAH_ERROR_MISUSE);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&primary_mod);
+        wah_free_module(&linked_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
