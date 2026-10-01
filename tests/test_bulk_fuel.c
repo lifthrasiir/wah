@@ -403,6 +403,35 @@ static void test_array_fill_fuel_resume(void) {
     wah_free_module(&mod);
 }
 
+// array.fill should be charged per byte like other array operations
+static void test_array_fill_fuel_per_byte(void) {
+    printf("Testing array.fill fuel per byte...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    PARSE_FUEL(&mod, "wasm \
+        types {[array v128 mut, fn [] []]} \
+        funcs {[1]} \
+        code {[{[1 type.ref.null 0] \
+            i32.const 256 array.new_default 0 local.set 0 \
+            local.get 0 i32.const 0 v128.const %v128 i32.const 256 array.fill 0 \
+        end}]}", (const uint8_t *)"0123456789abcdef");
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    assert_ok(wah_set_fuel(&ctx, 10000));
+    assert_ok(wah_call(&ctx, 0, NULL, 0, NULL));
+    // array.new_default and array.fill each cost at least 4096 / 16 fuel
+    assert_true(10000 - wah_get_fuel(&ctx) >= 2 * 4096 / 16);
+
+    // Resuming in the middle of v128 elements should still work
+    run_resume(&ctx, 0, NULL, 0, 1);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 // ============================================================
 // array.copy fuel resume (GC)
 // ============================================================
@@ -1078,6 +1107,7 @@ int main(void) {
     test_table_copy_backward_fuel_resume();
     test_table_init_fuel_resume();
     test_array_fill_fuel_resume();
+    test_array_fill_fuel_per_byte();
     test_array_copy_fuel_resume();
     test_array_init_data_fuel_resume();
     test_array_init_elem_fuel_resume();

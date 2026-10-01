@@ -11633,11 +11633,13 @@ static uint32_t wah_bulk_array_fill(wah_exec_context_t *ctx, wah_type_t et, uint
                                      uint32_t offset, uint32_t size, uint32_t elem_size, const wah_value_t *fill_val) {
     for (uint32_t done = 0; done < size; ) {
         uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
-        chunk = (uint32_t)wah_bulk_fuel_limit(ctx, chunk);
+        // Charged per byte like other array operations, but at least one element at a time
+        uint64_t bytes = wah_bulk_fuel_limit(ctx, (uint64_t)chunk * elem_size);
+        if (bytes < (uint64_t)chunk * elem_size) chunk = bytes > elem_size ? (uint32_t)(bytes / elem_size) : 1;
         for (uint32_t i = 0; i < chunk; i++)
             wah_gc_store_field(et, elems + (offset + done + i) * elem_size, fill_val);
         done += chunk;
-        wah_bulk_fuel_charge(ctx, chunk);
+        wah_bulk_fuel_charge(ctx, (uint64_t)chunk * elem_size);
         if (done < size && wah_bulk_should_stop(ctx)) return done;
     }
     return size;
