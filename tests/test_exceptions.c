@@ -868,6 +868,87 @@ static void test_try_table_handler_overflow() {
     wah_free_module(&mod);
 }
 
+// Runs `body` 100 times in a loop; leaving a try_table through a branch must drop its handler.
+// With `fuel` > 0, fuel is refilled in small steps so that slow-path islands get executed as well.
+static void check_try_table_branch_out(const char *body, int64_t fuel) {
+    wah_parse_options_t opts = { .enable_fuel_metering = fuel > 0 };
+    wah_module_t mod = {0};
+    assert_ok(wah_parse_module_from_spec_ex(&mod, &opts, "wasm \
+        types {[ fn [] [i32], fn [] [] ]} funcs {[0]} tags {[ tag.type# 1 ]} \
+        code {[{[1 i32] \
+            loop void %t \
+                local.get 0 i32.const 1 i32.add local.tee 0 i32.const 100 i32.lt_u br_if 0 \
+            end \
+            local.get 0 \
+        end}]}", body));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result = {0};
+    if (fuel > 0) {
+        assert_ok(wah_set_fuel(&ctx, fuel));
+        assert_ok(wah_start(&ctx, 0, NULL, 0));
+        wah_error_t err;
+        while ((err = wah_resume(&ctx)) == WAH_STATUS_FUEL_EXHAUSTED) assert_ok(wah_set_fuel(&ctx, fuel));
+        assert_ok(err);
+        assert_ok(wah_finish(&ctx, &result, 1, NULL));
+    } else {
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    }
+    assert_eq_i32(result.i32, 100);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_try_table_branch_out_drops_handler() {
+    printf("Testing branches out of try_table drop its handler...\n");
+    static const char *const bodies[] = {
+        "block void try_table void [catch_all 0] br 1 end end",
+        "block void try_table void [catch_all 0] i32.const 1 br_if 1 end end",
+        "block void try_table void [catch_all 0] i32.const 0 br_table [1] 1 end end",
+        "try_table void [] br 0 end",
+        "try_table void [] local.get 0 i32.const 1 i32.add local.tee 0 i32.const 99 i32.lt_u br_if 1 end", // back to the loop header
+        // catch_all to labels outside of another try_table
+        "block void try_table void [] try_table void [catch_all 1] throw 0 end end end",
+        "block void try_table void [] try_table void [catch_all 2] "
+        "local.get 0 i32.const 1 i32.add local.tee 0 i32.const 99 i32.lt_u if void throw 0 end end end end",
+    };
+    for (size_t i = 0; i < sizeof(bodies) / sizeof(*bodies); i++) {
+        check_try_table_branch_out(bodies[i], 0);
+        check_try_table_branch_out(bodies[i], 7);
+    }
+}
+
+static void test_try_table_stale_handler_does_not_catch() {
+    printf("Testing a throw after leaving try_table is not caught by it...\n");
+
+    wah_module_t mod = {0};
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[ fn [] [i32], fn [] [] ]} funcs {[0]} tags {[ tag.type# 1 ]} \
+        code {[{[] \
+            block void \
+                block void \
+                    try_table void [catch_all 1] br 1 end \
+                end \
+                throw 0 \
+            end \
+            i32.const 7 \
+        end}]}"));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_EXCEPTION);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 // Phase 0: Exception survives GC cycle while reachable from operand stack (via catch_ref).
 static void test_exception_survives_gc_on_stack() {
     printf("Testing exception survives GC cycle on operand stack...\n");
@@ -1033,6 +1114,8 @@ int main() {
     test_link_module_tag_context_has_gc();
     test_linked_module_imported_tag_identity();
     test_try_table_handler_overflow();
+    test_try_table_branch_out_drops_handler();
+    test_try_table_stale_handler_does_not_catch();
     test_exception_survives_gc_on_stack();
     test_exception_oom();
     test_cancel_does_not_free_exnref_in_global();

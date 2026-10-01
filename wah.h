@@ -1928,7 +1928,7 @@ typedef enum {
 
 #define WAH_INTERNAL_OPCODES(X) \
     X(POLL) X(METER) X(TICK) \
-    X(END_TRY_TABLE) \
+    X(END_TRY_TABLE) X(TRIM_HANDLERS) \
     X(REF_FUNC_CONST) \
     X(GLOBAL_GET_INDIRECT) X(GLOBAL_SET_INDIRECT) \
     WAH_IF_GC( \
@@ -7367,6 +7367,8 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
         uint32_t *patch_offsets;      // positions needing backpatch with this frame's end offset
         uint32_t patch_count;
         uint32_t patch_offsets_cap;
+        uint32_t try_depth;           // number of enclosing try_tables at this frame's label
+        bool needs_trim;              // some branch to this frame's end leaves a try_table
     } wah_lower_cf_t;
 
     // --- Growable buffer ---
@@ -7381,6 +7383,8 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
 
     wah_lower_cf_t control_stack[WAH_MAX_CONTROL_DEPTH];
     uint32_t control_sp = 0;
+    uint32_t cur_try_depth = 0;
+    uint8_t *loop_has_try = NULL; // per instruction; only allocated when the code has any try_table
 
     // --- Fuel metering types and variables (before any goto cleanup) ---
     typedef struct {
@@ -7402,6 +7406,38 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
     // Initialize buffer
     buf_cap = 256;
     WAH_MALLOC_ARRAY_GOTO(buf, buf_cap, cleanup);
+
+    // Find loops containing try_tables, whose headers need to drop handlers left by branches
+    for (uint32_t ti = 0; ti < ac->instr_count; ti++) {
+        if (ac->instrs[ti].opcode != WAH_OP_TRY_TABLE) continue;
+        WAH_MALLOC_ARRAY_GOTO(loop_has_try, ac->instr_count, cleanup);
+        memset(loop_has_try, 0, ac->instr_count);
+        uint32_t open[WAH_MAX_CONTROL_DEPTH], open_count = 0;
+        for (uint32_t ii = 0; ii < ac->instr_count; ii++) {
+            switch (ac->instrs[ii].opcode) {
+                case WAH_OP_BLOCK: case WAH_OP_LOOP: case WAH_OP_IF:
+                    WAH_ASSERT(open_count < WAH_MAX_CONTROL_DEPTH);
+                    open[open_count++] = ii;
+                    break;
+                case WAH_OP_TRY_TABLE:
+                    // Mark enclosing loops, stopping at an already marked one (whose enclosing loops are marked too)
+                    for (uint32_t j = open_count; j > 0; j--) {
+                        uint32_t k = open[j - 1];
+                        if (ac->instrs[k].opcode != WAH_OP_LOOP) continue;
+                        if (loop_has_try[k]) break;
+                        loop_has_try[k] = 1;
+                    }
+                    WAH_ASSERT(open_count < WAH_MAX_CONTROL_DEPTH);
+                    open[open_count++] = ii;
+                    break;
+                case WAH_OP_END:
+                    if (open_count > 0) open_count--;
+                    break;
+                default: break;
+            }
+        }
+        break;
+    }
 
     #define WAH_LOWER_ENSURE(n) do { \
         WAH_ENSURE_CAP_GOTO(buf, buf_size + (n), cleanup); \
@@ -7467,6 +7503,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
         } else { \
             WAH_ASSERT(_rd < control_sp && "validation should have verified relative depth"); \
             wah_lower_cf_t *_target = &control_stack[control_sp - 1 - _rd]; \
+            if (cur_try_depth > _target->try_depth) _target->needs_trim = true; \
             if (_target->opcode == WAH_OP_LOOP) { \
                 WAH_LOWER_U32(_target->continuation_offset); \
             } else { \
@@ -7478,7 +7515,8 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
 
     #define WAH_LOWER_PUSH_FRAME(op) do { \
         WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size"); \
-        control_stack[control_sp++] = (wah_lower_cf_t){ .opcode = (op), .continuation_offset = buf_size }; \
+        control_stack[control_sp++] = (wah_lower_cf_t){ \
+            .opcode = (op), .continuation_offset = buf_size, .try_depth = cur_try_depth }; \
     } while (0)
 
     #define WAH_LOWER_FINISH_FRAME() do { \
@@ -7570,6 +7608,11 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
             WAH_LOWER_PUSH_FRAME((wah_opcode_t)opcode);
             if (opcode == WAH_OP_LOOP) {
                 control_stack[control_sp - 1].continuation_offset = continuation_offset;
+                if (loop_has_try && loop_has_try[ii]) {
+                    // Branches back from inside try_tables land here
+                    WAH_LOWER_U16(WAH_OP_TRIM_HANDLERS);
+                    WAH_LOWER_U32(cur_try_depth);
+                }
             }
             WAH_METER_RECORD_INSTR_END();
             continue;
@@ -7595,6 +7638,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
             }
 
             WAH_LOWER_PUSH_FRAME(WAH_OP_TRY_TABLE);
+            cur_try_depth++;
             WAH_METER_RECORD_INSTR_END();
             continue;
         }
@@ -7602,10 +7646,19 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
             if (control_sp > 0) {
                 WAH_METER_START_CHUNK();
                 WAH_METER_RECORD_INSTR_START();
-                if (control_stack[control_sp - 1].opcode == WAH_OP_TRY_TABLE) {
+                wah_lower_cf_t *cf = &control_stack[control_sp - 1];
+                bool trim = cf->needs_trim && cf->opcode != WAH_OP_LOOP;
+                uint32_t trim_depth = cf->try_depth;
+                if (cf->opcode == WAH_OP_TRY_TABLE) {
                     WAH_LOWER_U16(WAH_OP_END_TRY_TABLE);
+                    cur_try_depth--;
                 }
                 WAH_LOWER_FINISH_FRAME();
+                if (trim) {
+                    // Branches from inside try_tables land here
+                    WAH_LOWER_U16(WAH_OP_TRIM_HANDLERS);
+                    WAH_LOWER_U32(trim_depth);
+                }
                 WAH_METER_RECORD_INSTR_END();
                 continue;
             }
@@ -8018,6 +8071,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
 
 cleanup:
     wah_free(alloc, buf);
+    wah_free(alloc, loop_has_try);
     wah_free(alloc, func_end_patches);
     wah_free(alloc, meter_chunks);
     wah_free(alloc, meter_instr_records);
@@ -12074,6 +12128,16 @@ WAH_RUN(END_TRY_TABLE) {
     WAH_NEXT();
 }
 
+// Drops handlers of try_tables left by a branch, keeping `depth` handlers in the current frame.
+WAH_RUN(TRIM_HANDLERS) {
+    uint32_t depth = wah_decode_u32_le(&bytecode_ip);
+    uint32_t base = ctx->exception_handler_depth;
+    while (base > 0 && ctx->exception_handlers[base - 1].call_depth >= ctx->call_depth) base--;
+    WAH_ASSERT(base + depth <= ctx->exception_handler_depth);
+    ctx->exception_handler_depth = base + depth;
+    WAH_NEXT();
+}
+
 WAH_RUN(THROW) {
     uint32_t tag_idx = wah_decode_u32_le(&bytecode_ip);
     WAH_ASSERT(tag_idx < fctx->tag_instance_count);
@@ -12127,7 +12191,7 @@ WAH_RUN(THROW_REF) {
 }
 
 #else // !WAH_FEATURE_EXCEPTION || !WAH_FEATURE_GC
-WAH_NEVER_RUN(TRY_TABLE) WAH_NEVER_RUN(END_TRY_TABLE) WAH_NEVER_RUN(THROW) WAH_NEVER_RUN(THROW_REF)
+WAH_NEVER_RUN(TRY_TABLE) WAH_NEVER_RUN(END_TRY_TABLE) WAH_NEVER_RUN(TRIM_HANDLERS) WAH_NEVER_RUN(THROW) WAH_NEVER_RUN(THROW_REF)
 #endif // WAH_FEATURE_EXCEPTION && WAH_FEATURE_GC
 
 WAH_RUN(I32_CONST) { (*sp++).i32 = (int32_t)wah_decode_u32_le(&bytecode_ip); WAH_NEXT(); }
