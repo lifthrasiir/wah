@@ -1195,8 +1195,17 @@ static void test_local_decls_memory_amplification(void) {
     assert_true(parse_peak_bytes(spec) < 2 * 1024 * 1024);
 }
 
+// Saved initialization states of non-defaultable locals should grow only as blocks get nested.
+static void test_local_init_stack_memory_amplification(void) {
+    printf("Running test_local_init_stack_memory_amplification...\n");
+    // Preallocating for the maximum control depth would take 64K * 256 = 16 MB
+    assert_true(parse_peak_bytes("wasm types {[fn [] []]} funcs {[0]} \
+        code {[{[1 type.ref 0, 65534 i32] block void block void end end end}]}") < 2 * 1024 * 1024);
+}
+
 int main(void) {
     test_local_decls_memory_amplification();
+    test_local_init_stack_memory_amplification();
     test_v128_locals_and_block_types_require_simd_feature();
     test_parse_module_argument_errors();
     test_zero_params_zero_results_func_type();

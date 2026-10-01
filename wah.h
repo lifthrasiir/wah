@@ -2752,6 +2752,7 @@ typedef struct {
     uint8_t *local_inits; // Per-local init state: 1=initialized, 0=not
     uint8_t *local_init_stack; // Saved states for control frames
     uint32_t local_init_stack_used; // Current usage in local_init_stack
+    uint32_t local_init_stack_cap;
     uint32_t num_non_defaultable; // Number of non-defaultable locals
 } wah_validation_context_t;
 
@@ -5841,6 +5842,17 @@ static inline void wah_validation_mark_unreachable(wah_validation_context_t *vct
     vctx->is_unreachable = true;
 }
 
+// Saves the initialization state of locals for a new control frame, growing the storage only as needed.
+static wah_error_t wah_validation_save_local_inits(wah_validation_context_t *vctx, wah_validation_control_frame_t *frame) {
+    if (!vctx->local_inits) return WAH_OK;
+    const wah_alloc_t *alloc = &vctx->module->alloc;
+    WAH_ENSURE_CAP(vctx->local_init_stack, (size_t)vctx->local_init_stack_used + vctx->total_locals);
+    frame->local_init_save_offset = vctx->local_init_stack_used;
+    memcpy(vctx->local_init_stack + vctx->local_init_stack_used, vctx->local_inits, vctx->total_locals);
+    vctx->local_init_stack_used += vctx->total_locals;
+    return WAH_OK;
+}
+
 static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, const uint8_t *code_end,
                                                      wah_validation_context_t *vctx, wah_func_type_t *bt) {
     const wah_alloc_t *alloc = &vctx->module->alloc;
@@ -6522,12 +6534,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             frame->stack_height = vctx->current_stack_depth;
             frame->type_stack_sp = vctx->type_stack.sp;
 
-            if (vctx->local_inits) {
-                frame->local_init_save_offset = vctx->local_init_stack_used;
-                memcpy(vctx->local_init_stack + vctx->local_init_stack_used,
-                       vctx->local_inits, vctx->total_locals);
-                vctx->local_init_stack_used += vctx->total_locals;
-            }
+            WAH_CHECK_GOTO(wah_validation_save_local_inits(vctx, frame), cleanup_block);
 
             for (uint32_t i = 0; i < bt->param_count; ++i) {
                 WAH_CHECK_GOTO(wah_validation_push_type(vctx, bt->param_types[i]), cleanup_block);
@@ -7274,12 +7281,7 @@ cleanup_block:
             }
             vctx->is_unreachable = false;
 
-            if (vctx->local_inits) {
-                frame->local_init_save_offset = vctx->local_init_stack_used;
-                memcpy(vctx->local_init_stack + vctx->local_init_stack_used,
-                       vctx->local_inits, vctx->total_locals);
-                vctx->local_init_stack_used += vctx->total_locals;
-            }
+            WAH_CHECK_GOTO(wah_validation_save_local_inits(vctx, frame), cleanup_try_table);
 
             EMIT_INSTR_EX(opcode_val, {
                 _di->imm.try_table.catch_count = catch_count;
@@ -8799,6 +8801,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         wah_free(alloc, vctx.local_inits); vctx.local_inits = NULL;
         wah_free(alloc, vctx.local_init_stack); vctx.local_init_stack = NULL;
         vctx.local_init_stack_used = 0;
+        vctx.local_init_stack_cap = 0;
         vctx.num_non_defaultable = 0;
 
         uint32_t tl = vctx.total_locals;
@@ -8820,7 +8823,6 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
                 if (!WAH_TYPE_IS_REF(lt) || WAH_TYPE_IS_NULLABLE(lt))
                     memset(vctx.local_inits + pc + start, 1, body->local_runs[ri].end - start);
             }
-            WAH_MALLOC_ARRAY_GOTO(vctx.local_init_stack, (size_t)tl * WAH_MAX_CONTROL_DEPTH, cleanup);
         }
 
         wah_free_analyzed_code(&ac, alloc);
