@@ -243,6 +243,30 @@ static void test_deadline_after_last_check_is_dropped(void) {
     wah_free_module(&env);
 }
 
+// Arming right after disarming should not be missed by the timer thread.
+static void test_rearm_right_after_disarm(void) {
+    printf("Testing deadline rearmed right after disarm...\n");
+    fflush(stdout);
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+    wah_exec_options_t options = {0};
+    options.limits.deadline_us = 2000;
+
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] []]} funcs {[0, 0]} \
+        code {[{[] end}, {[] loop void br 0 end end}]}"));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
+    for (int i = 0; i < 50; ++i) {
+        assert_ok(wah_call(&ctx, 0, NULL, 0, NULL));
+        assert_ok(wah_start(&ctx, 1, NULL, 0));
+        assert_err(wah_resume(&ctx), WAH_STATUS_YIELDED);
+        wah_cancel(&ctx);
+    }
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 // Start functions of linked modules run under the same limits as the primary module.
 static void test_linked_start_function_limits(void) {
     printf("Testing linked start functions respect deadline and fuel...\n");
@@ -299,6 +323,7 @@ int main(void) {
     test_uint64_max_deadline_is_no_deadline();
     test_destroy_while_deadline_armed();
     test_deadline_after_last_check_is_dropped();
+    test_rearm_right_after_disarm();
     test_linked_start_function_limits();
 
     printf("\n=== All interrupt/deadline tests passed ===\n");

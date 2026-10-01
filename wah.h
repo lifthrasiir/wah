@@ -10697,8 +10697,10 @@ static void wah_timer_fire(wah_timer_t *timer, uint32_t gen) {
 #if defined(_WIN32)
 static DWORD WINAPI wah_timer_main(LPVOID arg) {
     wah_timer_t *timer = (wah_timer_t *)arg;
+    bool changed = false;
     for (;;) {
-        WaitForSingleObject(timer->event, INFINITE);
+        if (!changed) WaitForSingleObject(timer->event, INFINITE);
+        changed = false;
         ResetEvent(timer->event);
         if (WAH_POLL_FLAG_LOAD(timer->cancelled)) break;
         AcquireSRWLockShared(&timer->lock);
@@ -10723,8 +10725,9 @@ static DWORD WINAPI wah_timer_main(LPVOID arg) {
         DWORD rc = WaitForMultipleObjects(2, handles, FALSE, INFINITE);
         if (WAH_POLL_FLAG_LOAD(timer->cancelled)) break;
         if (rc == WAIT_OBJECT_0) {
+            // Waiting for the event again could miss an arming that set it before this wake-up
             CancelWaitableTimer(timer->timer);
-            ResetEvent(timer->event);
+            changed = true;
             continue;
         }
         if (rc == WAIT_OBJECT_0 + 1) {
