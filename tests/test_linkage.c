@@ -3916,6 +3916,47 @@ int main() {
         wah_free_module(&m);
     }
 
+    // A global re-exported by a module linked with wah_link_module from a context linked with wah_link_context
+    // should be bound to the global of that context, not to its copy made at instantiation.
+    printf("Testing re-export of a linked context's mutable global through a linked module...\n");
+    {
+        wah_module_t prov = {0}, mid = {0}, user = {0};
+        assert_ok(wah_parse_module_from_spec(&prov, "wasm \
+            types {[ fn [i32] [], fn [] [i32] ]} funcs {[ 0, 1 ]} \
+            globals {[ i32 1 i32.const 1 end ]} \
+            exports {[ {'g'} global# 0 ]} \
+            code {[ {[] local.get 0 global.set 0 end}, {[] global.get 0 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&mid, "wasm \
+            types {[]} imports {[ {'prov'} {'g'} global# i32 1 ]} exports {[ {'g'} global# 0 ]}"));
+        assert_ok(wah_parse_module_from_spec(&user, "wasm \
+            types {[ fn [] [i32], fn [i32] [] ]} \
+            imports {[ {'mid'} {'g'} global# i32 1 ]} funcs {[ 0, 1 ]} \
+            code {[ {[] global.get 0 end}, {[] local.get 0 global.set 0 end} ]}"));
+
+        wah_exec_context_t pctx = {0}, uctx = {0};
+        assert_ok(wah_new_exec_context(&pctx, &prov, NULL));
+        assert_ok(wah_instantiate(&pctx));
+        assert_ok(wah_new_exec_context(&uctx, &user, NULL));
+        assert_ok(wah_link_context(&uctx, "prov", &pctx));
+        assert_ok(wah_link_module(&uctx, "mid", &mid));
+        assert_ok(wah_instantiate(&uctx));
+
+        wah_value_t v = { .i32 = 42 }, r;
+        assert_ok(wah_call(&pctx, 0, &v, 1, NULL));
+        assert_ok(wah_call(&uctx, 0, NULL, 0, &r));
+        assert_eq_i32(r.i32, 42);
+        v.i32 = 7;
+        assert_ok(wah_call(&uctx, 1, &v, 1, NULL));
+        assert_ok(wah_call(&pctx, 1, NULL, 0, &r));
+        assert_eq_i32(r.i32, 7);
+
+        wah_free_exec_context(&uctx);
+        wah_free_exec_context(&pctx);
+        wah_free_module(&user);
+        wah_free_module(&mid);
+        wah_free_module(&prov);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

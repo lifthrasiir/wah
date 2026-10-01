@@ -16908,9 +16908,10 @@ static wah_error_t wah_resolve_primary_global_imports(wah_exec_context_t *ctx) {
             wah_type_t vt1 = exported_global->type, vt2 = gi->type;
             WAH_CHECK(wah_validate_global_import_type(global_provider, vt1, exported_global->is_mutable,
                                                       module, vt2, gi->is_mutable));
-            uint32_t provider_offset = wah_linked_globals_offset(ctx, global_provider);
-            wah_bind_global_import_slot(&ctx->globals[i], gi->is_mutable,
-                                        &ctx->globals[provider_offset + global_global_idx]);
+            wah_value_t *prov_slot = global_provider_ctx
+                ? &global_provider_ctx->globals[global_global_idx]
+                : &ctx->globals[wah_linked_globals_offset(ctx, global_provider) + global_global_idx];
+            wah_bind_global_import_slot(&ctx->globals[i], gi->is_mutable, prov_slot);
         } else {
             uint32_t linked_local_global_idx = linked_global_idx - linked->import_global_count;
             const wah_global_t *exported_global = &linked->globals[linked_local_global_idx];
