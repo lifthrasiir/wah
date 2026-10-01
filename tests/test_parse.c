@@ -1144,7 +1144,59 @@ static void test_v128_locals_and_block_types_require_simd_feature(void) {
     wah_free_module(&module);
 }
 
+// Tracks the peak of outstanding allocation bytes.
+typedef struct { size_t cur, peak; } peak_alloc_t;
+
+static void *peak_malloc(size_t size, void *ud) {
+    peak_alloc_t *st = (peak_alloc_t *)ud;
+    size_t *p = (size_t *)malloc(sizeof(size_t) * 2 + size);
+    if (!p) return NULL;
+    p[0] = size;
+    st->cur += size;
+    if (st->cur > st->peak) st->peak = st->cur;
+    return p + 2;
+}
+static void peak_free(void *ptr, void *ud) {
+    size_t *p = (size_t *)ptr - 2;
+    ((peak_alloc_t *)ud)->cur -= p[0];
+    free(p);
+}
+static void *peak_realloc(void *ptr, size_t size, void *ud) {
+    size_t *p = (size_t *)ptr - 2;
+    void *np = peak_malloc(size, ud);
+    if (!np) return NULL;
+    memcpy(np, ptr, p[0] < size ? p[0] : size);
+    peak_free(ptr, ud);
+    return np;
+}
+
+static size_t parse_peak_bytes(const char *spec) {
+    peak_alloc_t st = {0};
+    wah_alloc_t alloc = { peak_malloc, peak_realloc, peak_free, &st };
+    wah_parse_options_t opts = { .alloc = &alloc };
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec_ex(&module, &opts, spec));
+    wah_free_module(&module);
+    assert_eq_u64(st.cur, 0);
+    return st.peak;
+}
+
+// Many locals are declared in a few bytes, so they shouldn't be expanded one by one.
+static void test_local_decls_memory_amplification(void) {
+    printf("Running test_local_decls_memory_amplification...\n");
+    enum { N = 64 };
+    static char spec[256 + N * 32];
+    strcpy(spec, "wasm types {[fn [] []]} funcs {[0");
+    for (int i = 1; i < N; i++) strcat(spec, ",0");
+    strcat(spec, "]} code {[{[65535 i32] end}");
+    for (int i = 1; i < N; i++) strcat(spec, ",{[65535 i32] end}");
+    strcat(spec, "]}");
+    // Expanded local types would take N * 256 KB = 16 MB
+    assert_true(parse_peak_bytes(spec) < 2 * 1024 * 1024);
+}
+
 int main(void) {
+    test_local_decls_memory_amplification();
     test_v128_locals_and_block_types_require_simd_feature();
     test_parse_module_argument_errors();
     test_zero_params_zero_results_func_type();

@@ -2655,15 +2655,36 @@ typedef struct wah_exception_handler_s {
 #define WAH_CATCH_KIND_CATCH_ALL_REF 3
 
 // --- Code Body Structure ---
+// Consecutive declared locals of the same type. Locals are kept in this form because
+// a few bytes can declare a huge number of locals.
+typedef struct wah_local_run_s {
+    uint32_t end; // Number of declared locals up to and including this run
+    wah_type_t type;
+} wah_local_run_t;
+
 typedef struct wah_code_body_s {
     uint32_t local_count;
-    wah_type_t *local_types; // Array of types for local variables
+    uint32_t local_run_count;
+    wah_local_run_t *local_runs;
     uint32_t code_size;
     const uint8_t *code; // Pointer to the raw instruction bytes within the WASM binary
     uint32_t max_stack_depth; // Maximum operand stack depth required
     uint32_t max_frame_slots; // local_count + max_stack_depth (preflight budget)
     wah_parsed_code_t parsed_code; // Pre-parsed opcodes and arguments for optimized execution
 } wah_code_body_t;
+
+static inline uint32_t wah_local_run_start(const wah_code_body_t *body, uint32_t ri) {
+    return ri > 0 ? body->local_runs[ri - 1].end : 0;
+}
+
+static inline wah_type_t wah_local_type(const wah_code_body_t *body, uint32_t li) {
+    uint32_t lo = 0, hi = body->local_run_count - 1; // Find the first run with end > li
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if (body->local_runs[mid].end > li) hi = mid; else lo = mid + 1;
+    }
+    return body->local_runs[lo].type;
+}
 
 // --- WebAssembly Element Segment Structure ---
 typedef struct wah_element_segment_s {
@@ -6277,7 +6298,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 expected_type = vctx->func_type->param_types[local_idx];
             } else {
                 uint32_t li = local_idx - vctx->func_type->param_count;
-                expected_type = code_body->local_types[li];
+                expected_type = wah_local_type(code_body, li);
             }
 
             if (opcode_val == WAH_OP_LOCAL_GET) {
@@ -8182,7 +8203,7 @@ static void wah_free_code_bodies(wah_module_t *module) {
     const wah_alloc_t *alloc = &module->alloc;
     if (!module->code_bodies) return;
     for (uint32_t i = 0; i < module->code_count; ++i) {
-        wah_free(alloc, module->code_bodies[i].local_types);
+        wah_free(alloc, module->code_bodies[i].local_runs);
         wah_free_parsed_code(&module->code_bodies[i].parsed_code, alloc);
     }
     wah_free(alloc, module->code_bodies);
@@ -8716,33 +8737,21 @@ static wah_error_t wah_parse_local_decls(const uint8_t **ptr, const uint8_t *bod
     const wah_alloc_t *alloc = &module->alloc;
     uint32_t num_entries;
     WAH_CHECK(wah_decode_and_validate_count(ptr, body_end, &num_entries, 2));
+    WAH_MALLOC_ARRAY(body->local_runs, num_entries);
 
     uint32_t total = 0;
-    const uint8_t *scan = *ptr;
-    for (uint32_t j = 0; j < num_entries; ++j) {
-        uint32_t n; wah_type_t t;
-        WAH_CHECK(wah_decode_uleb128(&scan, body_end, &n));
-        WAH_CHECK(wah_decode_val_type(&scan, body_end, &t));
-        WAH_ENSURE(UINT32_MAX - total >= n, WAH_ERROR_TOO_LARGE);
-        total += n;
-        WAH_ENSURE(total <= WAH_MAX_LOCAL_COUNT, WAH_ERROR_TOO_LARGE);
-    }
-
-    body->local_count = total;
-    WAH_MALLOC_ARRAY(body->local_types, total);
-
-    uint32_t idx = 0;
     for (uint32_t j = 0; j < num_entries; ++j) {
         uint32_t n; wah_type_t t;
         WAH_CHECK(wah_decode_uleb128(ptr, body_end, &n));
         WAH_CHECK(wah_decode_val_type(ptr, body_end, &t));
+        WAH_ENSURE(UINT32_MAX - total >= n, WAH_ERROR_TOO_LARGE);
+        total += n;
+        WAH_ENSURE(total <= WAH_MAX_LOCAL_COUNT, WAH_ERROR_TOO_LARGE);
         WAH_ENSURE(t < 0 || WAH_TYIDX(t) < module->type_count, WAH_ERROR_VALIDATION_FAILED);
         if (t == WAH_TYPE_V128) WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_SIMD));
-        for (uint32_t k = 0; k < n; ++k) {
-            body->local_types[idx] = t;
-            idx++;
-        }
+        if (n > 0) body->local_runs[body->local_run_count++] = (wah_local_run_t){ .end = total, .type = t };
     }
+    body->local_count = total;
     return WAH_OK;
 }
 
@@ -8760,7 +8769,8 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
     module->code_count = 0;
 
     for (uint32_t i = 0; i < count; ++i) {
-        module->code_bodies[i].local_types = NULL;
+        module->code_bodies[i].local_runs = NULL;
+        module->code_bodies[i].local_run_count = 0;
         module->code_bodies[i].parsed_code = (wah_parsed_code_t){0};
         ++module->code_count;
 
@@ -8793,18 +8803,22 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
         uint32_t tl = vctx.total_locals;
         uint32_t pc = func_type->param_count;
-        for (uint32_t li = 0; li < module->code_bodies[i].local_count; ++li) {
-            wah_type_t lt = module->code_bodies[i].local_types[li];
-            if (WAH_TYPE_IS_REF(lt) && !WAH_TYPE_IS_NULLABLE(lt)) ++vctx.num_non_defaultable;
+        const wah_code_body_t *body = &module->code_bodies[i];
+        for (uint32_t ri = 0; ri < body->local_run_count; ++ri) {
+            wah_type_t lt = body->local_runs[ri].type;
+            if (WAH_TYPE_IS_REF(lt) && !WAH_TYPE_IS_NULLABLE(lt))
+                vctx.num_non_defaultable += body->local_runs[ri].end - wah_local_run_start(body, ri);
         }
         if (vctx.num_non_defaultable > 0) {
             WAH_MALLOC_ARRAY_GOTO(vctx.local_inits, tl, cleanup);
             memset(vctx.local_inits, 1, pc); // params are initialized
             memset(vctx.local_inits + pc, 0, tl - pc); // declared locals start uninitialized
             // Mark defaultable locals as always initialized
-            for (uint32_t li = 0; li < module->code_bodies[i].local_count; ++li) {
-                wah_type_t lt = module->code_bodies[i].local_types[li];
-                if (!WAH_TYPE_IS_REF(lt) || WAH_TYPE_IS_NULLABLE(lt)) vctx.local_inits[pc + li] = 1;
+            for (uint32_t ri = 0; ri < body->local_run_count; ++ri) {
+                wah_type_t lt = body->local_runs[ri].type;
+                uint32_t start = wah_local_run_start(body, ri);
+                if (!WAH_TYPE_IS_REF(lt) || WAH_TYPE_IS_NULLABLE(lt))
+                    memset(vctx.local_inits + pc + start, 1, body->local_runs[ri].end - start);
             }
             WAH_MALLOC_ARRAY_GOTO(vctx.local_init_stack, (size_t)tl * WAH_MAX_CONTROL_DEPTH, cleanup);
         }
@@ -9942,8 +9956,9 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
             }
         }
         // 1b. Declared locals (slots [locals + param_count .. + param_count + local_count))
-        for (uint32_t i = 0; i < code->local_count; i++) {
-            if (WAH_TYPE_IS_REF(code->local_types[i])) {
+        for (uint32_t ri = 0; ri < code->local_run_count; ri++) {
+            if (!WAH_TYPE_IS_REF(code->local_runs[ri].type)) continue;
+            for (uint32_t i = wah_local_run_start(code, ri); i < code->local_runs[ri].end; i++) {
                 visitor(&frame->locals[ftype->param_count + i], userdata);
             }
         }
