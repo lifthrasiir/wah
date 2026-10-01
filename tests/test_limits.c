@@ -695,6 +695,51 @@ static void test_memory_budget_linked_module_gc(void) {
     wah_free_module(&linked);
 }
 
+// A linked module growing a memory or table imported from the primary should charge the primary only once.
+static void test_grow_budget_linked_module_import(void) {
+    printf("Testing grow of the primary's memory and table by a linked module charges once...\n");
+    uint64_t table_bytes = 10 * sizeof(wah_value_t);
+    wah_module_t linked = {0}, primary = {0};
+    assert_ok(wah_parse_module_from_spec(&linked, "wasm \
+        types {[ fn [i32] [i32] ]} \
+        imports {[ {'p'} {'mem'} mem# limits.i32/1 1, {'p'} {'tab'} table# funcref limits.i32/1 10 ]} \
+        funcs {[ 0, 0 ]} \
+        exports {[ {'grow_mem'} fn# 0, {'grow_tab'} fn# 1 ]} \
+        code {[ {[] local.get 0 memory.grow 0 end}, \
+                {[] ref.null funcref local.get 0 table.grow 0 end} ]}"));
+    assert_ok(wah_parse_module_from_spec(&primary, "wasm \
+        types {[ fn [i32] [i32] ]} \
+        imports {[ {'l'} {'grow_mem'} fn# 0, {'l'} {'grow_tab'} fn# 0 ]} \
+        tables {[ funcref limits.i32/1 10 ]} memories {[ limits.i32/1 1 ]} \
+        exports {[ {'mem'} mem# 0, {'tab'} table# 0 ]}"));
+
+    wah_exec_context_t ctx = {0};
+    wah_exec_options_t options = { .limits = { .max_memory_bytes = 3 * PAGE_SIZE + 3 * table_bytes } };
+    assert_ok(wah_new_exec_context(&ctx, &primary, &options));
+    assert_ok(wah_link_module(&ctx, "l", &linked));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t arg = { .i32 = 1 }, r;
+    for (int i = 0; i < 2; ++i) {
+        assert_ok(wah_call(&ctx, 0, &arg, 1, &r));
+        assert_eq_i32(r.i32, 1 + i);
+    }
+    assert_ok(wah_call(&ctx, 0, &arg, 1, &r));
+    assert_eq_i32(r.i32, -1);
+
+    arg.i32 = 10;
+    for (int i = 0; i < 2; ++i) {
+        assert_ok(wah_call(&ctx, 1, &arg, 1, &r));
+        assert_eq_i32(r.i32, 10 + 10 * i);
+    }
+    assert_ok(wah_call(&ctx, 1, &arg, 1, &r));
+    assert_eq_i32(r.i32, -1);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&primary);
+    wah_free_module(&linked);
+}
+
 // --- Phase 3: Fuel connection ---
 
 static const wah_parse_options_t fuel_opts = { .features = WAH_FEATURE_ALL, .enable_fuel_metering = true };
@@ -942,6 +987,7 @@ int main(void) {
     test_get_limits_reports_memory_budget();
     test_zero_page_memory_budget();
     test_imported_memory_budget();
+    test_grow_budget_linked_module_import();
 
     // Phase 3: Fuel connection
     test_fuel_via_limits();

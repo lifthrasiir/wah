@@ -11948,7 +11948,7 @@ static wah_error_t wah_table_grow_internal(
         wah_exec_context_t *src = fctx->tables[table_idx].import_ctx;
         uint32_t src_idx = fctx->tables[table_idx].import_idx;
         if (fctx->tables[table_idx].is_imported) {
-            wah_budget_charge(src, delta_bytes);
+            if (src != ctx) wah_budget_charge(src, delta_bytes);
             owner_ctx = src;
             owner_idx = src_idx;
         }
@@ -12007,7 +12007,7 @@ static bool wah_memory_grow_internal(
         wah_exec_context_t *src = fctx->memories[mem_idx].import_ctx;
         uint32_t src_idx = fctx->memories[mem_idx].import_idx;
         if (fctx->memories[mem_idx].is_imported) {
-            wah_budget_charge(src, delta_bytes);
+            if (src != ctx) wah_budget_charge(src, delta_bytes);
             owner_ctx = src;
             owner_idx = src_idx;
         }
