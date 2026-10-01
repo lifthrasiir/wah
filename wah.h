@@ -9344,11 +9344,11 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             gi->is_mutable = (mut_byte == 1);
         } else if (kind == WAH_KIND_TAG) {
             // Tag import
-            WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_EXCEPTION), cleanup);
             wah_tag_import_t *tgi = &module->tag_imports[import_tag_count];
             tgi->name = imp_name;
             module->imports[i].index = import_tag_count;
             import_tag_count++;
+            WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_EXCEPTION), cleanup);
 
             WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
             uint8_t attribute = *(*ptr)++;

@@ -213,6 +213,22 @@ int main(void) {
         }
     }
 
+    // Regression: a tag import rejected because of disabled exceptions leaked its names.
+    printf("Testing rejected tag import cleanup...\n");
+    {
+        tracking_alloc_t mc = {0};
+        wah_alloc_t ma = { tracking_malloc, tracking_realloc, tracking_free, &mc };
+        wah_parse_options_t po = { .features = WAH_FEATURE_WASM_V2, .alloc = &ma };
+        wah_module_t m = {0};
+        assert_err(wah_parse_module_from_spec_ex(&m, &po, "wasm \
+            types {[fn [] []]} \
+            imports {[{'env'} {'tag'} tag# 0 0]}"), WAH_ERROR_DISABLED_FEATURE);
+        wah_free_module(&m);
+        if (!tracking_ok("rejected-tag", &mc)) {
+            return 1;
+        }
+    }
+
     printf("custom allocator API tests passed\n");
     return 0;
 }
