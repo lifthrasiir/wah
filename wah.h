@@ -2875,6 +2875,11 @@ static inline const wah_memory_type_t *wah_memory_type(const wah_module_t *m, ui
     if (idx < m->import_memory_count) return &m->memory_imports[idx].type;
     return &m->memories[idx - m->import_memory_count];
 }
+// Maximum page count of a memory instance, limited by its address type
+static inline uint64_t wah_memory_max_pages(const wah_memory_type_t *mt) {
+    uint64_t page_limit = (mt->addr_type == WAH_TYPE_I32) ? 65536ULL : (1ULL << 48);
+    return mt->max_pages > page_limit ? page_limit : mt->max_pages;
+}
 static inline wah_type_t wah_global_type(const wah_module_t *m, uint32_t idx) {
     if (idx < m->import_global_count) return m->global_imports[idx].type;
     return m->globals[idx - m->import_global_count].type;
@@ -10856,10 +10861,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
 
         for (uint32_t i = 0; i < total_memories; ++i) {
             const wah_memory_type_t *mt = wah_memory_type(module, i);
-            uint64_t page_limit = (mt->addr_type == WAH_TYPE_I32) ? 65536ULL : (1ULL << 48);
-            uint64_t max_p = mt->max_pages;
-            if (max_p > page_limit) max_p = page_limit;
-            exec_ctx->memories[exec_ctx->memory_count++] = (wah_memory_inst_t){ .max_pages = max_p };
+            exec_ctx->memories[exec_ctx->memory_count++] = (wah_memory_inst_t){ .max_pages = wah_memory_max_pages(mt) };
         }
 
         // Import memory slots are left zero-initialized; wah_instantiate() fills them in.
@@ -17100,7 +17102,7 @@ static wah_error_t wah_alloc_local_memory_import(wah_exec_context_t *ctx, uint32
                                                  const wah_memory_type_t *type, uint64_t min_pages) {
     const wah_alloc_t *alloc = &ctx->alloc;
     WAH_ENSURE(type->min_pages >= min_pages, WAH_ERROR_LINK_FAILED);
-    ctx->memories[dst_idx].max_pages = type->max_pages;
+    ctx->memories[dst_idx].max_pages = wah_memory_max_pages(type);
     WAH_ENSURE(type->min_pages <= SIZE_MAX / WAH_WASM_PAGE_SIZE, WAH_ERROR_TOO_LARGE);
     uint64_t byte_size = type->min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
     WAH_ENSURE(wah_budget_check(ctx, byte_size), WAH_ERROR_TOO_LARGE);
@@ -17303,7 +17305,7 @@ static wah_error_t wah_create_owned_linked_contexts(wah_exec_context_t *ctx) {
                     uint64_t byte_size = min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
                     WAH_ENSURE(wah_budget_check(ctx, byte_size), WAH_ERROR_TOO_LARGE);
                     wah_budget_charge(ctx, byte_size);
-                    ictx->memories[slot].max_pages = lmod->memories[mi].max_pages;
+                    ictx->memories[slot].max_pages = wah_memory_max_pages(&lmod->memories[mi]);
                     ictx->memories[slot].size = byte_size;
                     if (byte_size > 0) {
                         WAH_MALLOC_ARRAY(ictx->memories[slot].data, byte_size);
@@ -17386,7 +17388,7 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                             WAH_ENSURE(wah_budget_check(ctx, byte_size), WAH_ERROR_TOO_LARGE);
                             wah_budget_charge(ctx, byte_size);
                             ictx->memories[mi].is_imported = false;
-                            ictx->memories[mi].max_pages = mtype->max_pages;
+                            ictx->memories[mi].max_pages = wah_memory_max_pages(mtype);
                             ictx->memories[mi].size = byte_size;
                             if (byte_size > 0) {
                                 WAH_MALLOC_ARRAY(ictx->memories[mi].data, byte_size);

@@ -4,6 +4,7 @@
 #include "common.h"
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 // Simple host function
 int host_func_called = 0;
@@ -40,6 +41,20 @@ void safe_host_func(wah_call_context_t *ctx, void *userdata) {
     safe_called = 1;
     wah_return_i32(ctx, 123);
 }
+
+// Records the largest allocation request, refusing ones over 4 GiB
+static size_t max_alloc_request = 0;
+static void *recording_malloc(size_t n, void *ud) {
+    (void)ud;
+    if (n > max_alloc_request) max_alloc_request = n;
+    return n > ((size_t)1 << 32) ? NULL : malloc(n);
+}
+static void *recording_realloc(void *p, size_t n, void *ud) {
+    (void)ud;
+    if (n > max_alloc_request) max_alloc_request = n;
+    return n > ((size_t)1 << 32) ? NULL : realloc(p, n);
+}
+static void recording_free(void *p, void *ud) { (void)ud; free(p); }
 
 int main() {
     printf("Testing linkage...\n\n");
@@ -3843,6 +3858,38 @@ int main() {
         wah_free_exec_context(&ctx);
         wah_free_module(&b);
         wah_free_module(&a);
+    }
+
+    // i32 memories of linked modules without a declared maximum are limited to 65536 pages.
+    printf("Testing memory size limit of linked modules...\n");
+    {
+        wah_module_t l = {0}, p = {0};
+        assert_ok(wah_parse_module_from_spec(&l, "wasm \
+            memories {[ limits.i32/1 1 ]} \
+            exports {[ {'mem'} mem# 0 ]}"));
+        assert_ok(wah_parse_module_from_spec(&p, "wasm \
+            types {[ fn [i32] [i32] ]} \
+            imports {[ {'l'} {'mem'} mem# limits.i32/1 1 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'grow'} fn# 0 ]} \
+            code {[ {[] local.get 0 memory.grow 0 end } ]}"));
+
+        wah_alloc_t alloc = { recording_malloc, recording_realloc, recording_free, NULL };
+        wah_exec_options_t opts = { .alloc = &alloc };
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &p, &opts));
+        assert_ok(wah_link_module(&ctx, "l", &l));
+        assert_ok(wah_instantiate(&ctx));
+
+        max_alloc_request = 0;
+        wah_value_t arg = {.i32 = 65536}, res;
+        assert_ok(wah_call_by_name(&ctx, "grow", &arg, 1, &res));
+        assert_eq_i32(res.i32, -1);
+        assert_true(max_alloc_request <= ((size_t)1 << 32));
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&p);
+        wah_free_module(&l);
     }
 
     printf("All linkage tests passed!\n");
