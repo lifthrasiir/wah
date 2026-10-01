@@ -10063,19 +10063,39 @@ static inline void wah_gc_set_gray(wah_gc_object_t *obj, bool gray) {
         obj->next_tagged = (struct wah_gc_object_s *)((uintptr_t)obj->next_tagged & ~WAH_GC_TAG_AUX);
 }
 
-static void wah_gc_mark_object(wah_gc_object_t *obj, const wah_module_t *module) {
-    (void)module;
+// Marked objects that are yet to be scanned. If it can't grow, objects are marked gray instead
+// and found later by scanning all heaps, which is slower but always works.
+typedef struct {
+    wah_gc_object_t **items;
+    uint32_t count, cap;
+    bool overflow; // Some objects are gray
+    const wah_alloc_t *alloc;
+    const wah_module_t *module; // Fallback for objects without a module
+} wah_gc_worklist_t;
+
+static void wah_gc_mark_object(wah_gc_object_t *obj, wah_gc_worklist_t *wl) {
     if (!obj || wah_gc_marked(obj)) return;
     wah_gc_set_mark(obj, true);
-    wah_gc_set_gray(obj, true);
+    if (wl->count >= wl->cap) {
+        uint32_t new_cap = wl->cap ? wl->cap * 2 : 256;
+        void *new_items = wl->items;
+        if (new_cap < wl->cap || wah_realloc(wl->alloc, new_cap, sizeof(*wl->items), &new_items) != WAH_OK) {
+            wah_gc_set_gray(obj, true);
+            wl->overflow = true;
+            return;
+        }
+        wl->items = (wah_gc_object_t **)new_items;
+        wl->cap = new_cap;
+    }
+    wl->items[wl->count++] = obj;
 }
 
-static void wah_gc_mark_ref(void *ref, const wah_module_t *module) {
+static void wah_gc_mark_ref(void *ref, wah_gc_worklist_t *wl) {
     if (!ref || wah_ref_is_i31(ref)) return;
-    wah_gc_mark_object(wah_gc_header(ref), module);
+    wah_gc_mark_object(wah_gc_header(ref), wl);
 }
 
-static void wah_gc_scan_object(wah_gc_object_t *obj, const wah_module_t *module) {
+static void wah_gc_scan_object(wah_gc_object_t *obj, wah_gc_worklist_t *wl) {
     wah_repr_t repr_id = obj->repr_id;
     if (repr_id == WAH_TYPE_EXN) {
         wah_exception_t *exc = (wah_exception_t *)obj;
@@ -10085,12 +10105,12 @@ static void wah_gc_scan_object(wah_gc_object_t *obj, const wah_module_t *module)
             wah_value_t v;
             wah_exception_get_value(exc, i, &v);
             if (!v.ref || wah_ref_is_i31(v.ref)) continue;
-            wah_gc_mark_ref(v.ref, module);
+            wah_gc_mark_ref(v.ref, wl);
         }
         return;
     }
     if (repr_id < 0) return;
-    const wah_module_t *obj_mod = obj->module ? obj->module : module;
+    const wah_module_t *obj_mod = obj->module ? obj->module : wl->module;
     const wah_repr_info_t *info = wah_repr_info_get(obj_mod, repr_id);
     if (!info) return;
 
@@ -10099,7 +10119,7 @@ static void wah_gc_scan_object(wah_gc_object_t *obj, const wah_module_t *module)
         for (uint32_t i = 0; i < info->count; ++i) {
             if (!wah_repr_field_is_ref(&info->fields[i])) continue;
             void **ref = (void **)(payload + info->fields[i].offset);
-            if (*ref) wah_gc_mark_ref(*ref, obj_mod);
+            if (*ref) wah_gc_mark_ref(*ref, wl);
         }
     } else if (info->type == WAH_REPR_ARRAY) {
         if (info->count == 0) return;
@@ -10110,15 +10130,13 @@ static void wah_gc_scan_object(wah_gc_object_t *obj, const wah_module_t *module)
         uint8_t *elems = payload + sizeof(wah_gc_array_body_t);
         for (uint32_t i = 0; i < length; ++i) {
             void **ref = (void **)(elems + i * elem_size + info->fields[0].offset);
-            if (*ref) wah_gc_mark_ref(*ref, obj_mod);
+            if (*ref) wah_gc_mark_ref(*ref, wl);
         }
     }
 }
 
 static void wah_gc_mark_visitor(wah_value_t *slot, void *userdata) {
-    void *ref = slot->ref;
-    if (!ref || wah_ref_is_i31(ref)) return;
-    wah_gc_mark_object(wah_gc_header(ref), (const wah_module_t *)userdata);
+    wah_gc_mark_ref(slot->ref, (wah_gc_worklist_t *)userdata);
 }
 
 #define WAH_GC_INLINE_DOMAIN_SIZE 8
@@ -10200,29 +10218,31 @@ static bool wah_gc_step_mark(wah_exec_context_t *ctx) {
         }
     }
 
-    // Mark from roots of every context in the domain (marks objects as gray)
+    // Mark from roots of every context in the domain
+    wah_gc_worklist_t wl = { .alloc = &ctx->alloc, .module = ctx->module };
     for (uint32_t i = 0; i < domain_count; i++) {
         wah_exec_context_t *c = domain[i];
         if (c != ctx && !c->is_instantiated) continue;
-        wah_gc_enumerate_roots(c, wah_gc_mark_visitor, (void *)c->module);
+        wah_gc_enumerate_roots(c, wah_gc_mark_visitor, &wl);
     }
 
-    // Iteratively scan gray objects in all heaps until no more remain.
-    bool found_gray;
-    do {
-        found_gray = false;
+    // Scan marked objects until no more remain
+    for (;;) {
+        while (wl.count > 0) wah_gc_scan_object(wl.items[--wl.count], &wl);
+        if (!wl.overflow) break;
+        wl.overflow = false;
         for (uint32_t i = 0; i < domain_count; i++) {
             if (!wah_gc_domain_first_heap(domain, i)) continue;
             for (wah_gc_object_t *obj = domain[i]->gc->all_objects; obj; obj = wah_gc_next(obj)) {
                 if (wah_gc_gray(obj)) {
                     wah_gc_set_gray(obj, false);
-                    found_gray = true;
-                    wah_gc_scan_object(obj, domain[i]->module);
+                    wah_gc_scan_object(obj, &wl);
                 }
             }
         }
-    } while (found_gray);
+    }
 
+    wah_free(&ctx->alloc, wl.items);
     wah_gc_domain_free(&d, &ctx->alloc);
     gc->phase = WAH_GC_PHASE_SWEEP;
     gc->sweep_cursor = NULL;

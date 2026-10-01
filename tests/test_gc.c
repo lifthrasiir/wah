@@ -1,6 +1,7 @@
 #define WAH_IMPLEMENTATION
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 #include "../wah.h"
 #include "common.h"
 
@@ -2130,6 +2131,59 @@ int main() {
         assert_eq_i32(result.i32, 42);
 
         wah_free_exec_context(&ctx2);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
+    // Regression: marking took O(N * depth) when older objects point to newer ones,
+    // because each pass over the object list could only advance one level of such a chain.
+    printf("Testing GC mark time is linear for chains from old to new objects...\n");
+    {
+        wah_module_t env_mod = {0}, wasm_mod = {0};
+        assert_ok(wah_new_module(&env_mod, NULL));
+        assert_ok(wah_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
+        // func 1 (forward): head is the oldest, each new node is appended to the tail.
+        // func 2 (reverse): each new node points to the previous head.
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, "wasm \
+            types {[ sub [] struct [type.ref.null 0 mut], fn [i32] [], fn [] [] ]} \
+            imports {[ {'env'} {'gc'} fn# 2 ]} \
+            funcs {[ 1, 1 ]} \
+            globals {[ type.ref.null 0 mut ref.null 0 end ]} \
+            code {[ \
+                {[1 type.ref.null 0, 1 type.ref.null 0] \
+                    ref.null 0 struct.new 0 local.tee 1 global.set 0 \
+                    loop void \
+                        ref.null 0 struct.new 0 local.set 2 \
+                        local.get 1 local.get 2 struct.set 0 0 \
+                        local.get 2 local.set 1 \
+                        local.get 0 i32.const 1 i32.sub local.tee 0 br_if 0 \
+                    end \
+                    call 0 end}, \
+                {[] \
+                    loop void \
+                        global.get 0 struct.new 0 global.set 0 \
+                        local.get 0 i32.const 1 i32.sub local.tee 0 br_if 0 \
+                    end \
+                    call 0 end} \
+            ]}"));
+
+        double elapsed[2];
+        for (int k = 0; k < 2; ++k) {
+            wah_exec_context_t ctx2 = {0};
+            assert_ok(wah_new_exec_context(&ctx2, &wasm_mod, NULL));
+            assert_ok(wah_link_module(&ctx2, "env", &env_mod));
+            assert_ok(wah_gc_start(&ctx2));
+            assert_ok(wah_instantiate(&ctx2));
+            wah_value_t n = { .i32 = 20000 };
+            clock_t start = clock();
+            assert_ok(wah_call(&ctx2, 1 + k, &n, 1, NULL));
+            elapsed[k] = (double)(clock() - start) / CLOCKS_PER_SEC;
+            assert_true(ctx2.gc->object_count >= 20000);
+            wah_free_exec_context(&ctx2);
+        }
+        printf("  forward %.3fs, reverse %.3fs\n", elapsed[0], elapsed[1]);
+        assert_true(elapsed[0] < elapsed[1] * 20 + 0.1);
+
         wah_free_module(&wasm_mod);
         wah_free_module(&env_mod);
     }
