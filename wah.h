@@ -12407,6 +12407,7 @@ WAH_RUN(STRUCT_NEW) {
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_struct(ctx, fctx->module, repr_id, info);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+    wah_bulk_fuel_charge(ctx, info->size); // Can't be resumed, so may leave fuel negative
     uint8_t *payload = (uint8_t *)obj;
     const wah_type_def_t *td = &fctx->module->type_defs[typeidx];
     for (uint32_t i = td->field_count; i > 0; --i) {
@@ -12424,6 +12425,7 @@ WAH_RUN(STRUCT_NEW_DEFAULT) {
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_struct(ctx, fctx->module, repr_id, info);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+    wah_bulk_fuel_charge(ctx, info->size); // Can't be resumed, so may leave fuel negative
     (*sp++).ref = obj;
     WAH_NEXT();
     WAH_CLEANUP();

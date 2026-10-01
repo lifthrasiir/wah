@@ -551,6 +551,32 @@ static void test_array_new_fuel_proportional(void) {
 }
 
 // ============================================================
+// struct.new*: fuel should be proportional to the struct size
+// ============================================================
+static void test_struct_new_fuel_proportional(void) {
+    printf("Testing struct.new* fuel proportionality...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    // 1024 i64 fields = 8192 bytes
+    PARSE_FUEL(&mod, "wasm \
+        types {[struct [" REP128(REP8("i64 mut, ")) "], fn [] []]} \
+        funcs {[1]} \
+        code {[{[] struct.new_default 0 drop end}]}");
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    assert_ok(wah_set_fuel(&ctx, 10000));
+    assert_ok(wah_call(&ctx, 0, NULL, 0, NULL));
+    // At least one fuel per WAH_BULK_ITEMS_PER_FUEL (= 16) bytes
+    assert_true(10000 - wah_get_fuel(&ctx) >= 8192 / 16);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
 // Allocations made by element expressions should be charged
 // ============================================================
 static void test_elem_expr_alloc_fuel(void) {
@@ -953,6 +979,7 @@ static void test_bulk_fuel_int64_max(void) {
 int main(void) {
     test_array_new_fuel_proportional();
     test_elem_expr_alloc_fuel();
+    test_struct_new_fuel_proportional();
     test_memory_fill_fuel();
     test_memory_fill_fuel_resume();
     test_memory_copy_fuel_resume();
