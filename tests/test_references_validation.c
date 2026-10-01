@@ -484,6 +484,25 @@ static void test_gc_mutability_check() {
     wah_free_module(&good);
 }
 
+// array.new_fixed must still pop operands pushed after unreachable.
+static void test_array_new_fixed_unreachable() {
+    printf("Testing array.new_fixed operands in unreachable code...\n");
+
+    wah_module_t bad = {0};
+    assert_err(wah_parse_module_from_spec(&bad, "wasm \
+        types {[ array i32 mut, fn [] [] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] unreachable f32.const 0.0f32 array.new_fixed 0 1 drop return end } ]}"), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad);
+
+    wah_module_t good = {0};
+    assert_ok(wah_parse_module_from_spec(&good, "wasm \
+        types {[ array i32 mut, fn [] [type.ref 0] ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] unreachable i32.const 1 array.new_fixed 0 3 end } ]}"));
+    wah_free_module(&good);
+}
+
 static void test_gc_array_numeric_operands() {
     printf("Testing GC array numeric operand validation...\n");
 
@@ -675,6 +694,7 @@ int main() {
     test_forward_ref_across_rec_groups();
     test_gc_mutability_check();
     test_gc_array_numeric_operands();
+    test_array_new_fixed_unreachable();
     test_br_on_cast_label_type();
     test_br_on_cast_multi_value();
     test_br_on_cast_oob_heap_type();

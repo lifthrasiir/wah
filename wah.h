@@ -6855,12 +6855,11 @@ cleanup_block:
             WAH_ENSURE(typeidx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
             const wah_type_def_t *td = &vctx->module->type_defs[typeidx];
             WAH_ENSURE(td->kind == WAH_COMP_ARRAY, WAH_ERROR_VALIDATION_FAILED);
-            if (!vctx->is_unreachable) {
-                uint32_t base = wah_validation_block_base_height(vctx);
-                WAH_ENSURE(length <= vctx->current_stack_depth - base, WAH_ERROR_VALIDATION_FAILED);
-                for (uint32_t j = 0; j < length; ++j)
-                    WAH_CHECK(wah_validation_pop_field_value(vctx, td->field_types[0]));
-            }
+            // Operands beyond the block base are all BOT when unreachable, so don't loop over them
+            uint32_t avail = vctx->current_stack_depth - wah_validation_block_base_height(vctx);
+            WAH_ENSURE(vctx->is_unreachable || length <= avail, WAH_ERROR_VALIDATION_FAILED);
+            for (uint32_t j = 0; j < length && j < avail; ++j)
+                WAH_CHECK(wah_validation_pop_field_value(vctx, td->field_types[0]));
             PUSH(_(WAH_TYPE_FROM_IDX(typeidx, 0)));
             EMIT_INSTR_EX(opcode_val, _di->imm.type_length.type_idx = typeidx; _di->imm.type_length.length = length);
             break;
