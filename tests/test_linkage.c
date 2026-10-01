@@ -3824,6 +3824,27 @@ int main() {
         wah_free_module(&p);
     }
 
+    // A linked module re-exporting its own unresolvable import should fail to link,
+    // without reading import slots that are not yet resolved.
+    printf("Testing linked module importing its own re-export...\n");
+    {
+        wah_module_t a = {0}, b = {0};
+        assert_ok(wah_parse_module_from_spec(&a, "wasm types {[ fn [] [] ]} funcs {[ 0 ]} code {[ {[] end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&b, "wasm \
+            types {[ fn [] [] ]} \
+            imports {[ {'B'} {'f'} fn# 0 ]} \
+            exports {[ {'f'} fn# 0 ]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &a, NULL));
+        assert_ok(wah_link_module(&ctx, "B", &b));
+        assert_true(wah_instantiate(&ctx) != WAH_OK);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&b);
+        wah_free_module(&a);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

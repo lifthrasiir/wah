@@ -17459,6 +17459,10 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
             ictx->function_table_count = lmod_ft_size;
             if (lmod_ft_size > 0) {
                 WAH_MALLOC_ARRAY(ictx->function_table, lmod_ft_size);
+                // Imports may resolve to other imports of this module, which should look unresolved until bound
+                for (uint32_t fi = 0; fi < lmod_ic; fi++) {
+                    ictx->function_table[fi] = (wah_function_holder_t){ .header = (wah_gc_object_t)WAH_FUNCREF_HEADER };
+                }
                 for (uint32_t fi = 0; fi < lmod_ic; fi++) {
                     wah_func_import_t *lfi = &lmod->func_imports[fi];
                     const wah_module_t *provider = NULL;
