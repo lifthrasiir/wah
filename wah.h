@@ -2778,7 +2778,7 @@ typedef struct {
         struct { uint32_t type_idx; uint32_t length; } type_length;
         struct {
             uint32_t catch_count;
-            struct { uint8_t kind; uint32_t tag_idx; uint32_t target_symbol; } *catches;
+            struct { uint8_t kind; uint32_t tag_idx; uint32_t target_symbol; uint32_t drop; } *catches;
         } try_table;
     } imm;
 } wah_decoded_instr_t;
@@ -7169,7 +7169,7 @@ cleanup_block:
         case WAH_OP_TRY_TABLE: {
             wah_error_t err = WAH_OK;
             WAH_ENSURE(vctx->control_sp < WAH_MAX_CONTROL_DEPTH, WAH_ERROR_TOO_LARGE);
-            typedef struct { uint8_t kind; uint32_t tag_idx; uint32_t label_idx; } wah_catch_entry_t;
+            typedef struct { uint8_t kind; uint32_t tag_idx; uint32_t label_idx; uint32_t drop; } wah_catch_entry_t;
             wah_catch_entry_t *catch_entries = NULL;
             wah_validation_control_frame_t* frame = &vctx->control_stack[vctx->control_sp];
             frame->opcode = (wah_opcode_t)opcode_val;
@@ -7210,10 +7210,13 @@ cleanup_block:
 
             for (uint32_t ci = 0; ci < catch_count; ci++) {
                 uint32_t adjusted_label = catch_entries[ci].label_idx + 1;
-                uint32_t br_result_count;
+                uint32_t br_result_count, br_stack_height;
                 const wah_type_t *br_result_types;
                 wah_validation_resolve_br_target(vctx, adjusted_label,
-                    &br_result_count, &br_result_types, NULL);
+                    &br_result_count, &br_result_types, &br_stack_height);
+                // Values to discard below the try_table's stack base (which includes params) when caught
+                WAH_ENSURE_GOTO(frame->stack_height >= br_stack_height, WAH_ERROR_VALIDATION_FAILED, cleanup_try_table);
+                catch_entries[ci].drop = frame->stack_height + bt->param_count - br_stack_height;
 
                 uint32_t tag_param_count = 0;
                 const wah_type_t *tag_param_types = NULL;
@@ -7261,6 +7264,7 @@ cleanup_block:
                         _di->imm.try_table.catches[ci].kind = catch_entries[ci].kind;
                         _di->imm.try_table.catches[ci].tag_idx = catch_entries[ci].tag_idx;
                         _di->imm.try_table.catches[ci].target_symbol = catch_entries[ci].label_idx;
+                        _di->imm.try_table.catches[ci].drop = catch_entries[ci].drop;
                     }
                 }
             });
@@ -7539,6 +7543,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                 uint32_t label_depth = instr->imm.try_table.catches[ci].target_symbol;
                 WAH_ASSERT(label_depth <= control_sp);
                 WAH_LOWER_RESOLVE_BRANCH(label_depth);
+                WAH_LOWER_U32(instr->imm.try_table.catches[ci].drop);
             }
 
             WAH_LOWER_PUSH_FRAME(WAH_OP_TRY_TABLE);
@@ -11132,6 +11137,7 @@ static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t 
             uint8_t catch_kind = *catch_ptr++;
             uint32_t catch_tag_idx = wah_decode_u32_le(&catch_ptr);
             uint32_t catch_offset = wah_decode_u32_le(&catch_ptr);
+            uint32_t catch_drop = wah_decode_u32_le(&catch_ptr);
 
             bool match = false;
             if (catch_kind == WAH_CATCH_KIND_CATCH || catch_kind == WAH_CATCH_KIND_CATCH_REF) {
@@ -11144,7 +11150,7 @@ static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t 
             }
 
             if (match) {
-                ctx->sp = handler->sp_base;
+                ctx->sp = handler->sp_base - catch_drop; // Rewind to the target label's stack height
                 ctx->exception_handler_depth--;
 
                 if (catch_kind == WAH_CATCH_KIND_CATCH || catch_kind == WAH_CATCH_KIND_CATCH_REF) {
@@ -11893,6 +11899,7 @@ WAH_RUN(TRY_TABLE) {
         bytecode_ip += 1; // catch_kind
         bytecode_ip += sizeof(uint32_t); // tag_idx
         bytecode_ip += sizeof(uint32_t); // offset
+        bytecode_ip += sizeof(uint32_t); // drop
     }
     WAH_NEXT();
     WAH_CLEANUP();

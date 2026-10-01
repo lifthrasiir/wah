@@ -122,6 +122,40 @@ static void test_try_table_body_in_unreachable_code() {
     wah_free_module(&bad);
 }
 
+// A catch targeting an outer label must rewind the operand stack to that label's height,
+// not just to the try_table's height.
+static void test_catch_to_outer_label_rewinds_stack() {
+    printf("Testing catch to an outer label rewinds the operand stack...\n");
+    static const char *const bodies[] = {
+        // throw in the same frame
+        "i32.const 100 block void i32.const 7 try_table void [catch_all 0] throw 0 end drop end end",
+        // throw in a callee
+        "i32.const 100 block void i32.const 7 try_table void [catch_all 0] call 1 end drop end end",
+        // try_table with params
+        "i32.const 100 block void i32.const 7 i32.const 8 try_table 2 [catch_all 0] drop throw 0 end drop end end",
+        // catch delivering a value to a block result
+        "i32.const 100 block 3 i32.const 7 i32.const 8 try_table void [catch 1 0] i32.const 9 throw 1 end drop drop i32.const 0 end drop end",
+    };
+    for (size_t i = 0; i < sizeof(bodies) / sizeof(*bodies); ++i) {
+        char spec[1024];
+        snprintf(spec, sizeof(spec), "wasm \
+            types {[ fn [] [], fn [] [i32], fn [i32] [], fn [] [i32] ]} \
+            funcs {[ 1, 0 ]} \
+            tags {[ tag.type# 0, tag.type# 2 ]} \
+            code {[ {[] %s }, {[] throw 0 end} ]}", bodies[i]);
+        wah_module_t mod = {0};
+        assert_ok(wah_parse_module_from_spec(&mod, spec));
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t result;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 100);
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod);
+    }
+}
+
 // 20f1b66: Add support for exceptions: throw[_ref], try_table.
 // Runtime test for catch_all: same structure as the working catch test but with catch_all.
 static void test_catch_all() {
@@ -982,6 +1016,7 @@ int main() {
     test_try_table_catch_label_types();
     test_try_table_params_respect_block_floor();
     test_try_table_body_in_unreachable_code();
+    test_catch_to_outer_label_rewinds_stack();
     test_catch_all();
     test_cross_module_throw_tag_context();
     test_throw_ref_local_use_after_free();
