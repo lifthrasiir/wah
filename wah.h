@@ -8610,12 +8610,27 @@ static void wah_bind_function_import_slot(
 // Resolve a function export that may be a re-exported import. Follows the
 // import chain across linked modules until a local function is found, or uses
 // an already-resolved slot from an instantiated linked context.
+static bool wah_is_owned_linked_ctx(const wah_exec_context_t *ctx, const wah_exec_context_t *c) {
+    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+        if (ctx->linked_modules[j].ctx == c) return ctx->linked_modules[j].owns_ctx;
+    }
+    return false;
+}
+
+// Imports of a separately instantiated context are resolved with its own linked modules,
+// while owned contexts share the linked modules of the context owning them.
+static wah_exec_context_t *wah_link_namespace(wah_exec_context_t *ns, wah_exec_context_t *linked_ctx) {
+    if (!linked_ctx || linked_ctx == ns || wah_is_owned_linked_ctx(ns, linked_ctx)) return ns;
+    return linked_ctx;
+}
+
 static wah_error_t wah_resolve_function_export(
     wah_exec_context_t *ctx,
     const wah_module_t *linked, wah_exec_context_t *linked_ctx, uint32_t func_idx,
     const wah_module_t **out_provider, wah_exec_context_t **out_provider_ctx,
     uint32_t *out_local_idx, const wah_function_t **out_src, uint32_t *out_global_idx
 ) {
+    wah_exec_context_t *ns = ctx;
     for (int depth = 0; depth < WAH_REEXPORT_MAX_DEPTH; depth++) {
         if (func_idx >= linked->import_function_count) {
             uint32_t local_idx = func_idx - linked->import_function_count;
@@ -8641,7 +8656,8 @@ static wah_error_t wah_resolve_function_export(
         wah_func_import_t *fi = &linked->func_imports[func_idx];
         const wah_module_t *next = NULL;
         wah_exec_context_t *next_ctx = NULL;
-        WAH_ENSURE(wah_find_linked_module(ctx, &fi->name, &next, &next_ctx, NULL), WAH_ERROR_LINK_FAILED);
+        ns = wah_link_namespace(ns, linked_ctx);
+        WAH_ENSURE(wah_find_linked_module(ns, &fi->name, &next, &next_ctx, NULL), WAH_ERROR_LINK_FAILED);
         const wah_export_t *exp = wah_find_export(next, 0, &fi->name);
         WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
         linked = next;
@@ -8660,6 +8676,7 @@ static wah_error_t wah_resolve_global_export(
     const wah_module_t **out_provider, wah_exec_context_t **out_provider_ctx,
     uint32_t *out_local_idx, uint32_t *out_global_idx
 ) {
+    wah_exec_context_t *ns = ctx;
     for (int depth = 0; depth < WAH_REEXPORT_MAX_DEPTH; depth++) {
         if (global_idx >= linked->import_global_count) {
             uint32_t local_idx = global_idx - linked->import_global_count;
@@ -8673,7 +8690,8 @@ static wah_error_t wah_resolve_global_export(
         wah_global_import_t *gi = &linked->global_imports[global_idx];
         const wah_module_t *next = NULL;
         wah_exec_context_t *next_ctx = NULL;
-        WAH_ENSURE(wah_find_linked_module(ctx, &gi->name, &next, &next_ctx, NULL), WAH_ERROR_LINK_FAILED);
+        ns = wah_link_namespace(ns, linked_ctx);
+        WAH_ENSURE(wah_find_linked_module(ns, &gi->name, &next, &next_ctx, NULL), WAH_ERROR_LINK_FAILED);
         const wah_export_t *exp = wah_find_export(next, 3, &gi->name);
         WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
         WAH_ENSURE(exp->index < wah_global_index_limit(next), WAH_ERROR_LINK_FAILED);
@@ -8690,6 +8708,7 @@ static wah_error_t wah_resolve_table_export(
     const wah_module_t **out_provider, wah_exec_context_t **out_provider_ctx,
     uint32_t *out_idx
 ) {
+    wah_exec_context_t *ns = ctx;
     for (int depth = 0; depth < WAH_REEXPORT_MAX_DEPTH; depth++) {
         if (table_idx >= linked->import_table_count) {
             WAH_ENSURE(table_idx - linked->import_table_count < linked->table_count, WAH_ERROR_LINK_FAILED);
@@ -8701,7 +8720,8 @@ static wah_error_t wah_resolve_table_export(
         wah_table_import_t *ti = &linked->table_imports[table_idx];
         const wah_module_t *next = NULL;
         wah_exec_context_t *next_ctx = NULL;
-        WAH_ENSURE(wah_find_linked_module(ctx, &ti->name, &next, &next_ctx, NULL), WAH_ERROR_LINK_FAILED);
+        ns = wah_link_namespace(ns, linked_ctx);
+        WAH_ENSURE(wah_find_linked_module(ns, &ti->name, &next, &next_ctx, NULL), WAH_ERROR_LINK_FAILED);
         const wah_export_t *exp = wah_find_export(next, 1, &ti->name);
         WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
         WAH_ENSURE(exp->index < wah_table_index_limit(next), WAH_ERROR_LINK_FAILED);
@@ -8718,6 +8738,7 @@ static wah_error_t wah_resolve_memory_export(
     const wah_module_t **out_provider, wah_exec_context_t **out_provider_ctx,
     uint32_t *out_idx
 ) {
+    wah_exec_context_t *ns = ctx;
     for (int depth = 0; depth < WAH_REEXPORT_MAX_DEPTH; depth++) {
         if (mem_idx >= linked->import_memory_count) {
             WAH_ENSURE(mem_idx - linked->import_memory_count < linked->memory_count, WAH_ERROR_LINK_FAILED);
@@ -8729,7 +8750,8 @@ static wah_error_t wah_resolve_memory_export(
         wah_memory_import_t *mi = &linked->memory_imports[mem_idx];
         const wah_module_t *next = NULL;
         wah_exec_context_t *next_ctx = NULL;
-        WAH_ENSURE(wah_find_linked_module(ctx, &mi->name, &next, &next_ctx, NULL), WAH_ERROR_LINK_FAILED);
+        ns = wah_link_namespace(ns, linked_ctx);
+        WAH_ENSURE(wah_find_linked_module(ns, &mi->name, &next, &next_ctx, NULL), WAH_ERROR_LINK_FAILED);
         const wah_export_t *exp = wah_find_export(next, 2, &mi->name);
         WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
         WAH_ENSURE(exp->index < wah_memory_index_limit(next), WAH_ERROR_LINK_FAILED);
@@ -16923,14 +16945,6 @@ static wah_error_t wah_resolve_linked_global_imports(wah_exec_context_t *ctx) {
         if (owner->gc) WAH_CHECK(wah_gc_register_dependent(owner->gc, ctx, &owner->alloc)); \
     } \
 } while (0)
-
-// Owned contexts have been already charged to `ctx`.
-static bool wah_is_owned_linked_ctx(const wah_exec_context_t *ctx, const wah_exec_context_t *c) {
-    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
-        if (ctx->linked_modules[j].ctx == c) return ctx->linked_modules[j].owns_ctx;
-    }
-    return false;
-}
 
 static wah_error_t wah_import_existing_table(wah_exec_context_t *ctx, uint32_t dst_idx,
                                              wah_exec_context_t *linked_ctx, uint32_t linked_table_idx,

@@ -3685,6 +3685,54 @@ int main() {
         wah_free_module(&a);
     }
 
+    // Re-exports through a linked context must be resolved in that context's own link namespace.
+    printf("Testing re-exports through linked contexts resolve in their own namespace...\n");
+    {
+        wah_module_t provider_mod = {0}, middle_mod = {0}, lmod = {0}, user_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&provider_mod, "wasm \
+            types {[ fn [] [i32] ]} funcs {[ 0 ]} tables {[ funcref limits.i32/1 3 ]} memories {[ limits.i32/1 2 ]} \
+            globals {[ i32 immut i32.const 42 end ]} \
+            exports {[ {'g'} global# 0, {'f'} fn# 0, {'t'} export.table 0, {'m'} mem# 0 ]} \
+            code {[ {[] i32.const 7 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&middle_mod, "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'provider'} {'g'} global# i32 immut, {'provider'} {'f'} fn# 0, \
+                       {'provider'} {'t'} export.table funcref limits.i32/1 0, {'provider'} {'m'} mem# limits.i32/1 0 ]} \
+            exports {[ {'g'} global# 0, {'f'} fn# 0, {'t'} export.table 0, {'m'} mem# 0 ]}"));
+        // Linked module (not a context) importing everything from the middle context
+        assert_ok(wah_parse_module_from_spec(&lmod, "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'middle'} {'g'} global# i32 immut, {'middle'} {'f'} fn# 0, \
+                       {'middle'} {'t'} export.table funcref limits.i32/1 0, {'middle'} {'m'} mem# limits.i32/1 0 ]} \
+            funcs {[ 0 ]} exports {[ {'get'} fn# 1 ]} \
+            code {[ {[] global.get 0 call 0 i32.add table.size 0 i32.add memory.size 0 i32.add end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&user_mod, "wasm \
+            types {[ fn [] [i32] ]} imports {[ {'l'} {'get'} fn# 0 ]}"));
+
+        wah_exec_context_t pctx = {0}, mctx = {0}, ctx = {0};
+        assert_ok(wah_new_exec_context(&pctx, &provider_mod, NULL));
+        assert_ok(wah_instantiate(&pctx));
+        assert_ok(wah_new_exec_context(&mctx, &middle_mod, NULL));
+        assert_ok(wah_link_context(&mctx, "provider", &pctx));
+        assert_ok(wah_instantiate(&mctx));
+        assert_ok(wah_new_exec_context(&ctx, &user_mod, NULL));
+        assert_ok(wah_link_context(&ctx, "middle", &mctx));
+        assert_ok(wah_link_module(&ctx, "l", &lmod));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t r;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
+        assert_eq_i32(r.i32, 42 + 7 + 3 + 2);
+
+        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&mctx);
+        wah_free_exec_context(&pctx);
+        wah_free_module(&user_mod);
+        wah_free_module(&lmod);
+        wah_free_module(&middle_mod);
+        wah_free_module(&provider_mod);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
