@@ -1013,7 +1013,8 @@ wah_error_t wah_call_by_name(wah_exec_context_t *exec_ctx, const char *name, con
 wah_error_t wah_set_fuel(wah_exec_context_t *ctx, int64_t fuel);
 
 // Function: wah_get_fuel
-//   Returns the remaining fuel for execution.
+//   Returns the remaining fuel for execution. This can be negative after exhaustion,
+//   most notably when an operation that can't be suspended (e.g. `array.new`) overdrew the fuel.
 int64_t wah_get_fuel(const wah_exec_context_t *ctx);
 
 // Function: wah_start
@@ -12203,6 +12204,7 @@ WAH_RUN(ARRAY_NEW) {
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_array(ctx, fctx->module, repr_id, info, length);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+    wah_bulk_fuel_charge(ctx, (uint64_t)length * info->size); // Can't be resumed, so may leave fuel negative
     uint8_t *elems = (uint8_t *)obj + sizeof(wah_gc_array_body_t);
     wah_type_t et = fctx->module->type_defs[typeidx].field_types[0];
     for (uint32_t i = 0; i < length; i++)
@@ -12219,6 +12221,7 @@ WAH_RUN(ARRAY_NEW_DEFAULT) {
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_array(ctx, fctx->module, repr_id, info, length);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+    wah_bulk_fuel_charge(ctx, (uint64_t)length * info->size);
     (*sp++).ref = obj;
     WAH_NEXT();
     WAH_CLEANUP();
@@ -12305,6 +12308,7 @@ WAH_RUN(ARRAY_NEW_DATA) {
     WAH_ENSURE_GOTO((uint64_t)offset + (uint64_t)size * esz <= seg_len, WAH_ERROR_TRAP, cleanup);
     void *obj = wah_gc_alloc_array(ctx, fctx->module, repr_id, info, size);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+    wah_bulk_fuel_charge(ctx, (uint64_t)size * info->size);
     uint8_t *elems = (uint8_t *)obj + sizeof(wah_gc_array_body_t);
     memcpy(elems, seg->data + offset, (size_t)size * esz);
     (*sp++).ref = obj;
@@ -12325,6 +12329,7 @@ WAH_RUN(ARRAY_NEW_ELEM) {
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_array(ctx, fctx->module, repr_id, info, size);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
+    wah_bulk_fuel_charge(ctx, (uint64_t)size * info->size);
     uint8_t *elems = (uint8_t *)obj + sizeof(wah_gc_array_body_t);
     for (uint32_t i = 0; i < size; i++) {
         if (!seg->is_expr_elem) {

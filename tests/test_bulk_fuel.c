@@ -511,6 +511,46 @@ static void test_array_init_elem_fuel_resume(void) {
 }
 
 // ============================================================
+// array.new{,_default,_data,_elem}: initialization costs proportional fuel
+// ============================================================
+static void test_array_new_fuel_proportional(void) {
+    printf("Testing array.new* fuel proportionality...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    PARSE_FUEL(&mod, "wasm \
+        types {[array i8 mut, sub [] array funcref mut, fn [i32] []]} \
+        funcs {[2, 2, 2, 2]} \
+        elements {[ elem.passive.expr funcref [" REP128("ref.null funcref end, ") "] ]} \
+        datacount {1} \
+        code {[ \
+            {[] i32.const 7 local.get 0 array.new 0 drop end}, \
+            {[] local.get 0 array.new_default 0 drop end}, \
+            {[] i32.const 0 local.get 0 array.new_data 0 0 drop end}, \
+            {[] i32.const 0 local.get 0 array.new_elem 1 0 drop end}, \
+        ]} \
+        data {[data.passive {%'" REP128("CC") "'}]}");
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    for (uint32_t f = 0; f < 4; ++f) {
+        int64_t cost[2];
+        for (int k = 0; k < 2; ++k) {
+            wah_value_t p = { .i32 = k ? 128 : 0 };
+            assert_ok(wah_set_fuel(&ctx, 10000));
+            assert_ok(wah_call(&ctx, f, &p, 1, NULL));
+            cost[k] = 10000 - wah_get_fuel(&ctx);
+        }
+        // At least one fuel per WAH_BULK_ITEMS_PER_FUEL (= 16) elements
+        assert_true(cost[1] - cost[0] >= 128 / 16);
+    }
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
+// ============================================================
 // Fuel cost proportionality: fill(0) vs fill(N) should differ
 // ============================================================
 static void test_bulk_fuel_proportional(void) {
@@ -877,6 +917,7 @@ static void test_bulk_fuel_int64_max(void) {
 }
 
 int main(void) {
+    test_array_new_fuel_proportional();
     test_memory_fill_fuel();
     test_memory_fill_fuel_resume();
     test_memory_copy_fuel_resume();
