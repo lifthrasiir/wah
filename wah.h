@@ -7563,13 +7563,14 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
     #define WAH_METER_RECORD_INSTR_START() \
         uint32_t _meter_instr_start = buf_size
 
+    // Chunks are split before their cost and record count overflow uint16_t.
     #define WAH_METER_RECORD_INSTR_END() do { \
         if (emit_meter) { \
             WAH_ENSURE_CAP_GOTO(meter_instr_records, meter_instr_record_count + 1, cleanup); \
             meter_instr_records[meter_instr_record_count++] = (wah_meter_instr_record_t){ \
                 .fast_offset = _meter_instr_start, .byte_length = buf_size - _meter_instr_start \
             }; \
-            meter_current_cost++; \
+            if (++meter_current_cost == UINT16_MAX) WAH_METER_END_CHUNK(); \
         } \
     } while (0)
 

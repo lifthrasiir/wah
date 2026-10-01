@@ -1,6 +1,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
+#include <assert.h>
 #include "../wah.h"
 #include "common.h"
 
@@ -970,6 +972,51 @@ static void test_meter_chunk_reset_before_polled_loop(void) {
     wah_free_module(&mod);
 }
 
+static char *repeat_spec(const char *pre, const char *rep, int n, const char *post) {
+    size_t lp = strlen(pre), lr = strlen(rep), lq = strlen(post);
+    char *s = malloc(lp + lr * (size_t)n + lq + 1), *p = s;
+    assert(s);
+    memcpy(p, pre, lp); p += lp;
+    for (int i = 0; i < n; i++) { memcpy(p, rep, lr); p += lr; }
+    memcpy(p, post, lq + 1);
+    return s;
+}
+
+static void test_long_straight_line_chunk(void) {
+    printf("Testing fuel accounting of very long straight-line code...\n");
+
+    // 2n+2 instructions without any branch, so that a single chunk would cost more than 65535.
+    static const int ns[] = { 32767, 32770, 100000 };
+    for (size_t i = 0; i < sizeof(ns) / sizeof(*ns); i++) {
+        int n = ns[i];
+        char *spec = repeat_spec("wasm types {[fn [] [i32]]} funcs {[0]} code {[{[] i32.const 0 ",
+                                 "i32.const 1 i32.add ", n, "end}]}");
+        wah_module_t mod = {0};
+        PARSE_FUEL(&mod, spec);
+        free(spec);
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+
+        wah_value_t result;
+        assert_ok(wah_set_fuel(&ctx, 1000000));
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, n);
+        assert_eq_i64(1000000 - wah_get_fuel(&ctx), 2 * n + 2);
+
+        // Run out of fuel in the middle of chunks so that slow paths are taken
+        assert_ok(wah_set_fuel(&ctx, 1000));
+        assert_ok(wah_start(&ctx, 0, NULL, 0));
+        wah_error_t err;
+        while ((err = wah_resume(&ctx)) == WAH_STATUS_FUEL_EXHAUSTED) assert_ok(wah_set_fuel(&ctx, 1000));
+        assert_ok(err);
+        assert_ok(wah_finish(&ctx, &result, 1, NULL));
+        assert_eq_i32(result.i32, n);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod);
+    }
+}
+
 int main(void) {
     test_straight_line_exact_fuel();
     test_zero_fuel();
@@ -994,6 +1041,7 @@ int main(void) {
     test_multi_value_fuel();
     test_multi_value_resume();
     test_meter_chunk_reset_before_polled_loop();
+    test_long_straight_line_chunk();
 
     printf("\n=== All fuel tests passed ===\n");
     return 0;
