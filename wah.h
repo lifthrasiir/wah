@@ -2375,6 +2375,7 @@ typedef struct wah_gc_state_s {
     uint32_t object_count;
     size_t allocated_bytes;
     size_t allocation_threshold;
+    size_t other_heap_bytes; // Bytes in other heaps of the domain at the last mark
     bool gc_pending;
     struct wah_exec_context_s **gc_dependents;
     uint32_t gc_dependent_count;
@@ -10393,8 +10394,10 @@ static bool wah_gc_step_mark(wah_exec_context_t *ctx) {
     uint32_t domain_count = d.count;
 
     // Clear all marks and gray bits, otherwise stale marks in other heaps would stop tracing
+    gc->other_heap_bytes = 0;
     for (uint32_t i = 0; i < domain_count; i++) {
         if (!wah_gc_domain_first_heap(domain, i)) continue;
+        if (domain[i]->gc != gc) gc->other_heap_bytes += domain[i]->gc->allocated_bytes;
         for (wah_gc_object_t *obj = domain[i]->gc->all_objects; obj; obj = wah_gc_next(obj)) {
             wah_gc_set_mark(obj, false);
             wah_gc_set_gray(obj, false);
@@ -10457,7 +10460,8 @@ static void wah_gc_step_sweep(wah_exec_context_t *ctx) {
     }
 
     gc->phase = WAH_GC_PHASE_IDLE;
-    gc->allocation_threshold = gc->allocated_bytes * 2;
+    // Allocate as much as the traced bytes, including other heaps, before collecting again
+    gc->allocation_threshold = gc->allocated_bytes * 2 + gc->other_heap_bytes;
     if (gc->allocation_threshold < WAH_GC_DEFAULT_THRESHOLD) {
         gc->allocation_threshold = WAH_GC_DEFAULT_THRESHOLD;
     }
