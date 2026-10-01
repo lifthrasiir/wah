@@ -9224,6 +9224,12 @@ cleanup:
     return err;
 }
 
+static int wah_export_name_cmp(const void *a, const void *b) {
+    const wah_export_t *x = *(const wah_export_t *const *)a, *y = *(const wah_export_t *const *)b;
+    if (x->name_len != y->name_len) return x->name_len < y->name_len ? -1 : 1;
+    return memcmp(x->name, y->name, x->name_len);
+}
+
 static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     wah_error_t err = WAH_OK;
     const wah_alloc_t *alloc = &module->alloc;
@@ -9241,15 +9247,6 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
         ++module->export_count;
 
         WAH_CHECK_GOTO(wah_parse_name(ptr, section_end, (char **)&export_entry->name, &export_entry->name_len, alloc), cleanup);
-
-        // Check for duplicate export names
-        for (uint32_t j = 0; j < i; ++j) {
-            if (module->exports[j].name_len == export_entry->name_len &&
-                memcmp(module->exports[j].name, export_entry->name, export_entry->name_len) == 0) {
-                err = WAH_ERROR_VALIDATION_FAILED; // Duplicate export name
-                goto cleanup;
-            }
-        }
 
         // Export kind
         WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
@@ -9280,6 +9277,18 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
                 err = WAH_ERROR_MALFORMED; // Unknown export kind
                 goto cleanup;
         }
+    }
+
+    // Check for duplicate export names by sorting
+    if (count > 1) {
+        const wah_export_t **sorted;
+        WAH_MALLOC_ARRAY_GOTO(sorted, count, cleanup);
+        for (uint32_t i = 0; i < count; ++i) sorted[i] = &module->exports[i];
+        qsort(sorted, count, sizeof(*sorted), wah_export_name_cmp);
+        for (uint32_t i = 1; i < count && err == WAH_OK; ++i) {
+            if (wah_export_name_cmp(&sorted[i - 1], &sorted[i]) == 0) err = WAH_ERROR_VALIDATION_FAILED;
+        }
+        wah_free(alloc, sorted);
     }
 
 cleanup:

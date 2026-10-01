@@ -180,6 +180,14 @@ void test_duplicate_export_names() {
     wah_module_t module;
     assert_err(wah_parse_module_from_spec(&module, module_spec), WAH_ERROR_VALIDATION_FAILED);
     wah_free_module(&module); // Should be safe to call even if parsing failed
+
+    // Non-adjacent duplicates
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        exports {[ {'b'} fn# 0, {'a'} fn# 0, {'ab'} fn# 0, {'c'} fn# 0, {'a'} fn# 0 ]} \
+        code {[ {[] end } ]}"), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&module);
 }
 
 void test_export_names_differing_after_nul() {
