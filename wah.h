@@ -16527,6 +16527,7 @@ static wah_error_t wah_create_tag_contexts_for_linked_modules(wah_exec_context_t
                 uint32_t lmod_total_tables = lmod->import_table_count + lmod->table_count;
                 if (lmod_total_tables > 0 && lmod_total_tables > ctx->table_count) {
                     WAH_MALLOC_ARRAY(ictx->tables, lmod_total_tables);
+                    memset(ictx->tables, 0, lmod_total_tables * sizeof(wah_table_inst_t));
                     ictx->table_count = lmod_total_tables;
                     for (uint32_t ti = 0; ti < lmod->import_table_count && ti < ctx->table_count; ti++) {
                         ictx->tables[ti] = ctx->tables[ti];

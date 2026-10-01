@@ -401,6 +401,16 @@ static void prepare_runtime_throw_ref_case(runtime_case_t *c) {
     c->saved_alloc = wah_debug_exec_alloc(&c->ctx);
 }
 
+// The provider has a tag and more tables than the consumer, so its tables are allocated
+// while creating tag contexts. A failure in the first table must not leave others uninitialized.
+static void prepare_instantiate_tag_tables_case(instantiate_case_t *c) {
+    assert_ok(wah_parse_module_from_spec(&c->provider, "wasm \
+        types {[ fn [] [] ]} \
+        tables {[ funcref limits.i32/1 4, funcref limits.i32/1 4 ]} \
+        tags {[ tag.type# 0 ]}"));
+    assert_ok(wah_parse_module_from_spec(&c->consumer, "wasm types {[]}"));
+}
+
 int main(void) {
     module_case_t new_module_case = {0};
     run_oom_loop_no_failure_cleanup("wah_new_module", op_new_module_constructor, cleanup_module_case, &new_module_case);
@@ -421,6 +431,12 @@ int main(void) {
     run_oom_loop("wah_instantiate linked modules", op_instantiate_linked, cleanup_instantiate_case, &instantiate_case);
     wah_free_module(&instantiate_case.consumer);
     wah_free_module(&instantiate_case.provider);
+
+    instantiate_case_t tag_tables_case = {0};
+    prepare_instantiate_tag_tables_case(&tag_tables_case);
+    run_oom_loop("wah_instantiate linked module with tag and tables", op_instantiate_linked, cleanup_instantiate_case, &tag_tables_case);
+    wah_free_module(&tag_tables_case.consumer);
+    wah_free_module(&tag_tables_case.provider);
 
     module_case_t builder_case = {0};
     run_oom_loop("host module builder APIs", op_host_builder, cleanup_module_case, &builder_case);
