@@ -590,6 +590,22 @@ static void test_br_on_cast_multi_value() {
     wah_free_module(&good);
 }
 
+static void test_br_on_cast_oob_heap_type() {
+    printf("Testing br_on_cast rejects out-of-range heap type indices...\n");
+    // These used to be rejected only incidentally by the label type check.
+    static const char *const bad[] = {
+        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} code {[ {[] \
+            block funcref unreachable br_on_cast.null.null 0 50 50 end drop end } ]}",
+        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} code {[ {[] \
+            block funcref unreachable br_on_cast_fail.null.null 0 50 50 end drop end } ]}",
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(*bad); ++i) {
+        wah_module_t mod = {0};
+        assert_err(wah_parse_module_from_spec(&mod, bad[i]), WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&mod);
+    }
+}
+
 int main() {
     test_typed_select_i32();
     test_typed_select_funcref();
@@ -607,6 +623,7 @@ int main() {
     test_gc_array_numeric_operands();
     test_br_on_cast_label_type();
     test_br_on_cast_multi_value();
+    test_br_on_cast_oob_heap_type();
     printf("All references_validation tests passed!\n");
     return 0;
 }

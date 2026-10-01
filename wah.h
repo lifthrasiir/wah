@@ -7058,6 +7058,8 @@ cleanup_block:
             wah_type_t ht1, ht2;
             WAH_CHECK(wah_decode_heap_type(code_ptr, code_end, &ht1));
             WAH_CHECK(wah_decode_heap_type(code_ptr, code_end, &ht2));
+            WAH_ENSURE(ht1 < 0 || WAH_TYIDX(ht1) < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(ht2 < 0 || WAH_TYIDX(ht2) < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(wah_type_is_subtype(ht2, ht1, vctx->module), WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(label_idx <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
             bool src_nullable = (cast_flags & 0x01) != 0;
