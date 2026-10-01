@@ -2374,6 +2374,7 @@ typedef struct wah_gc_state_s {
     wah_gc_object_t *sweep_cursor;
     wah_gc_phase_t phase;
     uint32_t object_count;
+    uint32_t exception_count; // Among object_count
     size_t allocated_bytes;
     size_t allocation_threshold;
     size_t other_heap_bytes; // Bytes in other heaps of the domain at the last mark
@@ -10023,6 +10024,7 @@ static void wah_gc_free_all_objects(wah_exec_context_t *ctx, wah_gc_state_t *gc)
     gc->all_objects = NULL;
     gc->sweep_cursor = NULL;
     gc->object_count = 0;
+    gc->exception_count = 0;
     gc->allocated_bytes = 0;
 }
 
@@ -10131,6 +10133,7 @@ static wah_exception_t *wah_gc_alloc_exception(wah_exec_context_t *ctx, uint32_t
     if (payload64 > UINT32_MAX) return NULL;
     void *p = wah_gc_alloc(ctx, NULL, WAH_TYPE_EXN, (uint32_t)payload64);
     if (!p) return NULL;
+    ctx->gc->exception_count++;
     return (wah_exception_t *)wah_gc_header(p);
 }
 #endif
@@ -10508,6 +10511,7 @@ static void wah_gc_step_sweep(wah_exec_context_t *ctx) {
                 gc->all_objects = next;
             gc->allocated_bytes -= obj->size_bytes;
             gc->object_count--;
+            if (obj->repr_id == WAH_TYPE_EXN) gc->exception_count--;
             wah_budget_release(gc->owner, obj->size_bytes);
 #ifdef WAH_DEBUG
             gc->total_frees++;
@@ -15670,7 +15674,7 @@ cleanup:
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 static void wah_gc_sweep_unreachable_exceptions(wah_exec_context_t *ctx) {
     wah_gc_state_t *gc = ctx->gc;
-    if (!gc) return;
+    if (!gc || gc->exception_count == 0) return;
 
     if (!wah_gc_step_mark(ctx)) return;
 
@@ -15685,6 +15689,7 @@ static void wah_gc_sweep_unreachable_exceptions(wah_exec_context_t *ctx) {
                 gc->all_objects = next;
             gc->allocated_bytes -= obj->size_bytes;
             gc->object_count--;
+            if (obj->repr_id == WAH_TYPE_EXN) gc->exception_count--;
             wah_budget_release(gc->owner, obj->size_bytes);
 #ifdef WAH_DEBUG
             gc->total_frees++;

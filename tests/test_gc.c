@@ -40,6 +40,11 @@ static void host_count_structref(wah_call_context_t *cc, void *ud) {
     wah_return_i32(cc, (int32_t)g_structref_count);
 }
 
+static size_t g_counted_allocs;
+static void *counting_malloc(size_t size, void *ud) { (void)ud; g_counted_allocs++; return malloc(size); }
+static void *counting_realloc(void *p, size_t size, void *ud) { (void)ud; g_counted_allocs++; return realloc(p, size); }
+static void counting_free(void *p, void *ud) { (void)ud; free(p); }
+
 #define FAKE_REF_I64 INT64_C(0x4141414141414140)
 
 static uint32_t g_fake_ref_visits;
@@ -2422,6 +2427,26 @@ int main() {
         wah_free_exec_context(&lctx);
         wah_free_module(&pmod);
         wah_free_module(&lmod);
+    }
+
+    // Regression: every trap ran a full mark to free unreachable exceptions, even if there were none.
+    printf("Testing trap without exceptions does not run a GC mark...\n");
+    {
+        wah_module_t wasm_mod = {0};
+        assert_ok(wah_parse_module_from_spec(&wasm_mod, "wasm \
+            types {[ struct [i32 mut], fn [] [] ]} funcs {[ 1 ]} \
+            globals {[ type.ref.null 0 mut i32.const 1 struct.new 0 end ]} \
+            code {[ {[] unreachable end} ]}"));
+        wah_alloc_t counting = { counting_malloc, counting_realloc, counting_free, NULL };
+        wah_exec_options_t opts = { .alloc = &counting };
+        wah_exec_context_t ctx2 = {0};
+        assert_ok(wah_new_exec_context(&ctx2, &wasm_mod, &opts));
+        assert_ok(wah_instantiate(&ctx2));
+        g_counted_allocs = 0;
+        assert_err(wah_call(&ctx2, 0, NULL, 0, NULL), WAH_ERROR_TRAP);
+        assert_eq_u32((uint32_t)g_counted_allocs, 0);
+        wah_free_exec_context(&ctx2);
+        wah_free_module(&wasm_mod);
     }
 
     printf("All GC tests passed.\n");
