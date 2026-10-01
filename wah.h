@@ -11807,6 +11807,10 @@ static wah_error_t wah_table_grow_internal(
     if (new_size < *old_size || new_size > fctx->tables[table_idx].max_size) {
         return WAH_OK;
     }
+    if (delta == 0) {
+        *grew = true;
+        return WAH_OK;
+    }
 
     if (delta > SIZE_MAX / sizeof(wah_value_t) || new_size > SIZE_MAX / sizeof(wah_value_t)) {
         return WAH_OK;
@@ -11856,6 +11860,7 @@ static wah_error_t wah_table_grow_internal(
     }
     wah_propagate_table_import_aliases(ctx, fctx, owner_ctx, owner_idx, new_table, new_size);
     wah_free(grow_alloc, old_entries);
+    wah_bulk_fuel_charge(ctx, new_size); // The whole table was copied or filled
 
     *grew = true;
     return WAH_OK;
