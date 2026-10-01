@@ -9810,8 +9810,9 @@ wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t
             last_parsed_order = handler->order;
         }
 
+        // Compare sizes, as forming a pointer past the buffer is undefined and may wrap on 32-bit hosts
+        WAH_ENSURE_GOTO(section_size <= (size_t)(end - ptr), WAH_ERROR_UNEXPECTED_EOF, cleanup_parse);
         const uint8_t *section_payload_end = ptr + section_size;
-        WAH_ENSURE_GOTO(section_payload_end <= end, WAH_ERROR_UNEXPECTED_EOF, cleanup_parse);
 
         WAH_LOG("Parsing section ID: %d, size: %u", section_id, section_size);
         WAH_CHECK_GOTO(handler->parser_func(&ptr, section_payload_end, module), cleanup_parse);
