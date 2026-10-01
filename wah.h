@@ -6606,12 +6606,10 @@ cleanup_block:
 
             uint32_t adj_keep = 0, adj_drop = 0;
             if (!vctx->is_unreachable) {
+                WAH_ENSURE(vctx->current_stack_depth >= br_stack_height + br_result_count, WAH_ERROR_VALIDATION_FAILED);
                 if (!is_br_if) {
                     uint32_t block_floor = (vctx->control_sp > 0) ? vctx->control_stack[vctx->control_sp - 1].stack_height : 0;
-                    WAH_ENSURE(vctx->current_stack_depth >= br_stack_height + br_result_count, WAH_ERROR_VALIDATION_FAILED);
                     WAH_ENSURE(vctx->current_stack_depth >= block_floor + br_result_count, WAH_ERROR_VALIDATION_FAILED);
-                } else {
-                    WAH_ENSURE(vctx->current_stack_depth >= br_result_count, WAH_ERROR_VALIDATION_FAILED);
                 }
                 adj_keep = br_result_count;
                 adj_drop = vctx->current_stack_depth - br_stack_height - br_result_count;
@@ -7191,6 +7189,12 @@ cleanup_block:
                 WAH_ENSURE_GOTO(catch_entries[ci].label_idx <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup_try_table);
             }
 
+            for (int32_t i = bt->param_count - 1; i >= 0; --i) {
+                WAH_CHECK_GOTO(wah_validation_pop_and_match_type(vctx, bt->param_types[i]), cleanup_try_table);
+            }
+            frame->stack_height = vctx->current_stack_depth;
+            frame->type_stack_sp = vctx->type_stack.sp;
+
             vctx->control_sp++;
 
             for (uint32_t ci = 0; ci < catch_count; ci++) {
@@ -7225,14 +7229,9 @@ cleanup_block:
                 }
             }
 
-            WAH_ENSURE_GOTO(vctx->current_stack_depth >= bt->param_count, WAH_ERROR_VALIDATION_FAILED, cleanup_try_table);
             for (uint32_t i = 0; i < bt->param_count; ++i) {
-                wah_type_t actual_type = vctx->type_stack.data[vctx->type_stack.sp - bt->param_count + i];
-                WAH_CHECK_GOTO(wah_validate_type_match(actual_type, bt->param_types[i], vctx->module), cleanup_try_table);
+                WAH_CHECK_GOTO(wah_validation_push_type(vctx, bt->param_types[i]), cleanup_try_table);
             }
-
-            frame->stack_height = vctx->current_stack_depth - bt->param_count;
-            frame->type_stack_sp = vctx->type_stack.sp - bt->param_count;
 
             if (vctx->local_inits) {
                 frame->local_init_save_offset = vctx->local_init_stack_used;

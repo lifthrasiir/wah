@@ -59,6 +59,51 @@ static void test_try_table_catch_label_types() {
     wah_free_module(&bad);
 }
 
+static void test_try_table_params_respect_block_floor() {
+    printf("Testing try_table params cannot be taken from an outer block...\n");
+
+    // The i32 param of try_table lives outside of the enclosing block, so it must be rejected.
+    // Accepting it used to make `br_if 1` compute a negative drop count.
+    wah_module_t bad = {0};
+    assert_err(wah_parse_module_from_spec(&bad, "wasm \
+        types {[ fn [] [i32], fn [i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] \
+            i32.const 7 \
+            block 0 \
+                try_table 1 [] \
+                    i32.const 1 \
+                    br_if 1 \
+                end \
+                i32.const 5 \
+            end \
+            drop \
+        end } ]}"), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad);
+
+    // Same shape but with the param inside the block is fine.
+    wah_module_t good = {0};
+    assert_ok(wah_parse_module_from_spec(&good, "wasm \
+        types {[ fn [] [i32], fn [i32] [i32] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] \
+            block 0 \
+                i32.const 7 \
+                try_table 1 [] \
+                    i32.const 1 \
+                    br_if 1 \
+                end \
+            end \
+        end } ]}"));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &good, NULL));
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 7);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&good);
+}
+
 // 20f1b66: Add support for exceptions: throw[_ref], try_table.
 // Runtime test for catch_all: same structure as the working catch test but with catch_all.
 static void test_catch_all() {
@@ -917,6 +962,7 @@ static void test_cancel_does_not_free_exnref_in_global() {
 
 int main() {
     test_try_table_catch_label_types();
+    test_try_table_params_respect_block_floor();
     test_catch_all();
     test_cross_module_throw_tag_context();
     test_throw_ref_local_use_after_free();
