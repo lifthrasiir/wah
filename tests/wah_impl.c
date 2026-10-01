@@ -127,17 +127,10 @@ wah_error_t wah_debug_module_export_table(wah_module_t *mod, const char *name,
     mod->tables[mod->table_count].min_elements = min_elements;
     mod->tables[mod->table_count].max_elements = max_elements;
 
-    new_ptr = mod->exports;
-    WAH_CHECK(wah_realloc(alloc, mod->export_count + 1, sizeof(*mod->exports), &new_ptr));
-    mod->exports = (wah_export_t *)new_ptr;
+    WAH_CHECK(wah_module_ensure_export(mod, name));
     char *name_copy = wah_strdup(name, alloc);
     if (!name_copy) return WAH_ERROR_OUT_OF_MEMORY;
-    mod->exports[mod->export_count].name = name_copy;
-    mod->exports[mod->export_count].name_len = strlen(name);
-    mod->exports[mod->export_count].kind = 1;
-    mod->exports[mod->export_count].index = mod->table_count;
-    mod->export_count++;
-    mod->exports_cap = mod->export_count;
+    wah_module_append_export(mod, (wah_export_t){ .name = name_copy, .name_len = strlen(name), .kind = 1, .index = mod->table_count });
     mod->table_count++;
     return WAH_OK;
 }

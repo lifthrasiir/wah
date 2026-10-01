@@ -668,6 +668,7 @@ private:
 
     // Dynamic export array growth
     uint32_t exports_cap;  // Capacity for dynamic export array growth
+    uint32_t *export_order; // Export indices sorted by names (length first), with at least exports_cap entries
 
     // Repr metadata for GC types
     uint32_t repr_count;
@@ -8521,14 +8522,33 @@ static bool wah_find_linked_module(
     return false;
 }
 
-static const wah_export_t *wah_find_export(const wah_module_t *module, uint8_t kind, const wah_import_name_t *name) {
-    for (uint32_t i = 0; i < module->export_count; ++i) {
-        const wah_export_t *exp = &module->exports[i];
-        if (exp->kind != kind) continue;
-        if (wah_name_matches(exp->name, exp->name_len, name->field, name->field_len)) return exp;
-    }
+static int wah_export_name_cmp_len(const wah_export_t *exp, const char *name, size_t name_len) {
+    if (exp->name_len != name_len) return exp->name_len < name_len ? -1 : 1;
+    return memcmp(exp->name, name, name_len);
+}
 
-    return NULL;
+// Position in export_order of the first export whose name is not less than the given name.
+static uint32_t wah_export_lower_bound(const wah_module_t *module, const char *name, size_t name_len) {
+    uint32_t lo = 0, hi = module->export_count;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if (wah_export_name_cmp_len(&module->exports[module->export_order[mid]], name, name_len) < 0) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+static const wah_export_t *wah_find_export_by_name(const wah_module_t *module, const char *name, size_t name_len) {
+    uint32_t pos = wah_export_lower_bound(module, name, name_len);
+    if (pos >= module->export_count) return NULL;
+    const wah_export_t *exp = &module->exports[module->export_order[pos]];
+    return wah_export_name_cmp_len(exp, name, name_len) == 0 ? exp : NULL;
+}
+
+// Export names are unique across all kinds.
+static const wah_export_t *wah_find_export(const wah_module_t *module, uint8_t kind, const wah_import_name_t *name) {
+    const wah_export_t *exp = wah_find_export_by_name(module, name->field, name->field_len);
+    return exp && exp->kind == kind ? exp : NULL;
 }
 
 static wah_error_t wah_validate_function_import_type(
@@ -9328,8 +9348,8 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
         }
     }
 
-    // Check for duplicate export names by sorting
-    if (count > 1) {
+    // Sort exports by names for lookups, which also finds duplicate names
+    if (count > 0) {
         const wah_export_t **sorted;
         WAH_MALLOC_ARRAY_GOTO(sorted, count, cleanup);
         for (uint32_t i = 0; i < count; ++i) sorted[i] = &module->exports[i];
@@ -9337,11 +9357,17 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
         for (uint32_t i = 1; i < count && err == WAH_OK; ++i) {
             if (wah_export_name_cmp(&sorted[i - 1], &sorted[i]) == 0) err = WAH_ERROR_VALIDATION_FAILED;
         }
+        if (err == WAH_OK) err = wah_malloc(alloc, count, sizeof(uint32_t), (void **)&module->export_order);
+        if (err == WAH_OK) {
+            for (uint32_t i = 0; i < count; ++i) module->export_order[i] = (uint32_t)(sorted[i] - module->exports);
+        }
         wah_free(alloc, sorted);
     }
 
 cleanup:
     if (err != WAH_OK) {
+        wah_free(alloc, module->export_order);
+        module->export_order = NULL;
         if (module->exports) {
             // Free names that were already allocated
             for (uint32_t k = 0; k < module->export_count; ++k) {
@@ -15772,6 +15798,7 @@ void wah_free_module(wah_module_t *module) {
         }
         wah_free(alloc, module->exports);
     }
+    wah_free(alloc, module->export_order);
 
     // Free host function resources stored in the unified functions[] array.
     if (module->functions) {
@@ -15816,6 +15843,7 @@ wah_error_t wah_new_module(wah_module_t *mod, const wah_alloc_t *alloc_arg) {
 
     // Allocate initial export array
     WAH_MALLOC_ARRAY_GOTO(mod->exports, mod->exports_cap, cleanup);
+    WAH_MALLOC_ARRAY_GOTO(mod->export_order, mod->exports_cap, cleanup);
 
     return WAH_OK;
 
@@ -15949,13 +15977,23 @@ wah_error_t wah_define_type(wah_module_t *mod, wah_type_t *out_type, const char 
 
 static wah_error_t wah_module_ensure_export(wah_module_t *mod, const char *name) {
     const wah_alloc_t *alloc = &mod->alloc;
-    for (uint32_t i = 0; i < mod->export_count; ++i) {
-        if (mod->exports[i].name && strcmp(mod->exports[i].name, name) == 0) {
-            return WAH_ERROR_VALIDATION_FAILED;
-        }
+    WAH_ENSURE(!wah_find_export_by_name(mod, name, strlen(name)), WAH_ERROR_VALIDATION_FAILED);
+    if (mod->export_count >= mod->exports_cap) {
+        WAH_ENSURE(mod->exports_cap <= UINT32_MAX / 2, WAH_ERROR_TOO_LARGE);
+        uint32_t new_cap = mod->exports_cap ? mod->exports_cap * 2 : 16;
+        WAH_REALLOC_ARRAY(mod->export_order, new_cap); // Allowed to be larger than exports_cap
+        WAH_REALLOC_ARRAY(mod->exports, new_cap);
+        mod->exports_cap = new_cap;
     }
-    WAH_ENSURE_CAP(mod->exports, mod->export_count + 1);
     return WAH_OK;
+}
+
+// Appends an export whose name has been checked by wah_module_ensure_export.
+static void wah_module_append_export(wah_module_t *mod, wah_export_t exp) {
+    uint32_t pos = wah_export_lower_bound(mod, exp.name, exp.name_len);
+    memmove(&mod->export_order[pos + 1], &mod->export_order[pos], (mod->export_count - pos) * sizeof(uint32_t));
+    mod->export_order[pos] = mod->export_count;
+    mod->exports[mod->export_count++] = exp;
 }
 
 static wah_error_t wah_module_register_host_func(
@@ -15995,8 +16033,8 @@ static wah_error_t wah_module_register_host_func(
                   .fn_module = mod },
     };
     mod->local_function_count++;
-    mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
-                                                        .kind = WAH_KIND_FUNCTION, .index = mod->import_function_count + new_func_idx };
+    wah_module_append_export(mod, (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
+                                                 .kind = WAH_KIND_FUNCTION, .index = mod->import_function_count + new_func_idx });
     name_copy = NULL;
     param_types_copy = NULL;
     result_types_copy = NULL;
@@ -16095,8 +16133,8 @@ static wah_error_t wah_export_global_internal(wah_module_t *mod, const char *nam
 
     mod->globals[mod->global_count] = (wah_global_t){ .type = type, .is_mutable = is_mutable };
     WAH_CHECK_GOTO(wah_new_const_expr(type, init_value, &mod->globals[mod->global_count].init_expr, alloc), cleanup);
-    mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
-                                                        .kind = WAH_KIND_GLOBAL, .index = mod->import_global_count + mod->global_count };
+    wah_module_append_export(mod, (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
+                                                 .kind = WAH_KIND_GLOBAL, .index = mod->import_global_count + mod->global_count });
     mod->global_count++;
     return WAH_OK;
 
@@ -16123,8 +16161,8 @@ wah_error_t wah_export_memory(wah_module_t *mod, const char *name, uint64_t min_
     WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
 
     mod->memories[mod->memory_count] = (wah_memory_type_t){ .addr_type = WAH_TYPE_I32, .min_pages = min_pages, .max_pages = max_pages };
-    mod->exports[mod->export_count++] = (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
-                                                        .kind = WAH_KIND_MEMORY, .index = mod->import_memory_count + mod->memory_count };
+    wah_module_append_export(mod, (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
+                                                 .kind = WAH_KIND_MEMORY, .index = mod->import_memory_count + mod->memory_count });
     mod->memory_count++;
     return WAH_OK;
 
@@ -17594,13 +17632,9 @@ wah_error_t wah_export_by_name_len(const wah_module_t *module, const char *name,
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(out, WAH_ERROR_MISUSE);
 
-    for (uint32_t i = 0; i < module->export_count; ++i) {
-        const wah_export_t *export_entry = &module->exports[i];
-        if (wah_name_matches(export_entry->name, export_entry->name_len, name, name_len)) {
-            return wah_module_export(module, i, out);
-        }
-    }
-    return WAH_ERROR_NOT_FOUND;
+    const wah_export_t *exp = wah_find_export_by_name(module, name, name_len);
+    WAH_ENSURE(exp, WAH_ERROR_NOT_FOUND);
+    return wah_module_export(module, (uint32_t)(exp - module->exports), out);
 }
 
 ////////////////////////////////////////////////////////////////////////////////

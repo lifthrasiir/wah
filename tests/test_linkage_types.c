@@ -2,6 +2,7 @@
 #include "common.h"
 #include "wah_impl.h"
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
@@ -724,7 +725,50 @@ static void test_cross_module_type_eq_dag() {
     wah_free_module(&prov);
 }
 
+// Each import used to search all exports of the provider linearly.
+static double instantiate_many_imports_seconds(int n) {
+    size_t size = 64 + (size_t)n * 64;
+    char *prov_spec = (char *)malloc(size), *cons_spec = (char *)malloc(size);
+    assert_true(prov_spec && cons_spec);
+#define APPEND(buf, ...) (p += snprintf(p, (size_t)(buf + size - p), __VA_ARGS__))
+    char *p = prov_spec;
+    APPEND(prov_spec, "wasm globals {[");
+    for (int i = 0; i < n; i++) APPEND(prov_spec, "%si32 immut i32.const %d end", i ? "," : "", i);
+    APPEND(prov_spec, "]} exports {[");
+    for (int i = 0; i < n; i++) APPEND(prov_spec, "%s{'g%d'} global# %d", i ? "," : "", i, i);
+    APPEND(prov_spec, "]}");
+    p = cons_spec;
+    APPEND(cons_spec, "wasm imports {[");
+    for (int i = 0; i < n; i++) APPEND(cons_spec, "%s{'p'} {'g%d'} global# i32 immut", i ? "," : "", n - 1 - i);
+    APPEND(cons_spec, "]}");
+#undef APPEND
+
+    wah_module_t prov = {0}, cons = {0};
+    assert_ok(wah_parse_module_from_spec(&prov, prov_spec));
+    assert_ok(wah_parse_module_from_spec(&cons, cons_spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &cons, NULL));
+    assert_ok(wah_link_module(&ctx, "p", &prov));
+    clock_t start = clock();
+    assert_ok(wah_instantiate(&ctx));
+    double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
+    wah_free_exec_context(&ctx);
+    wah_free_module(&cons);
+    wah_free_module(&prov);
+    free(prov_spec);
+    free(cons_spec);
+    return elapsed;
+}
+
+static void test_import_resolution_time() {
+    printf("Testing import resolution time is not quadratic...\n");
+    double small = instantiate_many_imports_seconds(5000), large = instantiate_many_imports_seconds(20000);
+    printf("  5000 imports: %.3fs, 20000 imports: %.3fs\n", small, large);
+    assert_true(large < small * 8 + 0.1); // Quadratic would be 16x
+}
+
 int main() {
+    test_import_resolution_time();
     test_cross_module_type_eq_dag();
     test_cross_module_call_indirect();
     test_linked_module_imported_table_grow();
