@@ -16458,6 +16458,39 @@ static wah_error_t wah_init_active_data_segments(wah_exec_context_t *ctx) {
     return WAH_OK;
 }
 
+// Converts ref.func sentinels in local globals of linked modules. This should be done right after
+// they are evaluated, so that other modules importing them never see sentinels; otherwise sentinels
+// would be left unconverted or converted in the function index space of a wrong module.
+static wah_error_t wah_convert_linked_funcref_globals(wah_exec_context_t *ctx) {
+    const wah_module_t *module = ctx->module;
+    uint32_t lg_offset = wah_global_index_limit(module);
+    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+        const wah_module_t *linked = ctx->linked_modules[j].module;
+        for (uint32_t k = 0; k < linked->global_count; k++) {
+            uint32_t slot = lg_offset + linked->import_global_count + k;
+            if (ctx->globals[slot].ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
+                uint32_t fidx = ctx->globals[slot]._prefuncref.func_idx;
+                uint32_t linked_import_count = linked->import_function_count;
+                if (fidx >= linked_import_count) {
+                    uint32_t local_k = fidx - linked_import_count;
+                    WAH_ENSURE(local_k < linked->wasm_function_count, WAH_ERROR_VALIDATION_FAILED);
+                    ctx->globals[slot].ref = wah_func_to_ref(&linked->functions[local_k].func);
+                } else {
+                    const wah_module_t *func_provider = NULL;
+                    wah_exec_context_t *func_provider_ctx = NULL;
+                    uint32_t func_local_idx = 0, func_global_idx = 0;
+                    const wah_function_t *func_src = NULL;
+                    WAH_CHECK(wah_resolve_function_export(ctx, linked, NULL, fidx, &func_provider, &func_provider_ctx,
+                                                          &func_local_idx, &func_src, &func_global_idx));
+                    ctx->globals[slot].ref = wah_func_to_ref((wah_function_t *)func_src);
+                }
+            }
+        }
+        lg_offset += wah_global_index_limit(linked);
+    }
+    return WAH_OK;
+}
+
 static wah_error_t wah_prepare_linked_globals(wah_exec_context_t *ctx) {
     const wah_alloc_t *alloc = &ctx->alloc;
     const wah_module_t *module = ctx->module;
@@ -16515,7 +16548,7 @@ static wah_error_t wah_prepare_linked_globals(wah_exec_context_t *ctx) {
 
     wah_free(alloc, ctx->globals);
     ctx->globals = new_globals;
-    return WAH_OK;
+    return wah_convert_linked_funcref_globals(ctx);
 }
 
 // Re-evaluate linked module local globals after their imports have been resolved.
@@ -16553,7 +16586,7 @@ static wah_error_t wah_init_linked_globals(wah_exec_context_t *ctx) {
     }
     ctx->globals = saved_globals;
     ctx->global_count = saved_global_count;
-    return WAH_OK;
+    return wah_convert_linked_funcref_globals(ctx);
 }
 
 static wah_error_t wah_resolve_primary_func_imports(wah_exec_context_t *ctx) {
@@ -17073,39 +17106,9 @@ static wah_error_t wah_resolve_primary_memory_imports(wah_exec_context_t *ctx) {
     return WAH_OK;
 }
 
-static wah_error_t wah_convert_linked_funcref_globals(wah_exec_context_t *ctx) {
-    const wah_module_t *module = ctx->module;
-    uint32_t lg_offset = wah_global_index_limit(module);
-    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
-        const wah_module_t *linked = ctx->linked_modules[j].module;
-        for (uint32_t k = 0; k < linked->global_count; k++) {
-            uint32_t slot = lg_offset + linked->import_global_count + k;
-            if (ctx->globals[slot].ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
-                uint32_t fidx = ctx->globals[slot]._prefuncref.func_idx;
-                uint32_t linked_import_count = linked->import_function_count;
-                if (fidx >= linked_import_count) {
-                    uint32_t local_k = fidx - linked_import_count;
-                    WAH_ENSURE(local_k < linked->wasm_function_count, WAH_ERROR_VALIDATION_FAILED);
-                    ctx->globals[slot].ref = wah_func_to_ref(&linked->functions[local_k].func);
-                } else {
-                    const wah_module_t *func_provider = NULL;
-                    wah_exec_context_t *func_provider_ctx = NULL;
-                    uint32_t func_local_idx = 0, func_global_idx = 0;
-                    const wah_function_t *func_src = NULL;
-                    WAH_CHECK(wah_resolve_function_export(ctx, linked, NULL, fidx, &func_provider, &func_provider_ctx,
-                                                          &func_local_idx, &func_src, &func_global_idx));
-                    ctx->globals[slot].ref = wah_func_to_ref((wah_function_t *)func_src);
-                }
-            }
-        }
-        lg_offset += wah_global_index_limit(linked);
-    }
-    return WAH_OK;
-}
 
 // wah_resolve_primary_global_imports copies immutable global values before linked globals are
-// finalized by wah_init_linked_globals (which may allocate new GC objects) and
-// wah_convert_linked_funcref_globals (which resolves _prefuncref sentinels). Re-copy them.
+// finalized by wah_init_linked_globals, which may allocate new GC objects. Re-copy them.
 static wah_error_t wah_fixup_primary_global_imports(wah_exec_context_t *ctx) {
     const wah_module_t *module = ctx->module;
     for (uint32_t i = 0; i < module->import_global_count; i++) {
@@ -17460,7 +17463,6 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     WAH_CHECK_GOTO(wah_resolve_primary_table_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_primary_memory_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_finalize_owned_linked_contexts(ctx), cleanup);
-    WAH_CHECK_GOTO(wah_convert_linked_funcref_globals(ctx), cleanup);
     WAH_CHECK_GOTO(wah_fixup_primary_global_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_init_table_init_exprs(ctx), cleanup);
     WAH_CHECK_GOTO(wah_init_active_elem_segments(ctx), cleanup);

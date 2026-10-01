@@ -3648,6 +3648,43 @@ int main() {
         wah_free_module(&l);
     }
 
+    // ref.func values in linked module globals must be converted before being copied to other modules,
+    // otherwise they were left unconverted or converted in the index space of a wrong module.
+    printf("Testing ref.func globals imported between linked modules...\n");
+    {
+        wah_module_t a = {0}, b = {0}, p = {0};
+        assert_ok(wah_parse_module_from_spec(&a, "wasm \
+            types {[ fn [] [i32] ]} funcs {[ 0, 0 ]} \
+            globals {[ type.ref.null 0 immut ref.func 1 end ]} \
+            exports {[ {'g'} global# 0 ]} \
+            code {[ {[] i32.const 11 end}, {[] i32.const 22 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&b, "wasm \
+            types {[ fn [] [i32] ]} imports {[ {'a'} {'g'} global# type.ref.null 0 immut ]} \
+            funcs {[ 0, 0, 0, 0 ]} \
+            globals {[ type.ref.null 0 immut global.get 0 end ]} \
+            exports {[ {'call_imp'} fn# 2, {'call_own'} fn# 3 ]} \
+            code {[ {[] i32.const 33 end}, {[] i32.const 44 end}, \
+                    {[] global.get 0 call_ref 0 end}, {[] global.get 1 call_ref 0 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&p, "wasm \
+            types {[ fn [] [i32] ]} imports {[ {'b'} {'call_imp'} fn# 0, {'b'} {'call_own'} fn# 0 ]}"));
+        for (int order = 0; order < 2; ++order) {
+            wah_exec_context_t ctx = {0};
+            assert_ok(wah_new_exec_context(&ctx, &p, NULL));
+            assert_ok(wah_link_module(&ctx, order ? "b" : "a", order ? &b : &a));
+            assert_ok(wah_link_module(&ctx, order ? "a" : "b", order ? &a : &b));
+            assert_ok(wah_instantiate(&ctx));
+            wah_value_t r;
+            assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
+            assert_eq_i32(r.i32, 22);
+            assert_ok(wah_call(&ctx, 1, NULL, 0, &r));
+            assert_eq_i32(r.i32, 22);
+            wah_free_exec_context(&ctx);
+        }
+        wah_free_module(&p);
+        wah_free_module(&b);
+        wah_free_module(&a);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
