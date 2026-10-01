@@ -208,6 +208,52 @@ static void test_destroy_while_deadline_armed(void) {
     wah_free_module(&mod);
 }
 
+// Start functions of linked modules run under the same limits as the primary module.
+static void test_linked_start_function_limits(void) {
+    printf("Testing linked start functions respect deadline and fuel...\n");
+    fflush(stdout);
+    wah_module_t linked = {0}, primary = {0};
+
+    // Infinite loop without fuel metering: only the deadline can stop it
+    assert_ok(wah_parse_module_from_spec(&linked, "wasm \
+        types {[fn [] []]} funcs {[0]} start {0} \
+        code {[{[] loop void br 0 end end}]}"));
+    assert_ok(wah_parse_module_from_spec(&primary, "wasm types {[]}"));
+    {
+        wah_exec_context_t ctx = {0};
+        wah_exec_options_t options = {0};
+        options.limits.deadline_us = 10000;
+        assert_ok(wah_new_exec_context(&ctx, &primary, &options));
+        assert_ok(wah_link_module(&ctx, "linked", &linked));
+        assert_err(wah_instantiate(&ctx), WAH_STATUS_YIELDED);
+        wah_free_exec_context(&ctx);
+    }
+    wah_free_module(&linked);
+    wah_free_module(&primary);
+
+    // Both metered: the primary's fuel is used for the linked start function
+    assert_ok(wah_parse_module_from_spec_ex(&linked, &fuel_opts, "wasm \
+        types {[fn [] []]} funcs {[0]} start {0} \
+        code {[{[1 i32] loop void local.get 0 i32.const 1 i32.add local.tee 0 i32.const 100 i32.lt_s br_if 0 end end}]}"));
+    assert_ok(wah_parse_module_from_spec_ex(&primary, &fuel_opts, "wasm types {[]}"));
+    for (int enough = 0; enough < 2; ++enough) {
+        wah_exec_context_t ctx = {0};
+        wah_exec_options_t options = {0};
+        options.limits.fuel = enough ? 100000 : 100;
+        assert_ok(wah_new_exec_context(&ctx, &primary, &options));
+        assert_ok(wah_link_module(&ctx, "linked", &linked));
+        if (enough) {
+            assert_ok(wah_instantiate(&ctx));
+            assert_true(wah_get_fuel(&ctx) < 100000 - 100 * 6);
+        } else {
+            assert_err(wah_instantiate(&ctx), WAH_STATUS_FUEL_EXHAUSTED);
+        }
+        wah_free_exec_context(&ctx);
+    }
+    wah_free_module(&linked);
+    wah_free_module(&primary);
+}
+
 int main(void) {
     test_interrupt_without_gc();
     test_is_interrupted_in_host_function();
@@ -217,6 +263,7 @@ int main(void) {
     test_fast_call_disarms_deadline();
     test_uint64_max_deadline_is_no_deadline();
     test_destroy_while_deadline_armed();
+    test_linked_start_function_limits();
 
     printf("\n=== All interrupt/deadline tests passed ===\n");
     return 0;

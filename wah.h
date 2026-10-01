@@ -15374,13 +15374,12 @@ static void wah_cancel_internal(wah_exec_context_t *ctx) {
 #endif
 }
 
-static wah_error_t wah_start_internal(
-    wah_exec_context_t *ctx, uint32_t func_idx,
+// `fn` may belong to a different (linked) context, in which case it runs with `ctx`'s stack and limits.
+static wah_error_t wah_start_function_internal(
+    wah_exec_context_t *ctx, const wah_function_t *fn,
     const wah_value_t *params, uint32_t param_count
 ) {
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
-    WAH_ENSURE(func_idx < ctx->function_table_count, WAH_ERROR_NOT_FOUND);
-    const wah_function_t *fn = &ctx->function_table[func_idx].func;
 
     ctx->lifecycle.base_sp = ctx->sp;
     ctx->lifecycle.base_call_depth = ctx->call_depth;
@@ -15440,6 +15439,15 @@ static wah_error_t wah_start_internal(
     ctx->lifecycle.state = WAH_EXEC_SUSPENDED;
     ctx->lifecycle.stop_reason = WAH_OK;
     return WAH_OK;
+}
+
+static wah_error_t wah_start_internal(
+    wah_exec_context_t *ctx, uint32_t func_idx,
+    const wah_value_t *params, uint32_t param_count
+) {
+    WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
+    WAH_ENSURE(func_idx < ctx->function_table_count, WAH_ERROR_NOT_FOUND);
+    return wah_start_function_internal(ctx, &ctx->function_table[func_idx].func, params, param_count);
 }
 
 static wah_error_t wah_resume_internal(wah_exec_context_t *ctx) {
@@ -17273,29 +17281,20 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
     return WAH_OK;
 }
 
+// Linked start functions run on the primary context, so that its fuel, deadline and budget apply.
 static wah_error_t wah_call_linked_start_functions(wah_exec_context_t *ctx) {
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
         const wah_module_t *lmod = ctx->linked_modules[j].module;
         wah_exec_context_t *ictx = ctx->linked_modules[j].ctx;
         if (ictx && ctx->linked_modules[j].owns_ctx && lmod->has_start_function) {
-            ictx->stack_buffer = ctx->stack_buffer;
-            ictx->stack_buffer_size = ctx->stack_buffer_size;
-            ictx->value_stack = ctx->value_stack;
-            ictx->sp = ctx->sp;
-            ictx->frame_ptr = ctx->frame_ptr;
-            ictx->call_depth = ctx->call_depth;
-            ictx->exception_handlers = ctx->exception_handlers;
-            ictx->exception_handler_depth = ctx->exception_handler_depth;
-            wah_error_t err = wah_call_module(ictx, lmod->start_function_idx, NULL, 0, NULL);
-            ictx->stack_buffer = NULL;
-            ictx->stack_buffer_size = 0;
-            ictx->value_stack = NULL;
-            ictx->sp = NULL;
-            ictx->frame_ptr = NULL;
-            ictx->call_depth = 0;
-            ictx->exception_handlers = NULL;
-            ictx->exception_handler_depth = 0;
-            WAH_CHECK(err);
+            WAH_ENSURE(lmod->start_function_idx < ictx->function_table_count, WAH_ERROR_NOT_FOUND);
+            WAH_CHECK(wah_start_function_internal(ctx, &ictx->function_table[lmod->start_function_idx].func, NULL, 0));
+            wah_error_t err = wah_resume_internal(ctx);
+            if (err != WAH_OK) {
+                wah_cancel_internal(ctx);
+                return err;
+            }
+            WAH_CHECK(wah_finish_internal(ctx, NULL, 0, NULL));
         }
     }
     return WAH_OK;
