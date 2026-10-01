@@ -3991,6 +3991,32 @@ int main() {
         wah_free_module(&m);
     }
 
+    // Linked modules with tags get their own context early, which shouldn't skip re-evaluating their globals.
+    printf("Testing linked module with a tag initializes globals from imported globals...\n");
+    {
+        wah_module_t p = {0}, l = {0}, prim = {0};
+        assert_ok(wah_parse_module_from_spec(&p, "wasm \
+            types {[]} globals {[ i32 0 i32.const 42 end ]} exports {[ {'g'} global# 0 ]}"));
+        assert_ok(wah_parse_module_from_spec(&l, "wasm \
+            types {[ fn [] [] ]} imports {[ {'p'} {'g'} global# i32 0 ]} \
+            tags {[ tag.type# 0 ]} globals {[ i32 0 global.get 0 end ]} exports {[ {'h'} global# 1 ]}"));
+        assert_ok(wah_parse_module_from_spec(&prim, "wasm \
+            types {[ fn [] [i32] ]} imports {[ {'l'} {'h'} global# i32 0 ]} \
+            funcs {[ 0 ]} code {[ {[] global.get 0 end} ]}"));
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &prim, NULL));
+        assert_ok(wah_link_module(&ctx, "p", &p));
+        assert_ok(wah_link_module(&ctx, "l", &l));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t r;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
+        assert_eq_i32(r.i32, 42);
+        wah_free_exec_context(&ctx);
+        wah_free_module(&prim);
+        wah_free_module(&l);
+        wah_free_module(&p);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

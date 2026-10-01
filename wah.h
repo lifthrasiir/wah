@@ -16847,8 +16847,8 @@ static wah_error_t wah_init_linked_globals(wah_exec_context_t *ctx) {
     uint32_t offset = wah_global_index_limit(module);
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
         const wah_module_t *linked = ctx->linked_modules[j].module;
-        wah_exec_context_t *lctx = ctx->linked_modules[j].ctx;
-        if (!lctx) {
+        // Owned contexts may already exist for linked modules with tags
+        if (!ctx->linked_modules[j].ctx || ctx->linked_modules[j].owns_ctx) {
             ctx->globals = saved_globals + offset;
             ctx->global_count = wah_global_index_limit(linked);
             ctx->module = linked;
