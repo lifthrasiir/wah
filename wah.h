@@ -11097,9 +11097,8 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
         }
     }
 
-    wah_free(alloc, exec_ctx->dependents);
-
-    // Unregister owned contexts from their transitive import owners (before freeing)
+    // Unregister owned contexts from their transitive import owners (before freeing),
+    // which may include this context itself
     for (uint32_t i = 0; exec_ctx->linked_modules && i < exec_ctx->linked_module_count; ++i) {
         if (!exec_ctx->linked_modules[i].owns_ctx) continue;
         wah_exec_context_t *ictx = exec_ctx->linked_modules[i].ctx;
@@ -11123,6 +11122,10 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
             }
         }
     }
+
+    wah_free(alloc, exec_ctx->dependents);
+    exec_ctx->dependents = NULL;
+    exec_ctx->dependent_count = 0;
 
     // Free linked modules
     if (exec_ctx->linked_modules) {

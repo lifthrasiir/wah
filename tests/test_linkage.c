@@ -3785,6 +3785,45 @@ int main() {
         wah_free_module(&q);
     }
 
+    // An owned context registered as a dependent of its own primary (through a re-export chain)
+    // should be unregistered before the primary's dependent list is freed.
+    printf("Testing freeing a context with owned contexts depending on it...\n");
+    {
+        wah_module_t p = {0}, a = {0}, b = {0};
+        assert_ok(wah_parse_module_from_spec(&p, "wasm \
+            types {[ fn [i32] [i32] ]} \
+            imports {[ {'b'} {'load'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            memories {[ limits.i32/2 1 10 ]} \
+            exports {[ {'mem'} mem# 0, {'run'} fn# 1 ]} \
+            code {[ {[] local.get 0 call 0 end } ]}"));
+        // A imports P's memory through the primary's exports and re-exports it to B
+        assert_ok(wah_parse_module_from_spec(&a, "wasm \
+            imports {[ {'x'} {'mem'} mem# limits.i32/2 1 10 ]} \
+            exports {[ {'mem2'} mem# 0 ]}"));
+        assert_ok(wah_parse_module_from_spec(&b, "wasm \
+            types {[ fn [i32] [i32] ]} \
+            imports {[ {'a'} {'mem2'} mem# limits.i32/2 1 10 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'load'} fn# 0 ]} \
+            code {[ {[] local.get 0 i32.load 2 0 end } ]}"));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &p, NULL));
+        assert_ok(wah_link_module(&ctx, "a", &a));
+        assert_ok(wah_link_module(&ctx, "b", &b));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t arg = {.i32 = 0}, res;
+        assert_ok(wah_call_by_name(&ctx, "run", &arg, 1, &res));
+        assert_eq_i32(res.i32, 0);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&b);
+        wah_free_module(&a);
+        wah_free_module(&p);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
