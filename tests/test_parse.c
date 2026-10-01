@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <time.h>
 #include <string.h>
 #include <assert.h>
 
@@ -1209,6 +1210,30 @@ static void test_cast_metadata_memory_amplification(void) {
     assert_true(parse_peak_bytes(spec) < 4 * 1024 * 1024);
 }
 
+// Distinct rec groups used to be compared against all previous ones of the same size.
+static double parse_distinct_func_types_seconds(int n) {
+    // Type i = fn (ref null i-1) -> (), all distinct
+    char *spec = (char *)malloc(64 + (size_t)n * 40);
+    assert_true(spec != NULL);
+    char *p = spec + snprintf(spec, 64, "wasm types {[fn [] []");
+    for (int i = 1; i < n; i++) p += snprintf(p, 40, ",fn [type.ref.null %d] []", i - 1);
+    strcpy(p, "]}");
+    wah_module_t module = {0};
+    clock_t start = clock();
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
+    wah_free_module(&module);
+    free(spec);
+    return elapsed;
+}
+
+static void test_rec_group_canonicalization_time(void) {
+    printf("Running test_rec_group_canonicalization_time...\n");
+    double small = parse_distinct_func_types_seconds(10000), large = parse_distinct_func_types_seconds(40000);
+    printf("  10000 types: %.3fs, 40000 types: %.3fs\n", small, large);
+    assert_true(large < small * 8 + 0.1); // Quadratic would be 16x
+}
+
 // Saved initialization states of non-defaultable locals should grow only as blocks get nested.
 static void test_local_init_stack_memory_amplification(void) {
     printf("Running test_local_init_stack_memory_amplification...\n");
@@ -1219,6 +1244,7 @@ static void test_local_init_stack_memory_amplification(void) {
 
 int main(void) {
     test_local_decls_memory_amplification();
+    test_rec_group_canonicalization_time();
     test_cast_metadata_memory_amplification();
     test_local_init_stack_memory_amplification();
     test_v128_locals_and_block_types_require_simd_feature();

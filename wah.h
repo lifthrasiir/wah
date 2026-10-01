@@ -4657,6 +4657,55 @@ static bool wah_types_structurally_equal(const wah_module_t *module, uint32_t a,
     return true;
 }
 
+// Hash of a rec group which is equal for structurally equal groups (see wah_types_structurally_equal).
+// The mixer is bijective and inputs are small, so deliberate collisions are expensive to find.
+static inline uint64_t wah_rec_group_hash_mix(uint64_t h, uint64_t v) {
+    h += v + UINT64_C(0x9e3779b97f4a7c15);
+    h = (h ^ (h >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+    h = (h ^ (h >> 27)) * UINT64_C(0x94d049bb133111eb);
+    return h ^ (h >> 31);
+}
+
+static uint64_t wah_rec_group_hash_type(uint64_t h, wah_type_t t, uint32_t rg_start, uint32_t rg_size,
+                                        const uint32_t *canonical_map) {
+    if (t < 0) return wah_rec_group_hash_mix(wah_rec_group_hash_mix(h, 0), (uint32_t)t);
+    uint32_t idx = WAH_TYIDX(t);
+    uint64_t nullable = WAH_TYPE_IS_NULLABLE(t);
+    if (idx >= rg_start && idx < rg_start + rg_size) {
+        return wah_rec_group_hash_mix(wah_rec_group_hash_mix(h, 1), ((uint64_t)(idx - rg_start) << 1) | nullable);
+    }
+    return wah_rec_group_hash_mix(wah_rec_group_hash_mix(h, 2), ((uint64_t)canonical_map[idx] << 1) | nullable);
+}
+
+static uint64_t wah_rec_group_hash(const wah_module_t *module, uint32_t rg_start, const uint32_t *canonical_map) {
+    uint32_t rg_size = module->type_defs[rg_start].rec_group_size;
+    uint64_t h = wah_rec_group_hash_mix(0, rg_size);
+    for (uint32_t i = rg_start; i < rg_start + rg_size; ++i) {
+        const wah_type_def_t *td = &module->type_defs[i];
+        h = wah_rec_group_hash_mix(h, ((uint64_t)td->kind << 1) | td->is_final);
+        if (td->supertype == WAH_NO_SUPERTYPE) {
+            h = wah_rec_group_hash_mix(h, 3);
+        } else {
+            h = wah_rec_group_hash_type(h, WAH_TYPE_FROM_IDX(td->supertype, 0), rg_start, rg_size, canonical_map);
+        }
+        if (td->kind == WAH_COMP_FUNC) {
+            const wah_func_type_t *ft = &module->types[i];
+            h = wah_rec_group_hash_mix(h, ((uint64_t)ft->param_count << 32) | ft->result_count);
+            for (uint32_t j = 0; j < ft->param_count; ++j)
+                h = wah_rec_group_hash_type(h, ft->param_types[j], rg_start, rg_size, canonical_map);
+            for (uint32_t j = 0; j < ft->result_count; ++j)
+                h = wah_rec_group_hash_type(h, ft->result_types[j], rg_start, rg_size, canonical_map);
+        } else {
+            h = wah_rec_group_hash_mix(h, td->field_count);
+            for (uint32_t j = 0; j < td->field_count; ++j) {
+                h = wah_rec_group_hash_type(h, td->field_types[j], rg_start, rg_size, canonical_map);
+                h = wah_rec_group_hash_mix(h, td->field_mutables[j]);
+            }
+        }
+    }
+    return h;
+}
+
 #define WAH_MAX_TYPE_RECURSION_DEPTH 256
 
 // Pairs of rec groups (by start index) already known to be equal during a single equality check.
@@ -5099,7 +5148,8 @@ static void wah_module_clear_type_metadata(wah_module_t *module) {
 static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
     wah_error_t err;
     const wah_alloc_t *alloc = &module->alloc;
-    uint32_t *canonical_map = NULL;
+    uint32_t *canonical_map = NULL, *group_slots = NULL;
+    uint64_t *group_hashes = NULL;
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     wah_repr_info_t *info = NULL;
 #endif
@@ -5110,14 +5160,21 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
     WAH_MALLOC_ARRAY_GOTO(canonical_map, module->type_count, cleanup);
     for (uint32_t i = 0; i < module->type_count; ++i) canonical_map[i] = i;
 
+    // Find canonical rec groups by hash. Each slot holds a canonical group start + 1 (0 = empty).
+    uint32_t group_slots_cap = 16;
+    while (group_slots_cap < module->type_count * 2) group_slots_cap *= 2;
+    WAH_MALLOC_ARRAY_GOTO(group_slots, group_slots_cap, cleanup);
+    WAH_MALLOC_ARRAY_GOTO(group_hashes, module->type_count, cleanup);
+    memset(group_slots, 0, (size_t)group_slots_cap * sizeof(group_slots[0]));
     for (uint32_t i = 0; i < module->type_count; ++i) {
         wah_type_def_t *td_i = &module->type_defs[i];
         if (i != td_i->rec_group_start) continue;
         uint32_t rg_size_i = td_i->rec_group_size;
-        for (uint32_t j = 0; j < i; ++j) {
-            wah_type_def_t *td_j = &module->type_defs[j];
-            if (j != td_j->rec_group_start) continue;
-            if (td_j->rec_group_size != rg_size_i) continue;
+        uint64_t h = group_hashes[i] = wah_rec_group_hash(module, i, canonical_map);
+        uint32_t slot = (uint32_t)(h >> 32) & (group_slots_cap - 1);
+        for (; group_slots[slot]; slot = (slot + 1) & (group_slots_cap - 1)) {
+            uint32_t j = group_slots[slot] - 1;
+            if (group_hashes[j] != h || module->type_defs[j].rec_group_size != rg_size_i) continue;
             bool match = true;
             for (uint32_t k = 0; k < rg_size_i && match; ++k) {
                 match = wah_types_structurally_equal(module, i + k, j + k, canonical_map);
@@ -5127,7 +5184,10 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
                 break;
             }
         }
+        if (!group_slots[slot]) group_slots[slot] = i + 1; // No match found
     }
+    wah_free(alloc, group_slots); group_slots = NULL;
+    wah_free(alloc, group_hashes); group_hashes = NULL;
 
     for (uint32_t i = 0; i < module->type_count; ++i) {
         wah_type_def_t *td = &module->type_defs[i];
@@ -5218,6 +5278,8 @@ cleanup:
     wah_free(alloc, info);
 #endif
     wah_free(alloc, canonical_map);
+    wah_free(alloc, group_slots);
+    wah_free(alloc, group_hashes);
     wah_module_clear_type_metadata(module);
     return err;
 }
