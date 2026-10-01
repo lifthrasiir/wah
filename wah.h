@@ -16325,11 +16325,11 @@ cleanup:
 
 wah_error_t wah_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages) {
     wah_error_t err;
-    const wah_alloc_t *alloc = &mod->alloc;
     char *name_copy = NULL;
 
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
+    const wah_alloc_t *alloc = &mod->alloc;
     WAH_ENSURE(min_pages > 0, WAH_ERROR_MISUSE);
     WAH_ENSURE(max_pages >= min_pages, WAH_ERROR_MISUSE);
 

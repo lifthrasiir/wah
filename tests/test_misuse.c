@@ -66,10 +66,20 @@ static void test_gc_misuse(void) {
     wah_free_module(&module);
 }
 
+static void test_module_builder_misuse(void) {
+    printf("Testing module builder misuse...\n");
+    wah_type_t type;
+    assert_err(wah_define_type(NULL, &type, "fn () -> ()"), WAH_ERROR_MISUSE);
+    assert_err(wah_export_memory(NULL, "mem", 1, 1), WAH_ERROR_MISUSE);
+    assert_err(wah_export_global_i32(NULL, "g", false, 0), WAH_ERROR_MISUSE);
+    assert_err(wah_export_global_f64(NULL, "g", false, 0.0), WAH_ERROR_MISUSE);
+}
+
 int main(void) {
     test_exec_context_misuse();
     test_fuel_misuse();
     test_gc_misuse();
+    test_module_builder_misuse();
     printf("API misuse tests passed\n");
     return 0;
 }
