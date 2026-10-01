@@ -2,6 +2,8 @@
 #include "common.h"
 #include "wah_impl.h"
 #include <stdio.h>
+#include <string.h>
+#include <time.h>
 
 static void host_return_null_ref(wah_call_context_t *ctx, void *userdata) {
     (void)userdata;
@@ -688,7 +690,42 @@ static void test_linked_module_ictx_memory_type_validation() {
     wah_free_module(&primary);
 }
 
+// Cross-module type equality used to recompute shared rec groups, taking exponential time for DAGs
+// like T_k = struct { ref null T_{k-1}, ref null T_{k-1} }.
+static void test_cross_module_type_eq_dag() {
+    printf("Testing cross-module type equality of DAG-shaped types is fast...\n");
+    enum { K = 30 };
+    static char types[64 + K * 64], prov_spec[256 + sizeof(types)], cons_spec[256 + sizeof(types)];
+    strcpy(types, "types {[ struct []");
+    for (int k = 1; k <= K; k++) {
+        char buf[64];
+        snprintf(buf, sizeof(buf), ", struct [type.ref.null %d immut, type.ref.null %d immut]", k - 1, k - 1);
+        strcat(types, buf);
+    }
+    char buf[64];
+    snprintf(buf, sizeof(buf), ", fn [type.ref.null %d] [] ]}", K);
+    strcat(types, buf);
+    snprintf(prov_spec, sizeof(prov_spec), "wasm %s funcs {[%d]} exports {[{'f'} fn# 0]} code {[{[] end}]}", types, K + 1);
+    snprintf(cons_spec, sizeof(cons_spec), "wasm %s imports {[{'p'} {'f'} fn# %d]}", types, K + 1);
+
+    wah_module_t prov = {0}, cons = {0};
+    assert_ok(wah_parse_module_from_spec(&prov, prov_spec));
+    assert_ok(wah_parse_module_from_spec(&cons, cons_spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &cons, NULL));
+    assert_ok(wah_link_module(&ctx, "p", &prov));
+    clock_t start = clock();
+    assert_ok(wah_instantiate(&ctx));
+    double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
+    printf("  instantiated in %.3fs\n", elapsed);
+    assert_true(elapsed < 1.0); // Would take 2^30 steps otherwise
+    wah_free_exec_context(&ctx);
+    wah_free_module(&cons);
+    wah_free_module(&prov);
+}
+
 int main() {
+    test_cross_module_type_eq_dag();
     test_cross_module_call_indirect();
     test_linked_module_imported_table_grow();
     test_elem_before_data_order();
