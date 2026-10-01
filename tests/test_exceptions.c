@@ -104,6 +104,24 @@ static void test_try_table_params_respect_block_floor() {
     wah_free_module(&good);
 }
 
+static void test_try_table_body_in_unreachable_code() {
+    printf("Testing try_table body in unreachable code is validated normally...\n");
+
+    // The try_table body starts with an empty stack even when the try_table itself is unreachable.
+    wah_module_t bad = {0};
+    assert_err(wah_parse_module_from_spec(&bad, "wasm \
+        types {[ fn [] [] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] \
+            unreachable \
+            try_table void [] \
+                i32.add \
+                drop \
+            end \
+        end } ]}"), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&bad);
+}
+
 // 20f1b66: Add support for exceptions: throw[_ref], try_table.
 // Runtime test for catch_all: same structure as the working catch test but with catch_all.
 static void test_catch_all() {
@@ -963,6 +981,7 @@ static void test_cancel_does_not_free_exnref_in_global() {
 int main() {
     test_try_table_catch_label_types();
     test_try_table_params_respect_block_floor();
+    test_try_table_body_in_unreachable_code();
     test_catch_all();
     test_cross_module_throw_tag_context();
     test_throw_ref_local_use_after_free();

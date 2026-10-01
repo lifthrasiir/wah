@@ -7241,6 +7241,7 @@ cleanup_block:
             for (uint32_t i = 0; i < bt->param_count; ++i) {
                 WAH_CHECK_GOTO(wah_validation_push_type(vctx, bt->param_types[i]), cleanup_try_table);
             }
+            vctx->is_unreachable = false;
 
             if (vctx->local_inits) {
                 frame->local_init_save_offset = vctx->local_init_stack_used;
