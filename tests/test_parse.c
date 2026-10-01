@@ -1234,9 +1234,35 @@ static void test_rec_group_canonicalization_time(void) {
     assert_true(large < small * 8 + 0.1); // Quadratic would be 16x
 }
 
-// Saved initialization states of non-defaultable locals should grow only as blocks get nested.
-static void test_local_init_stack_memory_amplification(void) {
-    printf("Running test_local_init_stack_memory_amplification...\n");
+// Entering a block used to copy the initialization states of all locals.
+static double parse_many_blocks_seconds(const char *locals) {
+    enum { N = 200000 };
+    static const char block[] = " block void end";
+    char *spec = (char *)malloc(256 + N * sizeof(block));
+    assert_true(spec != NULL);
+    char *p = spec + snprintf(spec, 256, "wasm types {[fn [] []]} funcs {[0]} code {[{[%s]", locals);
+    for (int i = 0; i < N; i++) { memcpy(p, block, sizeof(block) - 1); p += sizeof(block) - 1; }
+    strcpy(p, " end}]}");
+    wah_module_t module = {0};
+    clock_t start = clock();
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
+    wah_free_module(&module);
+    free(spec);
+    return elapsed;
+}
+
+static void test_block_entry_with_many_locals_time(void) {
+    printf("Running test_block_entry_with_many_locals_time...\n");
+    double few = parse_many_blocks_seconds("1 type.ref 0");
+    double many = parse_many_blocks_seconds("1 type.ref 0, 65534 i32");
+    printf("  1 local: %.3fs, 65535 locals: %.3fs\n", few, many);
+    assert_true(many < few * 1.8 + 0.05); // Used to be about 3x
+}
+
+// Tracking initialization of non-defaultable locals shouldn't take memory proportional to the nesting.
+static void test_local_init_tracking_memory_amplification(void) {
+    printf("Running test_local_init_tracking_memory_amplification...\n");
     // Preallocating for the maximum control depth would take 64K * 256 = 16 MB
     assert_true(parse_peak_bytes("wasm types {[fn [] []]} funcs {[0]} \
         code {[{[1 type.ref 0, 65534 i32] block void block void end end end}]}") < 2 * 1024 * 1024);
@@ -1244,9 +1270,10 @@ static void test_local_init_stack_memory_amplification(void) {
 
 int main(void) {
     test_local_decls_memory_amplification();
+    test_block_entry_with_many_locals_time();
     test_rec_group_canonicalization_time();
     test_cast_metadata_memory_amplification();
-    test_local_init_stack_memory_amplification();
+    test_local_init_tracking_memory_amplification();
     test_v128_locals_and_block_types_require_simd_feature();
     test_parse_module_argument_errors();
     test_zero_params_zero_results_func_type();
