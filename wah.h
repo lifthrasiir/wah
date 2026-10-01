@@ -10228,7 +10228,8 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
     for (uint32_t m = 0; m < ctx->linked_module_count; m++) {
         const wah_module_t *linked = ctx->linked_modules[m].module;
         uint32_t linked_globals = wah_global_index_limit(linked);
-        if (linked_globals > 0) {
+        wah_exec_context_t *lctx = ctx->linked_modules[m].ctx;
+        if (linked_globals > 0 && (!lctx || ctx->linked_modules[m].owns_ctx)) { // Others are visited in 2b
             wah_gc_visit_module_globals(linked, ctx->globals + g_offset, visitor, userdata);
         }
         g_offset += linked_globals;
@@ -16748,8 +16749,11 @@ static wah_error_t wah_prepare_linked_globals(wah_exec_context_t *ctx) {
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
         const wah_module_t *linked = ctx->linked_modules[j].module;
         wah_exec_context_t *lctx = ctx->linked_modules[j].ctx;
-        if (lctx && wah_global_index_limit(linked) > 0) {
-            memcpy(new_globals + offset, lctx->globals, wah_global_index_limit(linked) * sizeof(wah_value_t));
+        if (lctx) {
+            // Unused, see wah_linked_globals_offset
+            if (wah_global_index_limit(linked) > 0) {
+                memset(new_globals + offset, 0, wah_global_index_limit(linked) * sizeof(wah_value_t));
+            }
         } else {
             if (linked->import_global_count > 0) {
                 memset(new_globals + offset, 0, linked->import_global_count * sizeof(wah_value_t));

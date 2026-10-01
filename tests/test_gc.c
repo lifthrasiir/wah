@@ -2395,6 +2395,35 @@ int main() {
         wah_free_module(&amod);
     }
 
+    // Regression: globals of contexts linked with wah_link_context were copied into the consumer at instantiation,
+    // and the copy kept their objects alive after the provider overwrote them.
+    printf("Testing GC does not keep objects of a provider's globals as of the consumer's instantiation...\n");
+    {
+        wah_module_t lmod = {0}, pmod = {0};
+        wah_exec_context_t lctx = {0}, pctx = {0};
+        assert_ok(wah_parse_module_from_spec(&lmod, "wasm \
+            types {[ struct [i32 mut], fn [] [] ]} funcs {[ 1 ]} \
+            globals {[ anyref mut i32.const 1 struct.new 0 end ]} \
+            code {[ {[] ref.null anyref global.set 0 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&pmod, "wasm types {[]}"));
+        assert_ok(wah_new_exec_context(&lctx, &lmod, NULL));
+        assert_ok(wah_instantiate(&lctx));
+        assert_ok(wah_new_exec_context(&pctx, &pmod, NULL));
+        assert_ok(wah_link_context(&pctx, "l", &lctx));
+        assert_ok(wah_instantiate(&pctx));
+
+        assert_ok(wah_call(&lctx, 0, NULL, 0, NULL));
+        wah_gc_step(&lctx);
+        wah_gc_heap_stats_t stats;
+        wah_gc_heap_stats(&lctx, &stats);
+        assert_eq_u32((uint32_t)stats.object_count, 0);
+
+        wah_free_exec_context(&pctx);
+        wah_free_exec_context(&lctx);
+        wah_free_module(&pmod);
+        wah_free_module(&lmod);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }
