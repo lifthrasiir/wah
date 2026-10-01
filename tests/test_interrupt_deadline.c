@@ -208,6 +208,41 @@ static void test_destroy_while_deadline_armed(void) {
     wah_free_module(&mod);
 }
 
+static void host_sleep_50ms(wah_call_context_t *call, void *userdata) {
+    (void)call; (void)userdata;
+    test_sleep_ms(50);
+}
+
+// A deadline expiring after the last check of an activation should not interrupt the next activation.
+static void test_deadline_after_last_check_is_dropped(void) {
+    printf("Testing deadline expiring after the last check is dropped...\n");
+    fflush(stdout);
+    wah_module_t env = {0}, mod = {0};
+    wah_exec_context_t ctx = {0};
+    wah_exec_options_t options = {0};
+    options.limits.deadline_us = 5000;
+
+    assert_ok(wah_new_module(&env, NULL));
+    assert_ok(wah_export_func(&env, "sleep", "()", host_sleep_50ms, NULL, NULL));
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [], fn [] [i32]]} \
+        imports {[{'env'} {'sleep'} fn# 0]} funcs {[0, 1]} \
+        code {[{[] call 0 end}, {[] i32.const 42 end}]}"));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
+    assert_ok(wah_link_module(&ctx, "env", &env));
+    assert_ok(wah_instantiate(&ctx));
+
+    assert_ok(wah_call(&ctx, 1, NULL, 0, NULL));
+    assert_false(wah_is_interrupted(&ctx));
+    wah_value_t result = {0};
+    assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+    wah_free_module(&env);
+}
+
 // Start functions of linked modules run under the same limits as the primary module.
 static void test_linked_start_function_limits(void) {
     printf("Testing linked start functions respect deadline and fuel...\n");
@@ -263,6 +298,7 @@ int main(void) {
     test_fast_call_disarms_deadline();
     test_uint64_max_deadline_is_no_deadline();
     test_destroy_while_deadline_armed();
+    test_deadline_after_last_check_is_dropped();
     test_linked_start_function_limits();
 
     printf("\n=== All interrupt/deadline tests passed ===\n");

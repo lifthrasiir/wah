@@ -10666,15 +10666,19 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx) {
 }
 
 #ifndef WAH_NO_THREADS
+// The timer only fires while holding its lock, so that it can't interrupt an activation after it's disarmed.
 typedef struct wah_timer_s {
     wah_exec_context_t *ctx;
     uint64_t deadline_us;
     wah_poll_flag_t cancelled;
     wah_poll_flag_t armed;
+    uint32_t gen; // Incremented on each arming; protected by the lock
+    bool fired; // Since the last arming; protected by the lock
 #if defined(_WIN32)
     HANDLE thread;
     HANDLE event;
     HANDLE timer;
+    SRWLOCK lock;
 #else
     pthread_t thread;
     pthread_mutex_t mutex;
@@ -10682,7 +10686,11 @@ typedef struct wah_timer_s {
 #endif
 } wah_timer_t;
 
-static void wah_timer_fire(wah_timer_t *timer) {
+// Called with the lock held. Does nothing if the arming that started the wait has ended.
+static void wah_timer_fire(wah_timer_t *timer, uint32_t gen) {
+    if (!WAH_POLL_FLAG_LOAD(timer->armed) || timer->gen != gen) return;
+    WAH_POLL_FLAG_STORE(timer->armed, 0);
+    timer->fired = true;
     wah_request_interrupt(timer->ctx);
 }
 
@@ -10693,15 +10701,21 @@ static DWORD WINAPI wah_timer_main(LPVOID arg) {
         WaitForSingleObject(timer->event, INFINITE);
         ResetEvent(timer->event);
         if (WAH_POLL_FLAG_LOAD(timer->cancelled)) break;
-        if (!WAH_POLL_FLAG_LOAD(timer->armed)) continue;
+        AcquireSRWLockShared(&timer->lock);
+        bool armed = WAH_POLL_FLAG_LOAD(timer->armed) != 0;
+        uint32_t gen = timer->gen;
+        uint64_t deadline_us = timer->deadline_us;
+        ReleaseSRWLockShared(&timer->lock);
+        if (!armed) continue;
 
-        uint64_t ticks_100ns = timer->deadline_us * 10;
+        uint64_t ticks_100ns = deadline_us * 10;
         if (ticks_100ns == 0) ticks_100ns = 1;
         LARGE_INTEGER due_time;
         due_time.QuadPart = -(LONGLONG)ticks_100ns;
         if (!SetWaitableTimer(timer->timer, &due_time, 0, NULL, NULL, FALSE)) {
-            WAH_POLL_FLAG_STORE(timer->armed, 0);
-            wah_timer_fire(timer);
+            AcquireSRWLockExclusive(&timer->lock);
+            wah_timer_fire(timer, gen);
+            ReleaseSRWLockExclusive(&timer->lock);
             continue;
         }
 
@@ -10713,9 +10727,10 @@ static DWORD WINAPI wah_timer_main(LPVOID arg) {
             ResetEvent(timer->event);
             continue;
         }
-        if (rc == WAIT_OBJECT_0 + 1 && WAH_POLL_FLAG_LOAD(timer->armed)) {
-            WAH_POLL_FLAG_STORE(timer->armed, 0);
-            wah_timer_fire(timer);
+        if (rc == WAIT_OBJECT_0 + 1) {
+            AcquireSRWLockExclusive(&timer->lock);
+            wah_timer_fire(timer, gen);
+            ReleaseSRWLockExclusive(&timer->lock);
         }
     }
     return 0;
@@ -10737,12 +10752,14 @@ static void *wah_timer_main(void *arg) {
             pthread_cond_wait(&timer->cond, &timer->mutex);
         }
         if (WAH_POLL_FLAG_LOAD(timer->cancelled)) break;
+        uint32_t gen = timer->gen;
 
 #if defined(__APPLE__)
         uint64_t start_us = wah_timer_now_us();
         uint64_t deadline_us = timer->deadline_us;
         int rc = 0;
-        while (!WAH_POLL_FLAG_LOAD(timer->cancelled) && WAH_POLL_FLAG_LOAD(timer->armed) && rc != ETIMEDOUT) {
+        while (!WAH_POLL_FLAG_LOAD(timer->cancelled) && WAH_POLL_FLAG_LOAD(timer->armed) && timer->gen == gen &&
+               rc != ETIMEDOUT) {
             uint64_t now_us = wah_timer_now_us();
             uint64_t elapsed_us = now_us - start_us;
             if (elapsed_us >= deadline_us) {
@@ -10770,17 +10787,13 @@ static void *wah_timer_main(void *arg) {
             }
         }
         int rc = 0;
-        while (!WAH_POLL_FLAG_LOAD(timer->cancelled) && WAH_POLL_FLAG_LOAD(timer->armed) && rc != ETIMEDOUT) {
+        while (!WAH_POLL_FLAG_LOAD(timer->cancelled) && WAH_POLL_FLAG_LOAD(timer->armed) && timer->gen == gen &&
+               rc != ETIMEDOUT) {
             rc = pthread_cond_timedwait(&timer->cond, &timer->mutex, &deadline);
         }
 #endif
         if (WAH_POLL_FLAG_LOAD(timer->cancelled)) break;
-        if (WAH_POLL_FLAG_LOAD(timer->armed) && rc == ETIMEDOUT) {
-            WAH_POLL_FLAG_STORE(timer->armed, 0);
-            pthread_mutex_unlock(&timer->mutex);
-            wah_timer_fire(timer);
-            pthread_mutex_lock(&timer->mutex);
-        }
+        if (rc == ETIMEDOUT) wah_timer_fire(timer, gen);
     }
     pthread_mutex_unlock(&timer->mutex);
     return NULL;
@@ -10794,6 +10807,7 @@ static wah_error_t wah_new_timer(wah_exec_context_t *ctx) {
     WAH_CHECK(wah_malloc(alloc, 1, sizeof(*timer), (void **)&timer));
     *timer = (wah_timer_t){ .ctx = ctx, .deadline_us = ctx->deadline_us };
 #if defined(_WIN32)
+    InitializeSRWLock(&timer->lock);
     timer->event = CreateEventA(NULL, TRUE, FALSE, NULL);
     if (!timer->event) goto cleanup;
     timer->timer = CreateWaitableTimerA(NULL, TRUE, NULL);
@@ -10834,19 +10848,34 @@ cleanup:
 #endif
 }
 
+// Must be called with the lock held
+static void wah_timer_set_armed_locked(wah_exec_context_t *ctx, wah_timer_t *timer, bool armed) {
+    if (armed) {
+        timer->deadline_us = ctx->deadline_us;
+        timer->gen++;
+    }
+    WAH_POLL_FLAG_STORE(timer->armed, armed ? 1 : 0);
+    // An interrupt from a fire that the activation didn't get to see would yield the next one instead
+    if (timer->fired && WAH_POLL_FLAG_LOAD(ctx->interrupt_flag)) {
+        WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0);
+        wah_recompute_poll_flag(ctx);
+    }
+    timer->fired = false;
+}
+
 static void wah_timer_set_armed(wah_exec_context_t *ctx, bool armed) {
     wah_timer_t *timer = ctx->timer;
     if (!timer) return;
     if (armed && (ctx->deadline_us == 0 || ctx->deadline_us == UINT64_MAX)) return;
 #if defined(_WIN32)
-    if (armed) timer->deadline_us = ctx->deadline_us;
-    WAH_POLL_FLAG_STORE(timer->armed, armed ? 1 : 0);
+    AcquireSRWLockExclusive(&timer->lock);
+    wah_timer_set_armed_locked(ctx, timer, armed);
+    ReleaseSRWLockExclusive(&timer->lock);
     if (!armed) CancelWaitableTimer(timer->timer);
     SetEvent(timer->event);
 #else
     pthread_mutex_lock(&timer->mutex);
-    if (armed) timer->deadline_us = ctx->deadline_us;
-    WAH_POLL_FLAG_STORE(timer->armed, armed ? 1 : 0);
+    wah_timer_set_armed_locked(ctx, timer, armed);
     pthread_cond_signal(&timer->cond);
     pthread_mutex_unlock(&timer->mutex);
 #endif
