@@ -5827,6 +5827,7 @@ static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, co
         wah_type_t result_type;
         WAH_CHECK(wah_decode_val_type(code_ptr, code_end, &result_type));
         WAH_ENSURE(result_type < 0 || WAH_TYIDX(result_type) < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+        if (result_type == WAH_TYPE_V128) WAH_CHECK(wah_require_feature(vctx->module, WAH_FEATURE_SHIFT_SIMD));
         bt->result_count = 1;
         WAH_MALLOC_ARRAY(bt->result_types, 1);
         bt->result_types[0] = result_type;
@@ -6452,6 +6453,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             wah_type_t sel_type;
             WAH_CHECK(wah_decode_val_type(code_ptr, code_end, &sel_type));
             WAH_ENSURE(sel_type < 0 || WAH_TYIDX(sel_type) < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
+            if (sel_type == WAH_TYPE_V128) WAH_CHECK(wah_require_feature(vctx->module, WAH_FEATURE_SHIFT_SIMD));
             POP(I32); POP(_(sel_type)); POP(_(sel_type));
             EMIT_SIMPLE();
             return wah_validation_push_type(vctx, sel_type);
@@ -8699,7 +8701,8 @@ static wah_error_t wah_bind_table_import_slot(
 }
 
 static wah_error_t wah_parse_local_decls(const uint8_t **ptr, const uint8_t *body_end,
-                                         wah_code_body_t *body, uint32_t type_count, const wah_alloc_t *alloc) {
+                                         wah_code_body_t *body, wah_module_t *module) {
+    const wah_alloc_t *alloc = &module->alloc;
     uint32_t num_entries;
     WAH_CHECK(wah_decode_and_validate_count(ptr, body_end, &num_entries, 2));
 
@@ -8722,7 +8725,8 @@ static wah_error_t wah_parse_local_decls(const uint8_t **ptr, const uint8_t *bod
         uint32_t n; wah_type_t t;
         WAH_CHECK(wah_decode_uleb128(ptr, body_end, &n));
         WAH_CHECK(wah_decode_val_type(ptr, body_end, &t));
-        WAH_ENSURE(t < 0 || WAH_TYIDX(t) < type_count, WAH_ERROR_VALIDATION_FAILED);
+        WAH_ENSURE(t < 0 || WAH_TYIDX(t) < module->type_count, WAH_ERROR_VALIDATION_FAILED);
+        if (t == WAH_TYPE_V128) WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_SIMD));
         for (uint32_t k = 0; k < n; ++k) {
             body->local_types[idx] = t;
             idx++;
@@ -8754,7 +8758,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         WAH_ENSURE_GOTO(body_size <= (size_t)(section_end - *ptr), WAH_ERROR_MALFORMED, cleanup);
         const uint8_t *code_body_end = *ptr + body_size;
 
-        WAH_CHECK_GOTO(wah_parse_local_decls(ptr, code_body_end, &module->code_bodies[i], module->type_count, alloc), cleanup);
+        WAH_CHECK_GOTO(wah_parse_local_decls(ptr, code_body_end, &module->code_bodies[i], module), cleanup);
 
         module->code_bodies[i].code_size = (uint32_t)(code_body_end - *ptr);
         module->code_bodies[i].code = *ptr;

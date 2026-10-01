@@ -1125,7 +1125,27 @@ static void test_import_tag_requires_exception_feature(void) {
     wah_free_module(&module);
 }
 
+static void test_v128_locals_and_block_types_require_simd_feature(void) {
+    printf("Running test_v128_locals_and_block_types_require_simd_feature...\n");
+    wah_module_t module = {0};
+    wah_parse_options_t opts = { .features = WAH_FEATURE_MVP };
+    assert_err(wah_parse_module_from_spec_ex(&module, &opts,
+        "wasm types {[fn [] []]} funcs {[0]} code {[{[1 v128] end}]}"),
+        WAH_ERROR_DISABLED_FEATURE);
+    wah_free_module(&module);
+    assert_err(wah_parse_module_from_spec_ex(&module, &opts,
+        "wasm types {[fn [] []]} funcs {[0]} code {[{[] block v128 unreachable end drop end}]}"),
+        WAH_ERROR_DISABLED_FEATURE);
+    wah_free_module(&module);
+    opts.features = WAH_FEATURE_MVP | WAH_FEATURE_REF_TYPES;
+    assert_err(wah_parse_module_from_spec_ex(&module, &opts,
+        "wasm types {[fn [] []]} funcs {[0]} code {[{[] unreachable select.typed [v128] drop end}]}"),
+        WAH_ERROR_DISABLED_FEATURE);
+    wah_free_module(&module);
+}
+
 int main(void) {
+    test_v128_locals_and_block_types_require_simd_feature();
     test_parse_module_argument_errors();
     test_zero_params_zero_results_func_type();
     test_invalid_section_order_mem_table();
