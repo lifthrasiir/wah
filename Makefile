@@ -20,7 +20,7 @@ endif
 ifneq ($(strip $(SANITIZERS)),)
     SANITIZER_FLAGS := -fsanitize=$(SANITIZERS) -fno-omit-frame-pointer
 ifneq ($(findstring undefined,$(SANITIZERS)),)
-    SANITIZER_FLAGS += -DWAH_SANITIZE_UNDEFINED
+    SANITIZER_FLAGS += -DWAH_SANITIZE_UNDEFINED -fno-sanitize-recover=undefined
 endif
 endif
 
