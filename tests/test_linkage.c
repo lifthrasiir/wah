@@ -3733,6 +3733,58 @@ int main() {
         wah_free_module(&provider_mod);
     }
 
+    // An owned linked context importing a memory/table from a context linked with wah_link_context
+    // should see grows made through that context directly.
+    printf("Testing owned linked contexts see grows of memories and tables imported from linked contexts...\n");
+    {
+        wah_module_t q = {0}, t = {0}, s = {0};
+        assert_ok(wah_parse_module_from_spec(&q, "wasm \
+            types {[ fn [i32] [i32] ]} funcs {[ 0, 0 ]} \
+            tables {[ funcref limits.i32/2 1 10 ]} \
+            memories {[ limits.i32/2 1 10 ]} \
+            exports {[ {'mem'} mem# 0, {'tab'} table# 0, {'grow_mem'} fn# 0, {'grow_tab'} fn# 1 ]} \
+            code {[ {[] local.get 0 memory.grow 0 end }, \
+                    {[] ref.null funcref local.get 0 table.grow 0 end } ]}"));
+        assert_ok(wah_parse_module_from_spec(&t, "wasm \
+            types {[ fn [i32] [i32] ]} \
+            imports {[ {'q'} {'mem'} mem# limits.i32/2 1 10, {'q'} {'tab'} table# funcref limits.i32/2 1 10 ]} \
+            funcs {[ 0, 0 ]} \
+            exports {[ {'load'} fn# 0, {'tab_size'} fn# 1 ]} \
+            code {[ {[] local.get 0 i32.load 2 0 end }, {[] table.size 0 end } ]}"));
+        assert_ok(wah_parse_module_from_spec(&s, "wasm \
+            types {[ fn [i32] [i32] ]} \
+            imports {[ {'t'} {'load'} fn# 0, {'t'} {'tab_size'} fn# 0 ]} \
+            funcs {[ 0, 0 ]} \
+            exports {[ {'load'} fn# 2, {'tab_size'} fn# 3 ]} \
+            code {[ {[] local.get 0 call 0 end }, {[] local.get 0 call 1 end } ]}"));
+
+        wah_exec_context_t qctx = {0}, sctx = {0};
+        assert_ok(wah_new_exec_context(&qctx, &q, NULL));
+        assert_ok(wah_instantiate(&qctx));
+        assert_ok(wah_new_exec_context(&sctx, &s, NULL));
+        assert_ok(wah_link_context(&sctx, "q", &qctx));
+        assert_ok(wah_link_module(&sctx, "t", &t));
+        assert_ok(wah_instantiate(&sctx));
+
+        wah_value_t arg = {.i32 = 3}, res;
+        assert_ok(wah_call_by_name(&qctx, "grow_mem", &arg, 1, &res));
+        assert_eq_i32(res.i32, 1);
+        assert_ok(wah_call_by_name(&qctx, "grow_tab", &arg, 1, &res));
+        assert_eq_i32(res.i32, 1);
+
+        arg.i32 = 3 * 65536;
+        assert_ok(wah_call_by_name(&sctx, "load", &arg, 1, &res));
+        assert_eq_i32(res.i32, 0);
+        assert_ok(wah_call_by_name(&sctx, "tab_size", &arg, 1, &res));
+        assert_eq_i32(res.i32, 4);
+
+        wah_free_exec_context(&sctx);
+        wah_free_exec_context(&qctx);
+        wah_free_module(&s);
+        wah_free_module(&t);
+        wah_free_module(&q);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

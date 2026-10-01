@@ -11738,6 +11738,12 @@ static void wah_propagate_table_import_aliases(wah_exec_context_t *ctx, wah_exec
         wah_exec_context_t *dep = owner_ctx->dependents[d];
         if (dep == ctx || dep == fctx) continue;
         wah_update_table_import_aliases(dep, UINT32_MAX, owner_ctx, owner_idx, entries, size);
+        // Owned contexts of the dependent may import from the owner too
+        for (uint32_t m = 0; m < dep->linked_module_count; m++) {
+            wah_exec_context_t *lctx = dep->linked_modules[m].ctx;
+            if (!dep->linked_modules[m].owns_ctx || !lctx || lctx == fctx) continue;
+            wah_update_table_import_aliases(lctx, UINT32_MAX, owner_ctx, owner_idx, entries, size);
+        }
     }
     if (owner_ctx != ctx) {
         for (uint32_t m = 0; m < owner_ctx->linked_module_count; m++) {
@@ -11763,6 +11769,12 @@ static void wah_propagate_memory_import_aliases(wah_exec_context_t *ctx, wah_exe
         wah_exec_context_t *dep = owner_ctx->dependents[d];
         if (dep == ctx || dep == fctx) continue;
         wah_update_memory_import_aliases(dep, UINT32_MAX, owner_ctx, owner_idx, data, size);
+        // Owned contexts of the dependent may import from the owner too
+        for (uint32_t m = 0; m < dep->linked_module_count; m++) {
+            wah_exec_context_t *lctx = dep->linked_modules[m].ctx;
+            if (!dep->linked_modules[m].owns_ctx || !lctx || lctx == fctx) continue;
+            wah_update_memory_import_aliases(lctx, UINT32_MAX, owner_ctx, owner_idx, data, size);
+        }
     }
     if (owner_ctx != ctx) {
         for (uint32_t m = 0; m < owner_ctx->linked_module_count; m++) {
