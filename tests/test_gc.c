@@ -1987,6 +1987,50 @@ int main() {
         wah_free_module(&env_mod);
     }
 
+    // Regression: when fuel runs short, the slow island copied only instruction records,
+    // leaving out the POLL before a call. The callee then saw a stale ref map of the caller.
+    printf("Testing GC ref map: call inside a fuel slow island...\n");
+    {
+        wah_module_t env_mod = {0};
+        wah_new_module(&env_mod, NULL);
+        assert_ok(wah_export_func(&env_mod, "trigger_gc", "() -> ()", host_trigger_gc, NULL, NULL));
+
+        static const wah_parse_options_t fuel_opts = { .features = WAH_FEATURE_ALL, .enable_fuel_metering = true };
+        wah_module_t wasm_mod = {0};
+        assert_ok(wah_parse_module_from_spec_ex(&wasm_mod, &fuel_opts, "wasm \
+            types {[ struct [i32 mut], fn [] [], fn [] [i32] ]} \
+            imports {[ {'env'} {'trigger_gc'} fn# 1 ]} \
+            funcs {[2]} \
+            exports {[ {'f'} fn# 1 ]} \
+            code {[ {[] \
+                i32.const 42 struct.new 0 \
+                call 0 \
+                struct.get 0 0 \
+                i32.const 0 drop i32.const 0 drop i32.const 0 drop i32.const 0 drop \
+                i32.const 0 drop i32.const 0 drop i32.const 0 drop i32.const 0 drop \
+            end} ]}"));
+
+        wah_exec_context_t ctx2 = {0};
+        assert_ok(wah_new_exec_context(&ctx2, &wasm_mod, NULL));
+        assert_ok(wah_link_module(&ctx2, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx2));
+        assert_ok(wah_instantiate(&ctx2));
+
+        // Not enough fuel for the whole chunk, so the slow island gets executed.
+        assert_ok(wah_set_fuel(&ctx2, 10));
+        assert_ok(wah_start(&ctx2, 1, NULL, 0));
+        assert_err(wah_resume(&ctx2), WAH_STATUS_FUEL_EXHAUSTED);
+        assert_ok(wah_set_fuel(&ctx2, 1000));
+        assert_ok(wah_resume(&ctx2));
+        wah_value_t result;
+        assert_ok(wah_finish(&ctx2, &result, 1, NULL));
+        assert_eq_i32(result.i32, 42);
+
+        wah_free_exec_context(&ctx2);
+        wah_free_module(&wasm_mod);
+        wah_free_module(&env_mod);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }

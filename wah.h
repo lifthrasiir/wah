@@ -7555,12 +7555,12 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
             continue;
         }
 
+        WAH_METER_START_CHUNK();
+        WAH_METER_RECORD_INSTR_START();
+        // POLL belongs to the instruction record, so that slow islands also update the ref map before calls
         if (emit_poll && (instr->flags & WAH_INSTR_FLAG_POLL)) {
             WAH_EMIT_POLL();
         }
-
-        WAH_METER_START_CHUNK();
-        WAH_METER_RECORD_INSTR_START();
 
         #if defined(WAH_X86_64) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
         uint16_t native_opcode = wah_x86_64_opcode(opcode, features);
