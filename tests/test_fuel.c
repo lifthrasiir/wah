@@ -1199,6 +1199,20 @@ static void test_interrupted_tick_charges_once(void) {
     }
 }
 
+// Regression: negative fuel was accepted, and INT64_MIN made METER and TICK overflow.
+static void test_negative_fuel_rejected(void) {
+    printf("Testing negative fuel is rejected...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+    PARSE_FUEL(&mod, "wasm types {[ fn [] [] ]} funcs {[ 0 ]} code {[ {[] end} ]}");
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_err(wah_set_fuel(&ctx, INT64_MIN), WAH_ERROR_MISUSE);
+    assert_err(wah_set_fuel(&ctx, -1), WAH_ERROR_MISUSE);
+    assert_ok(wah_set_fuel(&ctx, 0));
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_straight_line_exact_fuel();
     test_zero_fuel();
@@ -1229,6 +1243,7 @@ int main(void) {
     test_metered_code_size();
     test_branch_targets_are_metered();
     test_interrupted_tick_charges_once();
+    test_negative_fuel_rejected();
 
     printf("\n=== All fuel tests passed ===\n");
     return 0;

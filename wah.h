@@ -1066,7 +1066,8 @@ wah_error_t wah_call_pin(wah_exec_context_t *exec_ctx, uint64_t func_idx, const 
 // Function: wah_set_fuel
 //   Resets the available fuel for execution.
 //
-//   - fuel [in]: New fuel value. Can be set to INT64_MAX to effectively disable fuel exhaustion.
+//   - fuel [in]: New fuel value, non-negative or WAH_ERROR_MISUSE is returned.
+//     Can be set to INT64_MAX to effectively disable fuel exhaustion.
 //
 //   Returns WAH_ERROR_DISABLED_FEATURE if fuel metering is not enabled for the module
 //   (`wah_parse_options_t::enable_fuel_metering` was false at parse time).
@@ -11695,6 +11696,7 @@ wah_error_t wah_set_fuel(wah_exec_context_t *ctx, int64_t fuel) {
     WAH_ENSURE(!ctx->poisoned, WAH_ERROR_MISUSE);
     WAH_ENSURE(ctx->module, WAH_ERROR_MISUSE);
     WAH_ENSURE(ctx->module->fuel_metering, WAH_ERROR_DISABLED_FEATURE);
+    WAH_ENSURE(fuel >= 0, WAH_ERROR_MISUSE);
     ctx->fuel = fuel;
     return WAH_OK;
 }
