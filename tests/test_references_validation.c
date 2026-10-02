@@ -322,6 +322,16 @@ static void test_uninit_local_tracking() {
     wah_module_t good = {0};
     assert_ok(wah_parse_module_from_spec(&good, good_spec));
     wah_free_module(&good);
+
+    // Negative: the check is the same in unreachable code, which used to be exempt
+    const char *dead_spec = "wasm \
+        types {[ fn [] [funcref] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[1 type.ref.func] unreachable local.get 0 end } ]}";
+
+    wah_module_t dead = {0};
+    assert_err(wah_parse_module_from_spec(&dead, dead_spec), WAH_ERROR_VALIDATION_FAILED);
+    wah_free_module(&dead);
 }
 
 // 43b4fce: Add subtype validation: finality check and structural compatibility.

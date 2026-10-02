@@ -6651,7 +6651,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
             if (opcode_val == WAH_OP_LOCAL_GET) {
                 if (wah_validation_local_needs_init(vctx, local_idx, expected_type) &&
-                    !vctx->local_inits->inits[local_idx] && !vctx->is_unreachable)
+                    !vctx->local_inits->inits[local_idx])
                     return WAH_ERROR_VALIDATION_FAILED;
                 PUSH(_(expected_type));
             } else if (opcode_val == WAH_OP_LOCAL_SET) {
