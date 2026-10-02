@@ -4465,6 +4465,46 @@ int main() {
         wah_free_module(&m);
     }
 
+    // Regression: a mutable global import re-exported by a linked module with a tag, thus an owned context created
+    // early, was bound to that module's import slot before it was resolved.
+    printf("Test: mutable global re-exported by an early owned context\n");
+    {
+        const char *def_spec = "wasm \
+            globals {[ i32 mut i32.const 5 end ]} \
+            exports {[ {'g'} global# 0 ]}";
+        const char *mid_spec = "wasm \
+            types {[ fn [] [] ]} \
+            imports {[ {'def'} {'g'} global# i32 mut ]} \
+            tags {[ tag.type# 0 ]} \
+            exports {[ {'g'} global# 0 ]}";
+        const char *primary_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'mid'} {'g'} global# i32 mut ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] global.get 0 i32.const 2 i32.add global.set 0 global.get 0 end } ]}";
+
+        wah_module_t def = {0}, mid = {0}, primary = {0};
+        assert_ok(wah_parse_module_from_spec(&def, def_spec));
+        assert_ok(wah_parse_module_from_spec(&mid, mid_spec));
+        assert_ok(wah_parse_module_from_spec(&primary, primary_spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "mid", &mid));
+        assert_ok(wah_link_module(&ctx, "def", &def));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t res;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &res));
+        assert_eq_i32(res.i32, 7);
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &res));
+        assert_eq_i32(res.i32, 9);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&primary);
+        wah_free_module(&mid);
+        wah_free_module(&def);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

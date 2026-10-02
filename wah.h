@@ -17325,7 +17325,9 @@ static wah_error_t wah_resolve_primary_global_imports(wah_exec_context_t *ctx, w
         uint32_t linked_global_idx = exp->index;
         WAH_ENSURE(linked_global_idx < wah_global_index_limit(linked), WAH_ERROR_LINK_FAILED);
 
-        if (linked_global_idx < linked->import_global_count && gi_linked_ctx) {
+        // Import slots of owned contexts are not resolved yet, so follow re-exports below instead
+        if (linked_global_idx < linked->import_global_count && gi_linked_ctx &&
+            !wah_is_owned_linked_ctx(ctx, gi_linked_ctx)) {
             wah_type_t vt1 = linked->global_imports[linked_global_idx].type, vt2 = gi->type;
             bool vt1_mut = linked->global_imports[linked_global_idx].is_mutable;
             WAH_CHECK(wah_validate_global_import_type(linked, vt1, vt1_mut, module, vt2, gi->is_mutable));
