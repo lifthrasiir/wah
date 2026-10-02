@@ -65,6 +65,9 @@ uint32_t wah_debug_module_import_function_count(const wah_module_t *mod) {
 uint32_t wah_debug_module_wasm_function_count(const wah_module_t *mod) {
     return mod ? mod->wasm_function_count : 0;
 }
+uint32_t wah_debug_module_bytecode_size(const wah_module_t *mod, uint32_t local_idx) {
+    return mod && local_idx < mod->wasm_function_count ? mod->code_bodies[local_idx].parsed_code.bytecode_size : 0;
+}
 uint32_t wah_debug_module_import_global_count(const wah_module_t *mod) {
     return mod ? mod->import_global_count : 0;
 }

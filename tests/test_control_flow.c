@@ -1,7 +1,44 @@
 #include "../wah.h"
 #include "common.h"
+#include "wah_impl.h"
+#include <stdlib.h>
+#include <string.h>
 #include <stdio.h>
 #include <assert.h>
+
+// br_table used to be lowered to 8 bytes per target, while a target can be encoded in a single byte.
+static void test_br_table_lowered_size() {
+    printf("Testing lowered size of a large br_table...\n");
+    enum { N = 100000 };
+    char *spec = malloc(4 * N + 256);
+    assert(spec);
+    strcpy(spec, "wasm types {[ fn [i32] [i32] ]} funcs {[ 0 ]} code {[ {[] block void block void "
+                 "local.get 0 br_table [");
+    char *p = spec + strlen(spec);
+    for (int i = 0; i < N; i++) p += snprintf(p, 4, i ? ",%d" : "%d", i & 1);
+    strcpy(p, "] 0 end i32.const 1 return end i32.const 2 end } ]}");
+    for (int metered = 0; metered < 2; metered++) {
+        wah_parse_options_t opts = { .enable_fuel_metering = metered };
+        wah_module_t module = {0};
+        assert_ok(wah_parse_module_from_spec_ex(&module, &opts, spec));
+        uint32_t size = wah_debug_module_bytecode_size(&module, 0);
+        printf("  %u bytes of bytecode for %d targets (metered=%d)\n", size, N, metered);
+        assert_true(size < (metered ? 6u : 3u) * N);
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &module, NULL));
+        if (metered) assert_ok(wah_set_fuel(&ctx, 1000));
+        static const int32_t expected[] = { 1, 2, 1, 1 };
+        for (int32_t i = 0; i < 4; i++) {
+            wah_value_t param = { .i32 = i == 3 ? N + 5 : i }, result;
+            assert_ok(wah_call(&ctx, 0, &param, 1, &result));
+            assert_eq_i32(result.i32, expected[i]);
+        }
+        wah_free_exec_context(&ctx);
+        wah_free_module(&module);
+    }
+    free(spec);
+}
 
 static void test_simple_block() {
     printf("Testing simple block...\n");
@@ -724,6 +761,7 @@ static void test_br_multi_value_keep_drop() {
 
 int main() {
     printf("=== Control Flow Tests ===\n");
+    test_br_table_lowered_size();
     test_simple_block();
     test_simple_if_const();
     test_if_else();

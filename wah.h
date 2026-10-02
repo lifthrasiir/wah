@@ -2780,7 +2780,16 @@ typedef struct {
 
     // Local initialization tracking for non-defaultable locals
     struct wah_local_inits_s *local_inits; // NULL for const exprs
+    struct wah_br_table_labels_s *br_table_labels; // NULL for const exprs
 } wah_validation_context_t;
+
+// Groups br_table targets by label, so that the work and the lowered size per target are constant.
+// Stamps tell which labels have records in the current br_table, without clearing the arrays for each one.
+typedef struct wah_br_table_labels_s {
+    uint32_t stamps[WAH_MAX_CONTROL_DEPTH + 1]; // Serial of the br_table which last recorded each label
+    uint16_t records[WAH_MAX_CONTROL_DEPTH + 1]; // Record index of each label in that br_table
+    uint32_t serial;
+} wah_br_table_labels_t;
 
 // Initialization state of non-defaultable locals, shared by all functions of a code section so that
 // the cost is proportional to the code instead of the number of declared locals.
@@ -2798,6 +2807,23 @@ typedef struct {
 } wah_validation_storage_t;
 
 // --- Analyzed-Code IR (structured output of raw-Wasm decoding + validation) ---
+
+// Immediates of br_table in a single allocation, so that they don't enlarge every decoded instruction.
+// Targets are grouped by label into records, at most one per label.
+typedef struct wah_br_table_imm_s {
+    uint32_t target_count; // Excluding the default
+    uint32_t record_count, record_cap;
+    uint32_t keep;
+    // Followed by: uint16_t targets[target_count + 1] (record of each target and the default), padding,
+    // uint32_t record_symbols[record_cap] (label of each record), uint32_t record_drops[record_cap]
+} wah_br_table_imm_t;
+
+static inline uint16_t *wah_br_table_targets(wah_br_table_imm_t *bt) { return (uint16_t *)(bt + 1); }
+static inline uint32_t *wah_br_table_symbols(wah_br_table_imm_t *bt) {
+    size_t targets_size = ((size_t)bt->target_count + 1) * sizeof(uint16_t);
+    return (uint32_t *)((uint8_t *)(bt + 1) + ((targets_size + 3) & ~(size_t)3));
+}
+static inline uint32_t *wah_br_table_drops(wah_br_table_imm_t *bt) { return wah_br_table_symbols(bt) + bt->record_cap; }
 
 typedef enum {
     WAH_INSTR_FLAG_NONE          = 0,
@@ -2827,13 +2853,7 @@ typedef struct {
         wah_memarg_t memarg;
         struct { wah_memarg_t memarg; uint8_t lane; } memarg_lane;
         struct { uint32_t label_idx; uint32_t target_symbol; uint32_t keep; uint32_t drop; } branch;
-        struct {
-            uint32_t target_count;
-            uint32_t *target_symbols;
-            uint32_t default_symbol;
-            uint32_t keep;
-            uint32_t *drops;
-        } br_table;
+        struct wah_br_table_imm_s *br_table;
         struct { int32_t heap_type; } ref_cast;
         struct {
             uint8_t cast_flags;
@@ -6794,52 +6814,61 @@ cleanup_block:
 
         case WAH_OP_BR_TABLE: {
             wah_error_t err = WAH_OK;
+            wah_br_table_labels_t *labels = vctx->br_table_labels;
+            WAH_ENSURE(labels, WAH_ERROR_VALIDATION_FAILED);
             uint32_t num_targets;
             WAH_CHECK(wah_decode_and_validate_count(code_ptr, code_end, &num_targets, 1));
             WAH_ENSURE(num_targets < UINT32_MAX, WAH_ERROR_TOO_LARGE);
             WAH_ENSURE((uint64_t)num_targets + 1 <= (uint64_t)(code_end - *code_ptr), WAH_ERROR_MALFORMED);
 
-            uint32_t* label_indices = NULL;
-            uint32_t *bt_drops = NULL;
-            WAH_MALLOC_ARRAY_GOTO(label_indices, num_targets + 1, cleanup_br_table);
+            uint32_t record_cap = num_targets < vctx->control_sp ? num_targets + 1 : vctx->control_sp + 1;
+            size_t bt_size = sizeof(wah_br_table_imm_t) + ((((size_t)num_targets + 1) * sizeof(uint16_t) + 3) & ~(size_t)3) +
+                             (size_t)record_cap * 2 * sizeof(uint32_t);
+            uint8_t *bt_bytes = NULL;
+            WAH_MALLOC_ARRAY_GOTO(bt_bytes, bt_size, cleanup_br_table);
+            wah_br_table_imm_t *bt = (wah_br_table_imm_t *)bt_bytes;
+            *bt = (wah_br_table_imm_t){ .target_count = num_targets, .record_cap = record_cap };
+            uint16_t *targets = wah_br_table_targets(bt);
+            uint32_t *record_symbols = wah_br_table_symbols(bt), *record_drops = wah_br_table_drops(bt);
+            uint32_t record_count = 0;
 
-            for (uint32_t i = 0; i < num_targets; ++i) {
-                WAH_CHECK_GOTO(wah_decode_uleb128(code_ptr, code_end, &label_indices[i]), cleanup_br_table);
-                WAH_ENSURE_GOTO(label_indices[i] <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
+            if (++labels->serial == 0) {
+                memset(labels->stamps, 0, sizeof(labels->stamps));
+                labels->serial = 1;
             }
-
-            WAH_CHECK_GOTO(wah_decode_uleb128(code_ptr, code_end, &label_indices[num_targets]), cleanup_br_table);
-            WAH_ENSURE_GOTO(label_indices[num_targets] <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
+            for (uint32_t i = 0; i <= num_targets; ++i) {
+                uint32_t label;
+                WAH_CHECK_GOTO(wah_decode_uleb128(code_ptr, code_end, &label), cleanup_br_table);
+                WAH_ENSURE_GOTO(label <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
+                if (labels->stamps[label] != labels->serial) {
+                    labels->stamps[label] = labels->serial;
+                    labels->records[label] = (uint16_t)record_count;
+                    record_symbols[record_count++] = label;
+                }
+                targets[i] = labels->records[label];
+            }
 
             WAH_CHECK_GOTO(wah_validation_pop_and_match_type(vctx, WAH_TYPE_I32), cleanup_br_table);
 
             uint32_t default_result_count;
             const wah_type_t *default_result_types;
-            uint32_t default_stack_height;
-            wah_validation_resolve_br_target(vctx, label_indices[num_targets],
-                                              &default_result_count, &default_result_types, &default_stack_height);
+            wah_validation_resolve_br_target(vctx, record_symbols[targets[num_targets]],
+                                             &default_result_count, &default_result_types, NULL);
 
-            for (uint32_t i = 0; i < num_targets; ++i) {
+            for (uint32_t r = 0; r < record_count; ++r) {
                 uint32_t cur_result_count;
-                wah_validation_resolve_br_target(vctx, label_indices[i], &cur_result_count, NULL, NULL);
+                wah_validation_resolve_br_target(vctx, record_symbols[r], &cur_result_count, NULL, NULL);
                 WAH_ENSURE_GOTO(cur_result_count == default_result_count, WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
             }
 
-            WAH_MALLOC_ARRAY_GOTO(bt_drops, num_targets + 1, cleanup_br_table);
-            uint32_t bt_keep = 0;
-            if (!vctx->is_unreachable) {
-                bt_keep = default_result_count;
-                for (uint32_t i = 0; i < num_targets; ++i) {
-                    uint32_t target_stack_height, dummy_count;
-                    wah_validation_resolve_br_target(vctx, label_indices[i], &dummy_count, NULL, &target_stack_height);
-                    uint32_t d = vctx->current_stack_depth - target_stack_height - default_result_count;
-                    bt_drops[i] = d;
-                }
-                uint32_t dd = vctx->current_stack_depth - default_stack_height - default_result_count;
-                bt_drops[num_targets] = dd;
-            } else {
-                for (uint32_t i = 0; i <= num_targets; ++i) bt_drops[i] = 0;
+            bt->record_count = record_count;
+            for (uint32_t r = 0; r < record_count; ++r) {
+                uint32_t target_stack_height, dummy_count;
+                wah_validation_resolve_br_target(vctx, record_symbols[r], &dummy_count, NULL, &target_stack_height);
+                record_drops[r] = vctx->is_unreachable ? 0 :
+                    vctx->current_stack_depth - target_stack_height - default_result_count;
             }
+            bt->keep = vctx->is_unreachable ? 0 : default_result_count;
 
             wah_type_t *popped_types = NULL;
             if (default_result_count > 0 && !wah_validation_at_unreachable_base(vctx)) {
@@ -6849,11 +6878,10 @@ cleanup_block:
                 WAH_CHECK_GOTO(wah_validation_pop_type(vctx, &popped_types[i]), cleanup_br_table_popped);
                 WAH_CHECK_GOTO(wah_validate_type_match(popped_types[i], default_result_types[i], vctx->module), cleanup_br_table_popped);
             }
-            for (uint32_t i = 0; popped_types && i < num_targets; ++i) {
+            for (uint32_t r = 0; popped_types && r < record_count; ++r) {
                 uint32_t cur_result_count;
                 const wah_type_t *cur_result_types;
-                wah_validation_resolve_br_target(vctx, label_indices[i],
-                                                 &cur_result_count, &cur_result_types, NULL);
+                wah_validation_resolve_br_target(vctx, record_symbols[r], &cur_result_count, &cur_result_types, NULL);
                 for (uint32_t j = 0; j < default_result_count; ++j) {
                     WAH_CHECK_GOTO(wah_validate_type_match(popped_types[j], cur_result_types[j], vctx->module), cleanup_br_table_popped);
                 }
@@ -6865,21 +6893,12 @@ cleanup_block:
 
             wah_validation_mark_unreachable(vctx);
             EMIT_INSTR_EX(opcode_val, {
-                _di->imm.br_table.target_count = num_targets;
-                _di->imm.br_table.default_symbol = label_indices[num_targets];
-                _di->imm.br_table.target_symbols = NULL;
-                _di->imm.br_table.keep = bt_keep;
-                _di->imm.br_table.drops = bt_drops;
-                bt_drops = NULL;
-                if (num_targets > 0) {
-                    WAH_MALLOC_ARRAY_GOTO(_di->imm.br_table.target_symbols, num_targets, cleanup_br_table);
-                    for (uint32_t _k = 0; _k < num_targets; _k++) _di->imm.br_table.target_symbols[_k] = label_indices[_k];
-                }
+                _di->imm.br_table = bt;
+                bt_bytes = NULL;
             });
             err = WAH_OK;
         cleanup_br_table:
-            wah_free(alloc, bt_drops);
-            wah_free(alloc, label_indices);
+            wah_free(alloc, bt_bytes);
             return err;
         }
 
@@ -7975,19 +7994,20 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                     break;
                 }
                 case WAH_OP_BR_TABLE: {
-                    uint32_t num_targets = instr->imm.br_table.target_count;
-                    WAH_LOWER_U32(num_targets);
-                    WAH_LOWER_U32(instr->imm.br_table.keep);
-                    for (uint32_t i = 0; i < num_targets + 1; ++i) {
-                        uint32_t relative_depth;
-                        if (i < num_targets) {
-                            relative_depth = instr->imm.br_table.target_symbols[i];
-                        } else {
-                            relative_depth = instr->imm.br_table.default_symbol;
-                        }
-                        WAH_LOWER_RESOLVE_BRANCH(relative_depth);
-                        uint32_t bt_drop = instr->imm.br_table.drops ? instr->imm.br_table.drops[i] : 0;
-                        WAH_LOWER_U32(bt_drop);
+                    // [target_count:u32][keep:u32][record:u16 per target and default][(offset:u32, drop:u32) per record]
+                    wah_br_table_imm_t *bt = instr->imm.br_table;
+                    const uint16_t *targets = wah_br_table_targets(bt);
+                    const uint32_t *record_symbols = wah_br_table_symbols(bt), *record_drops = wah_br_table_drops(bt);
+                    WAH_LOWER_U32(bt->target_count);
+                    WAH_LOWER_U32(bt->keep);
+                    WAH_LOWER_ENSURE(((size_t)bt->target_count + 1) * sizeof(uint16_t));
+                    for (uint32_t i = 0; i <= bt->target_count; ++i) {
+                        wah_write_u16_le(buf + buf_size, targets[i]);
+                        buf_size += sizeof(uint16_t);
+                    }
+                    for (uint32_t r = 0; r < bt->record_count; ++r) {
+                        WAH_LOWER_RESOLVE_BRANCH(record_symbols[r]);
+                        WAH_LOWER_U32(record_drops[r]);
                     }
                     break;
                 }
@@ -8372,8 +8392,7 @@ static void wah_free_analyzed_code(wah_analyzed_code_t *ac, const wah_alloc_t *a
             wah_decoded_instr_t *instr = &ac->instrs[i];
             switch (instr->opcode) {
                 case WAH_OP_BR_TABLE:
-                    wah_free(alloc, instr->imm.br_table.target_symbols);
-                    wah_free(alloc, instr->imm.br_table.drops);
+                    wah_free(alloc, instr->imm.br_table);
                     break;
                 case WAH_OP_TRY_TABLE:
                     wah_free(alloc, instr->imm.try_table.catches);
@@ -9037,6 +9056,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
     wah_validation_storage_t storage; // Uninitialized
     wah_validation_context_t vctx = { .type_stack = { .data = storage.type_stack }, .control_stack = storage.control_stack };
     wah_local_inits_t local_inits = {0};
+    wah_br_table_labels_t br_table_labels = {0};
     wah_analyzed_code_t ac = {0};
 
     uint32_t count;
@@ -9074,6 +9094,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
             .type_stack = { .data = storage.type_stack },
             .control_stack = storage.control_stack,
             .local_inits = &local_inits,
+            .br_table_labels = &br_table_labels,
         };
         if (vctx.total_locals > local_inits.inits_cap) {
             uint32_t old_cap = local_inits.inits_cap;
@@ -12295,8 +12316,10 @@ WAH_RUN(BR_TABLE) {
     uint32_t keep = wah_decode_u32_le(&bytecode_ip);
 
     uint32_t target_idx = (index < num_targets) ? index : num_targets;
-    uint32_t target_offset = wah_read_u32_le(bytecode_ip + target_idx * 2 * sizeof(uint32_t));
-    uint32_t drop = wah_read_u32_le(bytecode_ip + target_idx * 2 * sizeof(uint32_t) + sizeof(uint32_t));
+    uint32_t record = wah_read_u16_le(bytecode_ip + (size_t)target_idx * sizeof(uint16_t));
+    const uint8_t *record_ip = bytecode_ip + ((size_t)num_targets + 1) * sizeof(uint16_t) + record * 2 * sizeof(uint32_t);
+    uint32_t target_offset = wah_read_u32_le(record_ip);
+    uint32_t drop = wah_read_u32_le(record_ip + sizeof(uint32_t));
     WAH_DROP_KEEP(keep, drop);
     bytecode_ip = bytecode_base + target_offset;
     WAH_NEXT();

@@ -27,6 +27,7 @@ bool wah_debug_module_has_data_count_section(const wah_module_t *mod);
 uint32_t wah_debug_module_repr_count(const wah_module_t *mod);
 uint32_t wah_debug_module_import_function_count(const wah_module_t *mod);
 uint32_t wah_debug_module_wasm_function_count(const wah_module_t *mod);
+uint32_t wah_debug_module_bytecode_size(const wah_module_t *mod, uint32_t local_idx);
 uint32_t wah_debug_module_import_global_count(const wah_module_t *mod);
 uint32_t wah_debug_module_local_global_count(const wah_module_t *mod);
 uint32_t wah_debug_module_import_memory_count(const wah_module_t *mod);
