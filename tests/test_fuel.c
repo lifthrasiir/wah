@@ -972,6 +972,43 @@ static void test_meter_chunk_reset_before_polled_loop(void) {
     wah_free_module(&mod);
 }
 
+// A branch-target END followed by a polled loop left behind a zero-cost METER whose slow path was never patched,
+// so negative fuel there (allowed after array.new_default) restarted the function body from offset 0.
+static void test_meter_at_branch_target_before_polled_loop(void) {
+    printf("Testing meter at a branch target right before a polled loop...\n");
+
+    wah_module_t mod = {0};
+    PARSE_FUEL(&mod, "wasm \
+        types {[ sub [] array i32 mut, fn [] [i32] ]} funcs {[1]} \
+        globals {[ i32 mut i32.const 0 end ]} \
+        code {[{[] \
+            global.get 0 i32.const 1 i32.add global.set 0 \
+            block void i32.const 65536 array.new_default 0 drop br 0 end \
+            loop void end \
+            global.get 0 \
+        end}]}");
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_instantiate(&ctx));
+
+    assert_ok(wah_set_fuel(&ctx, 20)); // array.new_default charges 64 after the fact
+    assert_ok(wah_start(&ctx, 0, NULL, 0));
+    wah_error_t err;
+    int suspensions = 0;
+    while ((err = wah_resume(&ctx)) == WAH_STATUS_FUEL_EXHAUSTED) {
+        assert_true(++suspensions < 10);
+        assert_ok(wah_set_fuel(&ctx, 1000000));
+    }
+    assert_ok(err);
+    wah_value_t result;
+    uint32_t actual;
+    assert_ok(wah_finish(&ctx, &result, 1, &actual));
+    assert_eq_i32(result.i32, 1); // The body ran exactly once
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 static char *repeat_spec(const char *pre, const char *rep, int n, const char *post) {
     size_t lp = strlen(pre), lr = strlen(rep), lq = strlen(post);
     char *s = malloc(lp + lr * (size_t)n + lq + 1), *p = s;
@@ -1083,6 +1120,7 @@ int main(void) {
     test_multi_value_fuel();
     test_multi_value_resume();
     test_meter_chunk_reset_before_polled_loop();
+    test_meter_at_branch_target_before_polled_loop();
     test_long_straight_line_chunk();
     test_branch_targets_are_metered();
 

@@ -7625,6 +7625,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
 
     // If this changes, update test_meter_chunk_reset_before_polled_loop().
     #define WAH_METER_MAX_CHUNK_COST 100
+    #define WAH_METER_SIZE (2 * sizeof(uint16_t) + sizeof(uint32_t))
 
     #define WAH_METER_START_CHUNK() do { \
         if (emit_meter && meter_need_new_chunk) { \
@@ -7664,6 +7665,11 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
             meter_chunks[meter_chunk_count].next_fast_offset = buf_size; \
             meter_chunk_count++; \
             meter_current_cost = 0; \
+            meter_need_new_chunk = true; \
+        } else if (emit_meter && !meter_need_new_chunk) { \
+            /* Retract an empty chunk, whose record would be overwritten and METER left unpatched */ \
+            WAH_ASSERT(meter_chunks[meter_chunk_count].meter_offset + WAH_METER_SIZE == buf_size); \
+            buf_size = meter_chunks[meter_chunk_count].meter_offset; \
             meter_need_new_chunk = true; \
         } \
     } while (0)
@@ -8150,6 +8156,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
     #undef WAH_METER_RECORD_INSTR_START
     #undef WAH_METER_START_CHUNK
     #undef WAH_METER_MAX_CHUNK_COST
+    #undef WAH_METER_SIZE
     #undef WAH_EMIT_POLL
     #undef WAH_LOWER_FINISH_FRAME
     #undef WAH_LOWER_PUSH_FRAME
