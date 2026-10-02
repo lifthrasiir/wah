@@ -7147,6 +7147,10 @@ cleanup_block:
             for (uint32_t r = 0; r < record_count; ++r) {
                 uint32_t target_stack_height, dummy_count;
                 wah_validation_resolve_br_target(vctx, record_symbols[r], &dummy_count, NULL, &target_stack_height);
+                // Missing operands also fail below, but this must not underflow regardless
+                WAH_ENSURE_GOTO(vctx->is_unreachable || (uint64_t)vctx->current_stack_depth >=
+                                (uint64_t)target_stack_height + default_result_count,
+                                WAH_ERROR_VALIDATION_FAILED, cleanup_br_table);
                 record_drops[r] = vctx->is_unreachable ? 0 :
                     vctx->current_stack_depth - target_stack_height - default_result_count;
             }
