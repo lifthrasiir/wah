@@ -9795,6 +9795,9 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
                 break;
             case WAH_KIND_GLOBAL:
                 WAH_ENSURE_GOTO(export_entry->index < wah_global_index_limit(module), WAH_ERROR_VALIDATION_FAILED, cleanup);
+                if (wah_global_is_mutable(module, export_entry->index)) {
+                    WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_MUTABLE_GLOBALS), cleanup);
+                }
                 break;
             case WAH_KIND_TAG:
                 WAH_ENSURE_GOTO(export_entry->index < module->import_tag_count + module->tag_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
