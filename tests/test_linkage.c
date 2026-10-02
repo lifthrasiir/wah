@@ -4566,6 +4566,68 @@ int main() {
         wah_free_module(&a);
     }
 
+    // Regression: primary function imports from owned contexts were bound before those contexts existed, so calls
+    // looked up the instance by module in the running context, finding another instance or trapping.
+    printf("Test: primary function imports from owned contexts are bound to them\n");
+    {
+        const char *m_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            globals {[ i32 mut i32.const 0 end ]} \
+            exports {[ {'inc'} fn# 0 ]} \
+            code {[ {[] global.get 0 i32.const 1 i32.add global.set 0 global.get 0 end } ]}";
+        const char *c_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'m'} {'inc'} fn# 0 ]} \
+            exports {[ {'inc'} fn# 0 ]}";
+        const char *d_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'c'} {'inc'} fn# 0 ]} \
+            exports {[ {'inc'} fn# 0 ]}";
+        const char *r_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'c'} {'inc'} fn# 0, {'m'} {'inc'} fn# 0, {'d'} {'inc'} fn# 0 ]} \
+            funcs {[ 0, 0, 0 ]} \
+            code {[ {[] call 0 end }, {[] call 1 end }, {[] call 2 end } ]}";
+
+        wah_module_t m = {0}, c = {0}, d = {0}, r = {0};
+        assert_ok(wah_parse_module_from_spec(&m, m_spec));
+        assert_ok(wah_parse_module_from_spec(&c, c_spec));
+        assert_ok(wah_parse_module_from_spec(&d, d_spec));
+        assert_ok(wah_parse_module_from_spec(&r, r_spec));
+
+        wah_exec_context_t cctx = {0}, dctx = {0}, rctx = {0};
+        assert_ok(wah_new_exec_context(&cctx, &c, NULL));
+        assert_ok(wah_link_module(&cctx, "m", &m));
+        assert_ok(wah_instantiate(&cctx));
+        assert_ok(wah_new_exec_context(&dctx, &d, NULL));
+        assert_ok(wah_link_context(&dctx, "c", &cctx));
+        assert_ok(wah_instantiate(&dctx));
+        assert_ok(wah_new_exec_context(&rctx, &r, NULL));
+        assert_ok(wah_link_context(&rctx, "c", &cctx));
+        assert_ok(wah_link_module(&rctx, "m", &m)); // Another instance of m
+        assert_ok(wah_link_context(&rctx, "d", &dctx));
+        assert_ok(wah_instantiate(&rctx));
+
+        wah_value_t res;
+        assert_ok(wah_call(&rctx, 3, NULL, 0, &res)); // c.inc
+        assert_eq_i32(res.i32, 1);
+        assert_ok(wah_call(&rctx, 5, NULL, 0, &res)); // d.inc, the same instance two hops away
+        assert_eq_i32(res.i32, 2);
+        assert_ok(wah_call(&rctx, 4, NULL, 0, &res)); // m.inc of rctx
+        assert_eq_i32(res.i32, 1);
+        assert_ok(wah_call(&cctx, 0, NULL, 0, &res));
+        assert_eq_i32(res.i32, 3);
+
+        wah_free_exec_context(&rctx);
+        wah_free_exec_context(&dctx);
+        wah_free_exec_context(&cctx);
+        wah_free_module(&r);
+        wah_free_module(&d);
+        wah_free_module(&c);
+        wah_free_module(&m);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

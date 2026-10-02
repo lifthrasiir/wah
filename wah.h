@@ -18080,6 +18080,20 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
     return WAH_OK;
 }
 
+// Primary function imports are resolved before owned contexts exist, which would leave their fn_ctx NULL.
+static void wah_bind_primary_func_imports_to_owned_contexts(wah_exec_context_t *ctx) {
+    for (uint32_t i = 0; i < ctx->module->import_function_count; i++) {
+        wah_function_t *f = &ctx->function_table[i].func;
+        if (f->is_host || f->fn_ctx || f->fn_module == ctx->module) continue;
+        for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+            if (ctx->linked_modules[j].owns_ctx && ctx->linked_modules[j].module == f->fn_module) {
+                f->fn_ctx = ctx->linked_modules[j].ctx;
+                break;
+            }
+        }
+    }
+}
+
 static wah_error_t wah_init_linked_segments(wah_exec_context_t *ctx) {
     const wah_alloc_t *alloc = &ctx->alloc;
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
@@ -18157,6 +18171,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     WAH_CHECK_GOTO(wah_resolve_primary_table_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_primary_memory_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_finalize_owned_linked_contexts(ctx), cleanup);
+    wah_bind_primary_func_imports_to_owned_contexts(ctx);
     // Everything after this may store references to this context into linked contexts
     ctx->may_share_refs = true;
     WAH_CHECK_GOTO(wah_init_table_init_exprs(ctx), cleanup);
