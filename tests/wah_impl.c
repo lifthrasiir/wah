@@ -147,6 +147,11 @@ static int is_func_ref_in_range(const void *base, uint32_t count, size_t elem_si
     return ptr >= start && ptr < end;
 }
 
+wah_value_t wah_debug_pinned_value(const wah_exec_context_t *ctx, const void *pinned_ref) {
+    const wah_pin_slot_t *s = wah_pinned_slot(ctx, pinned_ref);
+    return s ? s->value : (wah_value_t){0};
+}
+
 bool wah_debug_is_func_ref_in_ctx(const wah_exec_context_t *ctx, const void *ref) {
     if (!ctx || !ref) return false;
     if (is_func_ref_in_range(ctx->function_table, ctx->function_table_count,

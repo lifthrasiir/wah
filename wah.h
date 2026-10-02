@@ -995,6 +995,10 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx);
 //   Calls a WebAssembly function by index.
 //   Returns WAH_ERROR_MULTI_RETURN if the function has multiple return values.
 //
+//   Reference results other than host objects from `wah_gc_alloc_host` are sanitized like `wah_param_ref`,
+//   because the host can't keep them alive. Use `wah_call_pin` to use them later. Reference parameters can be
+//   pinned references, while sanitized ones are rejected with WAH_ERROR_MISUSE. The same goes for other variants.
+//
 //   - func_idx [in]: Index of the function to call. See `wah_export_desc_t.index`.
 //   - params [in, borrowed, optional if param_count == 0]: Array of parameter values.
 //     Must have at least `param_count` elements. Can be NULL if `param_count` is zero.
@@ -1031,6 +1035,11 @@ wah_error_t wah_call_multi(wah_exec_context_t *exec_ctx, uint64_t func_idx, cons
 //   - result [out, owned, optional]: Pointer to a `wah_value_t` to store the result.
 //     Can be NULL if the result is not needed.
 wah_error_t wah_call_by_name(wah_exec_context_t *exec_ctx, const char *name, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
+
+// Function: wah_call_pin
+//   Same as `wah_call`, but non-null reference results are pinned (see `wah_param_pinned_ref`),
+//   so that they can be used until released by `wah_unpin_ref`.
+wah_error_t wah_call_pin(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result);
 
 // Function: wah_set_fuel
 //   Resets the available fuel for execution.
@@ -1069,6 +1078,16 @@ wah_error_t wah_resume(wah_exec_context_t *ctx);
 //   - actual_result_count [out, owned, optional]: Pointer to store the actual number of
 //     results to be returned if `max_result_count` were large enough.
 wah_error_t wah_finish(wah_exec_context_t *ctx, wah_value_t *results, uint32_t max_result_count, uint32_t *actual_result_count);
+
+// Function: wah_finish_pin
+//   Same as `wah_finish`, but non-null reference results are pinned (see `wah_param_pinned_ref`),
+//   so that they can be used until released by `wah_unpin_ref`.
+wah_error_t wah_finish_pin(wah_exec_context_t *ctx, wah_value_t *results, uint32_t max_result_count, uint32_t *actual_result_count);
+
+// Function: wah_unpin_ref
+//   Releases a pinned reference of the execution context. Does nothing for NULL.
+//   Returns WAH_ERROR_MISUSE if `pinned_ref` is not a currently pinned reference.
+wah_error_t wah_unpin_ref(wah_exec_context_t *ctx, void *pinned_ref);
 
 // Function: wah_cancel
 //   Discards a suspended, finished or trapped activation.
@@ -1209,17 +1228,17 @@ void *wah_param_ref(const wah_call_context_t *ctx, size_t index);
 //   Get a reference parameter passed to a host function by index, pinned so that the host can keep it after
 //   the call. A pinned reference is opaque and can only be given to `wah_result_ref` in host function calls
 //   of the same execution context, until it is released by `wah_unpin_ref` or the context is freed.
+//   Pinned references can be also passed as parameters to `wah_call` and so on.
 //
 //   - idx [in]: Index of the parameter to retrieve. Must be less than the number of parameters.
 //   - returns: The pinned reference, or NULL for a null reference. Also NULL on allocation failure,
 //     in which case the host function traps.
 void *wah_param_pinned_ref(wah_call_context_t *ctx, size_t index);
 
-// Function: wah_unpin_ref
-//   Releases a reference pinned by `wah_param_pinned_ref`. Valid only during the host function call.
-//   Does nothing for NULL. The host function traps with WAH_ERROR_MISUSE if `pinned_ref` is not
-//   a currently pinned reference.
-void wah_unpin_ref(wah_call_context_t *ctx, void *pinned_ref);
+// Function: wah_unpin_ref_from_host
+//   Same as `wah_unpin_ref` but can be called from a host function call context.
+//   The host function traps with WAH_ERROR_MISUSE if `pinned_ref` is not a currently pinned reference.
+void wah_unpin_ref_from_host(wah_call_context_t *ctx, void *pinned_ref);
 
 // Function: wah_result_count
 //   Returns the number of results expected for a host function.
@@ -15905,6 +15924,78 @@ static void wah_cancel_internal(wah_exec_context_t *ctx) {
 }
 
 // `fn` may belong to a different (linked) context, in which case it runs with `ctx`'s stack and limits.
+// --- Pinned references ---
+
+// Returns the slot of a currently pinned reference, or NULL if it isn't one.
+static wah_pin_slot_t *wah_pinned_slot(const wah_exec_context_t *exec, const void *pinned_ref) {
+    uintptr_t bits = (uintptr_t)pinned_ref;
+    if ((bits & 3) != WAH_PIN_TAG || !exec->pins) return NULL;
+    bits >>= 2;
+    uintptr_t slot = bits & (((uintptr_t)1 << WAH_PIN_SLOT_BITS) - 1);
+    uintptr_t generation = bits >> WAH_PIN_SLOT_BITS;
+    if (slot >= exec->pins->slot_count) return NULL;
+    wah_pin_slot_t *s = &exec->pins->slots[slot];
+    return s->value.ref && s->generation == generation ? s : NULL;
+}
+
+static wah_error_t wah_pin(wah_exec_context_t *exec, wah_value_t value, const wah_module_t *module, wah_type_t type,
+                           void **out) {
+    const wah_alloc_t *alloc = &exec->alloc;
+    if (!exec->pins) {
+        WAH_MALLOC(exec->pins);
+        *exec->pins = (wah_pin_table_t){0};
+    }
+    wah_pin_table_t *pins = exec->pins;
+    uint32_t slot;
+    if (pins->free_head) {
+        slot = pins->free_head - 1;
+        pins->free_head = pins->slots[slot].next_free;
+    } else {
+        WAH_ENSURE((uintptr_t)pins->slot_count < ((uintptr_t)1 << WAH_PIN_SLOT_BITS), WAH_ERROR_TOO_LARGE);
+        WAH_ENSURE_CAP(pins->slots, (size_t)pins->slot_count + 1);
+        slot = pins->slot_count++;
+        pins->slots[slot].generation = 0;
+    }
+    wah_pin_slot_t *s = &pins->slots[slot];
+    s->value = value;
+    s->module = module;
+    s->type = type;
+    s->next_free = 0;
+    *out = (void *)(((((uintptr_t)s->generation << WAH_PIN_SLOT_BITS) | slot) << 2) | WAH_PIN_TAG);
+    return WAH_OK;
+}
+
+static bool wah_unpin(wah_exec_context_t *exec, void *pinned_ref) {
+    if (!pinned_ref) return true;
+    wah_pin_slot_t *s = wah_pinned_slot(exec, pinned_ref);
+    if (!s) return false;
+    wah_pin_table_t *pins = exec->pins;
+    s->value = (wah_value_t){0};
+    s->generation = (uint32_t)((s->generation + 1) & WAH_PIN_GEN_MASK);
+    s->next_free = pins->free_head;
+    pins->free_head = (uint32_t)(s - pins->slots) + 1;
+    return true;
+}
+
+// Copies parameters given by the host into dst, unwrapping pinned references.
+// Sanitized references and pinned references released or of incompatible types are rejected.
+static wah_error_t wah_load_host_params(const wah_exec_context_t *ctx, wah_value_t *dst, const wah_value_t *params,
+                                        uint32_t count, const wah_module_t *module, const wah_type_t *types) {
+    for (uint32_t i = 0; i < count; ++i) {
+        wah_value_t value = params[i];
+        if (WAH_TYPE_IS_REF(types[i]) && value.ref) {
+            WAH_ENSURE(!((uintptr_t)value.ref & 1), WAH_ERROR_MISUSE); // The host can't make i31 references
+            if (((uintptr_t)value.ref & 3) == WAH_PIN_TAG) {
+                const wah_pin_slot_t *s = wah_pinned_slot(ctx, value.ref);
+                WAH_ENSURE(s && wah_cross_module_subtype(s->module, s->type, module, types[i]), WAH_ERROR_MISUSE);
+                value = s->value;
+            }
+        }
+        dst[i] = value;
+    }
+    return WAH_OK;
+}
+
 static wah_error_t wah_start_function_internal(
     wah_exec_context_t *ctx, const wah_function_t *fn,
     const wah_value_t *params, uint32_t param_count
@@ -15921,9 +16012,9 @@ static wah_error_t wah_start_function_internal(
         uint32_t result_count = (uint32_t)fn->nresults;
         wah_value_t *preflight_top = ctx->sp + param_count + result_count;
         WAH_ENSURE((uint8_t *)preflight_top <= (uint8_t *)ctx->frame_ptr, WAH_ERROR_STACK_OVERFLOW);
-        for (uint32_t i = 0; i < param_count; ++i) {
-            *ctx->sp++ = params[i];
-        }
+        WAH_CHECK(wah_load_host_params(ctx, ctx->sp, params, param_count,
+                                       fn->fn_module ? fn->fn_module : ctx->module, fn->param_types));
+        ctx->sp += param_count;
         if (result_count > 0) {
             memset(ctx->sp, 0, sizeof(wah_value_t) * result_count);
         }
@@ -15947,10 +16038,8 @@ static wah_error_t wah_start_function_internal(
     wah_value_t *preflight_top = ctx->sp + param_count + start_code->max_frame_slots;
     // Preflight: one frame + params + max_frame_slots must fit
     WAH_ENSURE((uint8_t *)preflight_top <= (uint8_t *)(ctx->frame_ptr - 1), WAH_ERROR_STACK_OVERFLOW);
-
-    for (uint32_t i = 0; i < param_count; ++i) {
-        *ctx->sp++ = params[i];
-    }
+    WAH_CHECK(wah_load_host_params(ctx, ctx->sp, params, param_count, fn_module, func_type->param_types));
+    ctx->sp += param_count;
 
     wah_error_t err = wah_push_frame(ctx, fn_module, local_idx,
         ctx->sp - func_type->param_count, func_type->result_count, fn->fn_ctx, preflight_top);
@@ -16015,20 +16104,12 @@ static void *wah_sanitize_host_ref(void *ref) {
     return ref;
 }
 
-static wah_value_t wah_sanitize_public_result(const wah_module_t *type_module,
-                                              wah_type_t result_type,
-                                              wah_value_t value) {
-    if (WAH_TYPE_IS_REF(result_type) &&
-        wah_type_hierarchy_top(result_type, type_module) == WAH_TYPE_EXTERN) {
-        value.ref = wah_sanitize_host_ref(value.ref);
-    }
-    return value;
-}
-
+// Results are pinned if `pin` is true, or sanitized otherwise.
 static wah_error_t wah_finish_internal(
     wah_exec_context_t *ctx, wah_value_t *results,
-    uint32_t max_result_count, uint32_t *actual_result_count
+    uint32_t max_result_count, uint32_t *actual_result_count, bool pin
 ) {
+    wah_error_t err = WAH_OK;
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_FINISHED, WAH_ERROR_MISUSE);
     uint32_t result_count = ctx->lifecycle.entry_result_count;
     uint32_t copy_count = result_count < max_result_count ? result_count : max_result_count;
@@ -16052,8 +16133,18 @@ static wah_error_t wah_finish_internal(
         } else if (copy_count > 0 && ctx->sp >= ctx->lifecycle.base_sp + result_count) {
             for (uint32_t i = 0; i < copy_count; ++i) {
                 wah_value_t value = *(ctx->sp - result_count + i);
-                if (result_types && i < result_count) {
-                    value = wah_sanitize_public_result(result_module, result_types[i], value);
+                if (result_types && WAH_TYPE_IS_REF(result_types[i]) && value.ref) {
+                    if (pin) {
+                        err = wah_pin(ctx, value, result_module, WAH_TYPE_AS_NON_NULL(result_types[i]), &value.ref);
+                        if (err != WAH_OK) {
+                            while (i-- > 0) {
+                                if (WAH_TYPE_IS_REF(result_types[i])) wah_unpin(ctx, results[i].ref);
+                            }
+                            break;
+                        }
+                    } else {
+                        value.ref = wah_sanitize_host_ref(value.ref);
+                    }
                 }
                 results[i] = value;
             }
@@ -16066,7 +16157,7 @@ static wah_error_t wah_finish_internal(
     ctx->frame_ptr = ctx->lifecycle.base_frame_ptr;
     ctx->exception_handler_depth = ctx->lifecycle.base_handler_depth;
     ctx->lifecycle = (struct wah_exec_lifecycle_s){0};
-    return WAH_OK;
+    return err;
 }
 
 wah_error_t wah_start(wah_exec_context_t *ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count) {
@@ -16089,7 +16180,13 @@ wah_error_t wah_resume(wah_exec_context_t *ctx) {
 wah_error_t wah_finish(wah_exec_context_t *ctx, wah_value_t *results, uint32_t max_results, uint32_t *actual_results) {
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(!ctx->poisoned, WAH_ERROR_MISUSE);
-    return wah_finish_internal(ctx, results, max_results, actual_results);
+    return wah_finish_internal(ctx, results, max_results, actual_results, false);
+}
+
+wah_error_t wah_finish_pin(wah_exec_context_t *ctx, wah_value_t *results, uint32_t max_results, uint32_t *actual_results) {
+    WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!ctx->poisoned, WAH_ERROR_MISUSE);
+    return wah_finish_internal(ctx, results, max_results, actual_results, true);
 }
 
 void wah_cancel(wah_exec_context_t *ctx) {
@@ -16108,14 +16205,14 @@ wah_exec_state_t wah_exec_state(const wah_exec_context_t *ctx) {
 
 static wah_error_t wah_call_module_multi(
     wah_exec_context_t *exec_ctx, uint32_t func_idx, const wah_value_t *params, uint32_t param_count,
-    wah_value_t *results, uint32_t max_result_count, uint32_t *actual_result_count
+    wah_value_t *results, uint32_t max_result_count, uint32_t *actual_result_count, bool pin
 ) {
     wah_error_t err = wah_start_internal(exec_ctx, func_idx, params, param_count);
     if (err != WAH_OK) return err;
 
     err = wah_resume_internal(exec_ctx);
     if (err == WAH_OK) {
-        return wah_finish_internal(exec_ctx, results, max_result_count, actual_result_count);
+        return wah_finish_internal(exec_ctx, results, max_result_count, actual_result_count, pin);
     }
 
     wah_cancel_internal(exec_ctx);
@@ -16123,7 +16220,7 @@ static wah_error_t wah_call_module_multi(
 }
 
 static wah_error_t wah_call_module(wah_exec_context_t *exec_ctx, uint32_t func_idx,
-                                   const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
+                                   const wah_value_t *params, uint32_t param_count, wah_value_t *result, bool pin) {
     WAH_ENSURE(func_idx < exec_ctx->function_table_count, WAH_ERROR_NOT_FOUND);
     const wah_function_t *fn = &exec_ctx->function_table[func_idx].func;
     uint32_t nresults;
@@ -16136,7 +16233,8 @@ static wah_error_t wah_call_module(wah_exec_context_t *exec_ctx, uint32_t func_i
     WAH_ENSURE(nresults <= 1, WAH_ERROR_MULTI_RETURN);
 
     uint32_t actual_results;
-    return wah_call_module_multi(exec_ctx, func_idx, params, param_count, result, result ? 1 : 0, &actual_results);
+    return wah_call_module_multi(exec_ctx, func_idx, params, param_count, result, result ? 1 : 0, &actual_results,
+                                 pin);
 }
 
 wah_error_t wah_call(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
@@ -16146,7 +16244,17 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_
     WAH_ENSURE(func_idx <= UINT32_MAX, WAH_ERROR_NOT_FOUND);
 
     if (!exec_ctx->is_instantiated) WAH_CHECK(wah_instantiate(exec_ctx));
-    return wah_call_module(exec_ctx, (uint32_t)func_idx, params, param_count, result);
+    return wah_call_module(exec_ctx, (uint32_t)func_idx, params, param_count, result, false);
+}
+
+wah_error_t wah_call_pin(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
+    WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(exec_ctx->module, WAH_ERROR_MISUSE);
+    WAH_ENSURE(!exec_ctx->poisoned, WAH_ERROR_MISUSE);
+    WAH_ENSURE(func_idx <= UINT32_MAX, WAH_ERROR_NOT_FOUND);
+
+    if (!exec_ctx->is_instantiated) WAH_CHECK(wah_instantiate(exec_ctx));
+    return wah_call_module(exec_ctx, (uint32_t)func_idx, params, param_count, result, true);
 }
 
 wah_error_t wah_call_multi(
@@ -16159,7 +16267,8 @@ wah_error_t wah_call_multi(
     WAH_ENSURE(func_idx <= UINT32_MAX, WAH_ERROR_NOT_FOUND);
 
     if (!exec_ctx->is_instantiated) WAH_CHECK(wah_instantiate(exec_ctx));
-    return wah_call_module_multi(exec_ctx, (uint32_t)func_idx, params, param_count, results, max_result_count, actual_result_count);
+    return wah_call_module_multi(exec_ctx, (uint32_t)func_idx, params, param_count, results, max_result_count, actual_result_count,
+                                 false);
 }
 
 wah_error_t wah_call_by_name(wah_exec_context_t *exec_ctx, const char *name, const wah_value_t *params, uint32_t param_count, wah_value_t *result) {
@@ -16707,45 +16816,6 @@ static void wah_call_misuse(wah_call_context_t *ctx) {
     if (ctx->trap_reason == WAH_OK) ctx->trap_reason = WAH_ERROR_MISUSE;
 }
 
-// Returns the slot of a currently pinned reference, or NULL if it isn't one.
-static wah_pin_slot_t *wah_pinned_slot(const wah_exec_context_t *exec, const void *pinned_ref) {
-    uintptr_t bits = (uintptr_t)pinned_ref;
-    if ((bits & 3) != WAH_PIN_TAG || !exec->pins) return NULL;
-    bits >>= 2;
-    uintptr_t slot = bits & (((uintptr_t)1 << WAH_PIN_SLOT_BITS) - 1);
-    uintptr_t generation = bits >> WAH_PIN_SLOT_BITS;
-    if (slot >= exec->pins->slot_count) return NULL;
-    wah_pin_slot_t *s = &exec->pins->slots[slot];
-    return s->value.ref && s->generation == generation ? s : NULL;
-}
-
-static wah_error_t wah_pin(wah_exec_context_t *exec, wah_value_t value, const wah_module_t *module, wah_type_t type,
-                           void **out) {
-    const wah_alloc_t *alloc = &exec->alloc;
-    if (!exec->pins) {
-        WAH_MALLOC(exec->pins);
-        *exec->pins = (wah_pin_table_t){0};
-    }
-    wah_pin_table_t *pins = exec->pins;
-    uint32_t slot;
-    if (pins->free_head) {
-        slot = pins->free_head - 1;
-        pins->free_head = pins->slots[slot].next_free;
-    } else {
-        WAH_ENSURE((uintptr_t)pins->slot_count < ((uintptr_t)1 << WAH_PIN_SLOT_BITS), WAH_ERROR_TOO_LARGE);
-        WAH_ENSURE_CAP(pins->slots, (size_t)pins->slot_count + 1);
-        slot = pins->slot_count++;
-        pins->slots[slot].generation = 0;
-    }
-    wah_pin_slot_t *s = &pins->slots[slot];
-    s->value = value;
-    s->module = module;
-    s->type = type;
-    s->next_free = 0;
-    *out = (void *)(((((uintptr_t)s->generation << WAH_PIN_SLOT_BITS) | slot) << 2) | WAH_PIN_TAG);
-    return WAH_OK;
-}
-
 void *wah_param_pinned_ref(wah_call_context_t *ctx, size_t index) {
     WAH_ASSERT(ctx && "Call context is NULL");
     WAH_ASSERT(index < ctx->nparams && "Parameter index out of bounds");
@@ -16761,19 +16831,15 @@ void *wah_param_pinned_ref(wah_call_context_t *ctx, size_t index) {
     return pinned;
 }
 
-void wah_unpin_ref(wah_call_context_t *ctx, void *pinned_ref) {
+wah_error_t wah_unpin_ref(wah_exec_context_t *ctx, void *pinned_ref) {
+    WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(wah_unpin(ctx, pinned_ref), WAH_ERROR_MISUSE);
+    return WAH_OK;
+}
+
+void wah_unpin_ref_from_host(wah_call_context_t *ctx, void *pinned_ref) {
     WAH_ASSERT(ctx && "Call context is NULL");
-    if (!pinned_ref) return;
-    wah_pin_slot_t *s = wah_pinned_slot(ctx->exec, pinned_ref);
-    if (!s) {
-        wah_call_misuse(ctx);
-        return;
-    }
-    wah_pin_table_t *pins = ctx->exec->pins;
-    s->value = (wah_value_t){0};
-    s->generation = (uint32_t)((s->generation + 1) & WAH_PIN_GEN_MASK);
-    s->next_free = pins->free_head;
-    pins->free_head = (uint32_t)(s - pins->slots) + 1;
+    if (!wah_unpin(ctx->exec, pinned_ref)) wah_call_misuse(ctx);
 }
 
 size_t wah_result_count(const wah_call_context_t *ctx) {
@@ -17988,7 +18054,7 @@ static wah_error_t wah_call_linked_start_functions(wah_exec_context_t *ctx) {
                 wah_cancel_internal(ctx);
                 return err;
             }
-            WAH_CHECK(wah_finish_internal(ctx, NULL, 0, NULL));
+            WAH_CHECK(wah_finish_internal(ctx, NULL, 0, NULL, false));
         }
     }
     return WAH_OK;
@@ -18032,7 +18098,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     WAH_CHECK_GOTO(wah_call_linked_start_functions(ctx), cleanup);
 
     if (module->has_start_function) {
-        WAH_CHECK_GOTO(wah_call_module(ctx, module->start_function_idx, NULL, 0, NULL), cleanup);
+        WAH_CHECK_GOTO(wah_call_module(ctx, module->start_function_idx, NULL, 0, NULL, false), cleanup);
     }
 
     ctx->is_instantiated = true;

@@ -59,6 +59,8 @@ wah_error_t wah_debug_module_export_table(wah_module_t *mod, const char *name,
 
 // --- Func ref range check (for spectest) ---
 bool wah_debug_is_func_ref_in_ctx(const wah_exec_context_t *ctx, const void *ref);
+// The reference itself of a pinned reference, or null if not pinned
+wah_value_t wah_debug_pinned_value(const wah_exec_context_t *ctx, const void *pinned_ref);
 bool wah_debug_is_func_ref_in_module(const wah_module_t *mod, const void *ref);
 bool wah_debug_type_is_exnref(const wah_module_t *mod, wah_type_t type);
 bool wah_debug_has_type_check_cache_entry(const wah_exec_context_t *ctx,

@@ -454,16 +454,29 @@ static int execute_action(const wast_node_t *action_node,
             param_count++;
         }
         {
+            // References are pinned and immediately unwrapped, so that results can be inspected
             wah_value_t raw_results[WAST_MAX_RESULTS];
-            wah_error_t err = wah_call_multi(&instance->exec, entry.index, params,
-                                             (uint32_t)param_count,
-                                             raw_results, WAST_MAX_RESULTS, &actual_results);
+            wah_error_t err = wah_start(&instance->exec, entry.index, params, (uint32_t)param_count);
+            if (err == WAH_OK) {
+                err = wah_resume(&instance->exec);
+                if (err == WAH_OK) {
+                    err = wah_finish_pin(&instance->exec, raw_results, WAST_MAX_RESULTS, &actual_results);
+                } else {
+                    wah_cancel(&instance->exec);
+                }
+            }
             if (out_err) *out_err = err;
             if (err == WAH_OK) {
                 uint32_t i;
                 const wah_type_t *ret_types = entry.u.func.result_types;
                 for (i = 0; i < actual_results; ++i) {
-                    result->values[i].value = raw_results[i];
+                    wah_value_t value = raw_results[i];
+                    if (ret_types && WAH_TYPE_IS_REF(ret_types[i]) && value.ref) {
+                        void *pinned = value.ref;
+                        value = wah_debug_pinned_value(&instance->exec, pinned);
+                        wah_unpin_ref(&instance->exec, pinned);
+                    }
+                    result->values[i].value = value;
                     result->values[i].type = ret_types ? ret_types[i] : WAH_TYPE_I32;
                 }
                 result->count = actual_results;
