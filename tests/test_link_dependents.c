@@ -17,12 +17,13 @@ static void test_repeated_imports(void) {
         tables {[ funcref limits.i32/1 1 ]} memories {[ limits.i32/1 1 ]} \
         exports {[ {'m'} mem# 0, {'t'} table# 0, {'grow'} fn# 0 ]} \
         code {[ {[] i32.const 1 memory.grow 0 drop ref.null funcref i32.const 1 table.grow 0 end} ]}"));
-    char *spec = malloc(64 + N * 2 * 48), *q = spec;
-    q += sprintf(q, "wasm types {[ fn [] [i32] ]} imports {[ ");
+    size_t cap = 256 + N * 2 * 80, len = 0;
+    char *spec = malloc(cap);
+    len += snprintf(spec + len, cap - len, "wasm types {[ fn [] [i32] ]} imports {[ ");
     for (int i = 0; i < N; i++) {
-        q += sprintf(q, "%s{'p'} {'m'} mem# limits.i32/1 1, {'p'} {'t'} table# funcref limits.i32/1 1", i ? ", " : "");
+        len += snprintf(spec + len, cap - len, "%s{'p'} {'m'} mem# limits.i32/1 1, {'p'} {'t'} table# funcref limits.i32/1 1", i ? ", " : "");
     }
-    q += sprintf(q, " ]} funcs {[ 0 ]} exports {[ {'size'} fn# 0 ]} \
+    len += snprintf(spec + len, cap - len, " ]} funcs {[ 0 ]} exports {[ {'size'} fn# 0 ]} \
         code {[ {[] memory.size %d table.size %d i32.add end} ]}", N - 1, N - 1);
     assert_ok(wah_parse_module_from_spec(&cmod, spec));
     free(spec);
