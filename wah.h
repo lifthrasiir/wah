@@ -17414,6 +17414,35 @@ static wah_error_t wah_create_tag_contexts_for_linked_modules(wah_exec_context_t
     return WAH_OK;
 }
 
+// Import slots of the primary and owned contexts may not be resolved yet, so follow re-exports to the defining tag.
+static wah_error_t wah_resolve_tag_identity(wah_exec_context_t *ctx, const wah_module_t *mod, wah_exec_context_t *mod_ctx,
+                                            uint32_t tag_idx, const wah_tag_instance_t **out_identity) {
+    for (int depth = 0; depth < WAH_REEXPORT_MAX_DEPTH; depth++) {
+        WAH_ENSURE(mod_ctx && tag_idx < mod_ctx->tag_instance_count, WAH_ERROR_LINK_FAILED);
+        bool instantiated = mod_ctx != ctx && !wah_is_owned_linked_ctx(ctx, mod_ctx);
+        if (instantiated || tag_idx >= mod->import_tag_count) {
+            *out_identity = mod_ctx->tag_instances[tag_idx].identity;
+            WAH_ENSURE(*out_identity, WAH_ERROR_LINK_FAILED);
+            return WAH_OK;
+        }
+        const wah_import_name_t *name = &mod->tag_imports[tag_idx].name;
+        const wah_module_t *next = NULL;
+        wah_exec_context_t *next_ctx = NULL;
+        if (!wah_find_linked_module(ctx, name, &next, &next_ctx, NULL)) {
+            // Linked modules fall back to the primary's exports
+            WAH_ENSURE(mod_ctx != ctx && wah_find_export(ctx->module, 4, name), WAH_ERROR_LINK_FAILED);
+            next = ctx->module;
+            next_ctx = ctx;
+        }
+        const wah_export_t *exp = wah_find_export(next, 4, name);
+        WAH_ENSURE(exp && exp->index < next->import_tag_count + next->tag_count, WAH_ERROR_LINK_FAILED);
+        mod = next;
+        mod_ctx = next_ctx;
+        tag_idx = exp->index;
+    }
+    return WAH_ERROR_TOO_LARGE;
+}
+
 static wah_error_t wah_resolve_linked_tag_imports(wah_exec_context_t *ctx) {
     const wah_module_t *module = ctx->module;
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
@@ -17440,10 +17469,9 @@ static wah_error_t wah_resolve_linked_tag_imports(wah_exec_context_t *ctx) {
                     : provider->tags[prov_tag_idx - provider->import_tag_count].type_index;
                 WAH_ENSURE(wah_cross_module_type_ref_eq(provider, WAH_TYPE_FROM_IDX(prov_type_idx, 0),
                                                         lmod, WAH_TYPE_FROM_IDX(lti->type_index, 0)), WAH_ERROR_LINK_FAILED);
-                WAH_ENSURE(provider_ctx != NULL, WAH_ERROR_LINK_FAILED);
-                WAH_ENSURE(prov_tag_idx < provider_ctx->tag_instance_count, WAH_ERROR_LINK_FAILED);
-                ictx->tag_instances[t] = provider_ctx->tag_instances[prov_tag_idx];
-                ictx->tag_instances[t].type_index = lti->type_index;
+                const wah_tag_instance_t *identity;
+                WAH_CHECK(wah_resolve_tag_identity(ctx, provider, provider_ctx, prov_tag_idx, &identity));
+                ictx->tag_instances[t] = (wah_tag_instance_t){ .type_index = lti->type_index, .identity = identity };
             }
         }
     }
@@ -17471,10 +17499,9 @@ static wah_error_t wah_resolve_primary_tag_imports(wah_exec_context_t *ctx) {
         WAH_ENSURE(wah_cross_module_type_ref_eq(linked, WAH_TYPE_FROM_IDX(linked_type_idx, 0),
                                                 module, WAH_TYPE_FROM_IDX(tgi->type_index, 0)), WAH_ERROR_LINK_FAILED);
 
-        WAH_ENSURE(linked_ctx != NULL, WAH_ERROR_LINK_FAILED);
-        WAH_ENSURE(linked_tag_idx < linked_ctx->tag_instance_count, WAH_ERROR_LINK_FAILED);
-        ctx->tag_instances[i] = linked_ctx->tag_instances[linked_tag_idx];
-        ctx->tag_instances[i].type_index = tgi->type_index;
+        const wah_tag_instance_t *identity;
+        WAH_CHECK(wah_resolve_tag_identity(ctx, linked, linked_ctx, linked_tag_idx, &identity));
+        ctx->tag_instances[i] = (wah_tag_instance_t){ .type_index = tgi->type_index, .identity = identity };
     }
     return WAH_OK;
 }

@@ -845,6 +845,57 @@ static void test_link_module_tag_context_has_gc() {
     wah_free_module(&provider);
 }
 
+// Tag imports copied slots in link order, so a re-exported import of a later module (or of the primary) was copied
+// before it was resolved, and NULL identities matched each other.
+static void test_reexported_tag_identity_in_link_order() {
+    printf("Testing re-exported tag identities do not depend on the link order...\n");
+
+    const char *def_spec = "wasm \
+        types {[ fn [i32] [] ]} \
+        tags {[ tag.type# 0, tag.type# 0 ]} \
+        exports {[ {'a'} export.tag 0, {'b'} export.tag 1 ]}";
+    const char *mid_spec = "wasm \
+        types {[ fn [i32] [] ]} \
+        imports {[ {'def'} {'a'} tag# tag.type# 0, {'def'} {'b'} tag# tag.type# 0 ]} \
+        exports {[ {'a'} export.tag 0, {'b'} export.tag 1 ]}";
+    const char *top_spec = "wasm \
+        types {[ fn [i32] [] ]} \
+        imports {[ {'mid'} {'a'} tag# tag.type# 0, {'mid'} {'b'} tag# tag.type# 0 ]} \
+        exports {[ {'a'} export.tag 0, {'b'} export.tag 1 ]}";
+    // Throws b and catches a, which should not match
+    const char *primary_spec = "wasm \
+        types {[ fn [i32] [], fn [] [i32] ]} \
+        imports {[ {'top'} {'a'} tag# tag.type# 0, {'top'} {'b'} tag# tag.type# 0 ]} \
+        funcs {[ 1 ]} \
+        code {[ {[] \
+            block i32 \
+                try_table void [catch 0 0] i32.const 42 throw 1 end \
+                i32.const -1 \
+            end \
+        end } ]}";
+
+    wah_module_t def = {0}, mid = {0}, top = {0}, primary = {0};
+    assert_ok(wah_parse_module_from_spec(&def, def_spec));
+    assert_ok(wah_parse_module_from_spec(&mid, mid_spec));
+    assert_ok(wah_parse_module_from_spec(&top, top_spec));
+    assert_ok(wah_parse_module_from_spec(&primary, primary_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+    assert_ok(wah_link_module(&ctx, "top", &top));
+    assert_ok(wah_link_module(&ctx, "mid", &mid));
+    assert_ok(wah_link_module(&ctx, "def", &def));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t result;
+    assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_EXCEPTION);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&primary);
+    wah_free_module(&top);
+    wah_free_module(&mid);
+    wah_free_module(&def);
+}
+
 static void test_try_table_handler_overflow() {
     printf("Testing try_table exception handler overflow...\n");
 
@@ -1172,6 +1223,7 @@ int main() {
     test_link_module_tag_type_index_cross_module();
     test_link_module_tag_context_has_gc();
     test_linked_module_imported_tag_identity();
+    test_reexported_tag_identity_in_link_order();
     test_try_table_handler_overflow();
     test_try_table_branch_out_drops_handler();
     test_try_table_stale_handler_does_not_catch();
