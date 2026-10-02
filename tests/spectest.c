@@ -14,8 +14,10 @@
 #define strdup _strdup
 #endif
 
+// Host objects can't be shared across link domains, so they are kept per context
 typedef struct {
     void *ptr;
+    const wah_exec_context_t *ctx;
     uint32_t id;
 } host_ref_t;
 
@@ -123,7 +125,7 @@ static int ensure_capacity(void **items, size_t *capacity, size_t elem_size, siz
 static void *host_ref_for_id(spectest_env_t *env, wah_exec_context_t *ctx, uint32_t id) {
     size_t i;
     for (i = 0; i < env->host_ref_count; ++i) {
-        if (env->host_refs[i].id == id) {
+        if (env->host_refs[i].ctx == ctx && env->host_refs[i].id == id) {
             return env->host_refs[i].ptr;
         }
     }
@@ -136,10 +138,19 @@ static void *host_ref_for_id(spectest_env_t *env, wah_exec_context_t *ctx, uint3
     // Pinned until the context is freed, as host references are reused across calls
     if (!ptr || wah_pin_ref(ctx, ptr, &pinned) != WAH_OK) return NULL;
     *(uint32_t *)ptr = id;
-    env->host_refs[env->host_ref_count].id = id;
-    env->host_refs[env->host_ref_count].ptr = ptr;
+    env->host_refs[env->host_ref_count] = (host_ref_t){ .ptr = ptr, .ctx = ctx, .id = id };
     env->host_ref_count++;
     return ptr;
+}
+
+// Forgets host objects of a context being freed, as another context may be created at the same address
+static void free_instance_exec(spectest_env_t *env, wah_exec_context_t *ctx) {
+    size_t i = 0;
+    while (i < env->host_ref_count) {
+        if (env->host_refs[i].ctx == ctx) env->host_refs[i] = env->host_refs[--env->host_ref_count];
+        else ++i;
+    }
+    wah_free_exec_context(ctx);
 }
 
 static spectest_module_def_t *find_def_by_name(spectest_env_t *env, const char *name) {
@@ -634,6 +645,12 @@ static spectest_instance_t *add_instance(spectest_env_t *env, const char *name, 
                 wah_debug_relocate_exec_refs(&env->instances[ii].exec, old_base, old_byte_size, delta);
             }
         }
+        for (size_t hi = 0; hi < env->host_ref_count; hi++) {
+            const char *p = (const char *)env->host_refs[hi].ctx;
+            if (p >= (const char *)old_base && p < (const char *)old_base + old_byte_size) {
+                env->host_refs[hi].ctx = (const wah_exec_context_t *)(p + delta);
+            }
+        }
     }
     instance = &env->instances[env->instance_count++];
     memset(instance, 0, sizeof(*instance));
@@ -653,7 +670,7 @@ static void discard_last_instance(spectest_env_t *env, spectest_instance_t *inst
         instance != &env->instances[env->instance_count - 1]) {
         return;
     }
-    wah_free_exec_context(&instance->exec);
+    free_instance_exec(env, &instance->exec);
     free(instance->name);
     memset(instance, 0, sizeof(*instance));
     env->instance_count--;
@@ -912,13 +929,13 @@ static int handle_module_instance(const wast_node_t *node, spectest_env_t *env, 
     if (expect_failure_kind == 1) {
         if (expect_unlinkable(err)) {
             if (instance == &tmp) {
-                wah_free_exec_context(&tmp.exec);
+                free_instance_exec(env, &tmp.exec);
             }
             pass_check(env);
             return 1;
         }
         if (instance == &tmp) {
-            wah_free_exec_context(&tmp.exec);
+            free_instance_exec(env, &tmp.exec);
         }
         fail_check(env, "expected unlinkable, got %s", wah_strerror(err));
         return 0;
@@ -1048,7 +1065,7 @@ static void free_env(spectest_env_t *env) {
     size_t i;
     for (i = 0; i < env->instance_count; ++i) {
         if (env->instances[i].live) {
-            wah_free_exec_context(&env->instances[i].exec);
+            free_instance_exec(env, &env->instances[i].exec);
         }
         free(env->instances[i].name);
     }

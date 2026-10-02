@@ -1426,13 +1426,17 @@ bool wah_gc_verify_heap(const wah_exec_context_t *ctx);
 //   The object is collected once unreachable from WebAssembly, so the pointer is valid only until the next
 //   `wah_start`, `wah_call*` and so on, unless pinned by `wah_pin_ref`.
 //
+//   The object belongs to the link domain of the context (see `wah_link_context`). Giving it to a context of
+//   another link domain, for example as a parameter or a result or to `wah_pin_ref`, is a misuse that is not
+//   detected, because the GC of its own domain can free it while the other domain uses it.
+//
 //   - size [in]: Size of the host object payload in bytes.
 //   - returns: Pointer to the payload of the allocated host object, or NULL on allocation failure.
 void *wah_gc_alloc_host(wah_exec_context_t *ctx, size_t size);
 
 // Function: wah_pin_ref
-//   Pins a host object from `wah_gc_alloc_host`, so that it is kept alive until released by `wah_unpin_ref`
-//   or the context is freed. Can be also called during host function calls of the context.
+//   Pins a host object from `wah_gc_alloc_host` of the same link domain, so that it is kept alive until released
+//   by `wah_unpin_ref` or the context is freed. Can be also called during host function calls of the context.
 //   The pinned reference can be used for `externref` and `anyref` like `wah_param_pinned_ref`,
 //   while the host object pointer itself also remains valid until released.
 //
