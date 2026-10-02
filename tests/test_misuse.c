@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include "../wah.h"
 #include "common.h"
 
@@ -75,11 +76,44 @@ static void test_module_builder_misuse(void) {
     assert_err(wah_export_global_f64(NULL, "g", false, 0.0), WAH_ERROR_MISUSE);
 }
 
+static void test_freeable_after_failure(void) {
+    printf("Testing outputs can be freed after early failures...\n");
+
+    // Garbage would be freed as pointers if the output were not initialized before failing
+    static const uint8_t short_binary[] = { 0x00, 'a', 's', 'm' };
+    wah_alloc_t bad_alloc = { 0 };
+    wah_module_t module, empty;
+    wah_exec_context_t ctx;
+
+    memset(&module, 0xa5, sizeof(module));
+    assert_err(wah_parse_module(&module, short_binary, sizeof(short_binary), NULL), WAH_ERROR_UNEXPECTED_EOF);
+    wah_free_module(&module);
+
+    memset(&module, 0xa5, sizeof(module));
+    assert_err(wah_parse_module(&module, NULL, 0, NULL), WAH_ERROR_MISUSE);
+    wah_free_module(&module);
+
+    memset(&module, 0xa5, sizeof(module));
+    assert_err(wah_new_module(&module, &bad_alloc), WAH_ERROR_MISUSE);
+    wah_free_module(&module);
+
+    assert_ok(wah_parse_module_from_spec(&empty, "wasm"));
+    memset(&ctx, 0xa5, sizeof(ctx));
+    assert_err(wah_new_exec_context(&ctx, &empty, &(wah_exec_options_t){ .alloc = &bad_alloc }), WAH_ERROR_MISUSE);
+    wah_free_exec_context(&ctx);
+
+    memset(&ctx, 0xa5, sizeof(ctx));
+    assert_err(wah_new_exec_context(&ctx, NULL, NULL), WAH_ERROR_MISUSE);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&empty);
+}
+
 int main(void) {
     test_exec_context_misuse();
     test_fuel_misuse();
     test_gc_misuse();
     test_module_builder_misuse();
+    test_freeable_after_failure();
     printf("API misuse tests passed\n");
     return 0;
 }

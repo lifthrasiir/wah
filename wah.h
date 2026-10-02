@@ -863,6 +863,8 @@ typedef struct {
 //   - binary_size [in]: Size of the WebAssembly binary data in bytes.
 //   - options [in, borrowed, optional]: Parsing options. Can be NULL for defaults.
 //
+//   On failure, `*module` holds no resources but can still be passed to `wah_free_module`.
+//
 //   Parsing time is proportional to the binary size, but with a large factor for adversarial inputs:
 //   validating an instruction costs as much as the arity of its type (up to about a thousand values),
 //   and `br_table` costs that much for each distinct label. Neither fuel nor deadlines apply to parsing.
@@ -961,6 +963,8 @@ typedef struct {
 //   - exec_ctx [out, owned]: Pointer to an uninitialized `wah_exec_context_t` struct.
 //   - module [in, borrowed]: Pointer to a parsed `wah_module_t` to execute.
 //   - options [in, borrowed, optional]: Execution options. Can be NULL for defaults (all zeroed).
+//
+//   On failure, `*exec_ctx` holds no resources but can still be passed to `wah_free_exec_context`.
 wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_exec_options_t *options);
 
 // Function: wah_set_limits
@@ -1114,6 +1118,8 @@ void wah_free_module(wah_module_t *module);
 //
 //   - alloc [in, borrowed, optional]: Custom allocator for constructing the module.
 //     The standard allocator is used if NULL is given.
+//
+//   On failure, `*mod` holds no resources but can still be passed to `wah_free_module`.
 wah_error_t wah_new_module(wah_module_t *mod, const wah_alloc_t *alloc);
 
 // Function: wah_define_type
@@ -10039,11 +10045,11 @@ static const struct wah_section_handler_s {
 wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t binary_size, const wah_parse_options_t *options) {
     wah_error_t err = WAH_OK;
     WAH_ENSURE(module, WAH_ERROR_MISUSE);
+    *module = (wah_module_t){0}; // Initialize module struct, also for early failures
     WAH_ENSURE(binary, WAH_ERROR_MISUSE);
     WAH_ENSURE(binary_size >= 8, WAH_ERROR_UNEXPECTED_EOF);
     WAH_ENSURE(wah_alloc_valid(options ? options->alloc : NULL), WAH_ERROR_MISUSE);
 
-    *module = (wah_module_t){0}; // Initialize module struct
     module->alloc = wah_resolve_alloc(options ? options->alloc : NULL);
     const wah_alloc_t *alloc = &module->alloc;
 
@@ -11216,9 +11222,10 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
     wah_limits_t default_limits = {0};
     const wah_limits_t *limits = options ? &options->limits : &default_limits;
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
+    *exec_ctx = (wah_exec_context_t){0};
     WAH_ENSURE(module, WAH_ERROR_MISUSE);
     WAH_ENSURE(wah_alloc_valid(options ? options->alloc : NULL), WAH_ERROR_MISUSE);
-    *exec_ctx = (wah_exec_context_t){ .is_instantiated = false, .alloc = wah_resolve_alloc(options ? options->alloc : NULL) };
+    exec_ctx->alloc = wah_resolve_alloc(options ? options->alloc : NULL);
     wah_error_t err = WAH_OK;
     const wah_alloc_t *alloc = &exec_ctx->alloc;
 
@@ -16455,6 +16462,7 @@ void wah_free_module(wah_module_t *module) {
 
 wah_error_t wah_new_module(wah_module_t *mod, const wah_alloc_t *alloc_arg) {
     WAH_ENSURE(mod, WAH_ERROR_MISUSE);
+    *mod = (wah_module_t){0};
     WAH_ENSURE(wah_alloc_valid(alloc_arg), WAH_ERROR_MISUSE);
 
     *mod = (wah_module_t){ .functions_cap = 16, .local_function_count = 0, .exports_cap = 16,
