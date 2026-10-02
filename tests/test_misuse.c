@@ -74,6 +74,11 @@ static void test_module_builder_misuse(void) {
     assert_err(wah_export_memory(NULL, "mem", 1, 1), WAH_ERROR_MISUSE);
     assert_err(wah_export_global_i32(NULL, "g", false, 0), WAH_ERROR_MISUSE);
     assert_err(wah_export_global_f64(NULL, "g", false, 0.0), WAH_ERROR_MISUSE);
+
+    wah_module_t mod = {0};
+    assert_ok(wah_new_module(&mod, NULL));
+    assert_err(wah_export_global_v128(&mod, "g", false, NULL), WAH_ERROR_MISUSE); // Used to dereference it
+    wah_free_module(&mod);
 }
 
 static void test_freeable_after_failure(void) {

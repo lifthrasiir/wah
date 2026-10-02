@@ -16879,6 +16879,7 @@ wah_error_t wah_export_global_f64(wah_module_t *mod, const char *name, bool is_m
 }
 
 wah_error_t wah_export_global_v128(wah_module_t *mod, const char *name, bool is_mutable, const wah_v128_t *init_value) {
+    WAH_ENSURE(init_value, WAH_ERROR_MISUSE);
     wah_value_t val = { .v128 = *init_value };
     return wah_export_global_internal(mod, name, WAH_TYPE_V128, is_mutable, &val);
 }
