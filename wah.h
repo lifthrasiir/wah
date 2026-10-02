@@ -8229,8 +8229,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                 }
                 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
                 case WAH_OP_STRUCT_NEW: case WAH_OP_STRUCT_NEW_DEFAULT:
-                case WAH_OP_ARRAY_NEW: case WAH_OP_ARRAY_NEW_DEFAULT:
-                case WAH_OP_ARRAY_FILL: {
+                case WAH_OP_ARRAY_NEW: case WAH_OP_ARRAY_NEW_DEFAULT: {
                     WAH_LOWER_U32(instr->imm.u32);
                     break;
                 }
@@ -8285,8 +8284,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                     break;
                 }
                 #undef WAH_XLAT_OP
-                case WAH_OP_ARRAY_NEW_FIXED:
-                case WAH_OP_ARRAY_NEW_DATA: case WAH_OP_ARRAY_NEW_ELEM: {
+                case WAH_OP_ARRAY_NEW_FIXED: {
                     WAH_LOWER_U32(instr->imm.type_length.type_idx);
                     WAH_LOWER_U32(instr->imm.type_length.length);
                     break;
