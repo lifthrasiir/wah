@@ -1259,6 +1259,10 @@ void wah_trap(wah_call_context_t *ctx, wah_error_t reason);
 //   Links a module into the primary module of the context under a specified name.
 //   Can be called multiple times to link multiple modules.
 //
+//   The module is instantiated together with the primary module, at most once per context:
+//   it can't be the primary module or any other linked module (including modules of linked contexts),
+//   or WAH_ERROR_MISUSE is returned. Use `wah_link_context` to link multiple instances of a module.
+//
 //   - name [in, borrowed]: Name to link the module under. Must be unique among linked modules.
 //   - mod [in, borrowed]: Module to link. Must outlive the execution context.
 wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah_module_t *mod);
@@ -1271,6 +1275,10 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
 //   Both contexts can leave references to their own objects and functions in each other,
 //   so their lifetimes are tied: once any context in the link domain is freed, the remaining
 //   contexts can only be freed (see `wah_free_exec_context`). Free them together.
+//
+//   Contexts of the same module can be linked as distinct instances, except for the primary module and
+//   modules linked by `wah_link_module`. The same context can be linked under multiple names to alias it,
+//   unless its module has host functions. Otherwise WAH_ERROR_MISUSE is returned.
 //
 //   - name [in, borrowed]: Name to link the context under. Must be unique among linked modules.
 //   - linked_ctx [in, borrowed]: Execution context to link.
@@ -16686,6 +16694,22 @@ void wah_trap(wah_call_context_t *ctx, wah_error_t reason) {
 
 // --- Linkage Implementation ---
 
+// Instances of modules linked with wah_link_module are identified by their modules, so their modules should be
+// distinct from the primary and every other linked module. Other instances of the primary module can't be linked
+// either. Contexts of the same module are distinct instances, and the same context may be linked more than once
+// to alias the instance, unless its module has host functions.
+static wah_error_t wah_check_linked_module(const wah_exec_context_t *ctx, const wah_module_t *mod,
+                                           const wah_exec_context_t *linked_ctx) {
+    WAH_ENSURE(mod != ctx->module, WAH_ERROR_MISUSE);
+    for (uint32_t i = 0; i < ctx->linked_module_count; ++i) {
+        const wah_linked_module_t *lm = &ctx->linked_modules[i];
+        if (lm->module != mod) continue;
+        WAH_ENSURE(linked_ctx && lm->ctx, WAH_ERROR_MISUSE);
+        WAH_ENSURE(lm->ctx != linked_ctx || mod->local_function_count == mod->wasm_function_count, WAH_ERROR_MISUSE);
+    }
+    return WAH_OK;
+}
+
 wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah_module_t *mod) {
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
     const wah_alloc_t *alloc = &ctx->alloc;
@@ -16702,6 +16726,7 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
         }
     }
 
+    WAH_CHECK(wah_check_linked_module(ctx, mod, NULL));
     WAH_ENSURE((mod->required_features & ~ctx->enabled_features) == 0, WAH_ERROR_DISABLED_FEATURE);
 
     WAH_ENSURE_CAP(ctx->linked_modules, ctx->linked_module_count + 1);
@@ -16730,6 +16755,7 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
         }
     }
 
+    WAH_CHECK(wah_check_linked_module(ctx, linked_ctx->module, linked_ctx));
     WAH_ENSURE((linked_ctx->module->required_features & ~ctx->enabled_features) == 0, WAH_ERROR_DISABLED_FEATURE);
 
     WAH_ENSURE_CAP(ctx->linked_modules, ctx->linked_module_count + 1);
@@ -17161,7 +17187,6 @@ static wah_error_t wah_resolve_linked_tag_imports(wah_exec_context_t *ctx) {
                 const wah_module_t *provider = NULL;
                 wah_exec_context_t *provider_ctx = NULL;
                 bool found = wah_find_linked_module(ctx, &lti->name, &provider, &provider_ctx, NULL);
-                if (found && provider == module) provider_ctx = ctx;
                 if (!found && wah_find_export(module, 4, &lti->name)) {
                     provider = module;
                     provider_ctx = ctx;
@@ -17237,7 +17262,6 @@ static wah_error_t wah_resolve_linked_global_imports(wah_exec_context_t *ctx, wa
                 uint32_t provider_linked_idx = 0;
                 const wah_export_t *gexp = NULL;
                 if (wah_find_linked_module(ctx, &lgi->name, &provider, &provider_ctx, &provider_linked_idx)) {
-                    if (provider == module) provider_ctx = ctx;
                     gexp = wah_find_export(provider, 3, &lgi->name);
                 }
                 if (!gexp) {
@@ -17670,7 +17694,6 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                 const wah_module_t *mprov = NULL;
                 wah_exec_context_t *mprov_ctx = NULL;
                 if (wah_find_linked_module(ctx, &mim->name, &mprov, &mprov_ctx, NULL)) {
-                    if (mprov == module) mprov_ctx = ctx; // The primary module linked to itself means the primary
                     const wah_export_t *mexp = wah_find_export(mprov, 2, &mim->name);
                     if (mexp && mprov_ctx && mexp->index < mprov_ctx->memory_count) {
                         WAH_CHECK(wah_bind_memory_import_slot(&ictx->memories[mi], mprov, mprov_ctx,
@@ -17731,7 +17754,6 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                 const wah_module_t *tprov = NULL;
                 wah_exec_context_t *tprov_ctx = NULL;
                 if (wah_find_linked_module(ctx, &tim->name, &tprov, &tprov_ctx, NULL)) {
-                    if (tprov == module) tprov_ctx = ctx; // The primary module linked to itself means the primary
                     const wah_export_t *texp = wah_find_export(tprov, 1, &tim->name);
                     if (texp && tprov_ctx && texp->index < tprov_ctx->table_count) {
                         WAH_CHECK(wah_bind_table_import_slot(&ictx->tables[ti], lmod, &tim->type,

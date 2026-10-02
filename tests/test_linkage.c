@@ -75,8 +75,8 @@ int main() {
         wah_exec_context_t ctx = {0};
         assert_ok(wah_new_exec_context(&ctx, &host_mod, NULL));
 
-        // Link the same module (should work as no-op)
-        assert_ok(wah_link_module(&ctx, "host", &host_mod));
+        // Linking the primary module to itself is not allowed
+        assert_err(wah_link_module(&ctx, "host", &host_mod), WAH_ERROR_MISUSE);
 
         // Instantiate
         assert_ok(wah_instantiate(&ctx));
@@ -686,16 +686,20 @@ int main() {
 
     printf("Testing duplicate module name...\n");
     {
-        wah_module_t mod = {0};
+        wah_module_t primary = {0}, mod = {0}, mod2 = {0};
+        assert_ok(wah_new_module(&primary, NULL));
         assert_ok(wah_new_module(&mod, NULL));
+        assert_ok(wah_new_module(&mod2, NULL));
 
         wah_exec_context_t ctx = {0};
-        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+        assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
         assert_ok(wah_link_module(&ctx, "mymod", &mod));
-        assert_err(wah_link_module(&ctx, "mymod", &mod), WAH_ERROR_VALIDATION_FAILED);
+        assert_err(wah_link_module(&ctx, "mymod", &mod2), WAH_ERROR_VALIDATION_FAILED);
 
         wah_free_exec_context(&ctx);
+        wah_free_module(&mod2);
         wah_free_module(&mod);
+        wah_free_module(&primary);
     }
 
     printf("Testing duplicate name in wah_link_context...\n");
@@ -1671,7 +1675,6 @@ int main() {
         wah_exec_context_t ctx = {0};
         assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
         assert_ok(wah_link_module(&ctx, "L", &linked));
-        assert_ok(wah_link_module(&ctx, "primary", &primary));
         assert_ok(wah_instantiate(&ctx));
 
         // Call write(42) - should set primary's mutable global to 42
@@ -1745,7 +1748,6 @@ int main() {
         wah_exec_context_t ctx = {0};
         assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
         assert_ok(wah_link_module(&ctx, "L", &linked));
-        assert_ok(wah_link_module(&ctx, "primary", &primary));
         assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
 
         wah_free_exec_context(&ctx);
@@ -1777,7 +1779,6 @@ int main() {
         wah_exec_context_t ctx = {0};
         assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
         assert_ok(wah_link_module(&ctx, "L", &linked));
-        assert_ok(wah_link_module(&ctx, "primary", &primary));
         assert_ok(wah_instantiate(&ctx));
 
         wah_value_t result;
@@ -2096,7 +2097,6 @@ int main() {
         wah_exec_context_t ctx = {0};
         assert_ok(wah_new_exec_context(&ctx, &primary_mod, NULL));
         assert_ok(wah_link_module(&ctx, "linked", &linked_mod));
-        assert_ok(wah_link_module(&ctx, "primary", &primary_mod));
         assert_ok(wah_instantiate(&ctx));
 
         // linked_size (calls into linked module) should report size 1.
@@ -3994,9 +3994,8 @@ int main() {
         wah_free_module(&prov);
     }
 
-    // The same module linked both as a context and as a module: imports from the latter should be bound to
-    // its own instance, not to the globals of the former.
-    printf("Testing module linked both as a context and as a module...\n");
+    // The same module linked both as a context and as a module would make two instances indistinguishable.
+    printf("Testing module linked both as a context and as a module is rejected...\n");
     {
         wah_module_t m = {0}, user = {0};
         assert_ok(wah_parse_module_from_spec(&m, "wasm \
@@ -4012,15 +4011,10 @@ int main() {
         wah_exec_context_t mctx = {0}, uctx = {0};
         assert_ok(wah_new_exec_context(&mctx, &m, NULL));
         assert_ok(wah_instantiate(&mctx));
-        wah_value_t v = { .i32 = 5 }, r;
-        assert_ok(wah_call(&mctx, 0, &v, 1, NULL));
 
         assert_ok(wah_new_exec_context(&uctx, &user, NULL));
         assert_ok(wah_link_context(&uctx, "a", &mctx));
-        assert_ok(wah_link_module(&uctx, "b", &m));
-        assert_ok(wah_instantiate(&uctx));
-        assert_ok(wah_call(&uctx, 0, NULL, 0, &r));
-        assert_eq_i32(r.i32, 1);
+        assert_err(wah_link_module(&uctx, "b", &m), WAH_ERROR_MISUSE);
 
         wah_free_exec_context(&uctx);
         wah_free_exec_context(&mctx);
@@ -4307,6 +4301,72 @@ int main() {
         wah_free_module(&a);
     }
 
+    // A module can be instantiated only once per link domain by wah_link_module, as instances are identified by
+    // modules there. Multiple instances of the same module should be linked with wah_link_context instead.
+    printf("Testing linking the same module more than once with wah_link_module is rejected...\n");
+    {
+        wah_module_t m = {0}, p = {0};
+        assert_ok(wah_parse_module_from_spec(&m, "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+            exports {[ {'f'} fn# 0 ]} code {[ {[] i32.const 1 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&p, "wasm types {[]}"));
+        wah_exec_context_t ctx = {0}, mctx = {0};
+        assert_ok(wah_new_exec_context(&mctx, &m, NULL));
+        assert_ok(wah_instantiate(&mctx));
+
+        assert_ok(wah_new_exec_context(&ctx, &p, NULL));
+        assert_err(wah_link_module(&ctx, "self", &p), WAH_ERROR_MISUSE);
+        assert_ok(wah_link_module(&ctx, "a", &m));
+        assert_err(wah_link_module(&ctx, "b", &m), WAH_ERROR_MISUSE);
+        assert_err(wah_link_context(&ctx, "c", &mctx), WAH_ERROR_MISUSE);
+        wah_free_exec_context(&ctx);
+
+        assert_ok(wah_new_exec_context(&ctx, &p, NULL));
+        assert_ok(wah_link_context(&ctx, "c", &mctx));
+        assert_err(wah_link_module(&ctx, "a", &m), WAH_ERROR_MISUSE);
+        assert_ok(wah_instantiate(&ctx));
+        wah_free_exec_context(&ctx);
+
+        wah_free_exec_context(&mctx);
+        wah_free_module(&p);
+        wah_free_module(&m);
+    }
+
+    printf("Testing aliasing a context with wah_link_context is allowed only without host functions...\n");
+    {
+        wah_module_t m = {0}, host = {0}, p = {0};
+        assert_ok(wah_parse_module_from_spec(&m, "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+            globals {[ i32 mut i32.const 0 end ]} exports {[ {'inc'} fn# 0 ]} \
+            code {[ {[] global.get 0 i32.const 1 i32.add global.set 0 global.get 0 end} ]}"));
+        assert_ok(wah_new_module(&host, NULL));
+        assert_ok(wah_export_func(&host, "testFunc", "() -> i32", simple_host_func, NULL, NULL));
+        assert_ok(wah_parse_module_from_spec(&p, "wasm types {[ fn [] [i32] ]} \
+            imports {[ {'a'} {'inc'} fn# 0, {'b'} {'inc'} fn# 0 ]}"));
+        wah_exec_context_t mctx = {0}, hctx = {0}, ctx = {0};
+        assert_ok(wah_new_exec_context(&mctx, &m, NULL));
+        assert_ok(wah_instantiate(&mctx));
+        assert_ok(wah_new_exec_context(&hctx, &host, NULL));
+        assert_ok(wah_instantiate(&hctx));
+
+        assert_ok(wah_new_exec_context(&ctx, &p, NULL));
+        assert_ok(wah_link_context(&ctx, "h1", &hctx));
+        assert_err(wah_link_context(&ctx, "h2", &hctx), WAH_ERROR_MISUSE);
+        assert_ok(wah_link_context(&ctx, "a", &mctx));
+        assert_ok(wah_link_context(&ctx, "b", &mctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t r;
+        for (int32_t i = 0; i < 4; ++i) {
+            assert_ok(wah_call(&ctx, (uint32_t)(i % 2), NULL, 0, &r));
+            assert_eq_i32(r.i32, i + 1); // Both names refer to the same instance
+        }
+        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&hctx);
+        wah_free_exec_context(&mctx);
+        wah_free_module(&p);
+        wah_free_module(&host);
+        wah_free_module(&m);
+    }
+
+    // Linking another instance of the primary module is also self-linkage, but it can be reached indirectly.
     printf("Testing functions of another instance of the primary module reached through a linked context...\n");
     {
         wah_module_t m = {0}, q = {0}, z = {0};
@@ -4330,6 +4390,7 @@ int main() {
         assert_ok(wah_instantiate(&xctx));
 
         assert_ok(wah_new_exec_context(&ctx, &m, NULL));
+        assert_err(wah_link_context(&ctx, "x", &yctx), WAH_ERROR_MISUSE);
         assert_ok(wah_link_context(&ctx, "x", &xctx));
         assert_ok(wah_instantiate(&ctx));
         wah_value_t r;
