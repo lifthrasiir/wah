@@ -1149,6 +1149,56 @@ static void test_branch_targets_are_metered(void) {
     check_branch_target_metered("block void try_table void [catch_all 0] " PAD50 "throw 0 end end", "");
 }
 
+static int g_tick_interrupt;
+static void host_maybe_interrupt(wah_call_context_t *cc, void *ud) {
+    (void)ud;
+    if (g_tick_interrupt) wah_request_interrupt_from_host(cc);
+}
+
+// Runs f with the given fuel, refilling one fuel at a time, and returns the fuel left minus 1000 per refill.
+static int64_t run_ticks_with_fuel(int interrupt, int64_t fuel) {
+    wah_module_t env = {0}, mod = {0};
+    assert_ok(wah_new_module(&env, NULL));
+    assert_ok(wah_export_func(&env, "h", "() -> ()", host_maybe_interrupt, NULL, NULL));
+    PARSE_FUEL(&mod, "wasm types {[ fn [] [], fn [] [i32] ]} \
+        imports {[ {'env'} {'h'} fn# 0 ]} funcs {[ 1 ]} \
+        code {[ {[] call 0 i32.const 1 i32.const 2 i32.add i32.const 3 i32.add end} ]}");
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_link_module(&ctx, "env", &env));
+    assert_ok(wah_instantiate(&ctx));
+    assert_ok(wah_set_fuel(&ctx, fuel));
+    g_tick_interrupt = interrupt;
+    assert_ok(wah_start(&ctx, 1, NULL, 0));
+    int64_t refills = 0;
+    wah_error_t err;
+    while ((err = wah_resume(&ctx)) != WAH_OK) {
+        if (err == WAH_STATUS_YIELDED) {
+            g_tick_interrupt = 0;
+        } else {
+            assert_err(err, WAH_STATUS_FUEL_EXHAUSTED);
+            refills++;
+            assert_ok(wah_set_fuel(&ctx, 1));
+        }
+    }
+    wah_value_t r;
+    assert_ok(wah_finish(&ctx, &r, 1, NULL));
+    assert_eq_i32(r.i32, 6);
+    int64_t left = wah_get_fuel(&ctx) - refills * 1000;
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+    wah_free_module(&env);
+    return left;
+}
+
+// Regression: TICK charged fuel before yielding to an interrupt, and charged it again when retried on resumption.
+static void test_interrupted_tick_charges_once(void) {
+    printf("Testing an interrupted TICK charges fuel once...\n");
+    for (int64_t fuel = 1; fuel <= 8; fuel++) {
+        assert_eq_i64(run_ticks_with_fuel(1, fuel), run_ticks_with_fuel(0, fuel));
+    }
+}
+
 int main(void) {
     test_straight_line_exact_fuel();
     test_zero_fuel();
@@ -1178,6 +1228,7 @@ int main(void) {
     test_long_straight_line_chunk();
     test_metered_code_size();
     test_branch_targets_are_metered();
+    test_interrupted_tick_charges_once();
 
     printf("\n=== All fuel tests passed ===\n");
     return 0;

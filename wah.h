@@ -12583,6 +12583,7 @@ WAH_RUN(TICK) {
     } else if (WAH_POLL_FLAG_LOAD(ctx->interrupt_flag)) {
         WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0);
         wah_recompute_poll_flag(ctx);
+        ctx->fuel++; // Charged again when retried
         err = WAH_STATUS_YIELDED;
     }
     if (err != WAH_OK) {
