@@ -16255,13 +16255,45 @@ static wah_error_t wah_finish_internal(
     return err;
 }
 
+// Instantiates ctx if not yet done on the first wah_start or wah_call*. Host objects in params are documented to be
+// valid until that entry, so they are pinned while start functions run and may collect them.
+static wah_error_t wah_instantiate_on_entry(wah_exec_context_t *ctx, uint64_t func_idx,
+                                            const wah_value_t *params, uint32_t param_count) {
+    if (ctx->is_instantiated) return WAH_OK;
+    wah_func_desc_t fd = {0};
+    uint32_t ref_count = 0;
+    bool known = params && func_idx <= UINT32_MAX && wah_module_function(ctx->module, (uint32_t)func_idx, &fd) == WAH_OK &&
+                 fd.param_count == param_count;
+    for (uint32_t i = 0; known && i < param_count; i++) {
+        void *ref = params[i].ref;
+        if (WAH_TYPE_IS_REF(fd.param_types[i]) && ref && ((uintptr_t)ref & 3) == 0) ref_count++;
+    }
+    if (ref_count == 0) return wah_instantiate(ctx);
+
+    const wah_alloc_t *alloc = &ctx->alloc;
+    void **pinned = NULL;
+    uint32_t pinned_count = 0;
+    wah_error_t err;
+    WAH_MALLOC_ARRAY(pinned, ref_count);
+    for (uint32_t i = 0; i < param_count; i++) {
+        void *ref = params[i].ref;
+        if (!WAH_TYPE_IS_REF(fd.param_types[i]) || !ref || ((uintptr_t)ref & 3) != 0) continue;
+        if (wah_gc_header(ref)->repr_id != WAH_REPR_HOST) continue; // Rejected by wah_load_host_params later
+        WAH_CHECK_GOTO(wah_pin(ctx, params[i], NULL, WAH_TYPE_ANY, &pinned[pinned_count]), cleanup);
+        pinned_count++;
+    }
+    err = wah_instantiate(ctx);
+cleanup:
+    while (pinned_count > 0) wah_unpin(ctx, pinned[--pinned_count]);
+    wah_free(alloc, pinned);
+    return err;
+}
+
 wah_error_t wah_start(wah_exec_context_t *ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count) {
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(!ctx->poisoned, WAH_ERROR_MISUSE);
     WAH_ENSURE(ctx->module, WAH_ERROR_MISUSE);
-    if (!ctx->is_instantiated) {
-        WAH_CHECK(wah_instantiate(ctx));
-    }
+    WAH_CHECK(wah_instantiate_on_entry(ctx, func_idx, params, param_count));
     WAH_ENSURE(func_idx <= UINT32_MAX, WAH_ERROR_NOT_FOUND);
     return wah_start_internal(ctx, (uint32_t)func_idx, params, param_count);
 }
@@ -16339,7 +16371,7 @@ wah_error_t wah_call(wah_exec_context_t *exec_ctx, uint64_t func_idx, const wah_
     WAH_ENSURE(!exec_ctx->poisoned, WAH_ERROR_MISUSE);
     WAH_ENSURE(func_idx <= UINT32_MAX, WAH_ERROR_NOT_FOUND);
 
-    if (!exec_ctx->is_instantiated) WAH_CHECK(wah_instantiate(exec_ctx));
+    WAH_CHECK(wah_instantiate_on_entry(exec_ctx, func_idx, params, param_count));
     return wah_call_module(exec_ctx, (uint32_t)func_idx, params, param_count, result, false);
 }
 
@@ -16349,7 +16381,7 @@ wah_error_t wah_call_pin(wah_exec_context_t *exec_ctx, uint64_t func_idx, const 
     WAH_ENSURE(!exec_ctx->poisoned, WAH_ERROR_MISUSE);
     WAH_ENSURE(func_idx <= UINT32_MAX, WAH_ERROR_NOT_FOUND);
 
-    if (!exec_ctx->is_instantiated) WAH_CHECK(wah_instantiate(exec_ctx));
+    WAH_CHECK(wah_instantiate_on_entry(exec_ctx, func_idx, params, param_count));
     return wah_call_module(exec_ctx, (uint32_t)func_idx, params, param_count, result, true);
 }
 
@@ -16362,7 +16394,7 @@ wah_error_t wah_call_multi(
     WAH_ENSURE(!exec_ctx->poisoned, WAH_ERROR_MISUSE);
     WAH_ENSURE(func_idx <= UINT32_MAX, WAH_ERROR_NOT_FOUND);
 
-    if (!exec_ctx->is_instantiated) WAH_CHECK(wah_instantiate(exec_ctx));
+    WAH_CHECK(wah_instantiate_on_entry(exec_ctx, func_idx, params, param_count));
     return wah_call_module_multi(exec_ctx, (uint32_t)func_idx, params, param_count, results, max_result_count, actual_result_count,
                                  false);
 }

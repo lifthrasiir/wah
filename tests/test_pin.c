@@ -4,6 +4,7 @@
 #include "common.h"
 #include <stdio.h>
 #include <stdint.h>
+#include <string.h>
 
 // Returns the reference given in the previous call and keeps the current one, so that references are kept
 // alive by the host across calls and garbage collections.
@@ -330,6 +331,49 @@ static void test_swap_reenter(void) {
     wah_free_module(&host);
 }
 
+static void test_host_ref_before_instantiation(void) {
+    printf("Testing host objects given to the first call survive collections in start functions...\n");
+    const char *calls[] = { "call", "call_pin", "call_multi", "start" };
+    for (int i = 0; i < 4; i++) {
+        wah_module_t mod = {0};
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+            types {[ struct [i32 mut], fn [] [], fn [i64, externref] [externref] ]} \
+            funcs {[ 1, 2 ]} start { 0 } \
+            code {[ {[1 i32] loop void i32.const 0 struct.new 0 drop \
+                        local.get 0 i32.const 1 i32.add local.tee 0 i32.const 200000 i32.lt_u br_if 0 end end}, \
+                    {[] local.get 1 end} ]}"));
+        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+        assert_ok(wah_gc_start(&ctx));
+        void *host = wah_gc_alloc_host(&ctx, 16);
+        assert_true(host != NULL);
+        memcpy(host, "host object here", 16);
+        // The i64 looks like a pointer to make sure that only references are pinned
+        wah_value_t args[2] = { { .i64 = (int64_t)(uintptr_t)host + 64 }, { .ref = host } }, r = {0};
+        printf("  via %s\n", calls[i]);
+        switch (i) {
+        case 0: assert_ok(wah_call(&ctx, 1, args, 2, &r)); break;
+        case 1: {
+            assert_ok(wah_call_pin(&ctx, 1, args, 2, &r));
+            assert_ok(wah_unpin_ref(&ctx, r.ref));
+            r.ref = host;
+            break;
+        }
+        case 2: assert_ok(wah_call_multi(&ctx, 1, args, 2, &r, 1, NULL)); break;
+        case 3: {
+            assert_ok(wah_start(&ctx, 1, args, 2));
+            assert_ok(wah_resume(&ctx));
+            assert_ok(wah_finish(&ctx, &r, 1, NULL));
+            break;
+        }
+        }
+        assert_true(r.ref == host);
+        assert_true(memcmp(host, "host object here", 16) == 0);
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod);
+    }
+}
+
 int main(void) {
     test_swap("(externref) -> externref", "externref", "extern.convert_any", "any.convert_extern");
     test_swap("(anyref) -> anyref", "anyref", "", "");
@@ -368,6 +412,7 @@ int main(void) {
 
     test_call_pin();
     test_pin_host_ref();
+    test_host_ref_before_instantiation();
 
     printf("All pin tests passed!\n");
     return 0;
