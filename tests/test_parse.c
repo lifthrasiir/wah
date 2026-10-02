@@ -1340,7 +1340,7 @@ static void *peak_realloc(void *ptr, size_t size, void *ud) {
 
 static size_t parse_peak_bytes(const char *spec) {
     peak_alloc_t st = {0};
-    wah_alloc_t alloc = { peak_malloc, peak_realloc, peak_free, &st };
+    wah_alloc_t alloc = { peak_malloc, peak_realloc, peak_free, &st, 0 };
     wah_parse_options_t opts = { .alloc = &alloc };
     wah_module_t module = {0};
     assert_ok(wah_parse_module_from_spec_ex(&module, &opts, spec));

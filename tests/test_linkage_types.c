@@ -761,7 +761,7 @@ static void test_cross_module_type_eq_dag(bool oom) {
     snprintf(cons_spec, sizeof(cons_spec), "wasm %s imports {[{'p'} {'f'} fn# %d]}", types, K + 1);
 
     bool failing = false;
-    wah_alloc_t alloc = { failing_malloc, failing_realloc, failing_free, &failing };
+    wah_alloc_t alloc = { failing_malloc, failing_realloc, failing_free, &failing, 16 };
     wah_exec_options_t opts = { .alloc = &alloc };
     wah_module_t prov = {0}, cons = {0};
     assert_ok(wah_parse_module_from_spec(&prov, prov_spec));

@@ -20,7 +20,7 @@ Naming convention is `wah_<verb>_<noun>` where possible. There are no `_ex` cons
 
 ### Custom Allocator
 
-`wah_alloc_t` (with `malloc` / `realloc` / `free` / `userdata`) can be supplied at parse time (`wah_parse_options_t::alloc`), at exec context creation (`wah_exec_options_t::alloc`), and at programmatic module construction (`wah_new_module(mod, alloc)`). Parse and exec allocators are independent and must be set separately. NULL means the standard allocator.
+`wah_alloc_t` (with `malloc` / `realloc` / `free` / `userdata`) can be supplied at parse time (`wah_parse_options_t::alloc`), at exec context creation (`wah_exec_options_t::alloc`), and at programmatic module construction (`wah_new_module(mod, alloc)`). Parse and exec allocators are independent and must be set separately. NULL means the standard allocator. `wah_alloc_t::min_align` declares the alignment the allocator guarantees (0 = `alignof(max_align_t)`; `WAH_MALLOC_MIN_ALIGN` for the standard one); below 16, `wah_malloc` / `wah_realloc` / `wah_free` pad every block to 16 bytes with the padding size stored in the byte before it.
 
 ## Implementation Strategy
 

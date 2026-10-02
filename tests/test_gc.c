@@ -2465,7 +2465,7 @@ int main() {
             types {[ struct [i32 mut], fn [] [] ]} funcs {[ 1 ]} \
             globals {[ type.ref.null 0 mut i32.const 1 struct.new 0 end ]} \
             code {[ {[] unreachable end} ]}"));
-        wah_alloc_t counting = { counting_malloc, counting_realloc, counting_free, NULL };
+        wah_alloc_t counting = { counting_malloc, counting_realloc, counting_free, NULL, 0 };
         wah_exec_options_t opts = { .alloc = &counting };
         wah_exec_context_t ctx2 = {0};
         assert_ok(wah_new_exec_context(&ctx2, &wasm_mod, &opts));

@@ -152,7 +152,7 @@ static void growth_free(void *ptr, void *userdata) { (void)userdata; free(ptr); 
 
 static int test_logarithmic_growth(void) {
     enum { N = 1024 };
-    wah_alloc_t alloc = { growth_malloc, growth_realloc, growth_free, NULL };
+    wah_alloc_t alloc = { growth_malloc, growth_realloc, growth_free, NULL, 0 };
     wah_module_t mod;
     assert_ok(wah_new_module(&mod, &alloc));
     growth_reallocs = 0;
@@ -187,7 +187,7 @@ static void *bytes_realloc(void *ptr, size_t size, void *userdata) {
 
 static int test_non_defaultable_locals_cost(void) {
     enum { FUNCS = 64 };
-    wah_alloc_t alloc = { bytes_malloc, bytes_realloc, growth_free, NULL };
+    wah_alloc_t alloc = { bytes_malloc, bytes_realloc, growth_free, NULL, 0 };
     wah_parse_options_t opts = { .alloc = &alloc };
     char spec[64 * FUNCS + 256];
     strcpy(spec, "wasm types {[ struct [i32 mut], fn [] [] ]} funcs {[ 1");
@@ -207,7 +207,7 @@ static int test_non_defaultable_locals_cost(void) {
 static int test_element_exprs_allocations(void) {
     enum { N = 100000 };
     tracking_alloc_t counts = {0};
-    wah_alloc_t alloc = { tracking_malloc, tracking_realloc, tracking_free, &counts };
+    wah_alloc_t alloc = { tracking_malloc, tracking_realloc, tracking_free, &counts, 0 };
     wah_parse_options_t opts = { .alloc = &alloc };
     static const char elem[] = "ref.func 0 end, ";
     char *spec = malloc(N * (sizeof(elem) - 1) + 256);
@@ -224,11 +224,63 @@ static int test_element_exprs_allocations(void) {
     return outstanding < 100 && tracking_ok("element exprs", &counts);
 }
 
+// Returns blocks that are 8 bytes off 16-byte boundaries (assuming 16-byte aligned malloc), with min_align = 8.
+static size_t misaligned_outstanding;
+static void *misaligned_malloc(size_t size, void *userdata) {
+    (void)userdata;
+    unsigned char *p = (unsigned char *)malloc(size + 8);
+    if (p) misaligned_outstanding++;
+    return p ? p + 8 : NULL;
+}
+static void *misaligned_realloc(void *ptr, size_t size, void *userdata) {
+    (void)userdata;
+    unsigned char *p = (unsigned char *)realloc((unsigned char *)ptr - 8, size + 8);
+    return p ? p + 8 : NULL;
+}
+static void misaligned_free(void *ptr, void *userdata) {
+    (void)userdata;
+    misaligned_outstanding--;
+    free((unsigned char *)ptr - 8);
+}
+
+// Blocks of allocators guaranteeing less than 16-byte alignment are padded, as values hold 128-bit vectors.
+static int test_less_aligned_allocator(void) {
+    printf("Testing allocators with 8-byte alignment...\n");
+    wah_alloc_t alloc = { misaligned_malloc, misaligned_realloc, misaligned_free, NULL, 8 };
+    wah_parse_options_t parse_opts = { .alloc = &alloc };
+    wah_exec_options_t exec_opts = { .alloc = &alloc };
+    wah_module_t mod = {0};
+    wah_v128_t lanes = { .u32 = { 1, 2, 3, 4 } };
+    // v128 through locals, globals and a GC struct, then grows memory and a table to exercise realloc
+    assert_ok(wah_parse_module_from_spec_ex(&mod, &parse_opts, "wasm \
+        types {[ struct [v128 mut], fn [] [i32] ]} funcs {[ 1 ]} \
+        tables {[ funcref limits.i32/1 1 ]} memories {[ limits.i32/1 1 ]} \
+        globals {[ v128 mut v128.const %v128 end ]} \
+        exports {[ {'f'} fn# 0 ]} \
+        code {[ {[1 v128] global.get 0 global.get 0 i8x16.add local.set 0 \
+            local.get 0 struct.new 0 struct.get 0 0 i32x4.extract_lane 3 \
+            i32.const 100 memory.grow 0 drop ref.null funcref i32.const 1000 table.grow 0 drop end} ]}",
+        lanes.u8));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, &exec_opts));
+    wah_value_t r;
+    assert_ok(wah_call_by_name(&ctx, "f", NULL, 0, &r));
+    assert_eq_i32(r.i32, 8);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+    assert_eq_u64(misaligned_outstanding, 0);
+
+    wah_alloc_t bad = { misaligned_malloc, misaligned_realloc, misaligned_free, NULL, 12 };
+    parse_opts.alloc = &bad;
+    assert_err(wah_parse_module_from_spec_ex(&mod, &parse_opts, "wasm"), WAH_ERROR_MISUSE);
+    return 1;
+}
+
 int main(void) {
     tracking_alloc_t module_counts = {0};
     tracking_alloc_t context_counts = {0};
-    wah_alloc_t module_alloc = { tracking_malloc, tracking_realloc, tracking_free, &module_counts };
-    wah_alloc_t context_alloc = { tracking_malloc, tracking_realloc, tracking_free, &context_counts };
+    wah_alloc_t module_alloc = { tracking_malloc, tracking_realloc, tracking_free, &module_counts, 0 };
+    wah_alloc_t context_alloc = { tracking_malloc, tracking_realloc, tracking_free, &context_counts, 0 };
 
     wah_module_t module;
     wah_parse_options_t parse_opts = { .alloc = &module_alloc };
@@ -258,9 +310,10 @@ int main(void) {
     if (!test_logarithmic_growth()) return 1;
     if (!test_non_defaultable_locals_cost()) return 1;
     if (!test_element_exprs_allocations()) return 1;
+    if (!test_less_aligned_allocator()) return 1;
 
     tracking_alloc_t builder_counts = {0};
-    wah_alloc_t builder_alloc = { tracking_malloc, tracking_realloc, tracking_free, &builder_counts };
+    wah_alloc_t builder_alloc = { tracking_malloc, tracking_realloc, tracking_free, &builder_counts, 0 };
     wah_module_t host_module;
     assert_ok(wah_new_module(&host_module, &builder_alloc));
     assert_ok(wah_export_func(&host_module, "id", "(i32) -> i32", host_id, NULL, NULL));
@@ -273,7 +326,7 @@ int main(void) {
     printf("Testing cross-module type checks don't use the parse allocator...\n");
     {
         tracking_alloc_t mc = {0};
-        wah_alloc_t ma = { tracking_malloc, tracking_realloc, tracking_free, &mc };
+        wah_alloc_t ma = { tracking_malloc, tracking_realloc, tracking_free, &mc, 0 };
         wah_parse_options_t po = { .alloc = &ma };
         wah_module_t provider = {0}, user = {0};
         // Comparing types referring to other types needs a memo
@@ -303,7 +356,7 @@ int main(void) {
     printf("Testing memory.grow 0 doesn't reallocate the memory...\n");
     {
         tracking_alloc_t cc = {0};
-        wah_alloc_t ca = { tracking_malloc, tracking_realloc, tracking_free, &cc };
+        wah_alloc_t ca = { tracking_malloc, tracking_realloc, tracking_free, &cc, 0 };
         wah_module_t m = {0};
         assert_ok(wah_parse_module_from_spec(&m, "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} \
             memories {[ limits.i32/1 1 ]} code {[ {[] i32.const 0 memory.grow 0 end} ]}"));
@@ -324,7 +377,7 @@ int main(void) {
     // Regression: partial allocator (missing function pointer) caused NULL call.
     printf("Testing partial allocator validation...\n");
     {
-        wah_alloc_t bad = { tracking_malloc, NULL, tracking_free, NULL };
+        wah_alloc_t bad = { tracking_malloc, NULL, tracking_free, NULL, 0 };
         wah_module_t m = {0};
         assert_err(wah_new_module(&m, &bad), WAH_ERROR_MISUSE);
     }
@@ -334,7 +387,7 @@ int main(void) {
     printf("Testing realloc(NULL) avoidance...\n");
     {
         strict_alloc_t sc = {0};
-        wah_alloc_t strict_alloc = { strict_malloc, strict_realloc, strict_free, &sc };
+        wah_alloc_t strict_alloc = { strict_malloc, strict_realloc, strict_free, &sc, 0 };
         wah_module_t m = {0};
         wah_type_t t;
         assert_ok(wah_new_module(&m, &strict_alloc));
@@ -350,8 +403,8 @@ int main(void) {
     printf("Testing linked module dropped segment cleanup...\n");
     {
         tracking_alloc_t mc = {0}, cc = {0};
-        wah_alloc_t ma = { tracking_malloc, tracking_realloc, tracking_free, &mc };
-        wah_alloc_t ca = { tracking_malloc, tracking_realloc, tracking_free, &cc };
+        wah_alloc_t ma = { tracking_malloc, tracking_realloc, tracking_free, &mc, 0 };
+        wah_alloc_t ca = { tracking_malloc, tracking_realloc, tracking_free, &cc, 0 };
 
         wah_module_t linked_mod = {0};
         wah_parse_options_t po = { .alloc = &ma };
@@ -394,7 +447,7 @@ int main(void) {
     printf("Testing rejected tag import cleanup...\n");
     {
         tracking_alloc_t mc = {0};
-        wah_alloc_t ma = { tracking_malloc, tracking_realloc, tracking_free, &mc };
+        wah_alloc_t ma = { tracking_malloc, tracking_realloc, tracking_free, &mc, 0 };
         wah_parse_options_t po = { .features = WAH_FEATURE_WASM_V2, .alloc = &ma };
         wah_module_t m = {0};
         assert_err(wah_parse_module_from_spec_ex(&m, &po, "wasm \
@@ -422,7 +475,7 @@ int main(void) {
             n += sizeof(entry);
         }
         peak_alloc_t pc = {0};
-        wah_alloc_t pa = { peak_malloc, peak_realloc, peak_free, &pc };
+        wah_alloc_t pa = { peak_malloc, peak_realloc, peak_free, &pc, 0 };
         wah_parse_options_t po = { .alloc = &pa };
         wah_module_t m = {0};
         assert_ok(wah_parse_module(&m, bin, n, &po));

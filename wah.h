@@ -176,6 +176,11 @@ typedef struct {
     // Field: userdata
     //   Will be passed to the malloc/realloc/free functions.
     void *userdata;
+    // Field: min_align
+    //   Alignment guaranteed for blocks returned by malloc and realloc, a power of two (or WAH_ERROR_MISUSE is
+    //   returned where the allocator is given). 0 means `alignof(max_align_t)`, the minimum that `malloc` guarantees.
+    //   Blocks are internally padded when this is less than 16, which 128-bit vectors need.
+    size_t min_align;
 } wah_alloc_t;
 
 // Union: wah_v128_t
@@ -747,9 +752,8 @@ private:
     WAH_ALIGNAS(16)
     // Unified stack: values grow upward from stack_buffer, call frames grow
     // downward from stack_end. Overflow when the two regions meet.
-    uint8_t *stack_buffer; // Base of the unified stack allocation
+    uint8_t *stack_buffer; // Base of the unified stack allocation, where the value stack starts
     uint64_t stack_buffer_size;     // Total bytes allocated for stack_buffer
-    wah_value_t *value_stack;       // = (wah_value_t *)stack_buffer
     wah_value_t *sp;                // Value stack pointer (next free slot)
     struct wah_call_frame_s *frame_ptr; // Next free frame slot (grows downward from stack_end)
     uint32_t call_depth;            // Current call depth
@@ -3151,16 +3155,6 @@ static inline uint32_t wah_data_seg_data_len(const wah_exec_context_t *ctx, uint
     return ctx->module->data_segments[idx].data_len;
 }
 
-// Helper function to duplicate a string
-static inline char* wah_strdup(const char* s, const wah_alloc_t *alloc) {
-    if (!s) return NULL;
-    size_t len = strlen(s);
-    char* copy = (char*)alloc->malloc(len + 1, alloc->userdata);
-    if (copy) {
-        memcpy(copy, s, len + 1);
-    }
-    return copy;
-}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Error checking and memory allocation ////////////////////////////////////////
@@ -3196,21 +3190,58 @@ static inline char* wah_strdup(const char* s, const wah_alloc_t *alloc) {
     if (!(cond)) { err = (error); WAH_LOG("WAH_ENSURE_GOTO(%s, %s, %s) failed", #cond, #error, #label); goto label; } \
 } while(0)
 
+// Macro: WAH_MALLOC_MIN_ALIGN [user-definable]
+//   Alignment guaranteed for blocks returned by `malloc` and `realloc`, which are used without custom allocators.
+//   Defaults to 16 on targets known to guarantee that, or `alignof(max_align_t)` otherwise (8 before C11).
+//   See `wah_alloc_t::min_align` for how it is used.
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define WAH_STD_MIN_ALIGN WAH_ALIGNOF(max_align_t)
+#else
+#define WAH_STD_MIN_ALIGN 8
+#endif
+#ifndef WAH_MALLOC_MIN_ALIGN
+#if defined(__APPLE__) || defined(_WIN64) || (defined(__GLIBC__) && UINTPTR_MAX > 0xffffffffu)
+#define WAH_MALLOC_MIN_ALIGN 16
+#else
+#define WAH_MALLOC_MIN_ALIGN WAH_STD_MIN_ALIGN
+#endif
+#endif
+
+// Alignment of every block, which is required by wah_value_t (with 128-bit vectors) and assumed for all blocks
+#define WAH_BLOCK_ALIGN 16
+typedef char wah_block_align_check_[WAH_ALIGNOF(wah_value_t) <= WAH_BLOCK_ALIGN ? 1 : -1];
+
 static void *wah_stdc_malloc(size_t size, void *userdata) { (void)userdata; return malloc(size); }
 static void *wah_stdc_realloc(void *ptr, size_t size, void *userdata) { (void)userdata; return realloc(ptr, size); }
 static void wah_stdc_free(void *ptr, void *userdata) { (void)userdata; free(ptr); }
 
 static inline bool wah_alloc_valid(const wah_alloc_t *a) {
-    return !a || (a->malloc && a->realloc && a->free);
+    return !a || (a->malloc && a->realloc && a->free && (a->min_align & (a->min_align - 1)) == 0);
 }
 
 static inline wah_alloc_t wah_resolve_alloc(const wah_alloc_t *a) {
-    if (a && a->malloc && a->realloc && a->free) return *a;
-    return (wah_alloc_t){ wah_stdc_malloc, wah_stdc_realloc, wah_stdc_free, NULL };
+    if (a && a->malloc && a->realloc && a->free) {
+        wah_alloc_t r = *a;
+        if (!r.min_align) r.min_align = WAH_STD_MIN_ALIGN;
+        return r;
+    }
+    return (wah_alloc_t){ wah_stdc_malloc, wah_stdc_realloc, wah_stdc_free, NULL, WAH_MALLOC_MIN_ALIGN };
+}
+
+// Blocks of allocators with smaller alignments are padded up to the next WAH_BLOCK_ALIGN boundary,
+// leaving 1 to WAH_BLOCK_ALIGN bytes before it, whose last byte records the padding size.
+static inline bool wah_alloc_padded(const wah_alloc_t *a) { return a->min_align < WAH_BLOCK_ALIGN; }
+
+static inline void *wah_alloc_pad(void *raw) {
+    uint8_t pad = (uint8_t)(WAH_BLOCK_ALIGN - ((uintptr_t)raw & (WAH_BLOCK_ALIGN - 1)));
+    uint8_t *p = (uint8_t *)raw + pad;
+    p[-1] = pad;
+    return p;
 }
 
 static inline void wah_free(const wah_alloc_t *a, void *ptr) {
     if (!ptr) return;
+    if (wah_alloc_padded(a)) ptr = (uint8_t *)ptr - ((uint8_t *)ptr)[-1];
     a->free(ptr, a->userdata);
 }
 
@@ -3218,7 +3249,15 @@ static inline wah_error_t wah_malloc(const wah_alloc_t *a, size_t count, size_t 
     *out_ptr = NULL;
     if (count == 0) return WAH_OK;
     if (elemsize != 0 && count > SIZE_MAX / elemsize) return WAH_ERROR_OUT_OF_MEMORY;
-    *out_ptr = a->malloc(count * elemsize, a->userdata);
+    size_t size = count * elemsize;
+    if (wah_alloc_padded(a)) {
+        if (size > SIZE_MAX - WAH_BLOCK_ALIGN) return WAH_ERROR_OUT_OF_MEMORY;
+        void *raw = a->malloc(size + WAH_BLOCK_ALIGN, a->userdata);
+        if (!raw) return WAH_ERROR_OUT_OF_MEMORY;
+        *out_ptr = wah_alloc_pad(raw);
+        return WAH_OK;
+    }
+    *out_ptr = a->malloc(size, a->userdata);
     return *out_ptr ? WAH_OK : WAH_ERROR_OUT_OF_MEMORY;
 }
 
@@ -3228,12 +3267,35 @@ static inline wah_error_t wah_realloc(const wah_alloc_t *a, size_t count, size_t
         *p_ptr = NULL;
         return WAH_OK;
     }
+    if (!*p_ptr) return wah_malloc(a, count, elemsize, p_ptr);
     if (elemsize != 0 && count > SIZE_MAX / elemsize) return WAH_ERROR_OUT_OF_MEMORY;
     size_t size = count * elemsize;
-    void* new_ptr = *p_ptr ? a->realloc(*p_ptr, size, a->userdata) : a->malloc(size, a->userdata);
+    if (wah_alloc_padded(a)) {
+        if (size > SIZE_MAX - WAH_BLOCK_ALIGN) return WAH_ERROR_OUT_OF_MEMORY;
+        uint8_t old_pad = ((uint8_t *)*p_ptr)[-1];
+        uint8_t *raw = (uint8_t *)a->realloc((uint8_t *)*p_ptr - old_pad, size + WAH_BLOCK_ALIGN, a->userdata);
+        if (!raw) return WAH_ERROR_OUT_OF_MEMORY;
+        uint8_t new_pad = (uint8_t)(WAH_BLOCK_ALIGN - ((uintptr_t)raw & (WAH_BLOCK_ALIGN - 1)));
+        // The old contents may be shorter than size, but anything moved is within the new block
+        if (new_pad != old_pad) memmove(raw + new_pad, raw + old_pad, size);
+        *p_ptr = wah_alloc_pad(raw);
+        return WAH_OK;
+    }
+    void* new_ptr = a->realloc(*p_ptr, size, a->userdata);
     if (!new_ptr) return WAH_ERROR_OUT_OF_MEMORY;
     *p_ptr = new_ptr;
     return WAH_OK;
+}
+
+// Helper function to duplicate a string
+static inline char* wah_strdup(const char* s, const wah_alloc_t *alloc) {
+    if (!s) return NULL;
+    size_t len = strlen(s);
+    char* copy = NULL;
+    if (wah_malloc(alloc, len + 1, 1, (void **)&copy) == WAH_OK) {
+        memcpy(copy, s, len + 1);
+    }
+    return copy;
 }
 
 #define WAH_MALLOC(ptr) WAH_MALLOC_ARRAY(ptr, 1)
@@ -11313,8 +11375,7 @@ static wah_error_t wah_alloc_unified_stack(wah_exec_context_t *exec_ctx, uint64_
     if (stack_bytes > SIZE_MAX) return WAH_ERROR_TOO_LARGE;
     exec_ctx->stack_buffer_size = stack_bytes;
     WAH_CHECK(wah_malloc(alloc, (size_t)stack_bytes, 1, (void **)&exec_ctx->stack_buffer));
-    exec_ctx->value_stack = (wah_value_t *)exec_ctx->stack_buffer;
-    exec_ctx->sp = exec_ctx->value_stack;
+    exec_ctx->sp = (wah_value_t *)exec_ctx->stack_buffer;
     exec_ctx->call_depth = 0;
     // Align frame_ptr to wah_call_frame_t boundary at the top of the buffer
     uintptr_t buf_end = (uintptr_t)exec_ctx->stack_buffer + (size_t)stack_bytes;
@@ -11505,7 +11566,7 @@ wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *lim
     WAH_ENSURE(state == WAH_EXEC_READY || state == WAH_EXEC_SUSPENDED, WAH_ERROR_MISUSE);
     bool set_stack = limits->max_stack_bytes != 0 && limits->max_stack_bytes != exec_ctx->stack_buffer_size;
     WAH_ENSURE(!set_stack || (state == WAH_EXEC_READY && exec_ctx->call_depth == 0 &&
-                              exec_ctx->sp == exec_ctx->value_stack), WAH_ERROR_MISUSE);
+                              exec_ctx->sp == (wah_value_t *)exec_ctx->stack_buffer), WAH_ERROR_MISUSE);
 
     // Check and allocate everything before changing anything
     WAH_ENSURE(!(limits->no_memory_bytes && limits->max_memory_bytes > 0), WAH_ERROR_MISUSE);
@@ -11524,8 +11585,7 @@ wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *lim
         wah_free(alloc, exec_ctx->stack_buffer);
         exec_ctx->stack_buffer = new_buf;
         exec_ctx->stack_buffer_size = new_size;
-        exec_ctx->value_stack = (wah_value_t *)new_buf;
-        exec_ctx->sp = exec_ctx->value_stack;
+        exec_ctx->sp = (wah_value_t *)new_buf;
         uintptr_t buf_end = (uintptr_t)new_buf + (size_t)new_size;
         buf_end &= ~(uintptr_t)(WAH_ALIGNOF(wah_call_frame_t) - 1);
         exec_ctx->frame_ptr = (wah_call_frame_t *)buf_end;
@@ -13509,7 +13569,7 @@ WAH_RUN(ELEM_DROP) {
     do { \
         size_t nparams = (the_fn)->nparams; \
         size_t nresults = (the_fn)->nresults; \
-        WAH_ASSERT(sp >= ctx->value_stack + nparams && "validation bug"); \
+        WAH_ASSERT(sp >= (wah_value_t *)ctx->stack_buffer + nparams && "validation bug"); \
         wah_value_t *param_vals = sp - nparams; \
         wah_value_t *result_vals = sp; \
         WAH_ENSURE_GOTO((uint8_t *)(result_vals + nresults) <= (uint8_t *)ctx->frame_ptr, WAH_ERROR_STACK_OVERFLOW, cleanup); \
@@ -17189,7 +17249,7 @@ static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, wah_exec_context
                                      .frame_function_table = ctx->function_table,
                                      .frame_function_table_count = ctx->function_table_count };
     wah_exec_context_t cctx = { .module = ctx->module, .globals = ctx->globals, .global_count = ctx->global_count,
-                                .value_stack = local_stack, .sp = local_stack, .frame_ptr = &local_frame,
+                                .stack_buffer = (uint8_t *)local_stack, .sp = local_stack, .frame_ptr = &local_frame,
                                 .call_depth = 1, .gc = run_ctx->gc, .alloc = run_ctx->alloc, .fuel = run_ctx->fuel };
     local_frame.frame_ctx = &cctx;
 

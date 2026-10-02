@@ -296,7 +296,7 @@ static void memo_failing_free(void *p, void *ud) { (void)ud; free(p); }
 // kept in the cache of cross-module type checks, so that a transient OOM changed later results of ref.test.
 static void test_cross_module_type_check_oom_not_cached() {
     printf("Testing cross-module type checks failed by OOM are not cached...\n");
-    wah_alloc_t alloc = { memo_failing_malloc, memo_failing_realloc, memo_failing_free, NULL };
+    wah_alloc_t alloc = { memo_failing_malloc, memo_failing_realloc, memo_failing_free, NULL, 16 };
     wah_module_t lm = {0}, pm = {0};
     // Type 1 refers to type 0 in another rec group, whose equality is memoized
     assert_ok(wah_parse_module_from_spec(&lm, "wasm \

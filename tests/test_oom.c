@@ -90,7 +90,7 @@ static void oom_free(void *ptr, void *userdata) {
 }
 
 static wah_alloc_t make_oom_alloc(oom_alloc_t *state) {
-    return (wah_alloc_t){ oom_malloc, oom_realloc, oom_free, state };
+    return (wah_alloc_t){ oom_malloc, oom_realloc, oom_free, state, 0 };
 }
 
 static void assert_no_leaks(const char *name, const oom_alloc_t *state) {

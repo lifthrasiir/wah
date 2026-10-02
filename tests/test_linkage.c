@@ -4078,7 +4078,7 @@ int main() {
             exports {[ {'grow'} fn# 0 ]} \
             code {[ {[] local.get 0 memory.grow 0 end } ]}"));
 
-        wah_alloc_t alloc = { recording_malloc, recording_realloc, recording_free, NULL };
+        wah_alloc_t alloc = { recording_malloc, recording_realloc, recording_free, NULL, 0 };
         wah_exec_options_t opts = { .alloc = &alloc };
         wah_exec_context_t ctx = {0};
         assert_ok(wah_new_exec_context(&ctx, &p, &opts));
