@@ -997,7 +997,8 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx);
 //
 //   Reference results other than host objects from `wah_gc_alloc_host` are sanitized like `wah_param_ref`,
 //   because the host can't keep them alive. Use `wah_call_pin` to use them later. Reference parameters can be
-//   pinned references, while sanitized ones are rejected with WAH_ERROR_MISUSE. The same goes for other variants.
+//   pinned references, while sanitized ones (and host objects for types other than externref or anyref) are
+//   rejected with WAH_ERROR_MISUSE. The same goes for other variants.
 //
 //   - func_idx [in]: Index of the function to call. See `wah_export_desc_t.index`.
 //   - params [in, borrowed, optional if param_count == 0]: Array of parameter values.
@@ -1270,7 +1271,8 @@ void wah_result_v128(wah_call_context_t *ctx, size_t index, const wah_v128_t *va
 //   - index [in]: Index of the result to set. Must be less than the number of results.
 //   - value [in]: Value to set for the result. Can be NULL if the result type is nullable.
 //     Can be a pinned reference from `wah_param_pinned_ref`, whose parameter type should match the result type.
-//     A reference sanitized by `wah_param_ref` or a released pinned reference makes the host function trap
+//     A reference sanitized by `wah_param_ref`, a released pinned reference, or a host object from
+//     `wah_gc_alloc_host` for a result type other than externref or anyref makes the host function trap
 //     with WAH_ERROR_MISUSE.
 void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value);
 
@@ -15957,11 +15959,14 @@ static wah_pin_slot_t *wah_pinned_slot(const wah_exec_context_t *exec, const voi
 }
 
 // Host objects pinned by wah_pin_ref have no module and fit both externref and anyref.
+// Host objects from wah_gc_alloc_host are only valid externrefs or anyrefs.
+static bool wah_host_object_accepts(wah_type_t type) {
+    wah_type_t heap_type = WAH_TYPE_AS_NON_NULL(type);
+    return heap_type == WAH_TYPE_EXTERN || heap_type == WAH_TYPE_ANY;
+}
+
 static bool wah_pin_accepts(const wah_pin_slot_t *s, const wah_module_t *module, wah_type_t type) {
-    if (!s->module) {
-        wah_type_t heap_type = WAH_TYPE_AS_NON_NULL(type);
-        return heap_type == WAH_TYPE_EXTERN || heap_type == WAH_TYPE_ANY;
-    }
+    if (!s->module) return wah_host_object_accepts(type);
     return wah_cross_module_subtype(s->module, s->type, module, type);
 }
 
@@ -16016,6 +16021,8 @@ static wah_error_t wah_load_host_params(const wah_exec_context_t *ctx, wah_value
                 const wah_pin_slot_t *s = wah_pinned_slot(ctx, value.ref);
                 WAH_ENSURE(s && wah_pin_accepts(s, module, types[i]), WAH_ERROR_MISUSE);
                 value = s->value;
+            } else {
+                WAH_ENSURE(wah_host_object_accepts(types[i]), WAH_ERROR_MISUSE);
             }
         }
         dst[i] = value;
@@ -16912,10 +16919,12 @@ void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value) {
             return;
         }
         value = s->value.ref;
-    } else {
-        WAH_ASSERT((value == NULL || wah_gc_header(value)->repr_id == WAH_REPR_HOST ||
-                    wah_type_hierarchy_top(ctx->result_types[index], NULL) != WAH_TYPE_EXTERN) &&
-                   "externref result must be allocated with wah_gc_alloc_host");
+    } else if (value) {
+        WAH_ASSERT(wah_gc_header(value)->repr_id == WAH_REPR_HOST && "Reference result must be a host object");
+        if (!wah_host_object_accepts(ctx->result_types[index])) {
+            wah_call_misuse(ctx);
+            return;
+        }
     }
     ctx->results[index].ref = value;
 }

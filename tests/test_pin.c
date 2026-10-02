@@ -48,6 +48,12 @@ static void host_return_bogus(wah_call_context_t *ctx, void *userdata) {
     wah_result_ref(ctx, 0, (void *)(uintptr_t)0x1002); // Tagged like a pinned reference that was never issued
 }
 
+static void *raw_host_result = NULL;
+static void host_return_raw(wah_call_context_t *ctx, void *userdata) {
+    (void)userdata;
+    wah_result_ref(ctx, 0, raw_host_result);
+}
+
 // Module importing h.f of the given type, where `call` wraps a struct of the given i32 field into the parameter
 // and `ret` unwraps the result into the field or -1 if null. Function 1 churns the GC heap.
 static void make_module(wah_module_t *mod, const char *param, const char *result, const char *call,
@@ -181,15 +187,19 @@ static void test_pin_host_ref(void) {
     printf("Testing host objects pinned by wah_pin_ref survive garbage collections...\n");
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
-    // 0: churn(), 1: keep(externref), 2: get() -> externref, 3: id(anyref) -> anyref
+    // 0: churn(), 1: keep(externref), 2: get() -> externref, 3: id(anyref) -> anyref,
+    // 4: field((ref null 0)) -> i32, 5: is_null(eqref) -> i32
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
-        types {[ struct [i32 mut], fn [] [], fn [externref] [], fn [] [externref], fn [anyref] [anyref] ]} \
-        funcs {[ 1, 2, 3, 4 ]} globals {[ externref mut ref.null externref end ]} \
+        types {[ struct [i32 mut], fn [] [], fn [externref] [], fn [] [externref], fn [anyref] [anyref], \
+                 fn [%'6300'] [i32], fn [eqref] [i32] ]} \
+        funcs {[ 1, 2, 3, 4, 5, 6 ]} globals {[ externref mut ref.null externref end ]} \
         code {[ {[1 i32] loop void i32.const 0 struct.new 0 drop \
                     local.get 0 i32.const 1 i32.add local.tee 0 i32.const 200000 i32.lt_u br_if 0 end end}, \
                 {[] local.get 0 global.set 0 end}, \
                 {[] global.get 0 end}, \
-                {[] local.get 0 end} ]}"));
+                {[] local.get 0 end}, \
+                {[] local.get 0 struct.get 0 0 end}, \
+                {[] local.get 0 ref.is_null end} ]}"));
     assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
     assert_ok(wah_instantiate(&ctx));
 
@@ -210,6 +220,35 @@ static void test_pin_host_ref(void) {
     assert_ok(wah_call(&ctx, 1, &arg, 1, NULL));
     assert_ok(wah_call(&ctx, 3, &arg, 1, &r));
     assert_true(r.ref == host);
+
+    printf("Testing host objects are rejected for parameters other than externref and anyref...\n");
+    for (int i = 0; i < 2; i++) {
+        arg.ref = i ? pinned : host;
+        assert_err(wah_call(&ctx, 4, &arg, 1, &r), WAH_ERROR_MISUSE);
+        assert_err(wah_call(&ctx, 5, &arg, 1, &r), WAH_ERROR_MISUSE);
+    }
+
+    printf("Testing host functions can't return host objects for results other than externref and anyref...\n");
+    {
+        wah_module_t user = {0}, hmod = {0};
+        wah_exec_context_t uctx = {0};
+        assert_ok(wah_parse_module_from_spec(&user, "wasm \
+            types {[ fn [] [eqref], fn [] [i32] ]} \
+            imports {[ {'h'} {'f'} fn# 0 ]} funcs {[ 1 ]} \
+            code {[ {[] call 0 ref.is_null end} ]}"));
+        assert_ok(wah_new_module(&hmod, NULL));
+        assert_ok(wah_export_func(&hmod, "f", "() -> eqref", host_return_raw, NULL, NULL));
+        assert_ok(wah_new_exec_context(&uctx, &user, NULL));
+        assert_ok(wah_link_module(&uctx, "h", &hmod));
+        assert_ok(wah_instantiate(&uctx));
+        raw_host_result = wah_gc_alloc_host(&uctx, 16);
+        void *keep = NULL;
+        assert_ok(wah_pin_ref(&uctx, raw_host_result, &keep)); // Kept alive, but still returned raw
+        assert_err(wah_call(&uctx, 1, NULL, 0, &r), WAH_ERROR_MISUSE);
+        wah_free_exec_context(&uctx);
+        wah_free_module(&user);
+        wah_free_module(&hmod);
+    }
 
     printf("Testing wah_pin_ref accepts only host objects...\n");
     void *out = host;
