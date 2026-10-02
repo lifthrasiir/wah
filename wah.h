@@ -17827,10 +17827,11 @@ static wah_error_t wah_import_existing_table(wah_exec_context_t *ctx, uint32_t d
                                              wah_exec_context_t *linked_ctx, uint32_t linked_table_idx,
                                              uint64_t min_elements) {
     WAH_ENSURE(linked_ctx->tables[linked_table_idx].size >= min_elements, WAH_ERROR_LINK_FAILED);
+    // Copied once marked as imported, so that a failure in between can't free the table of the provider
+    WAH_FOLLOW_IMPORT_CHAIN(ctx, dst_idx, linked_ctx, linked_table_idx, wah_table_inst_t, tables);
     ctx->tables[dst_idx].entries = linked_ctx->tables[linked_table_idx].entries;
     ctx->tables[dst_idx].size = linked_ctx->tables[linked_table_idx].size;
     ctx->tables[dst_idx].max_size = linked_ctx->tables[linked_table_idx].max_size;
-    WAH_FOLLOW_IMPORT_CHAIN(ctx, dst_idx, linked_ctx, linked_table_idx, wah_table_inst_t, tables);
     return WAH_OK; // Charged to the owner only
 }
 
@@ -17839,10 +17840,11 @@ static wah_error_t wah_import_existing_memory(wah_exec_context_t *ctx, uint32_t 
                                               uint64_t min_pages) {
     uint64_t cur_pages = linked_ctx->memories[linked_mem_idx].size / WAH_WASM_PAGE_SIZE;
     WAH_ENSURE(cur_pages >= min_pages, WAH_ERROR_LINK_FAILED);
+    // Copied once marked as imported, so that a failure in between can't free the memory of the provider
+    WAH_FOLLOW_IMPORT_CHAIN(ctx, dst_idx, linked_ctx, linked_mem_idx, wah_memory_inst_t, memories);
     ctx->memories[dst_idx].data = linked_ctx->memories[linked_mem_idx].data;
     ctx->memories[dst_idx].size = linked_ctx->memories[linked_mem_idx].size;
     ctx->memories[dst_idx].max_pages = linked_ctx->memories[linked_mem_idx].max_pages;
-    WAH_FOLLOW_IMPORT_CHAIN(ctx, dst_idx, linked_ctx, linked_mem_idx, wah_memory_inst_t, memories);
     return WAH_OK; // Charged to the owner only
 }
 
