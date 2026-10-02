@@ -1007,7 +1007,8 @@ void wah_get_limits(const wah_exec_context_t *exec_ctx, wah_limits_t *out);
 //   If the context was linked with others via `wah_link_context` (in either direction, transitively)
 //   and its instantiation has started initializing state, every other context in that link domain
 //   becomes unusable: any further use returns WAH_ERROR_MISUSE (or does nothing), and they can
-//   only be freed, in any order. Contexts that failed to link or were never instantiated are exempt.
+//   only be freed, in any order. Contexts that failed to link or were never instantiated are exempt,
+//   unless they have host objects from `wah_gc_alloc_host` left.
 //   It must not be called while any context in the link domain is running, e.g. from a host function.
 void wah_free_exec_context(wah_exec_context_t *exec_ctx);
 
@@ -11545,9 +11546,11 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     if (!exec_ctx) return;
     wah_alloc_t alloc_storage = wah_resolve_alloc(&exec_ctx->alloc);
     const wah_alloc_t *alloc = &alloc_storage;
-    // Other contexts in the link domain may be freed already if this one is poisoned
+    // Other contexts in the link domain may be freed already if this one is poisoned.
+    // Host objects may have been given to linked contexts even if this one was never instantiated.
     bool detached = exec_ctx->poisoned;
-    if (!detached && (exec_ctx->is_instantiated || exec_ctx->may_share_refs)) {
+    bool has_objects = exec_ctx->gc && exec_ctx->gc->all_objects;
+    if (!detached && (exec_ctx->is_instantiated || exec_ctx->may_share_refs || has_objects)) {
         exec_ctx->poisoned = true;
         wah_poison_link_domain(exec_ctx);
     }

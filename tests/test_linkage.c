@@ -4975,6 +4975,34 @@ int main() {
         wah_free_module(&l);
     }
 
+    // Regression: freeing a context that was never instantiated didn't poison its link domain, although host
+    // objects of its heap could be stored in linked contexts, whose next collection then marked freed objects.
+    printf("Test: freeing a context with host objects poisons its link domain even if not instantiated\n");
+    {
+        wah_module_t b = {0}, a = {0};
+        assert_ok(wah_parse_module_from_spec(&b, "wasm types {[ struct [i32 mut], fn [] [], fn [externref] [] ]} \
+            funcs {[ 1, 2 ]} globals {[ externref mut ref.null externref end ]} \
+            exports {[ {'alloc'} fn# 0, {'keep'} fn# 1 ]} \
+            code {[ {[1 i32] loop void i32.const 0 struct.new 0 drop \
+                        local.get 0 i32.const 1 i32.add local.tee 0 i32.const 200000 i32.lt_u br_if 0 end end}, \
+                    {[] local.get 0 global.set 0 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&a, "wasm"));
+        wah_exec_context_t bctx = {0}, actx = {0};
+        assert_ok(wah_new_exec_context(&bctx, &b, NULL));
+        assert_ok(wah_instantiate(&bctx));
+        assert_ok(wah_new_exec_context(&actx, &a, NULL));
+        assert_ok(wah_gc_start(&actx));
+        assert_ok(wah_link_context(&actx, "b", &bctx));
+        wah_value_t arg = { .ref = wah_gc_alloc_host(&actx, 16) };
+        assert_true(arg.ref != NULL);
+        assert_ok(wah_call_by_name(&bctx, "keep", &arg, 1, NULL));
+        wah_free_exec_context(&actx);
+        assert_err(wah_call_by_name(&bctx, "alloc", NULL, 0, NULL), WAH_ERROR_MISUSE);
+        wah_free_exec_context(&bctx);
+        wah_free_module(&a);
+        wah_free_module(&b);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
