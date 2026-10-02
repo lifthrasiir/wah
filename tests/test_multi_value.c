@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
 #include "../wah.h"
 #include "common.h"
@@ -401,6 +402,42 @@ static void test_host_multi_return_truncation() {
     wah_free_module(&mod);
 }
 
+// --- Results don't carry stale bytes of their stack slots beyond their types ---
+static void test_results_clear_unused_bytes() {
+    printf("Testing results don't carry stale bytes beyond their types...\n");
+
+    // The slots first hold all-ones v128 values, then narrower results are written over them
+    static const uint8_t ones[16] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff,
+                                     0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+    const char *spec = "wasm \
+        types {[ fn [] [i32, f32, i64, f64] ]} \
+        funcs {[ 0 ]} \
+        code {[ {[] \
+            v128.const %v128 v128.const %v128 v128.const %v128 v128.const %v128 drop drop drop drop \
+            i32.const 7 f32.const 1.5f32 i64.const 9 f64.const 2.5f64 \
+        end } ]}";
+
+    wah_module_t module;
+    assert_ok(wah_parse_module_from_spec(&module, spec, ones, ones, ones, ones));
+    wah_exec_context_t ctx;
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
+
+    wah_value_t results[4], expected[4];
+    memset(results, 0xaa, sizeof(results));
+    memset(expected, 0, sizeof(expected));
+    expected[0].i32 = 7;
+    expected[1].f32 = 1.5f;
+    expected[2].i64 = 9;
+    expected[3].f64 = 2.5;
+    uint32_t actual;
+    assert_ok(wah_call_multi(&ctx, 0, NULL, 0, results, 4, &actual));
+    assert_eq_u32(actual, 4);
+    for (int i = 0; i < 4; i++) assert_true(memcmp(&results[i], &expected[i], sizeof(wah_value_t)) == 0);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&module);
+}
+
 int main() {
     printf("=== Multi-Value Return Tests ===\n\n");
 
@@ -416,6 +453,7 @@ int main() {
     test_wah_call_multi_return_no_execution();
     test_multi_return_with_locals();
     test_host_multi_return_truncation();
+    test_results_clear_unused_bytes();
 
     printf("\n=== All Multi-Value Return Tests Passed ===\n");
     return 0;

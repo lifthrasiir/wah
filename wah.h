@@ -16267,7 +16267,13 @@ static wah_error_t wah_finish_internal(
             memset(results, 0, sizeof(wah_value_t));
         } else if (copy_count > 0 && ctx->sp >= ctx->lifecycle.base_sp + result_count) {
             for (uint32_t i = 0; i < copy_count; ++i) {
-                wah_value_t value = *(ctx->sp - result_count + i);
+                // Only copy the bytes of the result type, the rest of the slot may have stale (pointer) bytes
+                wah_type_t t = result_types ? result_types[i] : WAH_TYPE_V128;
+                size_t size = WAH_TYPE_IS_REF(t) ? sizeof(void *) : t == WAH_TYPE_V128 ? sizeof(wah_v128_t) :
+                              t == WAH_TYPE_I64 || t == WAH_TYPE_F64 ? 8 : 4;
+                wah_value_t value;
+                memset(&value, 0, sizeof(value));
+                memcpy(&value, ctx->sp - result_count + i, size);
                 if (result_types && WAH_TYPE_IS_REF(result_types[i]) && value.ref) {
                     if (pin) {
                         err = wah_pin(ctx, value, result_module, WAH_TYPE_AS_NON_NULL(result_types[i]), &value.ref);
