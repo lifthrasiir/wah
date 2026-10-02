@@ -3258,7 +3258,7 @@ static inline wah_error_t wah_realloc(const wah_alloc_t *a, size_t count, size_t
     } while (0)
 
 #define WAH_REALLOC_ARRAY_GOTO(ptr, count, label) do { \
-        void* _alloc_ptr = ptr; \
+        void* _alloc_ptr = (ptr); \
         err = wah_realloc(alloc, (count), sizeof(*(ptr)), &_alloc_ptr); \
         if (err != WAH_OK) { \
             WAH_LOG("WAH_REALLOC_ARRAY_GOTO(%s, %s, %s) failed due to OOM", #ptr, #count, #label); \
