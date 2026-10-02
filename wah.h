@@ -207,7 +207,6 @@ typedef union {
 
     // Internal fields
 #ifdef WAH_IMPLEMENTATION
-    struct { void *sentinel; uint32_t func_idx; } _prefuncref; // const_expr funcref intermediate
 #ifdef WAH_X86_64
     __m128i _m128i; __m128 _m128; __m128d _m128d;
 #elif defined(WAH_AARCH64)
@@ -1942,7 +1941,6 @@ typedef enum {
 #define WAH_INTERNAL_OPCODES(X) \
     X(POLL) X(METER) X(TICK) \
     X(END_TRY_TABLE) X(TRIM_HANDLERS) \
-    X(REF_FUNC_CONST) \
     X(GLOBAL_GET_INDIRECT) X(GLOBAL_SET_INDIRECT) \
     WAH_IF_GC( \
         X(STRUCT_GET_S8) X(STRUCT_GET_S16) X(STRUCT_GET_U8) X(STRUCT_GET_U16) \
@@ -2426,6 +2424,10 @@ typedef struct wah_linked_module_s {
     const wah_module_t *module;
     struct wah_exec_context_s *ctx;
     bool owns_ctx;
+    // Function table built before the owned context exists, so that const exprs can refer to functions.
+    // The owned context adopts it, keeping the identity of function references taken so far.
+    struct wah_function_holder_s *function_table;
+    uint32_t function_table_count;
 } wah_linked_module_t;
 
 // Returns the object header from a payload pointer.
@@ -2859,13 +2861,6 @@ typedef struct wah_type_check_cache_entry_s {
 
 // -- Function References --
 #define WAH_FUNCREF_HEADER { .next_tagged = NULL, .repr_id = WAH_TYPE_FUNC, .size_bytes = 0 }
-
-// Sentinel used by wah_value_t._prefuncref to distinguish ref.func 0 from ref.null.
-// A prefuncref with .sentinel == wah_funcref_sentinel is a valid function reference;
-// .ref == NULL means null. This sentinel is never executed.
-// The sentinel uses WAH_TYPE_BOT so leaked refs fail all type checks.
-static wah_function_holder_t wah_funcref_sentinel[1] =
-    {{ .header = { .next_tagged = NULL, .repr_id = WAH_TYPE_BOT, .size_bytes = 0 } }};
 
 static inline void *wah_func_to_ref(wah_function_t *fn) {
     return (void *)fn;
@@ -7992,9 +7987,6 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
                     break;
                 }
                 case WAH_OP_REF_FUNC: {
-                    if (ac->mode == WAH_ANALYZE_CONST_EXPR) {
-                        wah_write_u16_le(buf + buf_size - sizeof(uint16_t), WAH_OP_REF_FUNC_CONST);
-                    }
                     WAH_LOWER_U32(instr->imm.u32);
                     break;
                 }
@@ -11306,6 +11298,7 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     if (exec_ctx->linked_modules) {
         for (uint32_t i = 0; i < exec_ctx->linked_module_count; ++i) {
             wah_free(alloc, (void*)exec_ctx->linked_modules[i].name);
+            wah_free(alloc, exec_ctx->linked_modules[i].function_table); // Not adopted yet
             if (exec_ctx->linked_modules[i].owns_ctx) {
                 wah_exec_context_t *ictx = exec_ctx->linked_modules[i].ctx;
                 if (ictx->memories && ictx->memories != exec_ctx->memories) {
@@ -11733,13 +11726,6 @@ static wah_function_t *wah_materialize_funcref(wah_exec_context_t *fctx, uint32_
     return fn;
 }
 
-static wah_value_t wah_materialize_elem_ref(wah_exec_context_t *fctx, wah_value_t elem_val) {
-    if (elem_val.ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
-        elem_val.ref = wah_func_to_ref(wah_materialize_funcref(fctx, elem_val._prefuncref.func_idx));
-    }
-    return elem_val;
-}
-
 static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, wah_exec_context_t *fctx, uint32_t table_idx, uint64_t dst_offset,
                                     const wah_element_segment_t *segment,
                                     uint32_t src_offset, uint32_t size, wah_error_t *out_err) {
@@ -11753,12 +11739,10 @@ static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, wah_exec_context_t 
             if (!segment->is_expr_elem) {
                 store_val.ref = wah_func_to_ref(wah_materialize_funcref(fctx, segment->u.func_indices[src_offset + i]));
             } else {
-                wah_value_t elem_val;
                 if (src_offset + i >= segment->num_elems) { *out_err = WAH_ERROR_TRAP; return done + j; }
                 wah_error_t e = wah_eval_const_expr(fctx, &ctx->fuel, segment->u.expr.bytecodes[src_offset + i],
-                                                    segment->u.expr.bytecode_sizes[src_offset + i], &elem_val);
+                                                    segment->u.expr.bytecode_sizes[src_offset + i], &store_val);
                 if (e != WAH_OK) { *out_err = e; return done + j; }
-                store_val = wah_materialize_elem_ref(fctx, elem_val);
             }
             wah_ref_store_table(fctx, table_idx, dst_offset + i, store_val);
         }
@@ -11803,7 +11787,7 @@ static uint32_t wah_bulk_array_init_elem(wah_exec_context_t *ctx, wah_exec_conte
                 wah_error_t e = wah_eval_const_expr(fctx, &ctx->fuel, seg->u.expr.bytecodes[src_offset + i],
                                                     seg->u.expr.bytecode_sizes[src_offset + i], &ev);
                 if (e != WAH_OK) { *out_err = e; return done + j; }
-                ((void **)(elems))[dst_offset + i] = wah_materialize_elem_ref(fctx, ev).ref;
+                ((void **)(elems))[dst_offset + i] = ev.ref;
             }
         }
         done += chunk;
@@ -12457,14 +12441,6 @@ WAH_RUN(REF_FUNC) {
     WAH_NEXT();
 }
 
-WAH_RUN(REF_FUNC_CONST) {
-    uint32_t func_idx = wah_decode_u32_le(&bytecode_ip);
-    *sp++ = (wah_value_t){
-        ._prefuncref = { .sentinel = wah_func_to_ref(&wah_funcref_sentinel->func), .func_idx = func_idx }
-    };
-    WAH_NEXT();
-}
-
 WAH_RUN(GLOBAL_GET_INDIRECT) {
     uint32_t global_idx = wah_decode_u32_le(&bytecode_ip);
     *sp++ = *(wah_value_t *)frame->frame_globals[global_idx].ref;
@@ -12805,15 +12781,7 @@ WAH_RUN(ARRAY_NEW_ELEM) {
             wah_value_t ev;
             WAH_CHECK_GOTO(wah_eval_const_expr(fctx, &ctx->fuel, seg->u.expr.bytecodes[offset + i],
                                                seg->u.expr.bytecode_sizes[offset + i], &ev), cleanup);
-            if (ev.ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
-                uint32_t gfi = ev._prefuncref.func_idx;
-                WAH_ASSERT(gfi < fctx->function_table_count);
-                wah_function_t *fn = &fctx->function_table[gfi].func;
-                if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == fctx->module) fn->fn_ctx = fctx;
-                ((void **)elems)[i] = wah_func_to_ref(fn);
-            } else {
-                ((void **)elems)[i] = ev.ref;
-            }
+            ((void **)elems)[i] = ev.ref;
         }
     }
     (*sp++).ref = obj;
@@ -13241,7 +13209,6 @@ WAH_RUN(ELEM_DROP) {
     void *_fn_ref = fctx->tables[table_idx].entries[func_table_idx].ref; \
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup); \
     WAH_ENSURE_GOTO(!wah_ref_is_i31(_fn_ref) && wah_gc_header(_fn_ref)->repr_id == WAH_TYPE_FUNC, WAH_ERROR_TRAP, cleanup); \
-    WAH_ASSERT(_fn_ref != wah_func_to_ref(&wah_funcref_sentinel->func) && "prefuncref stored in table without conversion to funcref"); \
     const wah_function_t *actual_fn = wah_ref_to_func(_fn_ref); \
     WAH_REF_BODY(actual_fn, CALL_HOST, CALL_WASM)
 
@@ -13330,7 +13297,6 @@ WAH_RUN(CALL_REF) {
     void *_fn_ref = (*--sp).ref;
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup);
     WAH_ENSURE_GOTO(!wah_ref_is_i31(_fn_ref) && wah_gc_header(_fn_ref)->repr_id == WAH_TYPE_FUNC, WAH_ERROR_TRAP, cleanup);
-    WAH_ASSERT(_fn_ref != wah_func_to_ref(&wah_funcref_sentinel->func) && "prefuncref stored without conversion to funcref");
     const wah_function_t *actual_fn = wah_ref_to_func(_fn_ref);
     WAH_REF_BODY(actual_fn,
         WAH_CALL_HOST_INLINE(actual_fn),
@@ -13464,7 +13430,6 @@ WAH_RUN(RETURN_CALL_REF) {
     void *_fn_ref = (*--sp).ref;
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup);
     WAH_ENSURE_GOTO(!wah_ref_is_i31(_fn_ref) && wah_gc_header(_fn_ref)->repr_id == WAH_TYPE_FUNC, WAH_ERROR_TRAP, cleanup);
-    WAH_ASSERT(_fn_ref != wah_func_to_ref(&wah_funcref_sentinel->func) && "prefuncref stored without conversion to funcref");
     const wah_function_t *actual_fn = wah_ref_to_func(_fn_ref);
     while (ctx->exception_handler_depth > 0 &&
            ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) {
@@ -16691,7 +16656,9 @@ static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, int64_t *fuel, c
     wah_code_body_t dummy_code = { .parsed_code = { .bytecode = (uint8_t *)bytecode, .bytecode_size = bytecode_size } };
     wah_value_t local_stack[WAH_MAX_TYPE_STACK_SIZE];
     wah_call_frame_t local_frame = { .code = &dummy_code, .bytecode_ip = bytecode, .locals = local_stack,
-                                     .result_count = 1, .frame_globals = ctx->globals, .module = ctx->module };
+                                     .result_count = 1, .frame_globals = ctx->globals, .module = ctx->module,
+                                     .frame_function_table = ctx->function_table,
+                                     .frame_function_table_count = ctx->function_table_count };
     wah_exec_context_t cctx = { .module = ctx->module, .globals = ctx->globals, .global_count = ctx->global_count,
                                 .value_stack = local_stack, .sp = local_stack, .frame_ptr = &local_frame,
                                 .call_depth = 1, .gc = ctx->gc, .alloc = ctx->alloc, .fuel = *fuel };
@@ -16714,11 +16681,6 @@ static wah_error_t wah_init_table_init_exprs(wah_exec_context_t *ctx) {
             wah_value_t init_val;
             WAH_CHECK(wah_eval_const_expr(ctx, &ctx->fuel, module->tables[i].init_expr.bytecode,
                                           module->tables[i].init_expr.bytecode_size, &init_val));
-            if (init_val.ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
-                uint32_t func_idx = init_val._prefuncref.func_idx;
-                WAH_ENSURE(func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED);
-                init_val.ref = wah_func_to_ref(&ctx->function_table[func_idx].func);
-            }
             for (uint64_t j = 0; j < ctx->tables[slot].size; ++j) {
                 ctx->tables[slot].entries[j] = init_val;
             }
@@ -16752,18 +16714,9 @@ static wah_error_t wah_init_active_elem_segments(wah_exec_context_t *ctx) {
                 if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
                 ctx->tables[segment->table_idx].entries[offset + j].ref = wah_func_to_ref(fn);
             } else {
-                wah_value_t elem_val;
                 WAH_CHECK(wah_eval_const_expr(ctx, &ctx->fuel, segment->u.expr.bytecodes[j],
-                                              segment->u.expr.bytecode_sizes[j], &elem_val));
-                if (elem_val.ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
-                    uint32_t global_func_idx = elem_val._prefuncref.func_idx;
-                    WAH_ENSURE(global_func_idx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED);
-                    wah_function_t *fn = &ctx->function_table[global_func_idx].func;
-                    if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
-                    ctx->tables[segment->table_idx].entries[offset + j].ref = wah_func_to_ref(fn);
-                } else {
-                    ctx->tables[segment->table_idx].entries[offset + j] = elem_val;
-                }
+                                              segment->u.expr.bytecode_sizes[j],
+                                              &ctx->tables[segment->table_idx].entries[offset + j]));
             }
         }
         wah_elem_seg_mark_dropped(ctx, i);
@@ -16795,37 +16748,103 @@ static wah_error_t wah_init_active_data_segments(wah_exec_context_t *ctx) {
     return WAH_OK;
 }
 
-// Converts ref.func sentinels in local globals of linked modules. This should be done right after
-// they are evaluated, so that other modules importing them never see sentinels; otherwise sentinels
-// would be left unconverted or converted in the function index space of a wrong module.
-static wah_error_t wah_convert_linked_funcref_globals(wah_exec_context_t *ctx) {
-    const wah_module_t *module = ctx->module;
-    uint32_t lg_offset = wah_global_index_limit(module);
-    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
-        const wah_module_t *linked = ctx->linked_modules[j].module;
-        for (uint32_t k = 0; k < linked->global_count; k++) {
-            uint32_t slot = lg_offset + linked->import_global_count + k;
-            if (ctx->globals[slot].ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
-                uint32_t fidx = ctx->globals[slot]._prefuncref.func_idx;
-                uint32_t linked_import_count = linked->import_function_count;
-                if (fidx >= linked_import_count) {
-                    uint32_t local_k = fidx - linked_import_count;
-                    WAH_ENSURE(local_k < linked->wasm_function_count, WAH_ERROR_VALIDATION_FAILED);
-                    ctx->globals[slot].ref = wah_func_to_ref(&linked->functions[local_k].func);
-                } else {
-                    const wah_module_t *func_provider = NULL;
-                    wah_exec_context_t *func_provider_ctx = NULL;
-                    uint32_t func_local_idx = 0, func_global_idx = 0;
-                    const wah_function_t *func_src = NULL;
-                    WAH_CHECK(wah_resolve_function_export(ctx, linked, NULL, fidx, &func_provider, &func_provider_ctx,
-                                                          &func_local_idx, &func_src, &func_global_idx));
-                    ctx->globals[slot].ref = wah_func_to_ref((wah_function_t *)func_src);
-                }
-            }
+// Binds function imports of the linked module j into its function table, in place so that function
+// references taken from the table so far stay valid. ictx is NULL before the owned context is created.
+static wah_error_t wah_bind_linked_function_imports(wah_exec_context_t *ctx, uint32_t j, wah_exec_context_t *ictx,
+                                                    wah_function_holder_t *table) {
+    const wah_module_t *lmod = ctx->linked_modules[j].module;
+    // Imports may resolve to other imports of this module, which should look unresolved until bound
+    for (uint32_t fi = 0; fi < lmod->import_function_count; fi++) table[fi].func = (wah_function_t){0};
+    for (uint32_t fi = 0; fi < lmod->import_function_count; fi++) {
+        wah_func_import_t *lfi = &lmod->func_imports[fi];
+        const wah_module_t *provider = NULL;
+        wah_exec_context_t *provider_ctx = NULL;
+        bool found = wah_find_linked_module(ctx, &lfi->name, &provider, &provider_ctx, NULL);
+        if (!found && wah_name_matches(ctx->linked_modules[j].name, strlen(ctx->linked_modules[j].name),
+                                       lfi->name.module, lfi->name.module_len)) {
+            provider = lmod;
+            provider_ctx = ictx;
+            found = true;
         }
-        lg_offset += wah_global_index_limit(linked);
+        WAH_ENSURE(found && provider != NULL, WAH_ERROR_LINK_FAILED);
+        const wah_export_t *exp = wah_find_export(provider, 0, &lfi->name);
+        WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
+        const wah_module_t *actual_provider = NULL;
+        wah_exec_context_t *actual_ctx = NULL;
+        uint32_t actual_local_idx = 0, actual_global_idx = 0;
+        const wah_function_t *src = NULL;
+        WAH_CHECK(wah_resolve_function_export(ctx, provider, provider_ctx, exp->index, &actual_provider,
+                                              &actual_ctx, &actual_local_idx, &src, &actual_global_idx));
+        WAH_CHECK(wah_validate_function_import_type(lmod, lfi->type_index, actual_provider, actual_local_idx, src));
+        wah_gc_object_t header = table[fi].header;
+        wah_bind_function_import_slot(&table[fi], actual_provider, actual_ctx, exp, actual_local_idx, src);
+        table[fi].header = header;
     }
     return WAH_OK;
+}
+
+// Builds function tables of linked modules without their own contexts, before any const expr is evaluated.
+static wah_error_t wah_create_linked_function_tables(wah_exec_context_t *ctx) {
+    const wah_alloc_t *alloc = &ctx->alloc;
+    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+        wah_linked_module_t *lm = &ctx->linked_modules[j];
+        if (lm->ctx || lm->function_table) continue;
+        const wah_module_t *lmod = lm->module;
+        WAH_ENSURE(lmod->local_function_count <= UINT32_MAX - lmod->import_function_count, WAH_ERROR_TOO_LARGE);
+        uint32_t count = lmod->import_function_count + lmod->local_function_count;
+        if (count == 0) continue;
+        WAH_MALLOC_ARRAY(lm->function_table, count);
+        lm->function_table_count = count;
+        for (uint32_t fi = 0; fi < lmod->import_function_count; fi++) {
+            lm->function_table[fi] = (wah_function_holder_t){ .header = (wah_gc_object_t)WAH_FUNCREF_HEADER };
+        }
+        for (uint32_t fi = 0; fi < lmod->local_function_count; fi++) {
+            lm->function_table[lmod->import_function_count + fi] = lmod->functions[fi];
+        }
+        WAH_CHECK(wah_bind_linked_function_imports(ctx, j, NULL, lm->function_table));
+    }
+    return WAH_OK;
+}
+
+// Hands the function table of the linked module j over to its newly created owned context.
+static void wah_adopt_linked_function_table(wah_exec_context_t *ctx, uint32_t j, wah_exec_context_t *ictx) {
+    wah_linked_module_t *lm = &ctx->linked_modules[j];
+    ictx->function_table = lm->function_table;
+    ictx->function_table_count = lm->function_table_count;
+    lm->function_table = NULL;
+    lm->function_table_count = 0;
+    for (uint32_t fi = lm->module->import_function_count; fi < ictx->function_table_count; fi++) {
+        if (!ictx->function_table[fi].func.is_host) ictx->function_table[fi].func.fn_ctx = ictx;
+    }
+}
+
+// Linked modules are evaluated by the primary context with their own globals and function table swapped in.
+typedef struct {
+    const wah_module_t *module;
+    wah_value_t *globals;
+    uint32_t global_count;
+    wah_function_holder_t *function_table;
+    uint32_t function_table_count;
+} wah_linked_eval_state_t;
+
+static wah_linked_eval_state_t wah_enter_linked_eval(wah_exec_context_t *ctx, uint32_t j, wah_value_t *globals) {
+    wah_linked_eval_state_t saved = { ctx->module, ctx->globals, ctx->global_count,
+                                      ctx->function_table, ctx->function_table_count };
+    const wah_linked_module_t *lm = &ctx->linked_modules[j];
+    ctx->module = lm->module;
+    ctx->globals = globals;
+    ctx->global_count = wah_global_index_limit(lm->module);
+    ctx->function_table = lm->ctx ? lm->ctx->function_table : lm->function_table;
+    ctx->function_table_count = lm->ctx ? lm->ctx->function_table_count : lm->function_table_count;
+    return saved;
+}
+
+static void wah_leave_linked_eval(wah_exec_context_t *ctx, const wah_linked_eval_state_t *saved) {
+    ctx->module = saved->module;
+    ctx->globals = saved->globals;
+    ctx->global_count = saved->global_count;
+    ctx->function_table = saved->function_table;
+    ctx->function_table_count = saved->function_table_count;
 }
 
 static wah_error_t wah_prepare_linked_globals(wah_exec_context_t *ctx) {
@@ -16848,9 +16867,6 @@ static wah_error_t wah_prepare_linked_globals(wah_exec_context_t *ctx) {
         memcpy(new_globals, ctx->globals, local_global_limit * sizeof(wah_value_t));
     }
 
-    wah_value_t *saved_globals = ctx->globals;
-    uint32_t saved_global_count = ctx->global_count;
-    const wah_module_t *saved_module = ctx->module;
     uint32_t offset = local_global_limit;
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
         const wah_module_t *linked = ctx->linked_modules[j].module;
@@ -16864,31 +16880,25 @@ static wah_error_t wah_prepare_linked_globals(wah_exec_context_t *ctx) {
             if (linked->import_global_count > 0) {
                 memset(new_globals + offset, 0, linked->import_global_count * sizeof(wah_value_t));
             }
-            ctx->globals = new_globals + offset;
-            ctx->global_count = wah_global_index_limit(linked);
-            ctx->module = linked;
+            wah_linked_eval_state_t saved = wah_enter_linked_eval(ctx, j, new_globals + offset);
             for (uint32_t k = 0; k < linked->global_count; k++) {
                 wah_error_t err = wah_eval_const_expr(ctx, &ctx->fuel, linked->globals[k].init_expr.bytecode,
                                                       linked->globals[k].init_expr.bytecode_size,
                                                       &new_globals[offset + linked->import_global_count + k]);
                 if (err != WAH_OK) {
-                    ctx->module = saved_module;
-                    ctx->globals = saved_globals;
-                    ctx->global_count = saved_global_count;
+                    wah_leave_linked_eval(ctx, &saved);
                     wah_free(alloc, new_globals);
                     return err;
                 }
             }
-            ctx->module = saved_module;
+            wah_leave_linked_eval(ctx, &saved);
         }
         offset += wah_global_index_limit(linked);
     }
-    ctx->globals = saved_globals;
-    ctx->global_count = saved_global_count;
 
     wah_free(alloc, ctx->globals);
     ctx->globals = new_globals;
-    return wah_convert_linked_funcref_globals(ctx);
+    return WAH_OK;
 }
 
 // Re-evaluate linked module local globals after their imports have been resolved.
@@ -16898,35 +16908,27 @@ static wah_error_t wah_prepare_linked_globals(wah_exec_context_t *ctx) {
 // them in, globals initialized via (global.get $imported) must be re-evaluated.
 static wah_error_t wah_init_linked_globals(wah_exec_context_t *ctx) {
     const wah_module_t *module = ctx->module;
-    wah_value_t *saved_globals = ctx->globals;
-    uint32_t saved_global_count = ctx->global_count;
-    const wah_module_t *saved_module = ctx->module;
+    wah_value_t *globals = ctx->globals;
     uint32_t offset = wah_global_index_limit(module);
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
         const wah_module_t *linked = ctx->linked_modules[j].module;
         // Owned contexts may already exist for linked modules with tags
         if (!ctx->linked_modules[j].ctx || ctx->linked_modules[j].owns_ctx) {
-            ctx->globals = saved_globals + offset;
-            ctx->global_count = wah_global_index_limit(linked);
-            ctx->module = linked;
+            wah_linked_eval_state_t saved = wah_enter_linked_eval(ctx, j, globals + offset);
             for (uint32_t k = 0; k < linked->global_count; k++) {
                 wah_error_t err = wah_eval_const_expr(ctx, &ctx->fuel, linked->globals[k].init_expr.bytecode,
                                                       linked->globals[k].init_expr.bytecode_size,
-                                                      &saved_globals[offset + linked->import_global_count + k]);
+                                                      &globals[offset + linked->import_global_count + k]);
                 if (err != WAH_OK) {
-                    ctx->module = saved_module;
-                    ctx->globals = saved_globals;
-                    ctx->global_count = saved_global_count;
+                    wah_leave_linked_eval(ctx, &saved);
                     return err;
                 }
             }
-            ctx->module = saved_module;
+            wah_leave_linked_eval(ctx, &saved);
         }
         offset += wah_global_index_limit(linked);
     }
-    ctx->globals = saved_globals;
-    ctx->global_count = saved_global_count;
-    return wah_convert_linked_funcref_globals(ctx);
+    return WAH_OK;
 }
 
 static wah_error_t wah_resolve_primary_func_imports(wah_exec_context_t *ctx) {
@@ -17075,21 +17077,7 @@ static wah_error_t wah_create_tag_contexts_for_linked_modules(wah_exec_context_t
                     }
                     WAH_CHECK(wah_init_local_tables(ictx->tables, lmod, lmod_total_tables, ctx));
                 }
-                uint32_t lmod_ic = lmod->import_function_count;
-                uint32_t lmod_ft_size = lmod_ic + lmod->local_function_count;
-                ictx->function_table_count = lmod_ft_size;
-                if (lmod_ft_size > 0) {
-                    WAH_MALLOC_ARRAY(ictx->function_table, lmod_ft_size);
-                    for (uint32_t fi = 0; fi < lmod_ic; fi++) {
-                        ictx->function_table[fi] = (wah_function_holder_t){ .header = (wah_gc_object_t)WAH_FUNCREF_HEADER };
-                    }
-                    for (uint32_t fi = 0; fi < lmod->local_function_count; fi++) {
-                        ictx->function_table[lmod_ic + fi] = lmod->functions[fi];
-                        if (!lmod->functions[fi].func.is_host) {
-                            ictx->function_table[lmod_ic + fi].func.fn_ctx = ictx;
-                        }
-                    }
-                }
+                wah_adopt_linked_function_table(ctx, j, ictx);
                 WAH_MALLOC_ARRAY(ictx->tag_instances, ltotal_tags);
                 for (uint32_t t = 0; t < lmod->import_tag_count; t++) {
                     ictx->tag_instances[ictx->tag_instance_count++] =
@@ -17189,13 +17177,6 @@ static wah_error_t wah_init_primary_globals(wah_exec_context_t *ctx) {
         uint32_t slot = ig_count + i;
         WAH_CHECK(wah_eval_const_expr(ctx, &ctx->fuel, module->globals[i].init_expr.bytecode,
                                       module->globals[i].init_expr.bytecode_size, &ctx->globals[slot]));
-        if (ctx->globals[slot].ref == wah_func_to_ref(&wah_funcref_sentinel->func)) {
-            uint32_t fidx = ctx->globals[slot]._prefuncref.func_idx;
-            WAH_ENSURE(fidx < ctx->function_table_count, WAH_ERROR_VALIDATION_FAILED);
-            wah_function_t *fn = &ctx->function_table[fidx].func;
-            if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
-            ctx->globals[slot].ref = wah_func_to_ref(fn);
-        }
     }
     return WAH_OK;
 }
@@ -17486,11 +17467,6 @@ static wah_error_t wah_create_owned_linked_contexts(wah_exec_context_t *ctx) {
             wah_exec_context_t *ictx = NULL;
             if (tag_path_ictx) {
                 ictx = ctx->linked_modules[j].ctx;
-                if (ictx->function_table) {
-                    wah_free(alloc, ictx->function_table);
-                    ictx->function_table = NULL;
-                    ictx->function_table_count = 0;
-                }
                 if (ictx->tables && ictx->tables != ctx->tables) {
                     for (uint32_t ti = lmod->import_table_count; ti < ictx->table_count; ti++) {
                         if (ictx->tables[ti].entries) wah_free(alloc, ictx->tables[ti].entries);
@@ -17512,6 +17488,7 @@ static wah_error_t wah_create_owned_linked_contexts(wah_exec_context_t *ctx) {
                 };
                 ctx->linked_modules[j].ctx = ictx;
                 ctx->linked_modules[j].owns_ctx = true;
+                wah_adopt_linked_function_table(ctx, j, ictx);
             }
             uint32_t lmod_total_memories = lmod->import_memory_count + lmod->memory_count;
             if (lmod_total_memories > 0) {
@@ -17559,6 +17536,14 @@ static wah_error_t wah_create_owned_linked_contexts(wah_exec_context_t *ctx) {
 static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
     const wah_alloc_t *alloc = &ctx->alloc;
     const wah_module_t *module = ctx->module;
+    // Function imports are rebound below, and they should look unresolved to each other until then
+    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+        wah_exec_context_t *ictx = ctx->linked_modules[j].ctx;
+        if (!ctx->linked_modules[j].owns_ctx || ictx->is_instantiated || !ictx->function_table) continue;
+        for (uint32_t fi = 0; fi < ctx->linked_modules[j].module->import_function_count; fi++) {
+            ictx->function_table[fi].func = (wah_function_t){0};
+        }
+    }
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
         const wah_module_t *lmod = ctx->linked_modules[j].module;
         wah_exec_context_t *ictx = ctx->linked_modules[j].ctx;
@@ -17679,47 +17664,8 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                 }
                 WAH_ENSURE(tbl_found, WAH_ERROR_LINK_FAILED);
             }
-            uint32_t lmod_ic = lmod->import_function_count;
-            uint32_t lmod_ft_size = lmod_ic + lmod->local_function_count;
-            ictx->function_table_count = lmod_ft_size;
-            if (lmod_ft_size > 0) {
-                WAH_MALLOC_ARRAY(ictx->function_table, lmod_ft_size);
-                // Imports may resolve to other imports of this module, which should look unresolved until bound
-                for (uint32_t fi = 0; fi < lmod_ic; fi++) {
-                    ictx->function_table[fi] = (wah_function_holder_t){ .header = (wah_gc_object_t)WAH_FUNCREF_HEADER };
-                }
-                for (uint32_t fi = 0; fi < lmod_ic; fi++) {
-                    wah_func_import_t *lfi = &lmod->func_imports[fi];
-                    const wah_module_t *provider = NULL;
-                    wah_exec_context_t *provider_ctx = NULL;
-                    bool found = wah_find_linked_module(ctx, &lfi->name, &provider, &provider_ctx, NULL);
-                    if (!found && wah_name_matches(ctx->linked_modules[j].name, strlen(ctx->linked_modules[j].name),
-                                                   lfi->name.module, lfi->name.module_len)) {
-                        provider = lmod;
-                        provider_ctx = ictx;
-                        found = true;
-                    }
-                    WAH_ENSURE(found && provider != NULL, WAH_ERROR_LINK_FAILED);
-                    const wah_export_t *exp = wah_find_export(provider, 0, &lfi->name);
-                    WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
-                    const wah_module_t *actual_provider = NULL;
-                    wah_exec_context_t *actual_ctx = NULL;
-                    uint32_t actual_local_idx = 0, actual_global_idx = 0;
-                    const wah_function_t *src = NULL;
-                    WAH_CHECK(wah_resolve_function_export(ctx, provider, provider_ctx, exp->index, &actual_provider,
-                                                          &actual_ctx, &actual_local_idx, &src, &actual_global_idx));
-                    WAH_CHECK(wah_validate_function_import_type(lmod, lfi->type_index,
-                                                                actual_provider, actual_local_idx, src));
-                    wah_bind_function_import_slot(&ictx->function_table[fi],
-                                                  actual_provider, actual_ctx, exp, actual_local_idx, src);
-                }
-                for (uint32_t fi = 0; fi < lmod->local_function_count; fi++) {
-                    ictx->function_table[lmod_ic + fi] = lmod->functions[fi];
-                    if (!lmod->functions[fi].func.is_host) {
-                        ictx->function_table[lmod_ic + fi].func.fn_ctx = ictx;
-                    }
-                }
-            }
+            // Rebind now that owned contexts of providers exist
+            if (ictx->function_table) WAH_CHECK(wah_bind_linked_function_imports(ctx, j, ictx, ictx->function_table));
             ictx->is_instantiated = true;
         }
     }
@@ -17788,8 +17734,10 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     WAH_ENSURE((module->required_features & ~ctx->enabled_features) == 0, WAH_ERROR_DISABLED_FEATURE);
 
     if (!ctx->gc) WAH_CHECK_GOTO(wah_gc_start(ctx), cleanup); // Linked globals may allocate GC objects
-    WAH_CHECK_GOTO(wah_prepare_linked_globals(ctx), cleanup);
+    // Function references are resolved before any const expr is evaluated
     WAH_CHECK_GOTO(wah_resolve_primary_func_imports(ctx), cleanup);
+    WAH_CHECK_GOTO(wah_create_linked_function_tables(ctx), cleanup);
+    WAH_CHECK_GOTO(wah_prepare_linked_globals(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_primary_global_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_create_tag_contexts_for_linked_modules(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_linked_tag_imports(ctx), cleanup);

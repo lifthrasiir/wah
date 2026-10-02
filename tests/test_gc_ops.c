@@ -237,6 +237,56 @@ static void test_array_ops() {
     wah_free_module(&m2);
 }
 
+// ref.func nested in GC allocations of const exprs used to store a placeholder instead of the function,
+// because only top-level ref.func results were converted to function references.
+#define FUNC_IN_STRUCT_TYPES "types {[ fn [] [i32], sub [] struct [type.ref.null 0 immut] ]} "
+static void check_nested_ref_func(const char *provider_spec, const char *spec, uint32_t func_idx) {
+    wah_module_t provider = {0}, module = {0};
+    if (provider_spec) assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
+    if (provider_spec) assert_ok(wah_link_module(&ctx, "p", &provider));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, func_idx, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&module);
+    if (provider_spec) wah_free_module(&provider);
+}
+
+static void test_const_expr_nested_ref_func() {
+    printf("Testing ref.func nested in const expr GC allocations...\n");
+
+    // Global of the primary module
+    check_nested_ref_func(NULL, "wasm " FUNC_IN_STRUCT_TYPES "funcs {[ 0, 0 ]} \
+        globals {[ type.ref.null 1 immut ref.func 0 struct.new 1 end ]} \
+        elements {[ elem.declarative elem.funcref [0] ]} \
+        code {[ {[] i32.const 42 end}, {[] global.get 0 struct.get 1 0 call_ref 0 end} ]}", 1);
+
+    // Global of a linked module without its own context, referring to its local and imported functions
+    static const char *linked_provider = "wasm " FUNC_IN_STRUCT_TYPES "\
+        imports {[ {'p'} {'answer'} fn# 0 ]} funcs {[ 0, 0, 0 ]} \
+        globals {[ type.ref.null 1 immut ref.func 1 struct.new 1 end, \
+                   type.ref.null 1 immut ref.func 0 struct.new 1 end ]} \
+        exports {[ {'answer'} fn# 1, {'local'} fn# 2, {'imported'} fn# 3 ]} \
+        elements {[ elem.declarative elem.funcref [0, 1] ]} \
+        code {[ {[] i32.const 42 end}, \
+                {[] global.get 0 struct.get 1 0 call_ref 0 end}, \
+                {[] global.get 1 struct.get 1 0 call_ref 0 end} ]}";
+    check_nested_ref_func(linked_provider, "wasm types {[ fn [] [i32] ]} \
+        imports {[ {'p'} {'local'} fn# 0 ]}", 0);
+    check_nested_ref_func(linked_provider, "wasm types {[ fn [] [i32] ]} \
+        imports {[ {'p'} {'imported'} fn# 0 ]}", 0);
+
+    // Active element segment
+    check_nested_ref_func(NULL, "wasm " FUNC_IN_STRUCT_TYPES "funcs {[ 0, 0 ]} \
+        tables {[ type.ref.null 1 limits.i32/1 1 ]} \
+        elements {[ elem.active.expr.table# 0 i32.const 0 end type.ref.null 1 [ref.func 0 struct.new 1 end] ]} \
+        code {[ {[] i32.const 42 end}, {[] i32.const 0 table.get 0 struct.get 1 0 call_ref 0 end} ]}", 1);
+}
+
 // a4f274e: Support GC struct/array constructors in const expressions.
 static void test_gc_const_expr() {
     printf("Testing GC struct in const expr (a4f274e)...\n");
@@ -1367,6 +1417,7 @@ int main() {
     test_ref_eq_i31();
     test_array_ops();
     test_gc_const_expr();
+    test_const_expr_nested_ref_func();
     test_array_init_elem_dropped();
     test_extern_convert_validation();
     test_struct_new_get_set();
