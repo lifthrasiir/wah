@@ -10997,7 +10997,7 @@ static DWORD WINAPI wah_timer_main(LPVOID arg) {
         ReleaseSRWLockShared(&timer->lock);
         if (!armed) continue;
 
-        uint64_t ticks_100ns = remaining_us * 10;
+        uint64_t ticks_100ns = remaining_us > (uint64_t)INT64_MAX / 10 ? (uint64_t)INT64_MAX : remaining_us * 10;
         if (ticks_100ns == 0) ticks_100ns = 1;
         LARGE_INTEGER due_time;
         due_time.QuadPart = -(LONGLONG)ticks_100ns;

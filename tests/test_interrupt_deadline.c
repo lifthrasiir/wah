@@ -255,6 +255,37 @@ static void test_deadline_after_last_check_is_dropped(void) {
     wah_free_module(&env);
 }
 
+// A huge deadline used to overflow when converted to 100ns ticks on Windows, firing right away.
+static void test_huge_deadline_does_not_fire(void) {
+    printf("Testing huge deadline does not fire...\n");
+    fflush(stdout);
+    wah_module_t env = {0}, mod = {0};
+    wah_exec_context_t ctx = {0};
+    wah_exec_options_t options = {0};
+    options.limits.deadline_us = UINT64_MAX - 1;
+
+    assert_ok(wah_new_module(&env, NULL));
+    assert_ok(wah_export_func(&env, "sleep", "()", host_sleep_50ms, NULL, NULL));
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [], fn [] [i32]]} \
+        imports {[{'env'} {'sleep'} fn# 0]} funcs {[1]} \
+        code {[{[1 i32] call 0 \
+            loop void local.get 0 i32.const 1 i32.add local.tee 0 i32.const 2 i32.lt_s br_if 0 end \
+            local.get 0 end}]}"));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
+    assert_ok(wah_link_module(&ctx, "env", &env));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result = {0};
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 2);
+    assert_false(wah_is_interrupted(&ctx));
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+    wah_free_module(&env);
+}
+
 // Arming right after disarming should not be missed by the timer thread.
 static void test_rearm_right_after_disarm(void) {
     printf("Testing deadline rearmed right after disarm...\n");
@@ -393,6 +424,7 @@ int main(void) {
     test_deadline_after_last_check_is_dropped();
     test_deadline_is_charged_across_activations();
     test_rearm_right_after_disarm();
+    test_huge_deadline_does_not_fire();
     test_linked_start_function_limits();
 
     printf("\n=== All interrupt/deadline tests passed ===\n");
