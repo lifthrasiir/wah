@@ -192,6 +192,13 @@ typedef char wah_v128_align_check_[WAH_ALIGNOF(wah_v128_t) >= 16 ? 1 : -1];
 // Union: wah_value_t
 //   Value type for WebAssembly values and references. The type is described elsewhere.
 typedef union {
+    // Field: _
+    //   Not to be used. Only exists as the first member so that `{0}` zeroes the whole value (assuming that
+    //   null pointers are all zero bits), since only the first member of a union is initialized otherwise.
+    //   Initialize values only with `{0}` or designated initializers like `{.i32 = 42}`; other positional
+    //   initializers are made invalid by the opaque pointer type.
+    struct wah_opaque_s *_[16 / sizeof(void *)];
+
     int32_t i32;
     int64_t i64;
     float f32;
@@ -214,6 +221,8 @@ typedef union {
 #endif
 #endif
 } wah_value_t;
+
+typedef char wah_value_size_check_[sizeof(wah_value_t) == 16 ? 1 : -1];
 
 // Typedef: wah_type_t
 //   Compact type representation. Non-negative values are type indices;
