@@ -11763,7 +11763,7 @@ static inline bool wah_bulk_should_stop(const wah_exec_context_t *ctx) {
 // Pushes a new call frame. This is an internal helper.
 // local_idx: index into fn_module->code_bodies[] for the function body.
 // result_count: number of return values (stored in frame for RETURN/END).
-// fn_ctx: owning exec context of the function (NULL means use linked_modules lookup).
+// fn_ctx: owning exec context of the function (NULL means the primary module of ctx).
 // value_top: actual top of the value stack region (may differ from ctx->sp during interpretation).
 static inline wah_error_t wah_bind_frame_module(
     wah_exec_context_t *ctx, wah_call_frame_t *frame,
@@ -11781,52 +11781,9 @@ static inline wah_error_t wah_bind_frame_module(
         frame->frame_function_table_count = fn_ctx->function_table_count;
         frame->frame_ctx = fn_ctx;
     } else {
-        uint32_t offset = wah_global_index_limit(ctx->module);
-        bool found = false;
-        for (uint32_t i = 0; i < ctx->linked_module_count; i++) {
-            if (ctx->linked_modules[i].module == fn_module) {
-                if (ctx->linked_modules[i].ctx) {
-                    frame->frame_globals = ctx->linked_modules[i].ctx->globals;
-                    frame->frame_function_table = ctx->linked_modules[i].ctx->function_table;
-                    frame->frame_function_table_count = ctx->linked_modules[i].ctx->function_table_count;
-                    frame->frame_ctx = ctx->linked_modules[i].ctx;
-                } else {
-                    frame->frame_globals = offset ? ctx->globals + offset : ctx->globals;
-                    frame->frame_function_table = ctx->function_table;
-                    frame->frame_function_table_count = ctx->function_table_count;
-                    frame->frame_ctx = ctx;
-                }
-                found = true;
-                break;
-            }
-            offset += wah_global_index_limit(ctx->linked_modules[i].module);
-        }
-        if (!found) {
-            for (uint32_t i = 0; i < ctx->linked_module_count && !found; i++) {
-                wah_exec_context_t *lctx = ctx->linked_modules[i].ctx;
-                if (!lctx) continue;
-                uint32_t loffset = wah_global_index_limit(lctx->module);
-                for (uint32_t j = 0; j < lctx->linked_module_count; j++) {
-                    if (lctx->linked_modules[j].module == fn_module) {
-                        if (lctx->linked_modules[j].ctx) {
-                            frame->frame_globals = lctx->linked_modules[j].ctx->globals;
-                            frame->frame_function_table = lctx->linked_modules[j].ctx->function_table;
-                            frame->frame_function_table_count = lctx->linked_modules[j].ctx->function_table_count;
-                            frame->frame_ctx = lctx->linked_modules[j].ctx;
-                        } else {
-                            frame->frame_globals = lctx->globals + loffset;
-                            frame->frame_function_table = lctx->function_table;
-                            frame->frame_function_table_count = lctx->function_table_count;
-                            frame->frame_ctx = lctx;
-                        }
-                        found = true;
-                        break;
-                    }
-                    loffset += wah_global_index_limit(lctx->linked_modules[j].module);
-                }
-            }
-        }
-        WAH_ENSURE(found, WAH_ERROR_TRAP);
+        // Functions of other modules always have their contexts, which would be confused with this one otherwise
+        WAH_ASSERT(0 && "function of a linked module without its context");
+        return WAH_ERROR_TRAP;
     }
     return WAH_OK;
 }
