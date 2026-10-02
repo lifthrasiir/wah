@@ -9045,7 +9045,7 @@ static wah_error_t wah_resolve_function_export(
         linked_ctx = next_ctx;
         func_idx = exp->index;
     }
-    return WAH_ERROR_TOO_LARGE;
+    return WAH_ERROR_LINK_FAILED; // Cyclic re-exports
 }
 
 // Resolve a global export that may be a re-exported import. Follows the
@@ -9080,7 +9080,7 @@ static wah_error_t wah_resolve_global_export(
         linked_ctx = next_ctx;
         global_idx = exp->index;
     }
-    return WAH_ERROR_TOO_LARGE;
+    return WAH_ERROR_LINK_FAILED; // Cyclic re-exports
 }
 
 static wah_error_t wah_resolve_table_export(
@@ -9110,7 +9110,7 @@ static wah_error_t wah_resolve_table_export(
         linked_ctx = next_ctx;
         table_idx = exp->index;
     }
-    return WAH_ERROR_TOO_LARGE;
+    return WAH_ERROR_LINK_FAILED; // Cyclic re-exports
 }
 
 static wah_error_t wah_resolve_memory_export(
@@ -9140,7 +9140,7 @@ static wah_error_t wah_resolve_memory_export(
         linked_ctx = next_ctx;
         mem_idx = exp->index;
     }
-    return WAH_ERROR_TOO_LARGE;
+    return WAH_ERROR_LINK_FAILED; // Cyclic re-exports
 }
 
 static wah_error_t wah_bind_memory_import_slot(
@@ -17442,7 +17442,7 @@ static wah_error_t wah_resolve_tag_identity(wah_exec_context_t *ctx, const wah_m
         mod_ctx = next_ctx;
         tag_idx = exp->index;
     }
-    return WAH_ERROR_TOO_LARGE;
+    return WAH_ERROR_LINK_FAILED; // Cyclic re-exports
 }
 
 static wah_error_t wah_resolve_linked_tag_imports(wah_exec_context_t *ctx) {

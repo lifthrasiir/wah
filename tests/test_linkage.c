@@ -1199,6 +1199,10 @@ int main() {
             { "wasm imports {[{'A'} {'t'} table# funcref limits.i32/1 0]} exports {[{'t'} table# 0]}", NULL },
             { "wasm imports {[{'B'} {'t'} table# funcref limits.i32/1 0]} exports {[{'t'} table# 0]}",
               "wasm imports {[{'A'} {'t'} table# funcref limits.i32/1 0]} exports {[{'t'} table# 0]}" },
+            { "wasm imports {[{'A'} {'g'} global# i32 immut]} exports {[{'g'} global# 0]}", NULL },
+            { "wasm imports {[{'A'} {'g'} global# i32 mut]} exports {[{'g'} global# 0]}", NULL },
+            { "wasm types {[fn [] []]} imports {[{'A'} {'f'} fn# 0]} exports {[{'f'} fn# 0]}", NULL },
+            { "wasm types {[fn [] []]} imports {[{'A'} {'e'} tag# tag.type# 0]} exports {[{'e'} export.tag 0]}", NULL },
         };
         for (size_t i = 0; i < sizeof(specs) / sizeof(*specs); i++) {
             wah_module_t mod_a = {0}, mod_b = {0}, primary = {0};
