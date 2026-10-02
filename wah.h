@@ -10684,7 +10684,8 @@ static bool wah_gc_step_mark(wah_exec_context_t *ctx) {
     wah_gc_worklist_t wl = { .alloc = &ctx->alloc, .module = ctx->module };
     for (uint32_t i = 0; i < domain_count; i++) {
         wah_exec_context_t *c = domain[i];
-        if (c != ctx && !c->is_instantiated) continue;
+        // Failed or ongoing instantiations may have shared references to their functions already
+        if (c != ctx && !c->is_instantiated && !c->may_share_refs) continue;
         wah_gc_enumerate_roots(c, wah_gc_mark_visitor, &wl);
     }
 

@@ -4661,6 +4661,52 @@ int main() {
         wah_free_module(&y);
     }
 
+    // Regression: contexts whose instantiation failed were not GC roots, although their functions remained in
+    // another context's table, and their globals could hold objects of the heap of that context.
+    printf("Test: failed instantiation keeps its globals as GC roots\n");
+    {
+        const char *y_spec = "wasm \
+            types {[ struct [i32 mut], fn [] [i32], fn [] [] ]} \
+            funcs {[ 1, 2 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            exports {[ {'t'} table# 0 ]} \
+            code {[ {[] i32.const 0 call_indirect 1 0 end}, \
+                    {[1 i32] loop void i32.const 0 struct.new 0 drop \
+                        local.get 0 i32.const 1 i32.add local.tee 0 i32.const 200000 i32.lt_u br_if 0 end end} ]}";
+        const char *x_spec = "wasm \
+            types {[ struct [i32 immut], fn [] [i32], fn [] [] ]} \
+            imports {[ {'y'} {'t'} table# funcref limits.i32/1 1 ]} \
+            funcs {[ 1, 2 ]} \
+            globals {[ %'6300' mut ref.null 0 end ]} \
+            start { 1 } \
+            elements {[ elem.active.table#0 i32.const 0 end [0] ]} \
+            code {[ {[] global.get 0 ref.is_null if void i32.const 42 struct.new 0 global.set 0 end \
+                        global.get 0 struct.get 0 0 end}, \
+                    {[] unreachable end} ]}";
+
+        wah_module_t y = {0}, x = {0};
+        assert_ok(wah_parse_module_from_spec(&y, y_spec));
+        assert_ok(wah_parse_module_from_spec(&x, x_spec));
+        wah_exec_context_t yctx = {0}, xctx = {0};
+        assert_ok(wah_new_exec_context(&yctx, &y, NULL));
+        assert_ok(wah_instantiate(&yctx));
+        assert_ok(wah_new_exec_context(&xctx, &x, NULL));
+        assert_ok(wah_link_context(&xctx, "y", &yctx));
+        assert_err(wah_instantiate(&xctx), WAH_ERROR_TRAP);
+
+        wah_value_t res;
+        assert_ok(wah_call(&yctx, 0, NULL, 0, &res)); // Allocates the struct in the heap of yctx
+        assert_eq_i32(res.i32, 42);
+        assert_ok(wah_call(&yctx, 1, NULL, 0, NULL));
+        assert_ok(wah_call(&yctx, 0, NULL, 0, &res));
+        assert_eq_i32(res.i32, 42);
+
+        wah_free_exec_context(&xctx);
+        wah_free_exec_context(&yctx);
+        wah_free_module(&x);
+        wah_free_module(&y);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
