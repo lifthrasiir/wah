@@ -10236,8 +10236,12 @@ static const wah_type_t *wah_entry_result_types(const wah_exec_context_t *ctx, c
     return module->types[module->function_type_indices[fn->local_idx]].result_types;
 }
 
+// Registers each context only once, so that a context importing the same thing many times is visited once.
 static wah_error_t wah_register_dependent(wah_exec_context_t *provider, wah_exec_context_t *consumer) {
     const wah_alloc_t *alloc = &provider->alloc;
+    for (uint32_t i = 0; i < provider->dependent_count; i++) {
+        if (provider->dependents[i] == consumer) return WAH_OK;
+    }
     WAH_ENSURE_CAP(provider->dependents, (size_t)provider->dependent_count + 1);
     provider->dependents[provider->dependent_count++] = consumer;
     return WAH_OK;
@@ -10308,7 +10312,11 @@ static void wah_gc_end(wah_exec_context_t *ctx) {
     ctx->gc = NULL;
 }
 
+// Registers each context only once, so that a context importing the same thing many times is visited once.
 static wah_error_t wah_gc_register_dependent(wah_gc_state_t *gc, wah_exec_context_t *dep, const wah_alloc_t *alloc) {
+    for (uint32_t i = 0; i < gc->gc_dependent_count; i++) {
+        if (gc->gc_dependents[i] == dep) return WAH_OK;
+    }
     WAH_ENSURE_CAP(gc->gc_dependents, (size_t)gc->gc_dependent_count + 1);
     gc->gc_dependents[gc->gc_dependent_count++] = dep;
     return WAH_OK;
@@ -17101,6 +17109,7 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
     char *name_copy = wah_strdup(name, alloc);
     WAH_ENSURE(name_copy, WAH_ERROR_OUT_OF_MEMORY);
 
+    uint32_t gc_dependent_count = linked_ctx->gc ? linked_ctx->gc->gc_dependent_count : 0;
     if (linked_ctx->gc) {
         wah_error_t reg_err = wah_gc_register_dependent(linked_ctx->gc, ctx, &linked_ctx->alloc);
         if (reg_err != WAH_OK) {
@@ -17111,7 +17120,10 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
 
     wah_error_t dep_err = wah_register_dependent(linked_ctx, ctx);
     if (dep_err != WAH_OK) {
-        if (linked_ctx->gc) wah_gc_unregister_dependent(linked_ctx->gc, ctx);
+        // Unless it was registered already by linking the same context under another name
+        if (linked_ctx->gc && linked_ctx->gc->gc_dependent_count > gc_dependent_count) {
+            wah_gc_unregister_dependent(linked_ctx->gc, ctx);
+        }
         wah_free(alloc, name_copy);
         return dep_err;
     }
