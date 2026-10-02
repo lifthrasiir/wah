@@ -1090,6 +1090,71 @@ static void test_bulk_fuel_int64_max(void) {
     wah_free_module(&mod);
 }
 
+// ============================================================
+// Copies between distinct indices that alias the same memory or table
+// ============================================================
+static void test_aliased_memory_copy(void) {
+    printf("Testing memory.copy between aliased memories...\n");
+    wah_module_t pmod = {0}, mod = {0};
+    wah_exec_context_t pctx = {0}, ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&pmod, "wasm memories {[limits.i32/1 1]} exports {[{'m'} mem# 0]}"));
+    // Overlapping copy of more than one chunk from memory 0 to memory 1
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] []]} \
+        imports {[{'p'} {'m'} mem# limits.i32/1 1, {'p'} {'m'} mem# limits.i32/1 1]} \
+        funcs {[0]} \
+        code {[{[] i32.const 1 i32.const 0 i32.const 200 memory.copy 1 0 end}]}");
+    assert_ok(wah_new_exec_context(&pctx, &pmod, NULL));
+    assert_ok(wah_instantiate(&pctx));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_link_context(&ctx, "p", &pctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    for (int i = 0; i < 200; i++) pctx.memory_base[i] = (uint8_t)(i + 1);
+    run_resume(&ctx, 0, NULL, 0, 3);
+    assert_eq_u32(pctx.memory_base[0], 1);
+    for (int i = 0; i < 200; i++) assert_eq_u32(pctx.memory_base[i + 1], (uint8_t)(i + 1));
+
+    wah_free_exec_context(&ctx);
+    wah_free_exec_context(&pctx);
+    wah_free_module(&mod);
+    wah_free_module(&pmod);
+}
+
+static void test_aliased_table_copy(void) {
+    printf("Testing table.copy between aliased tables...\n");
+    wah_module_t pmod = {0}, mod = {0};
+    wah_exec_context_t pctx = {0}, ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&pmod, "wasm \
+        types {[fn [] []]} funcs {[0]} \
+        tables {[funcref limits.i32/1 4]} \
+        exports {[{'t'} table# 0]} \
+        elements {[ elem.active.table#0 i32.const 0 end [0, 0] ]} \
+        code {[{[] end}]}"));
+    // Copies t[0..3) to t[1..4), so that t[3] gets the null from t[2]
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] [i32]]} \
+        imports {[{'p'} {'t'} table# funcref limits.i32/1 4, {'p'} {'t'} table# funcref limits.i32/1 4]} \
+        funcs {[0]} \
+        code {[{[] i32.const 1 i32.const 0 i32.const 3 table.copy 1 0 \
+                   i32.const 3 table.get 0 ref.is_null end}]}");
+    assert_ok(wah_new_exec_context(&pctx, &pmod, NULL));
+    assert_ok(wah_instantiate(&pctx));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_link_context(&ctx, "p", &pctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t r;
+    assert_ok(wah_set_fuel(&ctx, 1000));
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
+    assert_eq_i32(r.i32, 1);
+
+    wah_free_exec_context(&ctx);
+    wah_free_exec_context(&pctx);
+    wah_free_module(&mod);
+    wah_free_module(&pmod);
+}
+
 int main(void) {
     test_array_new_fuel_proportional();
     test_elem_expr_alloc_fuel();
@@ -1121,6 +1186,8 @@ int main(void) {
     test_table64_init_fuel_resume();
     test_memory64_fill_fuel_resume();
     test_memory64_copy_backward_fuel_resume();
+    test_aliased_memory_copy();
+    test_aliased_table_copy();
 
     test_bulk_fuel_int64_max();
 

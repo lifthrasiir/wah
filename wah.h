@@ -11730,8 +11730,10 @@ static uint64_t wah_bulk_table_fill(wah_exec_context_t *ctx, wah_exec_context_t 
 static uint64_t wah_bulk_table_copy(wah_exec_context_t *ctx, wah_exec_context_t *fctx,
                                     uint32_t dst_table_idx, uint64_t dst_offset,
                                     uint32_t src_table_idx, uint64_t src_offset, uint64_t size) {
-    if (src_table_idx == dst_table_idx && dst_offset == src_offset) return size;
-    bool backward = (src_table_idx == dst_table_idx && dst_offset > src_offset && dst_offset < src_offset + size);
+    // Distinct indices may alias the same table
+    bool same = fctx->tables[src_table_idx].entries == fctx->tables[dst_table_idx].entries;
+    if (same && dst_offset == src_offset) return size;
+    bool backward = (same && dst_offset > src_offset && dst_offset < src_offset + size);
     for (uint64_t done = 0; done < size; ) {
         uint64_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
         chunk = wah_bulk_fuel_limit(ctx, chunk);
@@ -13125,7 +13127,8 @@ WAH_RUN(GLOBAL_SET) {
     WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dst_offset, size, fctx->tables[dst_table_idx].size), WAH_ERROR_TRAP, cleanup); \
     uint64_t done = wah_bulk_table_copy(ctx, fctx, dst_table_idx, dst_offset, src_table_idx, src_offset, size); \
     if (done < size) { \
-        bool backward = (src_table_idx == dst_table_idx && dst_offset > src_offset && dst_offset < src_offset + size); \
+        bool backward = (fctx->tables[src_table_idx].entries == fctx->tables[dst_table_idx].entries && \
+                         dst_offset > src_offset && dst_offset < src_offset + size); \
         if (backward) { \
             (*sp++).i##M = (int##M##_t)dst_offset; \
             (*sp++).i##N = (int##N##_t)src_offset; \
@@ -13913,7 +13916,8 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
     WAH_ENSURE_GOTO(wah_u64_range_in_bounds(dest, size, fctx->memories[dest_mem_idx].size), WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup); \
     WAH_ENSURE_GOTO(wah_u64_range_in_bounds(src, size, fctx->memories[src_mem_idx].size), WAH_ERROR_MEMORY_OUT_OF_BOUNDS, cleanup); \
     \
-    bool backward = (dest_mem_idx == src_mem_idx && dest > src && dest < src + size); \
+    bool backward = (fctx->memories[dest_mem_idx].data == fctx->memories[src_mem_idx].data && \
+                     dest > src && dest < src + size); \
     uint64_t done = wah_memory_copy_internal(ctx, fctx->memories[dest_mem_idx].data, dest, \
                                              fctx->memories[src_mem_idx].data, src, size, backward); \
     if (done < size) { \
