@@ -13074,8 +13074,8 @@ WAH_RUN(ARRAY_NEW_ELEM) {
     uint32_t offset = (uint32_t)(--sp)->i32;
     WAH_ASSERT(elemidx < fctx->module->element_segment_count);
     const wah_element_segment_t *seg = &fctx->module->element_segments[elemidx];
-    WAH_ENSURE_GOTO(!wah_elem_seg_is_dropped(fctx, elemidx), WAH_ERROR_TRAP, cleanup);
-    WAH_ENSURE_GOTO((uint64_t)offset + size <= seg->num_elems, WAH_ERROR_TRAP, cleanup);
+    uint32_t num_elems = wah_elem_seg_is_dropped(fctx, elemidx) ? 0 : seg->num_elems; // Dropped ones are empty
+    WAH_ENSURE_GOTO((uint64_t)offset + size <= num_elems, WAH_ERROR_TRAP, cleanup);
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_array(ctx, fctx->module, repr_id, info, size);

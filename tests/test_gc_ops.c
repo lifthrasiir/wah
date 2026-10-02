@@ -1440,6 +1440,26 @@ static void test_cross_module_ref_cast_in_linked() {
     wah_free_module(&provider);
 }
 
+// array.new_elem used to trap on dropped segments even when taking nothing, which are empty instead.
+static void test_array_new_elem_dropped_empty() {
+    printf("Testing array.new_elem of nothing from a dropped segment...\n");
+    wah_module_t mod = {0};
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[ array funcref mut, fn [i32] [i32] ]} funcs {[ 1 ]} \
+        elements {[ elem.passive.expr funcref [ ref.null funcref end ] ]} \
+        code {[ {[] elem.drop 0 i32.const 0 local.get 0 array.new_elem 0 0 array.len end} ]}"));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t param = { .i32 = 0 }, r;
+    assert_ok(wah_call(&ctx, 0, &param, 1, &r));
+    assert_eq_i32(r.i32, 0);
+    param.i32 = 1;
+    assert_err(wah_call(&ctx, 0, &param, 1, &r), WAH_ERROR_TRAP);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 int main() {
     test_i31_ops();
     test_extern_convert();
@@ -1476,6 +1496,7 @@ int main() {
     test_cross_module_array_new_elem_funcref();
     test_cross_module_array_init_elem_funcref();
     test_cross_module_ref_cast_in_linked();
+    test_array_new_elem_dropped_empty();
     printf("All GC ops tests passed!\n");
     return 0;
 }
