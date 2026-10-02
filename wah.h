@@ -17158,13 +17158,14 @@ static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, wah_exec_context
     return WAH_OK;
 }
 
-static wah_error_t wah_init_table_init_exprs(wah_exec_context_t *ctx) {
+// Const expressions of ctx are run by run_ctx, the context being instantiated, so that its fuel and heap are used.
+static wah_error_t wah_init_table_init_exprs(wah_exec_context_t *ctx, wah_exec_context_t *run_ctx) {
     const wah_module_t *module = ctx->module;
     for (uint32_t i = 0; i < module->table_count; ++i) {
         if (module->tables[i].init_expr.bytecode) {
             uint32_t slot = module->import_table_count + i;
             wah_value_t init_val;
-            WAH_CHECK(wah_eval_const_expr(ctx, ctx, module->tables[i].init_expr.bytecode,
+            WAH_CHECK(wah_eval_const_expr(ctx, run_ctx, module->tables[i].init_expr.bytecode,
                                           module->tables[i].init_expr.bytecode_size, &init_val));
             for (uint64_t j = 0; j < ctx->tables[slot].size; ++j) {
                 ctx->tables[slot].entries[j] = init_val;
@@ -17174,14 +17175,14 @@ static wah_error_t wah_init_table_init_exprs(wah_exec_context_t *ctx) {
     return WAH_OK;
 }
 
-static wah_error_t wah_init_active_elem_segments(wah_exec_context_t *ctx) {
+static wah_error_t wah_init_active_elem_segments(wah_exec_context_t *ctx, wah_exec_context_t *run_ctx) {
     const wah_module_t *module = ctx->module;
     for (uint32_t i = 0; i < module->element_segment_count; ++i) {
         const wah_element_segment_t *segment = &module->element_segments[i];
         if (!segment->is_active || segment->is_declarative) continue;
         WAH_ENSURE(segment->table_idx < ctx->table_count, WAH_ERROR_VALIDATION_FAILED);
         wah_value_t offset_val;
-        WAH_CHECK(wah_eval_const_expr(ctx, ctx, segment->offset_expr.bytecode, segment->offset_expr.bytecode_size, &offset_val));
+        WAH_CHECK(wah_eval_const_expr(ctx, run_ctx, segment->offset_expr.bytecode, segment->offset_expr.bytecode_size, &offset_val));
         uint64_t offset;
         if (segment->table_idx < wah_table_index_limit(module) &&
             wah_table_type(module, segment->table_idx)->addr_type == WAH_TYPE_I64) {
@@ -17199,7 +17200,7 @@ static wah_error_t wah_init_active_elem_segments(wah_exec_context_t *ctx) {
                 if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
                 ctx->tables[segment->table_idx].entries[offset + j].ref = wah_func_to_ref(fn);
             } else {
-                WAH_CHECK(wah_eval_elem_expr(ctx, ctx, segment, j,
+                WAH_CHECK(wah_eval_elem_expr(ctx, run_ctx, segment, j,
                                               &ctx->tables[segment->table_idx].entries[offset + j]));
             }
         }
@@ -17208,14 +17209,14 @@ static wah_error_t wah_init_active_elem_segments(wah_exec_context_t *ctx) {
     return WAH_OK;
 }
 
-static wah_error_t wah_init_active_data_segments(wah_exec_context_t *ctx) {
+static wah_error_t wah_init_active_data_segments(wah_exec_context_t *ctx, wah_exec_context_t *run_ctx) {
     const wah_module_t *module = ctx->module;
     for (uint32_t i = 0; i < module->data_segment_count; ++i) {
         const wah_data_segment_t *segment = &module->data_segments[i];
         if (segment->flags == 0x00 || segment->flags == 0x02) {
             WAH_ENSURE(segment->memory_idx < ctx->memory_count, WAH_ERROR_VALIDATION_FAILED);
             wah_value_t offset_val;
-            WAH_CHECK(wah_eval_const_expr(ctx, ctx, segment->offset_expr.bytecode, segment->offset_expr.bytecode_size, &offset_val));
+            WAH_CHECK(wah_eval_const_expr(ctx, run_ctx, segment->offset_expr.bytecode, segment->offset_expr.bytecode_size, &offset_val));
             uint64_t offset;
             if (wah_memory_type(module, segment->memory_idx)->addr_type == WAH_TYPE_I64) {
                 offset = (uint64_t)offset_val.i64;
@@ -18085,9 +18086,9 @@ static wah_error_t wah_init_linked_segments(wah_exec_context_t *ctx) {
             memset(ictx->dropped_data_segments, 0, bytes);
         }
         if (ictx && ctx->linked_modules[j].owns_ctx) {
-            WAH_CHECK(wah_init_table_init_exprs(ictx));
-            WAH_CHECK(wah_init_active_elem_segments(ictx));
-            WAH_CHECK(wah_init_active_data_segments(ictx));
+            WAH_CHECK(wah_init_table_init_exprs(ictx, ctx));
+            WAH_CHECK(wah_init_active_elem_segments(ictx, ctx));
+            WAH_CHECK(wah_init_active_data_segments(ictx, ctx));
         }
     }
     return WAH_OK;
@@ -18147,9 +18148,9 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     // Linked modules are dependencies of the primary, so they are fully instantiated first
     WAH_CHECK_GOTO(wah_init_linked_segments(ctx), cleanup);
     WAH_CHECK_GOTO(wah_call_linked_start_functions(ctx), cleanup);
-    WAH_CHECK_GOTO(wah_init_table_init_exprs(ctx), cleanup);
-    WAH_CHECK_GOTO(wah_init_active_elem_segments(ctx), cleanup);
-    WAH_CHECK_GOTO(wah_init_active_data_segments(ctx), cleanup);
+    WAH_CHECK_GOTO(wah_init_table_init_exprs(ctx, ctx), cleanup);
+    WAH_CHECK_GOTO(wah_init_active_elem_segments(ctx, ctx), cleanup);
+    WAH_CHECK_GOTO(wah_init_active_data_segments(ctx, ctx), cleanup);
 
     if (module->has_start_function) {
         WAH_CHECK_GOTO(wah_call_module(ctx, module->start_function_idx, NULL, 0, NULL, false), cleanup);

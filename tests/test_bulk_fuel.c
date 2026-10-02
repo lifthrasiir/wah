@@ -1191,6 +1191,38 @@ static void test_aliased_table_copy(void) {
     wah_free_module(&pmod);
 }
 
+// ============================================================
+// Element expressions of linked modules charge the fuel of the primary
+// ============================================================
+static void test_linked_elem_expr_fuel(void) {
+    printf("Testing element expressions of linked modules charge fuel during instantiation...\n");
+    const char *seg_spec = "wasm types {[ array i8 mut, fn [] [] ]} funcs {[ 1 ]} \
+        tables {[ anyref limits.i32/1 1 ]} exports {[ {'f'} fn# 0 ]} \
+        elements {[ elem.active.expr.table# 0 i32.const 0 end anyref [ i32.const 4096 array.new_default 0 end ] ]} \
+        code {[ {[] end} ]}";
+    int64_t cost[2];
+    for (int linked = 0; linked < 2; ++linked) {
+        wah_module_t seg = {0}, primary = {0};
+        wah_exec_context_t ctx = {0};
+        wah_exec_options_t opts = { .limits = { .fuel = 10000 } };
+        PARSE_FUEL(&seg, seg_spec);
+        if (linked) {
+            PARSE_FUEL(&primary, "wasm types {[ fn [] [] ]} imports {[ {'L'} {'f'} fn# 0 ]}");
+            assert_ok(wah_new_exec_context(&ctx, &primary, &opts));
+            assert_ok(wah_link_module(&ctx, "L", &seg));
+        } else {
+            assert_ok(wah_new_exec_context(&ctx, &seg, &opts));
+        }
+        assert_ok(wah_instantiate(&ctx));
+        cost[linked] = 10000 - wah_get_fuel(&ctx);
+        wah_free_exec_context(&ctx);
+        wah_free_module(&primary);
+        wah_free_module(&seg);
+    }
+    assert_true(cost[0] >= 4096 / 16);
+    assert_eq_i64(cost[1], cost[0]);
+}
+
 int main(void) {
     test_array_new_fuel_proportional();
     test_elem_expr_alloc_fuel();
@@ -1225,6 +1257,7 @@ int main(void) {
     test_memory64_copy_backward_fuel_resume();
     test_aliased_memory_copy();
     test_aliased_table_copy();
+    test_linked_elem_expr_fuel();
 
     test_bulk_fuel_int64_max();
 
