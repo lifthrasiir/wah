@@ -12003,7 +12003,10 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
     if (target >= 0) {
         uint32_t target_idx = WAH_TYIDX(target);
         const wah_module_t *obj_mod = hdr->module;
-        if (obj_mod == ctx->module || obj_mod == NULL) {
+        if (obj_mod == NULL) {
+            // Host objects, exceptions and functions, whose repr ids are not of any module
+            WAH_ASSERT(repr_id < 0);
+        } else if (obj_mod == ctx->module) {
             if (wah_type_accepts_repr(ctx->module, target_idx, repr_id))
                 return true;
         } else if (repr_id >= 0) {
