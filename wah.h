@@ -15949,9 +15949,8 @@ cleanup:
 ////////////////////////////////////////////////////////////////////////////////
 
 // Sweep only unreachable exception objects after a mark pass.
-// Unlike a full wah_gc_step, this leaves non-exception GC objects (e.g.
-// function holders) intact even if they are not reachable from the
-// enumerated roots at this point.
+// Unlike a full wah_gc_step, this leaves other GC objects intact even if they are not reachable from the roots,
+// because host objects from wah_gc_alloc_host should stay valid until the next entry, which wah_cancel is not.
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
 static void wah_gc_sweep_unreachable_exceptions(wah_exec_context_t *ctx) {
     wah_gc_state_t *gc = ctx->gc;
@@ -15970,7 +15969,7 @@ static void wah_gc_sweep_unreachable_exceptions(wah_exec_context_t *ctx) {
                 gc->all_objects = next;
             gc->allocated_bytes -= obj->size_bytes;
             gc->object_count--;
-            if (obj->repr_id == WAH_TYPE_EXN) gc->exception_count--;
+            gc->exception_count--;
             wah_budget_release(gc->owner, obj->size_bytes);
 #ifdef WAH_DEBUG
             gc->total_frees++;
