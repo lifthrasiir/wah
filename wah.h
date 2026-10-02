@@ -9459,6 +9459,7 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
             WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
             bool has_init_expr = (**ptr == 0x40);
             if (has_init_expr) {
+                WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_TYPED_FUNCREF));
                 (*ptr)++;
                 WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
                 WAH_ENSURE(**ptr == 0x00, WAH_ERROR_MALFORMED);
