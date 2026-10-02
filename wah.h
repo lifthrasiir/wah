@@ -699,18 +699,22 @@ private:
 typedef atomic_int wah_poll_flag_t;
 #define WAH_POLL_FLAG_LOAD(f)       atomic_load_explicit(&(f), memory_order_relaxed)
 #define WAH_POLL_FLAG_STORE(f, v)   atomic_store_explicit(&(f), (v), memory_order_relaxed)
+#define WAH_POLL_FLAG_FENCE()       atomic_thread_fence(memory_order_seq_cst)
 #elif defined(_MSC_VER)
 typedef volatile long wah_poll_flag_t;
 #define WAH_POLL_FLAG_LOAD(f)       (f)
 #define WAH_POLL_FLAG_STORE(f, v)   _InterlockedExchange(&(f), (v))
+#define WAH_POLL_FLAG_FENCE()       ((void)0) // Interlocked stores are already full barriers
 #elif defined(__GNUC__)
 typedef volatile int wah_poll_flag_t;
 #define WAH_POLL_FLAG_LOAD(f)       __atomic_load_n(&(f), __ATOMIC_RELAXED)
 #define WAH_POLL_FLAG_STORE(f, v)   __atomic_store_n(&(f), (v), __ATOMIC_RELAXED)
+#define WAH_POLL_FLAG_FENCE()       __atomic_thread_fence(__ATOMIC_SEQ_CST)
 #else
 typedef volatile int wah_poll_flag_t;
 #define WAH_POLL_FLAG_LOAD(f)       (f)
 #define WAH_POLL_FLAG_STORE(f, v)   ((f) = (v))
+#define WAH_POLL_FLAG_FENCE()       ((void)0)
 #endif
 #endif
 
@@ -10704,15 +10708,22 @@ static inline void wah_ref_store_table(wah_exec_context_t *ctx, uint32_t table_i
 // Timer thread ////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
+// An interrupt requested between our load and store of poll_flag would be overwritten, so check again after clearing.
+// Paired with the fence in wah_request_interrupt, either this sees interrupt_flag or that store lands later.
 static inline void wah_recompute_poll_flag(wah_exec_context_t *ctx) {
-    int pending = WAH_POLL_FLAG_LOAD(ctx->interrupt_flag) != 0;
-    pending = pending || (ctx->gc && ctx->gc->gc_pending);
-    WAH_POLL_FLAG_STORE(ctx->poll_flag, pending ? 1 : 0);
+    if (ctx->gc && ctx->gc->gc_pending) {
+        WAH_POLL_FLAG_STORE(ctx->poll_flag, 1);
+        return;
+    }
+    WAH_POLL_FLAG_STORE(ctx->poll_flag, 0);
+    WAH_POLL_FLAG_FENCE();
+    if (WAH_POLL_FLAG_LOAD(ctx->interrupt_flag)) WAH_POLL_FLAG_STORE(ctx->poll_flag, 1);
 }
 
 void wah_request_interrupt(wah_exec_context_t *ctx) {
     if (!ctx) return;
     WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 1);
+    WAH_POLL_FLAG_FENCE();
     WAH_POLL_FLAG_STORE(ctx->poll_flag, 1);
 }
 
