@@ -10965,6 +10965,14 @@ static void wah_timer_fire(wah_timer_t *timer, uint32_t gen) {
     wah_request_interrupt(timer->ctx);
 }
 
+static uint64_t wah_timer_now_us(void);
+
+// Called with the lock held. The deadline counts from the arming, not from when the timer thread woke up.
+static uint64_t wah_timer_remaining_us(const wah_timer_t *timer) {
+    uint64_t elapsed_us = wah_timer_now_us() - timer->start_us;
+    return elapsed_us >= timer->deadline_us ? 0 : timer->deadline_us - elapsed_us;
+}
+
 #if defined(_WIN32)
 static uint64_t wah_timer_now_us(void) {
     LARGE_INTEGER freq, now;
@@ -10985,11 +10993,11 @@ static DWORD WINAPI wah_timer_main(LPVOID arg) {
         AcquireSRWLockShared(&timer->lock);
         bool armed = WAH_POLL_FLAG_LOAD(timer->armed) != 0;
         uint32_t gen = timer->gen;
-        uint64_t deadline_us = timer->deadline_us;
+        uint64_t remaining_us = wah_timer_remaining_us(timer);
         ReleaseSRWLockShared(&timer->lock);
         if (!armed) continue;
 
-        uint64_t ticks_100ns = deadline_us * 10;
+        uint64_t ticks_100ns = remaining_us * 10;
         if (ticks_100ns == 0) ticks_100ns = 1;
         LARGE_INTEGER due_time;
         due_time.QuadPart = -(LONGLONG)ticks_100ns;
@@ -11035,32 +11043,29 @@ static void *wah_timer_main(void *arg) {
         uint32_t gen = timer->gen;
 
 #if defined(__APPLE__)
-        uint64_t start_us = wah_timer_now_us();
-        uint64_t deadline_us = timer->deadline_us;
         int rc = 0;
         while (!WAH_POLL_FLAG_LOAD(timer->cancelled) && WAH_POLL_FLAG_LOAD(timer->armed) && timer->gen == gen &&
                rc != ETIMEDOUT) {
-            uint64_t now_us = wah_timer_now_us();
-            uint64_t elapsed_us = now_us - start_us;
-            if (elapsed_us >= deadline_us) {
+            uint64_t remaining_us = wah_timer_remaining_us(timer);
+            if (remaining_us == 0) {
                 rc = ETIMEDOUT;
                 break;
             }
-            uint64_t remaining_us = deadline_us - elapsed_us;
             struct timespec rel = { .tv_sec = (time_t)(remaining_us / 1000000),
                                     .tv_nsec = (long)((remaining_us % 1000000) * 1000) };
             rc = pthread_cond_timedwait_relative_np(&timer->cond, &timer->mutex, &rel);
         }
 #else
+        uint64_t remaining_us = wah_timer_remaining_us(timer);
         struct timespec deadline;
         clock_gettime(CLOCK_MONOTONIC, &deadline);
-        uint64_t add_sec = timer->deadline_us / 1000000;
+        uint64_t add_sec = remaining_us / 1000000;
         uint64_t sec_headroom = (uint64_t)((sizeof(time_t) >= 8 ? INT64_MAX : INT32_MAX) - deadline.tv_sec);
         if (add_sec >= sec_headroom) {
             deadline.tv_sec = (time_t)(sizeof(time_t) >= 8 ? INT64_MAX : INT32_MAX);
         } else {
             deadline.tv_sec += (time_t)add_sec;
-            deadline.tv_nsec += (long)((timer->deadline_us % 1000000) * 1000);
+            deadline.tv_nsec += (long)((remaining_us % 1000000) * 1000);
             if (deadline.tv_nsec >= 1000000000L) {
                 deadline.tv_sec++;
                 deadline.tv_nsec -= 1000000000L;
