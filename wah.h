@@ -11899,6 +11899,7 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
                    obj_mod->repr_infos[repr_id]->type == WAH_REPR_ARRAY;
         }
         case WAH_TYPE_FUNC: return repr_id == WAH_TYPE_FUNC;
+        case WAH_TYPE_EXN: return repr_id == WAH_TYPE_EXN;
         case WAH_TYPE_I31: default: return false;
     }
 }

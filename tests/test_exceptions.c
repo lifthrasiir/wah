@@ -1082,6 +1082,44 @@ static void test_exception_oom() {
 
 // The payload of a catch to the function label was not counted in max_stack_depth when the body ends unreachable,
 // so rethrowing a wide exception there wrote past the frame (and here past the stack buffer).
+static void test_ref_test_exn() {
+    printf("Testing ref.test and ref.cast on exnref...\n");
+
+    const char *spec = "wasm \
+        types {[ fn [] [], fn [] [i32] ]} \
+        funcs {[ 1, 1 ]} \
+        tags {[ tag.type# 0 ]} \
+        code {[ \
+            {[] \
+                block exnref \
+                    try_table void [catch_all_ref 0] throw 0 end \
+                    unreachable \
+                end \
+                ref.test exnref \
+            end }, \
+            {[] \
+                block exnref \
+                    try_table void [catch_all_ref 0] throw 0 end \
+                    unreachable \
+                end \
+                ref.cast exnref drop i32.const 1 \
+            end } \
+        ]}";
+
+    wah_module_t mod = {0};
+    assert_ok(wah_parse_module_from_spec(&mod, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 1);
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 1);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 static void test_catch_to_function_label_counts_payload() {
     printf("Testing catch to the function label counts the payload in the stack depth...\n");
 
@@ -1231,6 +1269,7 @@ int main() {
     test_exception_oom();
     test_cancel_does_not_free_exnref_in_global();
     test_catch_to_function_label_counts_payload();
+    test_ref_test_exn();
     printf("All exception tests passed!\n");
     return 0;
 }
