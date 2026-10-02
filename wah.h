@@ -2779,11 +2779,17 @@ typedef struct {
     uint32_t control_sp;
 
     // Local initialization tracking for non-defaultable locals
-    uint8_t *local_inits; // Per-local init state: 1=initialized, 0=not
-    uint32_t *local_init_undo; // Locals initialized so far, to be reverted at the end of blocks
-    uint32_t local_init_undo_len; // At most num_non_defaultable
-    uint32_t num_non_defaultable; // Number of non-defaultable locals
+    struct wah_local_inits_s *local_inits; // NULL for const exprs
 } wah_validation_context_t;
+
+// Initialization state of non-defaultable locals, shared by all functions of a code section so that
+// the cost is proportional to the code instead of the number of declared locals.
+typedef struct wah_local_inits_s {
+    uint8_t *inits; // 1 if the non-defaultable local has been initialized; all 0 between functions
+    uint32_t inits_cap;
+    uint32_t *undo; // Locals initialized so far, to be reverted at the end of blocks
+    uint32_t undo_len, undo_cap;
+} wah_local_inits_t;
 
 // Stacks of a validation context are kept apart, so that resetting the context doesn't zero them.
 typedef struct {
@@ -5959,21 +5965,35 @@ static inline void wah_validation_mark_unreachable(wah_validation_context_t *vct
 
 // Remembers the initialization state of locals at the beginning of a control frame.
 static inline void wah_validation_save_local_inits(wah_validation_context_t *vctx, wah_validation_control_frame_t *frame) {
-    frame->local_init_undo_base = vctx->local_init_undo_len;
+    frame->local_init_undo_base = vctx->local_inits ? vctx->local_inits->undo_len : 0;
+}
+
+// Reverts locals initialized since the given length of the undo list.
+static inline void wah_local_inits_revert(wah_local_inits_t *li, uint32_t undo_base) {
+    while (li->undo_len > undo_base) li->inits[li->undo[--li->undo_len]] = 0;
 }
 
 // Reverts locals initialized since the beginning of a control frame.
 static inline void wah_validation_restore_local_inits(wah_validation_context_t *vctx, const wah_validation_control_frame_t *frame) {
-    while (vctx->local_init_undo_len > frame->local_init_undo_base) {
-        vctx->local_inits[vctx->local_init_undo[--vctx->local_init_undo_len]] = 0;
-    }
+    if (vctx->local_inits) wah_local_inits_revert(vctx->local_inits, frame->local_init_undo_base);
 }
 
-static inline void wah_validation_init_local(wah_validation_context_t *vctx, uint32_t local_idx) {
-    if (vctx->local_inits && !vctx->local_inits[local_idx]) {
-        vctx->local_inits[local_idx] = 1;
-        vctx->local_init_undo[vctx->local_init_undo_len++] = local_idx;
-    }
+// Only non-defaultable locals (non-nullable references other than parameters) need initialization.
+static inline bool wah_validation_local_needs_init(const wah_validation_context_t *vctx, uint32_t local_idx,
+                                                   wah_type_t type) {
+    return vctx->local_inits && local_idx >= vctx->func_type->param_count &&
+           WAH_TYPE_IS_REF(type) && !WAH_TYPE_IS_NULLABLE(type);
+}
+
+static inline wah_error_t wah_validation_init_local(wah_validation_context_t *vctx, uint32_t local_idx, wah_type_t type) {
+    if (!wah_validation_local_needs_init(vctx, local_idx, type)) return WAH_OK;
+    wah_local_inits_t *li = vctx->local_inits;
+    if (li->inits[local_idx]) return WAH_OK;
+    const wah_alloc_t *alloc = &vctx->module->alloc;
+    WAH_GROW_ARRAY(li->undo, li->undo_cap, (size_t)li->undo_len + 1);
+    li->inits[local_idx] = 1;
+    li->undo[li->undo_len++] = local_idx;
+    return WAH_OK;
 }
 
 static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, const uint8_t *code_end,
@@ -6430,15 +6450,16 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             }
 
             if (opcode_val == WAH_OP_LOCAL_GET) {
-                if (vctx->local_inits && !vctx->local_inits[local_idx] && !vctx->is_unreachable)
+                if (wah_validation_local_needs_init(vctx, local_idx, expected_type) &&
+                    !vctx->local_inits->inits[local_idx] && !vctx->is_unreachable)
                     return WAH_ERROR_VALIDATION_FAILED;
                 PUSH(_(expected_type));
             } else if (opcode_val == WAH_OP_LOCAL_SET) {
                 POP(_(expected_type));
-                wah_validation_init_local(vctx, local_idx);
+                WAH_CHECK(wah_validation_init_local(vctx, local_idx, expected_type));
             } else { // WAH_OP_LOCAL_TEE
                 POP(_(expected_type)); PUSH(_(expected_type));
-                wah_validation_init_local(vctx, local_idx);
+                WAH_CHECK(wah_validation_init_local(vctx, local_idx, expected_type));
             }
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = local_idx);
             break;
@@ -9015,6 +9036,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
     const wah_alloc_t *alloc = &module->alloc;
     wah_validation_storage_t storage; // Uninitialized
     wah_validation_context_t vctx = { .type_stack = { .data = storage.type_stack }, .control_stack = storage.control_stack };
+    wah_local_inits_t local_inits = {0};
     wah_analyzed_code_t ac = {0};
 
     uint32_t count;
@@ -9051,30 +9073,12 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
             .total_locals = func_type->param_count + module->code_bodies[i].local_count,
             .type_stack = { .data = storage.type_stack },
             .control_stack = storage.control_stack,
+            .local_inits = &local_inits,
         };
-
-        // Set up local initialization tracking for non-defaultable locals
-
-        uint32_t tl = vctx.total_locals;
-        uint32_t pc = func_type->param_count;
-        const wah_code_body_t *body = &module->code_bodies[i];
-        for (uint32_t ri = 0; ri < body->local_run_count; ++ri) {
-            wah_type_t lt = body->local_runs[ri].type;
-            if (WAH_TYPE_IS_REF(lt) && !WAH_TYPE_IS_NULLABLE(lt))
-                vctx.num_non_defaultable += body->local_runs[ri].end - wah_local_run_start(body, ri);
-        }
-        if (vctx.num_non_defaultable > 0) {
-            WAH_MALLOC_ARRAY_GOTO(vctx.local_inits, tl, cleanup);
-            memset(vctx.local_inits, 1, pc); // params are initialized
-            memset(vctx.local_inits + pc, 0, tl - pc); // declared locals start uninitialized
-            // Mark defaultable locals as always initialized
-            for (uint32_t ri = 0; ri < body->local_run_count; ++ri) {
-                wah_type_t lt = body->local_runs[ri].type;
-                uint32_t start = wah_local_run_start(body, ri);
-                if (!WAH_TYPE_IS_REF(lt) || WAH_TYPE_IS_NULLABLE(lt))
-                    memset(vctx.local_inits + pc + start, 1, body->local_runs[ri].end - start);
-            }
-            WAH_MALLOC_ARRAY_GOTO(vctx.local_init_undo, vctx.num_non_defaultable, cleanup);
+        if (vctx.total_locals > local_inits.inits_cap) {
+            uint32_t old_cap = local_inits.inits_cap;
+            WAH_GROW_ARRAY_GOTO(local_inits.inits, local_inits.inits_cap, vctx.total_locals, cleanup);
+            memset(local_inits.inits + old_cap, 0, local_inits.inits_cap - old_cap);
         }
 
         wah_free_analyzed_code(&ac, alloc);
@@ -9095,10 +9099,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
         WAH_CHECK_GOTO(wah_lower_analyzed_code(module, &ac, &module->code_bodies[i].parsed_code), cleanup);
         wah_free_analyzed_code(&ac, alloc);
-        wah_free(alloc, vctx.local_inits);
-        wah_free(alloc, vctx.local_init_undo);
-        vctx.local_inits = NULL;
-        vctx.local_init_undo = NULL;
+        wah_local_inits_revert(&local_inits, 0); // Locals initialized at the function level
 
         *ptr = code_body_end;
     }
@@ -9106,8 +9107,8 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
 cleanup:
     wah_free_analyzed_code(&ac, alloc);
-    wah_free(alloc, vctx.local_inits);
-    wah_free(alloc, vctx.local_init_undo);
+    wah_free(alloc, local_inits.inits);
+    wah_free(alloc, local_inits.undo);
     if (err != WAH_OK) wah_free_code_bodies(module);
     return err;
 }

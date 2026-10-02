@@ -175,6 +175,34 @@ static int test_logarithmic_growth(void) {
     return growth_reallocs < N / 4;
 }
 
+// Tracking initialization of non-defaultable locals should cost in proportion to the code, not to the
+// number of declared locals, which can be large for a few bytes.
+static size_t parse_alloc_bytes;
+static void *bytes_malloc(size_t size, void *userdata) { (void)userdata; parse_alloc_bytes += size; return malloc(size); }
+static void *bytes_realloc(void *ptr, size_t size, void *userdata) {
+    (void)userdata;
+    parse_alloc_bytes += size;
+    return realloc(ptr, size);
+}
+
+static int test_non_defaultable_locals_cost(void) {
+    enum { FUNCS = 64 };
+    wah_alloc_t alloc = { bytes_malloc, bytes_realloc, growth_free, NULL };
+    wah_parse_options_t opts = { .alloc = &alloc };
+    char spec[64 * FUNCS + 256];
+    strcpy(spec, "wasm types {[ struct [i32 mut], fn [] [] ]} funcs {[ 1");
+    for (int i = 1; i < FUNCS; i++) strcat(spec, ", 1");
+    strcat(spec, " ]} code {[ {[60000 type.ref 0] end}");
+    for (int i = 1; i < FUNCS; i++) strcat(spec, ", {[60000 type.ref 0] end}");
+    strcat(spec, " ]}");
+    wah_module_t mod;
+    parse_alloc_bytes = 0;
+    assert_ok(wah_parse_module_from_spec_ex(&mod, &opts, spec));
+    printf("  %zu bytes allocated for %d functions with 60000 non-defaultable locals\n", parse_alloc_bytes, FUNCS);
+    wah_free_module(&mod);
+    return parse_alloc_bytes < 1024 * 1024;
+}
+
 int main(void) {
     tracking_alloc_t module_counts = {0};
     tracking_alloc_t context_counts = {0};
@@ -207,6 +235,7 @@ int main(void) {
         return 1;
     }
     if (!test_logarithmic_growth()) return 1;
+    if (!test_non_defaultable_locals_cost()) return 1;
 
     tracking_alloc_t builder_counts = {0};
     wah_alloc_t builder_alloc = { tracking_malloc, tracking_realloc, tracking_free, &builder_counts };
