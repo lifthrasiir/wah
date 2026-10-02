@@ -1212,6 +1212,19 @@ static void test_section_forms_require_features(void) {
     }
 }
 
+// Block types as type indices are introduced by multi-value, but used to be accepted without it.
+static void test_block_type_index_requires_multi_value(void) {
+    printf("Running test_block_type_index_requires_multi_value...\n");
+    const char *spec = "wasm types {[fn [] []]} funcs {[0]} code {[{[] block 0 end end}]}";
+    wah_module_t module = {0};
+    wah_parse_options_t opts = { .features = WAH_FEATURE_ALL };
+    assert_ok(wah_parse_module_from_spec_ex(&module, &opts, spec));
+    wah_free_module(&module);
+    opts.features = WAH_FEATURE_ALL & ~WAH_FEATURE_MULTI_VALUE;
+    assert_err(wah_parse_module_from_spec_ex(&module, &opts, spec), WAH_ERROR_DISABLED_FEATURE);
+    wah_free_module(&module);
+}
+
 // Tracks the peak of outstanding allocation bytes.
 typedef struct { size_t cur, peak; } peak_alloc_t;
 
@@ -1417,6 +1430,7 @@ int main(void) {
     test_v128_locals_and_block_types_require_simd_feature();
     test_ref_value_types_require_features();
     test_section_forms_require_features();
+    test_block_type_index_requires_multi_value();
     test_parse_module_argument_errors();
     test_zero_params_zero_results_func_type();
     test_invalid_section_order_mem_table();

@@ -6188,6 +6188,7 @@ static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, co
         int32_t block_type_val;
         WAH_CHECK(wah_decode_sleb128_32(code_ptr, code_end, &block_type_val));
         WAH_ENSURE(block_type_val >= 0, WAH_ERROR_MALFORMED);
+        WAH_CHECK(wah_require_feature(vctx->module, WAH_FEATURE_SHIFT_MULTI_VALUE));
         uint32_t type_idx = (uint32_t)block_type_val;
         WAH_ENSURE(type_idx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
         WAH_ENSURE(vctx->module->type_defs[type_idx].kind == WAH_COMP_FUNC, WAH_ERROR_VALIDATION_FAILED);
