@@ -1013,6 +1013,21 @@ static void test_finished_results_are_roots(void) {
     roots_teardown(&f);
 }
 
+static void test_host_entry_params_are_roots(void) {
+    printf("Testing parameters of a host function started by wah_start are GC roots...\n");
+    wah_roots_fixture_t f;
+    roots_setup(&f);
+    wah_value_t pinned, r;
+    assert_ok(wah_call_pin(&f.actx, A_GET, NULL, 0, &pinned));
+    assert_ok(wah_start(&f.actx, A_HOST, &pinned, 1));
+    assert_ok(wah_unpin_ref(&f.actx, pinned.ref));
+    roots_collect(&f);
+    assert_ok(wah_resume(&f.actx));
+    assert_ok(wah_finish(&f.actx, &r, 1, NULL));
+    assert_eq_i32(r.i32, 1);
+    roots_teardown(&f);
+}
+
 int main(void) {
     test_resume_straight_line();
     test_resume_loop();
@@ -1041,6 +1056,7 @@ int main(void) {
     test_poll_yield_without_fuel();
     test_trapped_frames_are_not_roots();
     test_finished_results_are_roots();
+    test_host_entry_params_are_roots();
 
     printf("\n=== All resume tests passed ===\n");
     return 0;

@@ -10462,7 +10462,20 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
         }
     }
 
-    // 1d. Results of a finished activation, until wah_finish
+    // 1d. Parameters and results of a host function started by wah_start, which has no frame
+    const wah_function_t *entry_fn = ctx->lifecycle.entry_fn;
+    if (entry_fn && entry_fn->is_host &&
+        (ctx->lifecycle.state == WAH_EXEC_SUSPENDED || ctx->lifecycle.state == WAH_EXEC_RUNNING)) {
+        wah_value_t *params = ctx->lifecycle.base_sp, *results = params + entry_fn->nparams;
+        for (size_t i = 0; i < entry_fn->nparams; i++) {
+            if (WAH_TYPE_IS_REF(entry_fn->param_types[i])) visitor(&params[i], userdata);
+        }
+        for (size_t i = 0; i < entry_fn->nresults; i++) {
+            if (WAH_TYPE_IS_REF(entry_fn->result_types[i])) visitor(&results[i], userdata);
+        }
+    }
+
+    // 1e. Results of a finished activation, until wah_finish
     if (ctx->lifecycle.state == WAH_EXEC_FINISHED) {
         const wah_type_t *result_types = wah_entry_result_types(ctx, NULL);
         uint32_t result_count = ctx->lifecycle.entry_result_count;
