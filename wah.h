@@ -1095,7 +1095,8 @@ wah_error_t wah_finish_pin(wah_exec_context_t *ctx, wah_value_t *results, uint32
 wah_error_t wah_unpin_ref(wah_exec_context_t *ctx, void *pinned_ref);
 
 // Function: wah_cancel
-//   Discards a suspended, finished or trapped activation.
+//   Discards a suspended, finished or trapped activation. Does nothing to a running context,
+//   e.g. when called by a host function on the context that called it.
 //   After cancellation, the execution context can be safely destroyed or reused for another start.
 void wah_cancel(wah_exec_context_t *ctx);
 
@@ -16245,6 +16246,7 @@ wah_error_t wah_finish_pin(wah_exec_context_t *ctx, wah_value_t *results, uint32
 
 void wah_cancel(wah_exec_context_t *ctx) {
     if (!ctx || ctx->poisoned) return; // The exception sweep would visit the link domain
+    if (ctx->lifecycle.state == WAH_EXEC_RUNNING) return; // E.g. from a host function, the interpreter still uses the stack
     wah_cancel_internal(ctx);
 }
 

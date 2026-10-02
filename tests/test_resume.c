@@ -413,6 +413,38 @@ static void test_cancel_ready_noop(void) {
     wah_free_module(&mod);
 }
 
+// Re-entrant: cancels the running context given as userdata, which must be ignored
+static void host_cancel_running(wah_call_context_t *cc, void *ud) {
+    wah_exec_context_t *ctx = (wah_exec_context_t *)ud;
+    wah_cancel(ctx);
+    assert_eq_i32((int32_t)wah_exec_state(ctx), WAH_EXEC_RUNNING);
+    wah_return_i32(cc, 1);
+}
+
+static void test_cancel_running_noop(void) {
+    printf("Testing cancel on running context (no-op)...\n");
+    wah_module_t mod = {0}, host = {0};
+    wah_exec_context_t ctx = {0};
+    wah_value_t result;
+
+    assert_ok(wah_new_module(&host, NULL));
+    assert_ok(wah_export_func(&host, "f", "() -> i32", host_cancel_running, &ctx, NULL));
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32]]} imports {[ {'h'} {'f'} fn# 0 ]} funcs {[0]} \
+        code {[{[] i32.const 7 call 0 i32.add end}]}"));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_link_module(&ctx, "h", &host));
+    assert_ok(wah_instantiate(&ctx));
+
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
+    assert_eq_i32(result.i32, 8);
+    assert_eq_i32((int32_t)wah_exec_state(&ctx), WAH_EXEC_READY);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+    wah_free_module(&host);
+}
+
 static void test_resume_br_table(void) {
     printf("Testing resume through br_table...\n");
     wah_module_t mod = {0};
@@ -1062,6 +1094,7 @@ int main(void) {
     test_wah_call_backward_compat();
     test_finish_void_function();
     test_cancel_ready_noop();
+    test_cancel_running_noop();
     test_resume_br_table();
     test_resume_tail_call_deep();
     test_resume_return_call_indirect();
