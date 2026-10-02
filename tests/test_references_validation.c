@@ -643,6 +643,20 @@ static void test_br_on_cast_oob_heap_type() {
 }
 
 // The t* prefix of br_on_cast[_fail] labels must be popped with subtyping and respect the block floor.
+// Cast flags other than the two nullability bits used to be ignored.
+static void test_br_on_cast_bad_flags() {
+    printf("Testing br_on_cast rejects unknown cast flags...\n");
+    const char *ops[] = { "br_on_cast %'07'", "br_on_cast_fail %'07'", "br_on_cast %'04'" };
+    char spec[256];
+    for (int i = 0; i < 3; i++) {
+        snprintf(spec, sizeof(spec), "wasm types {[ fn [] [anyref] ]} funcs {[ 0 ]} \
+            code {[ {[] block anyref ref.null anyref %s 0 anyref eqref end end } ]}", ops[i]);
+        wah_module_t bad = {0};
+        assert_err(wah_parse_module_from_spec(&bad, spec), WAH_ERROR_MALFORMED);
+        wah_free_module(&bad);
+    }
+}
+
 static void test_br_on_cast_prefix() {
     printf("Testing br_on_cast prefix values...\n");
 
@@ -717,6 +731,7 @@ int main() {
     test_br_on_cast_multi_value();
     test_br_on_cast_oob_heap_type();
     test_br_on_cast_prefix();
+    test_br_on_cast_bad_flags();
     printf("All references_validation tests passed!\n");
     return 0;
 }

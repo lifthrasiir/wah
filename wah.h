@@ -7405,6 +7405,7 @@ cleanup_block:
         case WAH_OP_BR_ON_CAST: case WAH_OP_BR_ON_CAST_FAIL: {
             WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF);
             uint8_t cast_flags = *(*code_ptr)++;
+            WAH_ENSURE(cast_flags <= 0x03, WAH_ERROR_MALFORMED);
             uint32_t label_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
             wah_type_t ht1, ht2;
