@@ -263,9 +263,57 @@ static void test_pin_host_ref(void) {
     wah_free_module(&mod);
 }
 
+// Like host_swap, but the host also runs another context of the link domain after setting the result
+static wah_exec_context_t *reentry_ctx = NULL;
+static void host_swap_reenter(wah_call_context_t *ctx, void *userdata) {
+    host_swap(ctx, userdata);
+    assert_ok(wah_call_by_name(reentry_ctx, "churn", NULL, 0, NULL));
+}
+
+static void test_swap_reenter(void) {
+    printf("Testing results of a host function kept alive while it re-enters the link domain...\n");
+    wah_module_t qmod = {0}, pmod = {0}, host = {0};
+    wah_exec_context_t q = {0}, p = {0};
+    // Objects live in q's heap and are only referenced from its global, which churn clears before collecting
+    assert_ok(wah_parse_module_from_spec(&qmod, "wasm \
+        types {[ struct [i32 mut], fn [i32] [anyref], fn [] [] ]} funcs {[ 1, 2, 2 ]} \
+        globals {[ anyref mut ref.null anyref end ]} \
+        exports {[ {'get'} fn# 0, {'churn'} fn# 1, {'fill'} fn# 2 ]} \
+        code {[ {[] global.get 0 end}, \
+                {[1 i32] ref.null anyref global.set 0 loop void i32.const 0 struct.new 0 drop \
+                    local.get 0 i32.const 1 i32.add local.tee 0 i32.const 200000 i32.lt_u br_if 0 end end}, \
+                {[] i32.const 4242 struct.new 0 global.set 0 end} ]}"));
+    assert_ok(wah_parse_module_from_spec(&pmod, "wasm \
+        types {[ struct [i32 mut], fn [i32] [anyref], fn [anyref] [anyref], fn [i32] [i32] ]} \
+        imports {[ {'Q'} {'get'} fn# 1, {'h'} {'f'} fn# 2 ]} funcs {[ 3 ]} exports {[ {'run'} fn# 2 ]} \
+        code {[ {[1 anyref] local.get 0 call 0 call 1 local.tee 1 ref.is_null if i32 i32.const -1 \
+                 else local.get 1 ref.cast 0 struct.get 0 0 end end} ]}"));
+    assert_ok(wah_new_exec_context(&q, &qmod, NULL));
+    assert_ok(wah_instantiate(&q));
+    assert_ok(wah_new_module(&host, NULL));
+    assert_ok(wah_export_func(&host, "f", "(anyref) -> anyref", host_swap_reenter, NULL, NULL));
+    assert_ok(wah_new_exec_context(&p, &pmod, NULL));
+    assert_ok(wah_link_context(&p, "Q", &q));
+    assert_ok(wah_link_module(&p, "h", &host));
+    assert_ok(wah_instantiate(&p));
+    reentry_ctx = &q;
+    prev_pinned = NULL;
+    for (int32_t i = 0; i < 4; ++i) {
+        assert_ok(wah_call_by_name(&q, "fill", NULL, 0, NULL));
+        assert_eq_i32(run(&p, i, WAH_OK), i == 0 ? -1 : 4242);
+    }
+    wah_free_exec_context(&p);
+    wah_free_exec_context(&q);
+    prev_pinned = NULL;
+    wah_free_module(&pmod);
+    wah_free_module(&qmod);
+    wah_free_module(&host);
+}
+
 int main(void) {
     test_swap("(externref) -> externref", "externref", "extern.convert_any", "any.convert_extern");
     test_swap("(anyref) -> anyref", "anyref", "", "");
+    test_swap_reenter();
 
     test_misuse("returning a pinned reference", "(externref) -> externref", "externref", "externref",
                 "extern.convert_any", "any.convert_extern", host_return_pinned, WAH_OK);

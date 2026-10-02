@@ -2510,6 +2510,9 @@ typedef struct wah_gc_state_s {
     struct wah_exec_context_s **gc_dependents;
     uint32_t gc_dependent_count;
     uint32_t gc_dependents_cap;
+    // Host function being called by the owner, whose results are written above the stack pointer
+    const struct wah_function_s *host_call_fn;
+    wah_value_t *host_call_results;
 #ifdef WAH_DEBUG
     uint32_t total_collections;
     uint32_t total_allocations;
@@ -10508,7 +10511,15 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
         }
     }
 
-    // 1e. Results of a finished activation, until wah_finish
+    // 1e. Results of a host function being called, which may re-enter other contexts of the domain
+    if (ctx->gc && ctx->gc->owner == ctx && ctx->gc->host_call_fn) {
+        const wah_function_t *fn = ctx->gc->host_call_fn;
+        for (size_t i = 0; i < fn->nresults; i++) {
+            if (WAH_TYPE_IS_REF(fn->result_types[i])) visitor(&ctx->gc->host_call_results[i], userdata);
+        }
+    }
+
+    // 1f. Results of a finished activation, until wah_finish
     if (ctx->lifecycle.state == WAH_EXEC_FINISHED) {
         const wah_type_t *result_types = wah_entry_result_types(ctx, NULL);
         uint32_t result_count = ctx->lifecycle.entry_result_count;
@@ -11966,7 +11977,12 @@ static wah_error_t wah_call_host_function_internal(
     };
 
     WAH_ASSERT(!exec_ctx->gc || exec_ctx->gc->phase == WAH_GC_PHASE_IDLE);
+    wah_gc_state_t *gc = exec_ctx->gc;
+    const wah_function_t *saved_fn = gc ? gc->host_call_fn : NULL;
+    wah_value_t *saved_results = gc ? gc->host_call_results : NULL;
+    if (gc) gc->host_call_fn = fn, gc->host_call_results = results;
     fn->func(&call_ctx, fn->userdata);
+    if (gc) gc->host_call_fn = saved_fn, gc->host_call_results = saved_results;
     WAH_ASSERT(!exec_ctx->gc || exec_ctx->gc->phase == WAH_GC_PHASE_IDLE);
 
     WAH_ENSURE(call_ctx.trap_reason == WAH_OK, call_ctx.trap_reason);
