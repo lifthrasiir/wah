@@ -741,9 +741,9 @@ private:
 
     wah_poll_flag_t poll_flag;      // Fast path: non-zero means slow path needed
     wah_poll_flag_t interrupt_flag; // Cross-thread cooperative interruption
-
-    wah_value_t *globals;           // Mutable global values
     uint32_t global_count;
+
+    wah_value_t *globals;           // Mutable global values, Array[global_count]
 
     const struct wah_module_s *module;
 
@@ -760,10 +760,6 @@ private:
     struct wah_linked_module_s *linked_modules;
     uint32_t linked_module_count;
     uint32_t linked_modules_cap;
-    bool is_instantiated;
-    bool instantiate_failed; // Partially instantiated states can't be reused
-    bool may_share_refs; // Instantiation got far enough to possibly leave references in linked contexts
-    bool poisoned; // A context in the same link domain was freed, so only freeing is allowed
 
     // Runtime dispatch table (global function index space: imports + locals + hosts)
     struct wah_function_holder_s *function_table;
@@ -771,12 +767,17 @@ private:
     uint32_t function_table_count;
     uint32_t tag_instance_count;
 
+    bool is_instantiated;
+    bool instantiate_failed; // Partially instantiated states can't be reused
+    bool may_share_refs; // Instantiation got far enough to possibly leave references in linked contexts
+    bool poisoned; // A context in the same link domain was freed, so only freeing is allowed
+    uint32_t exception_handler_depth; // Of exception_handlers below
+
     // Pending exception (set by throw, consumed by try_table catch or propagated)
     struct wah_exception_s *pending_exception;
 
     // Exception handler stack (try_table frames)
     struct wah_exception_handler_s *exception_handlers;
-    uint32_t exception_handler_depth;
 
     // GC heap state (NULL when GC is not enabled)
     struct wah_gc_state_s *gc;
