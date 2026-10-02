@@ -11926,7 +11926,8 @@ static wah_error_t wah_grow_exception_handlers(wah_exec_context_t *ctx) {
 static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t *exc) {
     ctx->pending_exception = exc;
 
-    while (ctx->exception_handler_depth > 0) {
+    // Handlers below the base belong to an outer activation (none while activations can't nest)
+    while (ctx->exception_handler_depth > ctx->lifecycle.base_handler_depth) {
         wah_exception_handler_t *handler = &ctx->exception_handlers[ctx->exception_handler_depth - 1];
 
         while (ctx->call_depth > handler->call_depth) {
