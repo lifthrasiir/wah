@@ -859,6 +859,10 @@ typedef struct {
 //   - binary [in, borrowed]: Pointer to the WebAssembly binary data.
 //   - binary_size [in]: Size of the WebAssembly binary data in bytes.
 //   - options [in, borrowed, optional]: Parsing options. Can be NULL for defaults.
+//
+//   Parsing time is proportional to the binary size, but with a large factor for adversarial inputs:
+//   validating an instruction costs as much as the arity of its type (up to about a thousand values),
+//   and `br_table` costs that much for each distinct label. Neither fuel nor deadlines apply to parsing.
 wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t binary_size, const wah_parse_options_t *options);
 
 // Functions: wah_module_*_count
