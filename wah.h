@@ -8889,7 +8889,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
             WAH_CHECK(wah_parse_sub_type(ptr, section_end, idx,
                                          &module->types[idx], &module->type_defs[idx], alloc));
             if (module->type_defs[idx].kind == WAH_COMP_STRUCT || module->type_defs[idx].kind == WAH_COMP_ARRAY
-                    || module->type_defs[idx].supertype != WAH_NO_SUPERTYPE || !module->type_defs[idx].is_final) {
+                    || tag == 0x50 || tag == 0x4F) { // Even `sub final` without supertypes
                 WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_GC));
             }
             module->type_defs[idx].rec_group_start = idx;

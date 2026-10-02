@@ -1216,6 +1216,7 @@ static void test_section_forms_require_features(void) {
           WAH_FEATURE_BULK_MEMORY },
         { "wasm data {[data.passive {%'00'}]}", WAH_FEATURE_BULK_MEMORY },
         { "wasm datacount {0}", WAH_FEATURE_BULK_MEMORY },
+        { "wasm types {[sub.final [] fn [] []]}", WAH_FEATURE_GC },
     };
     #undef NO_REF_TYPES
     for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
