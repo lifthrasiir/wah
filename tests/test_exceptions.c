@@ -195,6 +195,41 @@ static void test_catch_all() {
     wah_free_module(&module);
 }
 
+// The exception handler stack used to be limited to 64 handlers over all frames.
+static void test_deep_handlers_in_recursion() {
+    printf("Testing more than 64 handlers in recursion...\n");
+
+    // f(n) enters a try_table and recurses until n = 0, which throws to the innermost handler.
+    const char *spec = "wasm \
+        types {[ fn [i32] [i32], fn [i32] [] ]} \
+        funcs {[ 0 ]} \
+        tags {[ tag.type# 1 ]} \
+        code {[ {[] \
+            block void \
+                try_table void [catch_all 0] \
+                    local.get 0 i32.eqz \
+                    if void i32.const 0 throw 0 end \
+                    local.get 0 i32.const 1 i32.sub call 0 \
+                    return \
+                end \
+            end \
+            i32.const 123 \
+        end } ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t param = { .i32 = 1000 }, result;
+    assert_ok(wah_call(&ctx, 0, &param, 1, &result));
+    assert_eq_i32(result.i32, 123);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&module);
+}
+
 // 084715d: Fix cross-module throw using wrong tag instance context.
 static void test_cross_module_throw_tag_context() {
     printf("Testing cross-module throw tag context (084715d)...\n");
@@ -694,8 +729,6 @@ static void test_end_inside_try_table() {
     wah_free_module(&module);
 }
 
-// Regression: 65+ nested try_table blocks overflow exception_handlers array
-// because WAH_MAX_EXCEPTION_HANDLER_DEPTH (64) < WAH_MAX_CONTROL_DEPTH (256).
 // Regression: wah_link_module tag import shallow-copies type_index from the
 // provider module's type space.  If the provider's tag type sits at a higher
 // index than the consumer has types, THROW performs an OOB read on
@@ -909,14 +942,18 @@ static void test_try_table_handler_overflow() {
     wah_module_t mod = {0};
     assert_ok(wah_parse_module_from_spec(&mod, spec));
 
-    wah_exec_context_t ctx = {0};
-    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
-    assert_ok(wah_instantiate(&ctx));
+    // Handlers are limited by the stack budget, which is too small for 65 handlers here
+    for (int small_stack = 0; small_stack <= 1; small_stack++) {
+        wah_exec_options_t opts = { .limits = { .max_stack_bytes = small_stack ? 1024 : 0 } };
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &mod, &opts));
+        assert_ok(wah_instantiate(&ctx));
 
-    wah_value_t result;
-    assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_STACK_OVERFLOW);
+        wah_value_t result;
+        assert_err(wah_call(&ctx, 0, NULL, 0, &result), small_stack ? WAH_ERROR_STACK_OVERFLOW : WAH_OK);
 
-    wah_free_exec_context(&ctx);
+        wah_free_exec_context(&ctx);
+    }
     wah_free_module(&mod);
 }
 
@@ -1247,6 +1284,7 @@ int main() {
     test_try_table_body_in_unreachable_code();
     test_catch_to_outer_label_rewinds_stack();
     test_catch_all();
+    test_deep_handlers_in_recursion();
     test_cross_module_throw_tag_context();
     test_throw_ref_local_use_after_free();
     test_catch_ref_and_throw_ref();

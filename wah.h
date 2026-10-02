@@ -772,6 +772,7 @@ private:
     bool may_share_refs; // Instantiation got far enough to possibly leave references in linked contexts
     bool poisoned; // A context in the same link domain was freed, so only freeing is allowed
     uint32_t exception_handler_depth; // Of exception_handlers below
+    uint32_t exception_handlers_cap;
 
     // Pending exception (set by throw, consumed by try_table catch or propagated)
     struct wah_exception_s *pending_exception;
@@ -3022,7 +3023,7 @@ typedef struct wah_type_check_cache_entry_s {
 } wah_type_check_cache_entry_t;
 
 // -- Exceptions --
-#define WAH_MAX_EXCEPTION_HANDLER_DEPTH 64
+#define WAH_INITIAL_EXCEPTION_HANDLER_CAP 64 // Grown on demand within the stack budget
 
 // -- Function References --
 #define WAH_FUNCREF_HEADER { .next_tagged = NULL, .repr_id = WAH_TYPE_FUNC, .size_bytes = 0 }
@@ -11239,8 +11240,8 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
     }
     exec_ctx->memory_bytes_committed = 0;
 
-    WAH_MALLOC_ARRAY_GOTO(exec_ctx->exception_handlers, WAH_MAX_EXCEPTION_HANDLER_DEPTH, cleanup);
-    memset(exec_ctx->exception_handlers, 0, sizeof(wah_exception_handler_t) * WAH_MAX_EXCEPTION_HANDLER_DEPTH);
+    WAH_MALLOC_ARRAY_GOTO(exec_ctx->exception_handlers, WAH_INITIAL_EXCEPTION_HANDLER_CAP, cleanup);
+    exec_ctx->exception_handlers_cap = WAH_INITIAL_EXCEPTION_HANDLER_CAP;
     WAH_MALLOC_ARRAY_GOTO(exec_ctx->type_check_cache, WAH_TYPE_CHECK_CACHE_SIZE, cleanup);
     memset(exec_ctx->type_check_cache, 0, sizeof(wah_type_check_cache_entry_t) * WAH_TYPE_CHECK_CACHE_SIZE);
 
@@ -11788,6 +11789,16 @@ static wah_error_t wah_push_frame(
     } while (0)
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+// The handler stack is separately limited by the stack budget.
+static wah_error_t wah_grow_exception_handlers(wah_exec_context_t *ctx) {
+    uint32_t needed = ctx->exception_handler_depth + 1;
+    WAH_ENSURE((uint64_t)needed * sizeof(wah_exception_handler_t) <= ctx->stack_buffer_size, WAH_ERROR_STACK_OVERFLOW);
+    void *handlers = ctx->exception_handlers;
+    WAH_CHECK(wah_grow_array(&ctx->alloc, needed, sizeof(wah_exception_handler_t), &handlers, &ctx->exception_handlers_cap));
+    ctx->exception_handlers = (wah_exception_handler_t *)handlers;
+    return WAH_OK;
+}
+
 static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t *exc) {
     ctx->pending_exception = exc;
 
@@ -12563,7 +12574,9 @@ WAH_RUN(BR_TABLE) {
 
 WAH_RUN(TRY_TABLE) {
     uint32_t catch_count_val = wah_decode_u32_le(&bytecode_ip);
-    WAH_ENSURE_GOTO(ctx->exception_handler_depth < WAH_MAX_EXCEPTION_HANDLER_DEPTH, WAH_ERROR_STACK_OVERFLOW, cleanup);
+    if (ctx->exception_handler_depth == ctx->exception_handlers_cap) {
+        WAH_CHECK_GOTO(wah_grow_exception_handlers(ctx), cleanup);
+    }
     wah_exception_handler_t *handler = &ctx->exception_handlers[ctx->exception_handler_depth++];
     handler->call_depth = ctx->call_depth;
     handler->sp_base = sp;
