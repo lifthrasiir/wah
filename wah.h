@@ -3089,6 +3089,11 @@ static inline uint64_t wah_memory_max_pages(const wah_memory_type_t *mt) {
     uint64_t page_limit = (mt->addr_type == WAH_TYPE_I32) ? 65536ULL : (1ULL << 48);
     return mt->max_pages > page_limit ? page_limit : mt->max_pages;
 }
+// Maximum size of a table instance, limited by its address type
+static inline uint64_t wah_table_max_size(const wah_table_type_t *tt) {
+    uint64_t limit = (tt->addr_type == WAH_TYPE_I32) ? UINT32_MAX : UINT64_MAX;
+    return tt->max_elements > limit ? limit : tt->max_elements;
+}
 static inline wah_type_t wah_global_type(const wah_module_t *m, uint32_t idx) {
     if (idx < m->import_global_count) return m->global_imports[idx].type;
     return m->globals[idx - m->import_global_count].type;
@@ -11391,7 +11396,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
             uint64_t table_bytes = 0;
             WAH_CHECK_GOTO(wah_table_byte_size(min_elements, &table_bytes), cleanup);
             WAH_ENSURE_GOTO(wah_budget_check(exec_ctx, table_bytes), WAH_ERROR_TOO_LARGE, cleanup);
-            exec_ctx->tables[slot] = (wah_table_inst_t){ .size = min_elements, .max_size = module->tables[i].max_elements };
+            exec_ctx->tables[slot] = (wah_table_inst_t){ .size = min_elements, .max_size = wah_table_max_size(&module->tables[i]) };
             if (min_elements > 0) {
                 WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables[slot].entries, min_elements, cleanup);
                 memset(exec_ctx->tables[slot].entries, 0, (size_t)table_bytes);
@@ -12204,7 +12209,7 @@ static wah_error_t wah_init_local_tables(wah_table_inst_t *tables, const wah_mod
         WAH_CHECK(wah_table_byte_size(min_elements, &table_bytes));
         WAH_ENSURE(wah_budget_check(budget_ctx, table_bytes), WAH_ERROR_TOO_LARGE);
         wah_budget_charge(budget_ctx, table_bytes);
-        tables[ti] = (wah_table_inst_t){ .size = min_elements, .max_size = lmod->tables[li].max_elements };
+        tables[ti] = (wah_table_inst_t){ .size = min_elements, .max_size = wah_table_max_size(&lmod->tables[li]) };
         if (min_elements > 0) {
             WAH_MALLOC_ARRAY(tables[ti].entries, min_elements);
             memset(tables[ti].entries, 0, (size_t)table_bytes);
@@ -13386,18 +13391,14 @@ WAH_RUN(GLOBAL_SET) {
 
 #define WAH_TABLE_GROW_IMPL(N) { \
     uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
-    int64_t delta = (int64_t)(*--sp).i##N; \
+    uint64_t delta = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     wah_value_t init_val = *--sp; \
     WAH_ASSERT(table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
     \
-    if (delta < 0) { \
-        (*sp++).i##N = -1; \
-    } else { \
-        uint64_t old_size; \
-        bool grew; \
-        WAH_CHECK_GOTO(wah_table_grow_internal(ctx, fctx, table_idx, (uint64_t)delta, init_val, &old_size, &grew), cleanup); \
-        (*sp++).i##N = grew ? (int##N##_t)old_size : -1; \
-    } \
+    uint64_t old_size; \
+    bool grew; \
+    WAH_CHECK_GOTO(wah_table_grow_internal(ctx, fctx, table_idx, delta, init_val, &old_size, &grew), cleanup); \
+    (*sp++).i##N = grew ? (int##N##_t)old_size : -1; \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 }
@@ -17839,7 +17840,7 @@ static wah_error_t wah_alloc_local_table_import(wah_exec_context_t *ctx, uint32_
     WAH_ENSURE(wah_budget_check(ctx, table_bytes), WAH_ERROR_TOO_LARGE);
     ctx->tables[dst_idx].is_imported = false;
     ctx->tables[dst_idx].size = type->min_elements;
-    ctx->tables[dst_idx].max_size = type->max_elements;
+    ctx->tables[dst_idx].max_size = wah_table_max_size(type);
     WAH_MALLOC_ARRAY(ctx->tables[dst_idx].entries, type->min_elements > 0 ? type->min_elements : 1);
     memset(ctx->tables[dst_idx].entries, 0, (size_t)table_bytes);
     wah_budget_charge(ctx, table_bytes);
@@ -18143,7 +18144,7 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                             wah_budget_charge(ctx, tbytes);
                             ictx->tables[ti].is_imported = false;
                             ictx->tables[ti].size = ttype->min_elements;
-                            ictx->tables[ti].max_size = ttype->max_elements;
+                            ictx->tables[ti].max_size = wah_table_max_size(ttype);
                             WAH_MALLOC_ARRAY(ictx->tables[ti].entries, ttype->min_elements > 0 ? ttype->min_elements : 1);
                             memset(ictx->tables[ti].entries, 0, (size_t)tbytes);
                             tbl_found = true;

@@ -984,6 +984,50 @@ void wah_test_table_grow_oom_returns_minus_one() {
     wah_free_module(&module);
 }
 
+// Records the largest allocation request, refusing ones over 1 GiB
+static size_t table_grow_max_request;
+static void *table_grow_recording_malloc(size_t size, void *userdata) {
+    (void)userdata;
+    if (size > table_grow_max_request) table_grow_max_request = size;
+    return size > ((size_t)1 << 30) ? NULL : malloc(size);
+}
+static void *table_grow_recording_realloc(void *ptr, size_t size, void *userdata) {
+    (void)userdata;
+    if (size > table_grow_max_request) table_grow_max_request = size;
+    return size > ((size_t)1 << 30) ? NULL : realloc(ptr, size);
+}
+
+static int32_t table_grow_recorded(int32_t initial, uint32_t delta) {
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [i32] [i32] ]} funcs {[ 0 ]} tables {[ funcref limits.i32/1 %d32 ]} \
+        code {[ {[] ref.null funcref local.get 0 table.grow 0 end} ]}", initial));
+    wah_alloc_t alloc = { .malloc = table_grow_recording_malloc, .realloc = table_grow_recording_realloc,
+                          .free = table_grow_oom_free };
+    wah_exec_options_t opts = { .alloc = &alloc };
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &module, &opts));
+    assert_ok(wah_instantiate(&ctx));
+    table_grow_max_request = 0;
+    wah_value_t param = { .i32 = (int32_t)delta }, result;
+    assert_ok(wah_call(&ctx, 0, &param, 1, &result));
+    wah_free_exec_context(&ctx);
+    wah_free_module(&module);
+    return result.i32;
+}
+
+// table.grow on i32 tables used to treat deltas of 2^31 or more as negative and fail without trying,
+// while i32 tables without maximum were not limited to 2^32-1 entries.
+void wah_test_table_grow_large_unsigned_delta() {
+    printf("Running wah_test_table_grow_large_unsigned_delta...\n");
+    assert_eq_i32(table_grow_recorded(0, 0x80000000u), -1);
+    if (sizeof(size_t) > 4) { // Otherwise the size doesn't fit in size_t anyway
+        assert_true(table_grow_max_request >= (uint64_t)0x80000000u * sizeof(wah_value_t));
+    }
+    assert_eq_i32(table_grow_recorded(1, 0xffffffffu), -1);
+    assert_true(table_grow_max_request < ((size_t)1 << 30)); // Not even tried
+}
+
 int main() {
     wah_test_table_indirect_call();
     wah_test_table_size();
@@ -1017,5 +1061,6 @@ int main() {
     wah_test_active_elem_dropped_after_init();
     wah_test_table_init_expr();
     wah_test_table_grow_oom_returns_minus_one();
+    wah_test_table_grow_large_unsigned_delta();
     return 0;
 }
