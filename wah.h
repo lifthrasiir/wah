@@ -9494,25 +9494,15 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
                 module->tables[i].addr_type = WAH_TYPE_I32;
             }
 
-            if (flags & 0x04) {
-                WAH_CHECK(wah_decode_uleb128_64(ptr, section_end, &module->tables[i].min_elements));
-                if (flags & 0x01) {
-                    WAH_CHECK(wah_decode_uleb128_64(ptr, section_end, &module->tables[i].max_elements));
-                } else {
-                    module->tables[i].max_elements = UINT64_MAX;
-                }
+            // Limits are u64 for both address types, whose ranges are checked by validation
+            WAH_CHECK(wah_decode_uleb128_64(ptr, section_end, &module->tables[i].min_elements));
+            if (flags & 0x01) {
+                WAH_CHECK(wah_decode_uleb128_64(ptr, section_end, &module->tables[i].max_elements));
+                WAH_ENSURE((flags & 0x04) || module->tables[i].max_elements <= UINT32_MAX, WAH_ERROR_VALIDATION_FAILED);
             } else {
-                uint32_t min32;
-                WAH_CHECK(wah_decode_uleb128(ptr, section_end, &min32));
-                module->tables[i].min_elements = min32;
-                if (flags & 0x01) {
-                    uint32_t max32;
-                    WAH_CHECK(wah_decode_uleb128(ptr, section_end, &max32));
-                    module->tables[i].max_elements = max32;
-                } else {
-                    module->tables[i].max_elements = UINT64_MAX;
-                }
+                module->tables[i].max_elements = UINT64_MAX;
             }
+            WAH_ENSURE((flags & 0x04) || module->tables[i].min_elements <= UINT32_MAX, WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(module->tables[i].min_elements <= module->tables[i].max_elements,
                        WAH_ERROR_VALIDATION_FAILED);
 
@@ -9641,25 +9631,15 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             WAH_ENSURE_GOTO((flags & ~0x05) == 0, WAH_ERROR_MALFORMED, cleanup);
             if (flags & 0x04) WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_MEMORY64), cleanup);
             ti->type.addr_type = (flags & 0x04) ? WAH_TYPE_I64 : WAH_TYPE_I32;
-            if (flags & 0x04) {
-                WAH_CHECK_GOTO(wah_decode_uleb128_64(ptr, section_end, &ti->type.min_elements), cleanup);
-                if (flags & 0x01) {
-                    WAH_CHECK_GOTO(wah_decode_uleb128_64(ptr, section_end, &ti->type.max_elements), cleanup);
-                } else {
-                    ti->type.max_elements = UINT64_MAX;
-                }
+            // Limits are u64 for both address types, whose ranges are checked by validation
+            WAH_CHECK_GOTO(wah_decode_uleb128_64(ptr, section_end, &ti->type.min_elements), cleanup);
+            if (flags & 0x01) {
+                WAH_CHECK_GOTO(wah_decode_uleb128_64(ptr, section_end, &ti->type.max_elements), cleanup);
+                WAH_ENSURE_GOTO((flags & 0x04) || ti->type.max_elements <= UINT32_MAX, WAH_ERROR_VALIDATION_FAILED, cleanup);
             } else {
-                uint32_t min32;
-                WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &min32), cleanup);
-                ti->type.min_elements = min32;
-                if (flags & 0x01) {
-                    uint32_t max32;
-                    WAH_CHECK_GOTO(wah_decode_uleb128(ptr, section_end, &max32), cleanup);
-                    ti->type.max_elements = max32;
-                } else {
-                    ti->type.max_elements = UINT64_MAX;
-                }
+                ti->type.max_elements = UINT64_MAX;
             }
+            WAH_ENSURE_GOTO((flags & 0x04) || ti->type.min_elements <= UINT32_MAX, WAH_ERROR_VALIDATION_FAILED, cleanup);
             WAH_ENSURE_GOTO(ti->type.min_elements <= ti->type.max_elements, WAH_ERROR_VALIDATION_FAILED, cleanup);
         } else if (kind == WAH_KIND_MEMORY) {
             // Memory import

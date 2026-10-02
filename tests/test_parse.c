@@ -1268,6 +1268,20 @@ static void test_const_expr_defined_global_requires_gc(void) {
     wah_free_module(&module);
 }
 
+// Limits are u64 even for i32 tables, whose range is checked by validation, like memories.
+static void test_i32_table_limits_are_u64(void) {
+    printf("Running test_i32_table_limits_are_u64...\n");
+    wah_module_t module = {0};
+    assert_err(wah_parse_module_from_spec(&module, "wasm tables {[ funcref %'00' %'8080808010' ]}"),
+               WAH_ERROR_VALIDATION_FAILED);
+    assert_err(wah_parse_module_from_spec(&module, "wasm tables {[ funcref %'01' 0 %'8080808010' ]}"),
+               WAH_ERROR_VALIDATION_FAILED);
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        imports {[ {'a'} {'b'} table# funcref %'00' %'8080808010' ]}"), WAH_ERROR_VALIDATION_FAILED);
+    assert_ok(wah_parse_module_from_spec(&module, "wasm tables {[ funcref %'01' 0 %'ffffffff0f' ]}"));
+    wah_free_module(&module);
+}
+
 // Tracks the peak of outstanding allocation bytes.
 typedef struct { size_t cur, peak; } peak_alloc_t;
 
@@ -1477,6 +1491,7 @@ int main(void) {
     test_mutable_global_export_requires_feature();
     test_table_init_expr_requires_feature();
     test_const_expr_defined_global_requires_gc();
+    test_i32_table_limits_are_u64();
     test_parse_module_argument_errors();
     test_zero_params_zero_results_func_type();
     test_invalid_section_order_mem_table();
