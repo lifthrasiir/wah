@@ -1332,6 +1332,8 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
 //   Both contexts can leave references to their own objects and functions in each other,
 //   so their lifetimes are tied: once any context in the link domain is freed, the remaining
 //   contexts can only be freed (see `wah_free_exec_context`). Free them together.
+//   Also they share the GC (every collection marks all heaps of the link domain), so contexts of the same link
+//   domain must not be used from multiple threads at the same time.
 //
 //   Contexts of the same module can be linked as distinct instances, except for the primary module and
 //   modules linked by `wah_link_module`. The same context can be linked under multiple names to alias it,
