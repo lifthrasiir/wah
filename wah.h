@@ -689,6 +689,8 @@ private:
     wah_features_t enabled_features;
     wah_features_t required_features;
     bool fuel_metering;
+    bool x86_64_features_known; // CPUID is slow under virtualization, so it is done once per module
+    uint32_t x86_64_features; // wah_x86_64_features_t (private)
 
     void *reserved; // Ensure that at least one pimpl pointer can be added
 #endif
@@ -2334,6 +2336,19 @@ static wah_x86_64_features_t wah_x86_64_features(void) {
         .avx512bw_vl = avx512vl && ((leaf7_ebx >> 30) & 1),
         .avx512bitalg_vl = avx512vl && ((leaf7_ecx >> 12) & 1),
     };
+}
+
+typedef char wah_x86_64_features_size_check_[sizeof(wah_x86_64_features_t) <= sizeof(uint32_t) ? 1 : -1];
+
+static wah_x86_64_features_t wah_module_x86_64_features(wah_module_t *module) {
+    wah_x86_64_features_t features;
+    if (!module->x86_64_features_known) {
+        features = wah_x86_64_features();
+        memcpy(&module->x86_64_features, &features, sizeof(features));
+        module->x86_64_features_known = true;
+    }
+    memcpy(&features, &module->x86_64_features, sizeof(features));
+    return features;
 }
 
 static wah_opcode_t wah_x86_64_opcode(wah_opcode_t opcode, wah_x86_64_features_t features) {
@@ -7642,7 +7657,7 @@ static bool wah_opcode_is_resumable_bulk(uint16_t opcode) {
 }
 
 // Lowering function that consumes analyzed IR instead of raw Wasm bytes
-static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah_analyzed_code_t *ac, wah_parsed_code_t *parsed_code) {
+static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analyzed_code_t *ac, wah_parsed_code_t *parsed_code) {
     const wah_alloc_t *alloc = &module->alloc;
     bool emit_poll = (ac->mode == WAH_ANALYZE_FUNC_BODY);
     wah_error_t err = WAH_OK;
@@ -7825,7 +7840,7 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
     } while (0)
 
     #if defined(WAH_X86_64) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
-    wah_x86_64_features_t features = wah_x86_64_features();
+    wah_x86_64_features_t features = wah_module_x86_64_features(module);
     #endif
 
     // --- Fuel metering state ---
