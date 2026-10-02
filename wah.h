@@ -16200,6 +16200,9 @@ cleanup:
 
 static bool wah_define_type_matches(const wah_module_t *mod, uint32_t i, const wah_func_type_t *ft, const wah_type_def_t *td) {
     const wah_type_def_t *ei = &mod->type_defs[i];
+    // Defined types are singleton rec groups referring only to existing types, so a match can't refer to itself
+#define WAH_SAME_NONSELF_TYPE(a, b) ((a) == (b) && ((a) < 0 || WAH_TYIDX(a) != i))
+    if (ei->rec_group_size != 1) return false;
     if (ei->kind != td->kind) return false;
     if (ei->is_final != td->is_final) return false;
     if (ei->supertype != td->supertype) return false;
@@ -16208,16 +16211,17 @@ static bool wah_define_type_matches(const wah_module_t *mod, uint32_t i, const w
         if (ef->param_count != ft->param_count) return false;
         if (ef->result_count != ft->result_count) return false;
         for (uint32_t j = 0; j < ft->param_count; ++j)
-            if (ef->param_types[j] != ft->param_types[j]) return false;
+            if (!WAH_SAME_NONSELF_TYPE(ef->param_types[j], ft->param_types[j])) return false;
         for (uint32_t j = 0; j < ft->result_count; ++j)
-            if (ef->result_types[j] != ft->result_types[j]) return false;
+            if (!WAH_SAME_NONSELF_TYPE(ef->result_types[j], ft->result_types[j])) return false;
     } else {
         if (ei->field_count != td->field_count) return false;
         for (uint32_t j = 0; j < td->field_count; ++j) {
-            if (ei->field_types[j] != td->field_types[j]) return false;
+            if (!WAH_SAME_NONSELF_TYPE(ei->field_types[j], td->field_types[j])) return false;
             if (ei->field_mutables[j] != td->field_mutables[j]) return false;
         }
     }
+#undef WAH_SAME_NONSELF_TYPE
     return true;
 }
 

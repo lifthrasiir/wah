@@ -218,12 +218,31 @@ static void test_type_reuse(void) {
     wah_free_module(&mod);
 }
 
+static void test_type_reuse_rec_groups(void) {
+    printf("Testing type reuse against parsed rec groups...\n");
+    wah_module_t mod = {0};
+    wah_type_t t;
+    // Type 0 is in a rec group of size 2; type 2 is a singleton group referring to itself.
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm types {[ rec [ struct [i32 immut], struct [i64 immut] ], \
+        struct [type.ref.null 2 immut] ]}"));
+
+    // Not iso-recursively equal to a member of a larger rec group
+    assert_ok(wah_define_type(&mod, &t, "struct { i32 }"));
+    assert_eq_i32(t, wah_debug_type_from_idx(3, false));
+    // Not equal to a recursive type either, even though the field refers to the same index
+    assert_ok(wah_define_type(&mod, &t, "struct { ref null %T }", wah_debug_type_from_idx(2, false)));
+    assert_eq_i32(t, wah_debug_type_from_idx(4, false));
+
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_function_specs();
     test_struct_and_array_specs();
     test_edge_cases();
     test_placeholders();
     test_type_reuse();
+    test_type_reuse_rec_groups();
     printf("All type spec tests passed!\n");
     return 0;
 }
