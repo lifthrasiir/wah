@@ -4853,6 +4853,38 @@ int main() {
         wah_free_module(&y);
     }
 
+    // Regression: segments of modules linked by wah_link_module were initialized after those of the primary,
+    // although they are dependencies of the primary which should be instantiated first.
+    printf("Test: segments of linked modules are initialized before those of the primary\n");
+    {
+        wah_module_t l = {0}, p = {0};
+        assert_ok(wah_parse_module_from_spec(&l, "wasm types {[ fn [] [] ]} funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} memories {[ limits.i32/1 1 ]} \
+            exports {[ {'m'} mem# 0, {'t'} table# 0 ]} \
+            elements {[ elem.active.table#0 i32.const 0 end [0] ]} \
+            code {[ {[] end} ]} \
+            data {[ data.active.table#0 i32.const 0 end {%'02'} ]}"));
+        assert_ok(wah_parse_module_from_spec(&p, "wasm types {[ fn [] [i32] ]} \
+            imports {[ {'l'} {'m'} mem# limits.i32/1 1, {'l'} {'t'} table# funcref limits.i32/1 1 ]} \
+            funcs {[ 0, 0, 0 ]} exports {[ {'byte'} fn# 0, {'entry'} fn# 2 ]} \
+            elements {[ elem.active.table#0 i32.const 0 end [1] ]} \
+            code {[ {[] i32.const 0 i32.load8_u 0 0 end}, {[] i32.const 7 end}, \
+                    {[] i32.const 0 call_indirect 0 0 end} ]} \
+            data {[ data.active.table#0 i32.const 0 end {%'01'} ]}"));
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &p, NULL));
+        assert_ok(wah_link_module(&ctx, "l", &l));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t r;
+        assert_ok(wah_call_by_name(&ctx, "byte", NULL, 0, &r));
+        assert_eq_i32(r.i32, 1);
+        assert_ok(wah_call_by_name(&ctx, "entry", NULL, 0, &r));
+        assert_eq_i32(r.i32, 7);
+        wah_free_exec_context(&ctx);
+        wah_free_module(&p);
+        wah_free_module(&l);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

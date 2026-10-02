@@ -18246,11 +18246,12 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     wah_bind_primary_func_imports_to_owned_contexts(ctx);
     // Everything after this may store references to this context into linked contexts
     ctx->may_share_refs = true;
+    // Linked modules are dependencies of the primary, so they are fully instantiated first
+    WAH_CHECK_GOTO(wah_init_linked_segments(ctx), cleanup);
+    WAH_CHECK_GOTO(wah_call_linked_start_functions(ctx), cleanup);
     WAH_CHECK_GOTO(wah_init_table_init_exprs(ctx), cleanup);
     WAH_CHECK_GOTO(wah_init_active_elem_segments(ctx), cleanup);
     WAH_CHECK_GOTO(wah_init_active_data_segments(ctx), cleanup);
-    WAH_CHECK_GOTO(wah_init_linked_segments(ctx), cleanup);
-    WAH_CHECK_GOTO(wah_call_linked_start_functions(ctx), cleanup);
 
     if (module->has_start_function) {
         WAH_CHECK_GOTO(wah_call_module(ctx, module->start_function_idx, NULL, 0, NULL, false), cleanup);
