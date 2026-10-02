@@ -814,7 +814,7 @@ static void test_reject_huge_element_count_before_allocation() {
     const uint8_t wasm[] = {
         0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
         0x01, 0x04, 0x01, 0x60, 0x00, 0x00, 0x09, 0x0a,
-        0x01, 0x05, 0x63, 0xbc, 0x32, 0xbc, 0xbc, 0xbc,
+        0x01, 0x05, 0x63, 0x80, 0x00, 0xbc, 0xbc, 0xbc, // (ref null 0) with a padded index
         0xc2, 0x01, 0x01, 0xbf, 0x01, 0x00, 0x41, 0x00,
         0xfd, 0x0c, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00,
         0x00, 0x00, 0x00, 0x00, 0x00, 0x80, 0x00, 0x00,
@@ -1210,6 +1210,23 @@ static void test_cast_metadata_memory_amplification(void) {
     assert_true(parse_peak_bytes(spec) < 4 * 1024 * 1024);
 }
 
+// Out-of-range type indices in global, table and element types used to be rejected only after all sections were parsed,
+// so a later malformed section (here a duplicate type section) took precedence.
+static void test_early_type_index_rejection(void) {
+    printf("Running test_early_type_index_rejection...\n");
+    static const char *const specs[] = {
+        "wasm imports {[{'m'} {'g'} global# type.ref.null 5 immut]} types {[]}",
+        "wasm imports {[{'m'} {'t'} table# type.ref.null 5 limits.i32/1 1]} types {[]}",
+        "wasm tables {[type.ref.null 5 limits.i32/1 1]} types {[]}",
+        "wasm elements {[elem.passive.expr type.ref.null 5 []]} types {[]}",
+    };
+    for (size_t i = 0; i < sizeof(specs) / sizeof(*specs); i++) {
+        wah_module_t module = {0};
+        assert_err(wah_parse_module_from_spec(&module, specs[i]), WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&module);
+    }
+}
+
 // struct.new_default (and struct.new in unreachable code) used to loop over all fields of a wide struct.
 static double parse_wide_struct_news_seconds(const char *body) {
     enum { N = 50000 };
@@ -1327,6 +1344,7 @@ int main(void) {
     test_block_entry_with_many_locals_time();
     test_rec_group_canonicalization_time();
     test_wide_struct_new_validation_time();
+    test_early_type_index_rejection();
     test_cast_metadata_memory_amplification();
     test_local_init_tracking_memory_amplification();
     test_v128_locals_and_block_types_require_simd_feature();

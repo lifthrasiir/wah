@@ -9322,6 +9322,7 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
 
         wah_type_t global_declared_type;
         WAH_CHECK(wah_decode_val_type(ptr, section_end, &global_declared_type));
+        WAH_ENSURE(global_declared_type < 0 || WAH_TYIDX(global_declared_type) < module->type_count, WAH_ERROR_VALIDATION_FAILED);
         module->globals[i].type = global_declared_type;
 
         // Mutability
@@ -9415,6 +9416,7 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
 
             wah_type_t elem_type;
             WAH_CHECK(wah_decode_ref_type(ptr, section_end, &elem_type));
+            WAH_ENSURE(elem_type < 0 || WAH_TYIDX(elem_type) < module->type_count, WAH_ERROR_VALIDATION_FAILED);
             module->tables[i].elem_type = elem_type;
 
             WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
@@ -9569,6 +9571,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             import_table_count++;
 
             WAH_CHECK_GOTO(wah_decode_ref_type(ptr, section_end, &ti->type.elem_type), cleanup);
+            WAH_ENSURE_GOTO(ti->type.elem_type < 0 || WAH_TYIDX(ti->type.elem_type) < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
             WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
             uint8_t flags = *(*ptr)++;
             WAH_ENSURE_GOTO((flags & ~0x05) == 0, WAH_ERROR_MALFORMED, cleanup);
@@ -9645,6 +9648,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             import_global_count++;
 
             WAH_CHECK_GOTO(wah_decode_val_type(ptr, section_end, &gi->type), cleanup);
+            WAH_ENSURE_GOTO(gi->type < 0 || WAH_TYIDX(gi->type) < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
             WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
             uint8_t mut_byte = *(*ptr)++;
             WAH_ENSURE_GOTO(mut_byte <= 1, WAH_ERROR_MALFORMED, cleanup);
@@ -9884,6 +9888,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
                 if (is_expr_elem) {
                     WAH_CHECK(wah_decode_ref_type(ptr, section_end, &segment->elem_type));
                     WAH_ENSURE(WAH_TYPE_IS_REF(segment->elem_type), WAH_ERROR_VALIDATION_FAILED);
+                    WAH_ENSURE(segment->elem_type < 0 || WAH_TYIDX(segment->elem_type) < module->type_count, WAH_ERROR_VALIDATION_FAILED);
                 } else {
                     WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
                     uint8_t elemkind = *(*ptr)++;
@@ -10119,20 +10124,6 @@ wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t
     if (module->has_data_count_section && module->data_segment_count > 0) {
         WAH_ENSURE_GOTO(module->data_segments != NULL, WAH_ERROR_MALFORMED, cleanup_parse);
     }
-
-    // Validate heap type indices across all sections
-    #define WAH_CHECK_TYPE_INDICES(count, t) do { \
-        for (uint32_t i = 0; i < (count); ++i) { \
-            int32_t _t = (int32_t)(t); \
-            if (_t >= 0 && WAH_TYIDX(_t) >= module->type_count) { err = WAH_ERROR_VALIDATION_FAILED; goto cleanup_parse; } \
-        } \
-    } while (0)
-    WAH_CHECK_TYPE_INDICES(module->global_count, module->globals[i].type);
-    WAH_CHECK_TYPE_INDICES(module->table_count, module->tables[i].elem_type);
-    WAH_CHECK_TYPE_INDICES(module->import_global_count, module->global_imports[i].type);
-    WAH_CHECK_TYPE_INDICES(module->import_table_count, module->table_imports[i].type.elem_type);
-    WAH_CHECK_TYPE_INDICES(module->element_segment_count, module->element_segments[i].elem_type);
-    #undef WAH_CHECK_TYPE_INDICES
 
     // Feature checks.
     bool uses_v128 = false, uses_multi_value = false, uses_mut_import = false;
