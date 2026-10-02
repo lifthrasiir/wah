@@ -11621,6 +11621,7 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
                     wah_free(alloc, ictx->tables);
                 }
                 wah_free(alloc, ictx->function_table);
+                wah_free(alloc, ictx->dependents);
                 wah_free(alloc, ictx->tag_instances);
                 wah_free(alloc, ictx->dropped_elem_segments);
                 wah_free(alloc, ictx->dropped_data_segments);

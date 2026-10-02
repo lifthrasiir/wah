@@ -50,8 +50,53 @@ static void test_repeated_imports(void) {
     wah_free_module(&pmod);
 }
 
+static size_t live_bytes = 0; // Each allocation has a 16-byte header with its size, keeping the alignment
+static void *counting_malloc(size_t n, void *ud) {
+    (void)ud;
+    size_t *p = malloc(n + 16);
+    if (!p) return NULL;
+    *p = n;
+    live_bytes += n;
+    return (char *)p + 16;
+}
+static void *counting_realloc(void *ptr, size_t n, void *ud) {
+    if (!ptr) return counting_malloc(n, ud);
+    size_t *p = (size_t *)((char *)ptr - 16), old = *p;
+    p = realloc(p, n + 16);
+    if (!p) return NULL;
+    *p = n;
+    live_bytes = live_bytes - old + n;
+    return (char *)p + 16;
+}
+static void counting_free(void *ptr, void *ud) {
+    (void)ud;
+    if (!ptr) return;
+    size_t *p = (size_t *)((char *)ptr - 16);
+    live_bytes -= *p;
+    free(p);
+}
+
+// Owned contexts of modules linked by wah_link_module get dependents when the primary imports from them.
+static void test_owned_dependents_freed(void) {
+    printf("Testing dependents of owned linked contexts are freed...\n");
+    wah_alloc_t alloc = { .malloc = counting_malloc, .realloc = counting_realloc, .free = counting_free };
+    wah_exec_options_t opts = { .alloc = &alloc };
+    wah_module_t lmod = {0}, pmod = {0};
+    assert_ok(wah_parse_module_from_spec(&lmod, "wasm memories {[ limits.i32/1 1 ]} exports {[ {'m'} mem# 0 ]}"));
+    assert_ok(wah_parse_module_from_spec(&pmod, "wasm imports {[ {'l'} {'m'} mem# limits.i32/1 1 ]}"));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &pmod, &opts));
+    assert_ok(wah_link_module(&ctx, "l", &lmod));
+    assert_ok(wah_instantiate(&ctx));
+    wah_free_exec_context(&ctx);
+    assert_eq_u64(live_bytes, 0);
+    wah_free_module(&pmod);
+    wah_free_module(&lmod);
+}
+
 int main(void) {
     test_repeated_imports();
+    test_owned_dependents_freed();
     printf("All link dependent tests passed!\n");
     return 0;
 }
