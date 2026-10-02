@@ -263,6 +263,26 @@ static void test_pin_host_ref(void) {
     wah_free_module(&mod);
 }
 
+static void host_return_nothing(wah_call_context_t *ctx, void *userdata) { (void)ctx; (void)userdata; }
+
+// NULL used to be accepted for non-nullable references from the host, both as parameters and as results.
+static void test_non_nullable_host_refs(void) {
+    printf("Testing NULL is rejected for non-nullable references from the host...\n");
+    wah_module_t mod = {0}, host = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[ fn [] [type.ref.extern], fn [type.ref.extern] [i32], fn [] [i32] ]} \
+        imports {[ {'h'} {'f'} fn# 0 ]} funcs {[ 1, 2 ]} \
+        code {[ {[] i32.const 1 end}, {[] call 0 drop i32.const 1 end} ]}"));
+    setup(&ctx, &mod, &host, "() -> ref extern", host_return_nothing);
+    wah_value_t param = { .ref = NULL }, r;
+    assert_err(wah_call(&ctx, 1, &param, 1, &r), WAH_ERROR_MISUSE);
+    assert_err(wah_call(&ctx, 2, NULL, 0, &r), WAH_ERROR_MISUSE);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+    wah_free_module(&host);
+}
+
 // Like host_swap, but the host also runs another context of the link domain after setting the result
 static wah_exec_context_t *reentry_ctx = NULL;
 static void host_swap_reenter(wah_call_context_t *ctx, void *userdata) {
@@ -314,6 +334,7 @@ int main(void) {
     test_swap("(externref) -> externref", "externref", "extern.convert_any", "any.convert_extern");
     test_swap("(anyref) -> anyref", "anyref", "", "");
     test_swap_reenter();
+    test_non_nullable_host_refs();
 
     test_misuse("returning a pinned reference", "(externref) -> externref", "externref", "externref",
                 "extern.convert_any", "any.convert_extern", host_return_pinned, WAH_OK);

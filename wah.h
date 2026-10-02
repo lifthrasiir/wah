@@ -1282,7 +1282,8 @@ void wah_result_v128(wah_call_context_t *ctx, size_t index, const wah_v128_t *va
 //   Valid only during the host function call.
 //
 //   - index [in]: Index of the result to set. Must be less than the number of results.
-//   - value [in]: Value to set for the result. Can be NULL if the result type is nullable.
+//   - value [in]: Value to set for the result. Can be NULL if the result type is nullable; otherwise the host
+//     function traps with WAH_ERROR_MISUSE, which is also the case when the result was never set.
 //     Can be a pinned reference from `wah_param_pinned_ref`, whose parameter type should match the result type.
 //     A reference sanitized by `wah_param_ref`, a released pinned reference, or a host object from
 //     `wah_gc_alloc_host` for a result type other than externref or anyref makes the host function trap
@@ -12026,6 +12027,10 @@ static wah_error_t wah_call_host_function_internal(
     WAH_ASSERT(!exec_ctx->gc || exec_ctx->gc->phase == WAH_GC_PHASE_IDLE);
 
     WAH_ENSURE(call_ctx.trap_reason == WAH_OK, call_ctx.trap_reason);
+    for (uint32_t i = 0; i < fn->nresults; i++) { // Results not set are null
+        wah_type_t t = fn->result_types[i];
+        WAH_ENSURE(!WAH_TYPE_IS_REF(t) || results[i].ref || WAH_TYPE_IS_NULLABLE(t), WAH_ERROR_MISUSE);
+    }
 
     return WAH_OK;
 }
@@ -16146,6 +16151,7 @@ static wah_error_t wah_load_host_params(const wah_exec_context_t *ctx, wah_value
                                         uint32_t count, const wah_module_t *module, const wah_type_t *types) {
     for (uint32_t i = 0; i < count; ++i) {
         wah_value_t value = params[i];
+        WAH_ENSURE(!WAH_TYPE_IS_REF(types[i]) || value.ref || WAH_TYPE_IS_NULLABLE(types[i]), WAH_ERROR_MISUSE);
         if (WAH_TYPE_IS_REF(types[i]) && value.ref) {
             WAH_ENSURE(!((uintptr_t)value.ref & 1), WAH_ERROR_MISUSE); // The host can't make i31 references
             if (((uintptr_t)value.ref & 3) == WAH_PIN_TAG) {
