@@ -4409,6 +4409,62 @@ int main() {
         wah_free_module(&m);
     }
 
+    // Regression: a direct importer of an owned context's memory or table was not registered as a dependent of it,
+    // so a grow running under another context left the importer dangling.
+    printf("Test: grow updates direct importers of owned contexts\n");
+    {
+        const char *m_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            memories {[ limits.i32/1 1 ]} \
+            exports {[ {'mem'} mem# 0, {'tbl'} table# 0, {'grow'} fn# 0 ]} \
+            code {[ {[] i32.const 1 memory.grow 0 ref.null funcref i32.const 100 table.grow 0 i32.add end } ]}";
+        const char *m2_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'m'} {'mem'} mem# limits.i32/1 1, {'m'} {'tbl'} table# funcref limits.i32/1 1 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'load'} fn# 0 ]} \
+            code {[ {[] i32.const 65536 i32.load 2 0 i32.const 100 table.get 0 ref.is_null i32.add end } ]}";
+        const char *c_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'m'} {'grow'} fn# 0, {'m2'} {'load'} fn# 0 ]} \
+            exports {[ {'grow'} fn# 0, {'load'} fn# 1 ]}";
+        const char *r_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'c'} {'grow'} fn# 0 ]} \
+            funcs {[ 0 ]} \
+            code {[ {[] call 0 end } ]}";
+
+        wah_module_t m = {0}, m2 = {0}, c = {0}, r = {0};
+        assert_ok(wah_parse_module_from_spec(&m, m_spec));
+        assert_ok(wah_parse_module_from_spec(&m2, m2_spec));
+        assert_ok(wah_parse_module_from_spec(&c, c_spec));
+        assert_ok(wah_parse_module_from_spec(&r, r_spec));
+
+        wah_exec_context_t cctx = {0}, rctx = {0};
+        assert_ok(wah_new_exec_context(&cctx, &c, NULL));
+        assert_ok(wah_link_module(&cctx, "m", &m));
+        assert_ok(wah_link_module(&cctx, "m2", &m2));
+        assert_ok(wah_instantiate(&cctx));
+        assert_ok(wah_new_exec_context(&rctx, &r, NULL));
+        assert_ok(wah_link_context(&rctx, "c", &cctx));
+        assert_ok(wah_instantiate(&rctx));
+
+        wah_value_t res;
+        assert_ok(wah_call(&rctx, 1, NULL, 0, &res));
+        assert_eq_i32(res.i32, 2); // Old sizes: 1 page and 1 element
+        assert_ok(wah_call_by_name(&cctx, "load", NULL, 0, &res));
+        assert_eq_i32(res.i32, 1); // Zero from the new page, plus a null element
+
+        wah_free_exec_context(&rctx);
+        wah_free_exec_context(&cctx);
+        wah_free_module(&r);
+        wah_free_module(&c);
+        wah_free_module(&m2);
+        wah_free_module(&m);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

@@ -17689,7 +17689,7 @@ cleanup:
     ctx->entities[dst_idx].is_imported = true; \
     ctx->entities[dst_idx].import_ctx = owner; \
     ctx->entities[dst_idx].import_idx = owner_idx; \
-    if (owner != linked_ctx) { \
+    if (owner != ctx) { /* Even for the direct provider, which may be owned and not know ctx otherwise */ \
         WAH_CHECK(wah_register_dependent(owner, ctx)); \
         if (owner->gc) WAH_CHECK(wah_gc_register_dependent(owner->gc, ctx, &owner->alloc)); \
     } \
