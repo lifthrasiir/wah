@@ -4488,6 +4488,9 @@ static WAH_ALWAYS_INLINE uint8x16_t wah_i32x4_shr_u_neon(uint8x16_t a, int32_t c
 static WAH_ALWAYS_INLINE uint8x16_t wah_i64x2_shl_neon(uint8x16_t a, int32_t count) {
     return vreinterpretq_u8_u64(vshlq_u64(vreinterpretq_u64_u8(a), vdupq_n_s64(count & 63)));
 }
+static WAH_ALWAYS_INLINE uint8x16_t wah_i64x2_shr_s_neon(uint8x16_t a, int32_t count) {
+    return vreinterpretq_u8_s64(vshlq_s64(vreinterpretq_s64_u8(a), vdupq_n_s64(-(count & 63))));
+}
 static WAH_ALWAYS_INLINE uint8x16_t wah_i64x2_shr_u_neon(uint8x16_t a, int32_t count) {
     return vreinterpretq_u8_u64(vshlq_u64(vreinterpretq_u64_u8(a), vdupq_n_s64(-(count & 63))));
 }
@@ -15162,7 +15165,7 @@ WAH_RUN(I64X2_EXTEND_HIGH_I32X4_S) N128_UNARY_OP(wah_i64x2_extend_high_i32x4_s_n
 WAH_RUN(I64X2_EXTEND_LOW_I32X4_U) N128_UNARY_OP(wah_i64x2_extend_low_i32x4_u_neon, V128_EXTEND_LOW_OP(64, u64, 32, u32, uint))
 WAH_RUN(I64X2_EXTEND_HIGH_I32X4_U) N128_UNARY_OP(wah_i64x2_extend_high_i32x4_u_neon, V128_EXTEND_HIGH_OP(64, u64, 32, u32, uint))
 WAH_RUN(I64X2_SHL) M128I_SHIFT_OP(_mm_slli_epi64, 63, N128_SHIFT_OP(wah_i64x2_shl_neon, V128_SHL_OP_LANE_WRAP(64, u64)))
-WAH_RUN(I64X2_SHR_S) V128_SHIFT_OP_LANE(64, >>, i64)
+WAH_RUN(I64X2_SHR_S) N128_SHIFT_OP(wah_i64x2_shr_s_neon, V128_SHIFT_OP_LANE(64, >>, i64))
 WAH_RUN(I64X2_SHR_U) M128I_SHIFT_OP(_mm_srli_epi64, 63, N128_SHIFT_OP(wah_i64x2_shr_u_neon, V128_SHIFT_OP_LANE_U(64, >>, u64)))
 WAH_RUN(I64X2_EXTMUL_LOW_I32X4_S) V128_EXTMUL_LOW_OP(64, i64, int64_t, 32, i32, int)
 WAH_RUN(I64X2_EXTMUL_HIGH_I32X4_S) V128_EXTMUL_HIGH_OP(64, i64, int64_t, 32, i32, int)
