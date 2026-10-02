@@ -16952,8 +16952,9 @@ static wah_error_t wah_init_linked_globals(wah_exec_context_t *ctx) {
     uint32_t offset = wah_global_index_limit(module);
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
         const wah_module_t *linked = ctx->linked_modules[j].module;
-        // Owned contexts may already exist for linked modules with tags
-        if (!ctx->linked_modules[j].ctx || ctx->linked_modules[j].owns_ctx) {
+        // Owned contexts may already exist for linked modules with tags.
+        // Without any globals, `globals` may be NULL where even adding 0 is UB.
+        if (linked->global_count > 0 && (!ctx->linked_modules[j].ctx || ctx->linked_modules[j].owns_ctx)) {
             wah_linked_eval_state_t saved = wah_enter_linked_eval(ctx, j, globals + offset);
             for (uint32_t k = 0; k < linked->global_count; k++) {
                 wah_error_t err = wah_eval_const_expr(ctx, &ctx->fuel, linked->globals[k].init_expr.bytecode,
