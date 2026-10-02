@@ -913,8 +913,8 @@ static void test_try_table_branch_out_drops_handler() {
         "try_table void [] local.get 0 i32.const 1 i32.add local.tee 0 i32.const 99 i32.lt_u br_if 1 end", // back to the loop header
         // catch_all to labels outside of another try_table
         "block void try_table void [] try_table void [catch_all 1] throw 0 end end end",
-        "block void try_table void [] try_table void [catch_all 2] "
-        "local.get 0 i32.const 1 i32.add local.tee 0 i32.const 99 i32.lt_u if void throw 0 end end end end",
+        ("block void try_table void [] try_table void [catch_all 2] "
+         "local.get 0 i32.const 1 i32.add local.tee 0 i32.const 99 i32.lt_u if void throw 0 end end end end"),
     };
     for (size_t i = 0; i < sizeof(bodies) / sizeof(*bodies); i++) {
         check_try_table_branch_out(bodies[i], 0);
