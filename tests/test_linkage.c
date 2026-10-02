@@ -4940,6 +4940,41 @@ int main() {
         wah_free_module(&l);
     }
 
+    // Regression: linking into a context whose instantiation failed was accepted, after which the GC root walk of
+    // the failed context read the globals of the newly linked module past the end of its globals array.
+    printf("Test: no linking after a failed instantiation\n");
+    {
+        wah_module_t l = {0}, p = {0}, m = {0}, n = {0};
+        assert_ok(wah_parse_module_from_spec(&l, "wasm types {[ array i8 mut, fn [] [] ]} funcs {[ 1 ]} \
+            exports {[ {'alloc'} fn# 0 ]} \
+            code {[ {[1 i32] loop void i32.const 65536 array.new_default 0 drop \
+                local.get 0 i32.const 1 i32.add local.tee 0 i32.const 16 i32.lt_u br_if 0 end end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&p, "wasm types {[ fn [] [] ]} funcs {[ 0 ]} \
+            globals {[ i32 mut i32.const 0 end ]} start { 0 } code {[ {[] unreachable end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&m, "wasm globals {[ externref mut ref.null externref end, \
+            externref mut ref.null externref end, externref mut ref.null externref end, \
+            externref mut ref.null externref end, externref mut ref.null externref end ]}"));
+        assert_ok(wah_parse_module_from_spec(&n, "wasm"));
+        wah_exec_context_t lctx = {0}, pctx = {0}, nctx = {0};
+        assert_ok(wah_new_exec_context(&lctx, &l, NULL));
+        assert_ok(wah_instantiate(&lctx));
+        assert_ok(wah_new_exec_context(&nctx, &n, NULL));
+        assert_ok(wah_instantiate(&nctx));
+        assert_ok(wah_new_exec_context(&pctx, &p, NULL));
+        assert_ok(wah_link_context(&pctx, "l", &lctx));
+        assert_err(wah_instantiate(&pctx), WAH_ERROR_TRAP);
+        assert_err(wah_link_module(&pctx, "m", &m), WAH_ERROR_MISUSE);
+        assert_err(wah_link_context(&pctx, "n", &nctx), WAH_ERROR_MISUSE);
+        assert_ok(wah_call_by_name(&lctx, "alloc", NULL, 0, NULL)); // Collects the link domain
+        wah_free_exec_context(&pctx);
+        wah_free_exec_context(&nctx);
+        wah_free_exec_context(&lctx);
+        wah_free_module(&n);
+        wah_free_module(&m);
+        wah_free_module(&p);
+        wah_free_module(&l);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
