@@ -6923,10 +6923,11 @@ cleanup_block:
 
             wah_validation_control_frame_t* frame = &vctx->control_stack[vctx->control_sp - 1];
 
-            if (frame->opcode == WAH_OP_IF && !frame->else_found) {
+            if (frame->opcode == WAH_OP_IF && !frame->else_found) { // The implicit else passes params as results
                 WAH_ENSURE(frame->block_type.param_count == frame->block_type.result_count, WAH_ERROR_VALIDATION_FAILED);
                 for (uint32_t i = 0; i < frame->block_type.param_count; ++i) {
-                    WAH_ENSURE(frame->block_type.param_types[i] == frame->block_type.result_types[i], WAH_ERROR_VALIDATION_FAILED);
+                    WAH_CHECK(wah_validate_type_match(frame->block_type.param_types[i], frame->block_type.result_types[i],
+                                                      vctx->module));
                 }
             }
 

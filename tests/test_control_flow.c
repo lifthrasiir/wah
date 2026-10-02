@@ -759,6 +759,26 @@ static void test_br_multi_value_keep_drop() {
     wah_free_module(&module2);
 }
 
+// An if without else used to require its params and results to be equal, but subtypes are fine.
+static void test_if_without_else_subtype() {
+    printf("Testing if without else accepts params that are subtypes of results...\n");
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [type.ref.i31] [eqref], fn [] [i32] ]} funcs {[ 1 ]} \
+        code {[ {[] i32.const 5 ref.i31 i32.const 0 if 0 end ref.cast i31ref i31.get_s end} ]}"));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
+    wah_value_t r;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
+    assert_eq_i32(r.i32, 5);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&module);
+    // But not the other way around
+    assert_err(wah_parse_module_from_spec(&module, "wasm \
+        types {[ fn [eqref] [type.ref.i31], fn [] [] ]} funcs {[ 1 ]} \
+        code {[ {[] ref.null eqref i32.const 0 if 0 end drop end} ]}"), WAH_ERROR_VALIDATION_FAILED);
+}
+
 int main() {
     printf("=== Control Flow Tests ===\n");
     test_br_table_lowered_size();
@@ -788,6 +808,7 @@ int main() {
     printf("\n=== Regression Tests ===\n");
     test_br_if_else_target();
     test_br_multi_value_keep_drop();
+    test_if_without_else_subtype();
 
     printf("\n=== Control Flow Tests Complete ===\n");
     return 0;
