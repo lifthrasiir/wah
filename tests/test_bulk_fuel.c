@@ -432,6 +432,42 @@ static void test_array_fill_fuel_per_byte(void) {
     wah_free_module(&mod);
 }
 
+// Resuming without fuel should never make progress, even inside array operations that charge per element
+static void test_array_ops_no_progress_without_fuel(void) {
+    printf("Testing array.fill, array.copy and array.init_data make no progress without fuel...\n");
+    static const char *ops[] = {
+        "local.get 0 i32.const 0 v128.const %v128 i32.const 64 array.fill 0",
+        "local.get 0 i32.const 0 local.get 0 i32.const 0 i32.const 64 array.copy 0 0",
+        "local.get 0 i32.const 0 i32.const 0 i32.const 8 array.init_data 0 0",
+    };
+    char spec[512];
+    for (int i = 0; i < 3; i++) {
+        wah_module_t mod = {0};
+        wah_exec_context_t ctx = {0};
+        snprintf(spec, sizeof(spec), "wasm \
+            types {[array v128 mut, fn [] []]} funcs {[1]} datacount {1} \
+            code {[{[1 type.ref.null 0] i32.const 64 array.new_default 0 local.set 0 %s end}]} \
+            data {[data.passive {%%v128 %%v128 %%v128 %%v128 %%v128 %%v128 %%v128 %%v128}]}", ops[i]);
+        const uint8_t *v = (const uint8_t *)"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        PARSE_FUEL(&mod, spec, v, v, v, v, v, v, v, v, v);
+        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+        assert_ok(wah_instantiate(&ctx));
+
+        assert_ok(wah_set_fuel(&ctx, 1));
+        assert_ok(wah_start(&ctx, 0, NULL, 0));
+        wah_error_t err;
+        while ((err = wah_resume(&ctx)) == WAH_STATUS_FUEL_EXHAUSTED) {
+            for (int j = 0; j < 100; j++) assert_err(wah_resume(&ctx), WAH_STATUS_FUEL_EXHAUSTED);
+            assert_ok(wah_set_fuel(&ctx, 1));
+        }
+        assert_ok(err);
+        assert_ok(wah_finish(&ctx, NULL, 0, NULL));
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod);
+    }
+}
+
 // ============================================================
 // array.copy fuel resume (GC)
 // ============================================================
@@ -1173,6 +1209,7 @@ int main(void) {
     test_table_init_fuel_resume();
     test_array_fill_fuel_resume();
     test_array_fill_fuel_per_byte();
+    test_array_ops_no_progress_without_fuel();
     test_array_copy_fuel_resume();
     test_array_init_data_fuel_resume();
     test_array_init_elem_fuel_resume();
