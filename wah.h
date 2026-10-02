@@ -3195,7 +3195,9 @@ static inline uint32_t wah_data_seg_data_len(const wah_exec_context_t *ctx, uint
 //   Alignment guaranteed for blocks returned by `malloc` and `realloc`, which are used without custom allocators.
 //   Defaults to 16 on targets known to guarantee that, or `alignof(max_align_t)` otherwise (8 before C11).
 //   See `wah_alloc_t::min_align` for how it is used.
-#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#if defined(_MSC_VER) && !defined(__clang__) // MSVC defines max_align_t only for C++
+#define WAH_STD_MIN_ALIGN (sizeof(void *) > 4 ? 16 : 8)
+#elif defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
 #define WAH_STD_MIN_ALIGN WAH_ALIGNOF(max_align_t)
 #else
 #define WAH_STD_MIN_ALIGN 8
