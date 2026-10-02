@@ -6907,13 +6907,8 @@ cleanup_block:
             return WAH_OK;
         }
         case WAH_OP_END: {
-            if (vctx->control_sp == 0) {
-                for (int32_t j = vctx->func_type->result_count - 1; j >= 0; --j) POP(_(vctx->func_type->result_types[j]));
-                WAH_ENSURE(vctx->current_stack_depth == 0, WAH_ERROR_VALIDATION_FAILED);
-                vctx->is_unreachable = false;
-                EMIT_SIMPLE();
-                return WAH_OK;
-            }
+            // The outermost END is handled by wah_analyze_stream
+            WAH_ENSURE(vctx->control_sp > 0, WAH_ERROR_VALIDATION_FAILED);
 
             wah_validation_control_frame_t* frame = &vctx->control_stack[vctx->control_sp - 1];
 
