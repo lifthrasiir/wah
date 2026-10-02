@@ -201,7 +201,7 @@ Keep in mind that this DSL is very basic and you are required to produce a corre
 - Composite types: `"struct { i32, mut funcref }"`, `"array i32"`, `"array mut anyref"`.
 - Reference types: `"ref (struct %T)"`, `"ref null func"`.
 - `%T` placeholders bind to module type indices at runtime.
-- Prefix `fresh` on a definition to force a distinct type instead of structural deduplication (the default merges identical types).
+- Prefix `fresh` on a definition to force a new type index instead of structural deduplication (the default merges identical types). It is still structurally equal to identical types in other modules, so it is not nominal.
 - Packed types (i8, i16) are only valid in struct field / array element contexts, not as bare function parameter types.
 
 ## Critical Implementation Details

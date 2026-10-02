@@ -1156,8 +1156,9 @@ wah_error_t wah_new_module(wah_module_t *mod, const wah_alloc_t *alloc);
 //   A placeholder `%T` can go anywhere i32/f64/func/funcref/anyref/... are used above.
 //   Its semantics strictly depend on its macro spelling (so `ref %T` accepts WAH_TYPE_FUNC
 //   but no WAH_TYPE_FUNCREF). Packed types are only usable in struct fields and array elements.
-//   In addition, prepending `fresh` ensures that the returned type is distinct from any other type;
-//   by default structurally identical types are automatically merged.
+//   By default a structurally identical type of the module is reused, and prepending `fresh` always defines
+//   a new type index instead. As WebAssembly types are structural, the new type is still equal to identical
+//   types elsewhere, for example in other modules, so it can't be used to make types that wasm can't forge.
 //
 //   - out_type [out]: Pointer to retrieve the (newly or previously) defined type index.
 //   - spec [in, borrowed]: Type specification string as described above.
