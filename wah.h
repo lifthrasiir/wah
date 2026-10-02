@@ -2745,10 +2745,17 @@ typedef enum {
 
 // --- Validation Context ---
 #define WAH_MAX_CONTROL_DEPTH 256
+// Not owned: points into module->types[] or wah_validation_control_frame_t::single_result
+typedef struct {
+    const wah_type_t *param_types, *result_types;
+    uint32_t param_count, result_count;
+} wah_block_type_t;
+
 typedef struct {
     wah_opcode_t opcode;
     uint32_t type_stack_sp; // Type stack pointer at the start of the block
-    wah_func_type_t block_type; // For if/block/loop
+    wah_block_type_t block_type; // For if/block/loop/try_table
+    wah_type_t single_result; // Result type of the short block type form
     bool else_found; // For if blocks
     bool is_unreachable; // True if this control frame is currently unreachable
     uint32_t stack_height; // Stack height at the beginning of the block
@@ -5953,9 +5960,10 @@ static inline void wah_validation_init_local(wah_validation_context_t *vctx, uin
 }
 
 static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, const uint8_t *code_end,
-                                                     wah_validation_context_t *vctx, wah_func_type_t *bt) {
-    const wah_alloc_t *alloc = &vctx->module->alloc;
-    *bt = (wah_func_type_t){0};
+                                                     wah_validation_context_t *vctx,
+                                                     wah_validation_control_frame_t *frame) {
+    wah_block_type_t *bt = &frame->block_type;
+    *bt = (wah_block_type_t){0};
     WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t block_type_peek = **code_ptr;
 
@@ -5966,9 +5974,9 @@ static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, co
         WAH_CHECK(wah_decode_val_type(code_ptr, code_end, &result_type));
         WAH_ENSURE(result_type < 0 || WAH_TYIDX(result_type) < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
         if (result_type == WAH_TYPE_V128) WAH_CHECK(wah_require_feature(vctx->module, WAH_FEATURE_SHIFT_SIMD));
+        frame->single_result = result_type;
         bt->result_count = 1;
-        WAH_MALLOC_ARRAY(bt->result_types, 1);
-        bt->result_types[0] = result_type;
+        bt->result_types = &frame->single_result;
     } else {
         int32_t block_type_val;
         WAH_CHECK(wah_decode_sleb128_32(code_ptr, code_end, &block_type_val));
@@ -5976,19 +5984,11 @@ static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, co
         uint32_t type_idx = (uint32_t)block_type_val;
         WAH_ENSURE(type_idx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
         WAH_ENSURE(vctx->module->type_defs[type_idx].kind == WAH_COMP_FUNC, WAH_ERROR_VALIDATION_FAILED);
-        const wah_func_type_t* referenced_type = &vctx->module->types[type_idx];
-
-        bt->param_count = referenced_type->param_count;
-        if (bt->param_count > 0) {
-            WAH_MALLOC_ARRAY(bt->param_types, bt->param_count);
-            memcpy(bt->param_types, referenced_type->param_types, sizeof(wah_type_t) * bt->param_count);
-        }
-
-        bt->result_count = referenced_type->result_count;
-        if (bt->result_count > 0) {
-            WAH_MALLOC_ARRAY(bt->result_types, bt->result_count);
-            memcpy(bt->result_types, referenced_type->result_types, sizeof(wah_type_t) * bt->result_count);
-        }
+        const wah_func_type_t *referenced_type = &vctx->module->types[type_idx];
+        *bt = (wah_block_type_t){
+            .param_types = referenced_type->param_types, .result_types = referenced_type->result_types,
+            .param_count = referenced_type->param_count, .result_count = referenced_type->result_count,
+        };
     }
     return WAH_OK;
 }
@@ -6625,8 +6625,8 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             frame->opcode = (wah_opcode_t)opcode_val;
             frame->else_found = false;
             frame->is_unreachable = vctx->is_unreachable;
-            wah_func_type_t* bt = &frame->block_type;
-            WAH_CHECK_GOTO(wah_validation_decode_block_type(code_ptr, code_end, vctx, bt), cleanup_block);
+            const wah_block_type_t *bt = &frame->block_type;
+            WAH_CHECK_GOTO(wah_validation_decode_block_type(code_ptr, code_end, vctx, frame), cleanup_block);
 
             for (int32_t i = bt->param_count - 1; i >= 0; --i) {
                 WAH_CHECK_GOTO(wah_validation_pop_and_match_type(vctx, bt->param_types[i]), cleanup_block);
@@ -6649,11 +6649,6 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             return WAH_OK;
 
 cleanup_block:
-            if (frame) {
-                wah_free(alloc, frame->block_type.param_types);
-                wah_free(alloc, frame->block_type.result_types);
-                frame->block_type = (wah_func_type_t){0};
-            }
             if (frame_pushed && vctx->control_sp > 0) vctx->control_sp--;
             return err;
         }
@@ -6716,11 +6711,6 @@ cleanup_block:
                 }
             }
 
-            // Free memory allocated for the block type in the control frame
-            wah_free(alloc, frame->block_type.param_types);
-            wah_free(alloc, frame->block_type.result_types);
-            frame->block_type.param_types = NULL;
-            frame->block_type.result_types = NULL;
             EMIT_SIMPLE();
             return WAH_OK;
         }
@@ -7300,8 +7290,8 @@ cleanup_block:
             frame->opcode = (wah_opcode_t)opcode_val;
             frame->else_found = false;
             frame->is_unreachable = vctx->is_unreachable;
-            wah_func_type_t* bt = &frame->block_type;
-            WAH_CHECK_GOTO(wah_validation_decode_block_type(code_ptr, code_end, vctx, bt), cleanup_try_table);
+            const wah_block_type_t *bt = &frame->block_type;
+            WAH_CHECK_GOTO(wah_validation_decode_block_type(code_ptr, code_end, vctx, frame), cleanup_try_table);
 
             uint32_t catch_count;
             WAH_CHECK_GOTO(wah_decode_and_validate_count(code_ptr, code_end, &catch_count, 2), cleanup_try_table);
@@ -7393,9 +7383,6 @@ cleanup_block:
 
 cleanup_try_table:
             wah_free(alloc, catch_entries);
-            wah_free(alloc, bt->param_types);
-            wah_free(alloc, bt->result_types);
-            *bt = (wah_func_type_t){0};
             return err;
         }
 
@@ -8334,14 +8321,7 @@ done:
 
 cleanup:
     #undef WAH_CAPTURE_REF_MAP
-    if (err != WAH_OK) {
-        for (uint32_t i = 0; i < vctx->control_sp; i++) {
-            wah_free(alloc, vctx->control_stack[i].block_type.param_types);
-            wah_free(alloc, vctx->control_stack[i].block_type.result_types);
-            vctx->control_stack[i].block_type = (wah_func_type_t){0};
-        }
-        vctx->control_sp = 0;
-    }
+    if (err != WAH_OK) vctx->control_sp = 0;
     wah_free(alloc, poll_ref_tops);
     wah_free(alloc, ref_nodes);
     return err;
@@ -9106,14 +9086,7 @@ cleanup:
     wah_free_analyzed_code(&ac, alloc);
     wah_free(alloc, vctx.local_inits);
     wah_free(alloc, vctx.local_init_undo);
-    if (err != WAH_OK) {
-        for (int32_t j = vctx.control_sp - 1; j >= 0; --j) {
-            wah_validation_control_frame_t* frame = &vctx.control_stack[j];
-            wah_free(alloc, frame->block_type.param_types);
-            wah_free(alloc, frame->block_type.result_types);
-        }
-        wah_free_code_bodies(module);
-    }
+    if (err != WAH_OK) wah_free_code_bodies(module);
     return err;
 }
 
