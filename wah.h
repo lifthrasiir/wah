@@ -10408,8 +10408,10 @@ static void wah_gc_visit_module_globals(const wah_module_t *module, wah_value_t 
 static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visitor, void *userdata) {
     if (!visitor) return;
 
-    // 1. Parameters and locals in each call frame
-    for (uint32_t d = 0; d < ctx->call_depth; d++) {
+    // 1. Parameters and locals in each call frame, unless trapped (then the stack doesn't match the last ref map,
+    // and frames are only kept until wah_cancel)
+    uint32_t live_depth = ctx->lifecycle.state == WAH_EXEC_TRAPPED ? ctx->lifecycle.base_call_depth : ctx->call_depth;
+    for (uint32_t d = 0; d < live_depth; d++) {
         wah_call_frame_t *frame = &WAH_FRAME(ctx, d);
         const wah_code_body_t *code = frame->code;
         if (!code) continue;

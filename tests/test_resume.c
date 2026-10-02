@@ -928,6 +928,76 @@ static void test_poll_yield_without_fuel(void) {
     wah_free_module(&mod);
 }
 
+// Roots of an activation of `a` outside running frames, while `b` (linked by `a`) collects garbage. The object made by
+// b.make lives in the heap of `b`, so it is only kept alive by `a` once b.clear runs.
+typedef struct {
+    wah_module_t a, b, h;
+    wah_exec_context_t actx, bctx;
+} wah_roots_fixture_t;
+
+enum { B_MAKE, B_GET, B_CLEAR, B_CHURN, B_USE };
+enum { A_GET, A_USE, A_HOST, A_TRAP, A_FETCH };
+
+static void host_param_alive(wah_call_context_t *cc, void *ud) {
+    (void)ud;
+    wah_return_i32(cc, wah_param_ref(cc, 0) != NULL); // Reads the header of the object
+}
+
+static void roots_setup(wah_roots_fixture_t *f) {
+    *f = (wah_roots_fixture_t){0};
+    assert_ok(wah_parse_module_from_spec(&f->b, "wasm \
+        types {[ struct [i32 mut], fn [] [], fn [] [anyref], fn [anyref] [i32] ]} \
+        funcs {[ 1, 2, 1, 1, 3 ]} \
+        globals {[ %'6300' mut ref.null 0 end ]} \
+        exports {[ {'make'} fn# 0, {'get'} fn# 1, {'clear'} fn# 2, {'churn'} fn# 3, {'use'} fn# 4 ]} \
+        code {[ {[] i32.const 42 struct.new 0 global.set 0 end}, \
+                {[] global.get 0 end}, \
+                {[] ref.null 0 global.set 0 end}, \
+                {[1 i32] loop void i32.const 0 struct.new 0 drop \
+                    local.get 0 i32.const 1 i32.add local.tee 0 i32.const 200000 i32.lt_u br_if 0 end end}, \
+                {[] local.get 0 ref.cast 0 struct.get 0 0 end} ]}"));
+    // A_TRAP leaves an i64 where the ref map of its last call had a reference
+    assert_ok(wah_parse_module_from_spec(&f->a, "wasm \
+        types {[ fn [] [], fn [] [anyref], fn [anyref] [i32] ]} \
+        imports {[ {'b'} {'get'} fn# 1, {'b'} {'use'} fn# 2, {'h'} {'f'} fn# 2 ]} \
+        funcs {[ 0, 1 ]} \
+        code {[ {[] call 0 call 1 drop i64.const 17592186044416 unreachable end}, \
+                {[] call 0 end} ]}"));
+    assert_ok(wah_new_module(&f->h, NULL));
+    assert_ok(wah_export_func(&f->h, "f", "(anyref) -> i32", host_param_alive, NULL, NULL));
+    assert_ok(wah_new_exec_context(&f->bctx, &f->b, NULL));
+    assert_ok(wah_instantiate(&f->bctx));
+    assert_ok(wah_new_exec_context(&f->actx, &f->a, NULL));
+    assert_ok(wah_link_context(&f->actx, "b", &f->bctx));
+    assert_ok(wah_link_module(&f->actx, "h", &f->h));
+    assert_ok(wah_instantiate(&f->actx));
+    assert_ok(wah_call(&f->bctx, B_MAKE, NULL, 0, NULL));
+}
+
+static void roots_collect(wah_roots_fixture_t *f) {
+    assert_ok(wah_call(&f->bctx, B_CLEAR, NULL, 0, NULL));
+    assert_ok(wah_call(&f->bctx, B_CHURN, NULL, 0, NULL));
+}
+
+static void roots_teardown(wah_roots_fixture_t *f) {
+    wah_free_exec_context(&f->actx);
+    wah_free_exec_context(&f->bctx);
+    wah_free_module(&f->a);
+    wah_free_module(&f->b);
+    wah_free_module(&f->h);
+}
+
+static void test_trapped_frames_are_not_roots(void) {
+    printf("Testing frames of a trapped activation are not scanned with stale ref maps...\n");
+    wah_roots_fixture_t f;
+    roots_setup(&f);
+    assert_ok(wah_start(&f.actx, A_TRAP, NULL, 0));
+    assert_err(wah_resume(&f.actx), WAH_ERROR_TRAP);
+    roots_collect(&f);
+    wah_cancel(&f.actx);
+    roots_teardown(&f);
+}
+
 int main(void) {
     test_resume_straight_line();
     test_resume_loop();
@@ -954,6 +1024,7 @@ int main(void) {
     test_cancel_with_pending_exception();
     test_resume_gc_ref_global();
     test_poll_yield_without_fuel();
+    test_trapped_frames_are_not_roots();
 
     printf("\n=== All resume tests passed ===\n");
     return 0;
