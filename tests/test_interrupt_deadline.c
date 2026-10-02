@@ -7,8 +7,14 @@
 #if defined(_WIN32)
 #include <windows.h>
 static void test_sleep_ms(unsigned ms) { Sleep(ms); }
+static uint64_t test_now_ms(void) { return GetTickCount64(); }
 #else
 #include <time.h>
+static uint64_t test_now_ms(void) {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint64_t)ts.tv_sec * 1000 + (uint64_t)ts.tv_nsec / 1000000;
+}
 static void test_sleep_ms(unsigned ms) {
     struct timespec ts;
     ts.tv_sec = (time_t)(ms / 1000);
@@ -115,7 +121,7 @@ static void test_interrupt_and_fuel_priority(void) {
 }
 
 static void test_short_deadline_yields_and_rearms(void) {
-    printf("Testing short deadline yields and rearms...\n");
+    printf("Testing short deadline yields and rearms with a new deadline...\n");
     fflush(stdout);
     wah_module_t mod = {0};
     wah_exec_context_t ctx = {0};
@@ -129,6 +135,10 @@ static void test_short_deadline_yields_and_rearms(void) {
     assert_ok(wah_start(&ctx, 0, NULL, 0));
     assert_err(wah_resume(&ctx), WAH_STATUS_YIELDED);
     assert_true(wah_is_suspended(&ctx));
+    wah_limits_t lim = { .deadline_us = 10000 };
+    assert_ok(wah_set_limits(&ctx, &lim)); // Allowed while suspended
+    wah_limits_t stack_lim = { .max_stack_bytes = 1 << 20 };
+    assert_err(wah_set_limits(&ctx, &stack_lim), WAH_ERROR_MISUSE); // ...except for the stack
     assert_err(wah_resume(&ctx), WAH_STATUS_YIELDED);
     wah_cancel(&ctx);
 
@@ -234,6 +244,8 @@ static void test_deadline_after_last_check_is_dropped(void) {
 
     assert_ok(wah_call(&ctx, 1, NULL, 0, NULL));
     assert_false(wah_is_interrupted(&ctx));
+    wah_limits_t lim = { .deadline_us = 5000 };
+    assert_ok(wah_set_limits(&ctx, &lim)); // The host function consumed the whole deadline
     wah_value_t result = {0};
     assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
@@ -257,6 +269,8 @@ static void test_rearm_right_after_disarm(void) {
         code {[{[] end}, {[] loop void br 0 end end}]}"));
     assert_ok(wah_new_exec_context(&ctx, &mod, &options));
     for (int i = 0; i < 50; ++i) {
+        wah_limits_t lim = { .deadline_us = 2000 };
+        assert_ok(wah_set_limits(&ctx, &lim));
         assert_ok(wah_call(&ctx, 0, NULL, 0, NULL));
         assert_ok(wah_start(&ctx, 1, NULL, 0));
         assert_err(wah_resume(&ctx), WAH_STATUS_YIELDED);
@@ -265,6 +279,60 @@ static void test_rearm_right_after_disarm(void) {
 
     wah_free_exec_context(&ctx);
     wah_free_module(&mod);
+}
+
+// The deadline is a budget for the whole context, charged only while running.
+static void test_deadline_is_charged_across_activations(void) {
+    printf("Testing deadline is charged across activations...\n");
+    fflush(stdout);
+    wah_module_t env = {0}, mod = {0};
+    wah_exec_context_t ctx = {0};
+    wah_exec_options_t options = {0};
+    options.limits.deadline_us = 10000000;
+
+    assert_ok(wah_new_module(&env, NULL));
+    assert_ok(wah_export_func(&env, "sleep", "()", host_sleep_50ms, NULL, NULL));
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [], fn [] [i32]]} \
+        imports {[{'env'} {'sleep'} fn# 0]} funcs {[0, 1, 0]} \
+        code {[{[] call 0 end}, {[] i32.const 42 end}, {[] loop void br 0 end end}]}"));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &options));
+    assert_ok(wah_link_module(&ctx, "env", &env));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_limits_t lim;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, NULL));
+    wah_get_limits(&ctx, &lim);
+    assert_true(lim.deadline_us <= 10000000 - 50000);
+    assert_true(lim.deadline_us > 0);
+
+    // Time spent while suspended is not charged
+    lim = (wah_limits_t){ .deadline_us = 200000 };
+    assert_ok(wah_set_limits(&ctx, &lim));
+    assert_ok(wah_start(&ctx, 3, NULL, 0));
+    test_sleep_ms(300);
+    uint64_t start_ms = test_now_ms();
+    assert_err(wah_resume(&ctx), WAH_STATUS_YIELDED);
+    assert_true(test_now_ms() - start_ms >= 100);
+    wah_get_limits(&ctx, &lim);
+    assert_eq_u64(lim.deadline_us, 1); // Clamped, as 0 means no deadline
+    wah_cancel(&ctx);
+
+    // An expired deadline stops any further activation until a new deadline is set
+    assert_ok(wah_start(&ctx, 3, NULL, 0));
+    start_ms = test_now_ms();
+    assert_err(wah_resume(&ctx), WAH_STATUS_YIELDED);
+    assert_true(test_now_ms() - start_ms < 100);
+    wah_cancel(&ctx);
+    wah_value_t result = {0};
+    lim = (wah_limits_t){ .deadline_us = 10000000 };
+    assert_ok(wah_set_limits(&ctx, &lim));
+    assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+    wah_free_module(&env);
 }
 
 // Start functions of linked modules run under the same limits as the primary module.
@@ -323,6 +391,7 @@ int main(void) {
     test_uint64_max_deadline_is_no_deadline();
     test_destroy_while_deadline_armed();
     test_deadline_after_last_check_is_dropped();
+    test_deadline_is_charged_across_activations();
     test_rearm_right_after_disarm();
     test_linked_start_function_limits();
 

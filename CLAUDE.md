@@ -61,7 +61,7 @@ Three independent limits can be active simultaneously and compose cleanly. They 
 
 - **Fuel metering:** Opt-in at parse time (`enable_fuel_metering` in `wah_parse_options_t`). Each basic block gets a METER opcode that decrements `ctx->fuel`. Bulk operations (memory.fill/copy/init, table.copy/init, etc.) charge fuel at a rate of one unit per `WAH_BULK_ITEMS_PER_FUEL` items (4096 by default, tunable at compile time). Set runtime fuel via `wah_set_fuel()` / `wah_get_fuel()` or via `wah_limits_t.fuel`. Fuzzing also consumes fuel during instantiation.
 
-- **Deadline timer:** `wah_limits_t.deadline_us` (microseconds; `UINT64_MAX` = no deadline). A background thread monitors wall-clock time and sets `interrupt_flag` when elapsed. TICK opcodes at loop back-edges check the flag cooperatively.
+- **Deadline timer:** `wah_limits_t.deadline_us` (microseconds; `UINT64_MAX` = no deadline). A context-wide budget like fuel: the time spent running in each `wah_resume` is deducted (suspended time is not), and an expired deadline is clamped to 1us (0 means no deadline) so that every execution yields until reset by `wah_set_limits`, which is also allowed while suspended. A background thread monitors wall-clock time and sets `interrupt_flag` when elapsed. TICK opcodes at loop back-edges check the flag cooperatively.
 
 - **Memory budget:** `wah_limits_t.max_memory_bytes` caps the sum of linear memory, tables, and GC heap (`UINT64_MAX` = unlimited; `0` is treated as the default). `wah_limits_t.no_memory_bytes` enforces a hard 0-byte limit (mutually exclusive with a non-zero `max_memory_bytes`). `wah_limits_t.max_stack_bytes` separately bounds the unified value-call stack.
 

@@ -928,6 +928,10 @@ typedef struct wah_limits_s {
     uint64_t fuel;
     // Field: deadline_us [default = UINT64_MAX (no deadline)]
     //   Cooperative time limit in microseconds. Be aware that this is not precise nor deterministic.
+    //   Like fuel, this is a budget for the whole context: the time spent in each `wah_resume`
+    //   (and `wah_call` etc.) is deducted, while the time spent suspended is not. Once it runs out,
+    //   the remaining deadline stays at 1us, so every execution yields with WAH_STATUS_YIELDED
+    //   almost immediately until a new deadline is set.
     uint64_t deadline_us;
     // Field: no_memory_bytes [default = false]
     //   If true, enforces a 0-byte limit on all memory. Incompatible with any `max_memory_bytes` > 0.
@@ -956,6 +960,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
 
 // Function: wah_set_limits
 //   Updates resource limits of an execution context.
+//   Can be called while suspended, except that `max_stack_bytes` can't be changed then.
 //
 //   - limits [in, borrowed]: Pointer to a `wah_limits_t` struct containing the new limits.
 //     Any zero or false field is ignored (i.e. the corresponding limit is unchanged).
@@ -967,7 +972,8 @@ wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *lim
 //
 //   - out [out, borrowed]: Pointer to a `wah_limits_t` struct to be filled in with the current limits.
 //     All fields are populated, except that 0 stands in for "unlimited" to match the default
-//     initialization state and to keep get/set round-trips safe.
+//     initialization state and to keep get/set round-trips safe. `deadline_us` is the remaining
+//     deadline, which is at least 1 once set.
 void wah_get_limits(const wah_exec_context_t *exec_ctx, wah_limits_t *out);
 
 // Function: wah_free_exec_context
@@ -10751,6 +10757,8 @@ typedef struct wah_timer_s {
     wah_poll_flag_t armed;
     uint32_t gen; // Incremented on each arming; protected by the lock
     bool fired; // Since the last arming; protected by the lock
+    bool running; // Armed by an activation whose time is not charged yet; protected by the lock
+    uint64_t start_us; // When the activation armed the timer; protected by the lock
 #if defined(_WIN32)
     HANDLE thread;
     HANDLE event;
@@ -10772,6 +10780,14 @@ static void wah_timer_fire(wah_timer_t *timer, uint32_t gen) {
 }
 
 #if defined(_WIN32)
+static uint64_t wah_timer_now_us(void) {
+    LARGE_INTEGER freq, now;
+    QueryPerformanceFrequency(&freq);
+    QueryPerformanceCounter(&now);
+    uint64_t f = (uint64_t)freq.QuadPart, n = (uint64_t)now.QuadPart;
+    return n / f * 1000000ULL + n % f * 1000000ULL / f;
+}
+
 static DWORD WINAPI wah_timer_main(LPVOID arg) {
     wah_timer_t *timer = (wah_timer_t *)arg;
     bool changed = false;
@@ -10816,13 +10832,11 @@ static DWORD WINAPI wah_timer_main(LPVOID arg) {
     return 0;
 }
 #else
-#if defined(__APPLE__)
 static uint64_t wah_timer_now_us(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     return (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)ts.tv_nsec / 1000ULL;
 }
-#endif
 
 static void *wah_timer_main(void *arg) {
     wah_timer_t *timer = (wah_timer_t *)arg;
@@ -10928,10 +10942,18 @@ cleanup:
 #endif
 }
 
-// Must be called with the lock held
+// Must be called with the lock held. The time spent while armed is charged to the remaining deadline,
+// which is clamped to 1us because 0 means no deadline.
 static void wah_timer_set_armed_locked(wah_exec_context_t *ctx, wah_timer_t *timer, bool armed) {
+    uint64_t now_us = wah_timer_now_us();
+    if (timer->running) {
+        uint64_t elapsed_us = now_us - timer->start_us;
+        ctx->deadline_us = timer->fired || elapsed_us >= timer->deadline_us ? 1 : timer->deadline_us - elapsed_us;
+    }
+    timer->running = armed;
     if (armed) {
         timer->deadline_us = ctx->deadline_us;
+        timer->start_us = now_us;
         timer->gen++;
     }
     WAH_POLL_FLAG_STORE(timer->armed, armed ? 1 : 0);
@@ -11188,8 +11210,11 @@ wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *lim
     WAH_ENSURE(limits, WAH_ERROR_MISUSE);
     WAH_ENSURE(!exec_ctx->poisoned, WAH_ERROR_MISUSE);
     const wah_alloc_t *alloc = &exec_ctx->alloc;
-    WAH_ENSURE(exec_ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
-    WAH_ENSURE(exec_ctx->call_depth == 0 && exec_ctx->sp == exec_ctx->value_stack, WAH_ERROR_MISUSE);
+    wah_exec_state_t state = exec_ctx->lifecycle.state;
+    WAH_ENSURE(state == WAH_EXEC_READY || state == WAH_EXEC_SUSPENDED, WAH_ERROR_MISUSE);
+    bool set_stack = limits->max_stack_bytes != 0 && limits->max_stack_bytes != exec_ctx->stack_buffer_size;
+    WAH_ENSURE(!set_stack || (state == WAH_EXEC_READY && exec_ctx->call_depth == 0 &&
+                              exec_ctx->sp == exec_ctx->value_stack), WAH_ERROR_MISUSE);
 
     // Check and allocate everything before changing anything
     WAH_ENSURE(!(limits->no_memory_bytes && limits->max_memory_bytes > 0), WAH_ERROR_MISUSE);
@@ -11200,7 +11225,7 @@ wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *lim
     bool set_deadline = limits->deadline_us != 0 && limits->deadline_us != UINT64_MAX;
     if (set_deadline) WAH_CHECK(wah_new_timer(exec_ctx)); // Stays idle until a deadline is set
 
-    if (limits->max_stack_bytes != 0 && limits->max_stack_bytes != exec_ctx->stack_buffer_size) {
+    if (set_stack) {
         uint64_t new_size = limits->max_stack_bytes;
         if (new_size > SIZE_MAX) return WAH_ERROR_TOO_LARGE;
         uint8_t *new_buf = NULL;
