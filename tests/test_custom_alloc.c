@@ -270,6 +270,27 @@ int main(void) {
         return 1;
     }
 
+    printf("Testing memory.grow 0 doesn't reallocate the memory...\n");
+    {
+        tracking_alloc_t cc = {0};
+        wah_alloc_t ca = { tracking_malloc, tracking_realloc, tracking_free, &cc };
+        wah_module_t m = {0};
+        assert_ok(wah_parse_module_from_spec(&m, "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+            memories {[ limits.i32/1 1 ]} code {[ {[] i32.const 0 memory.grow 0 end} ]}"));
+        wah_exec_context_t ectx = {0};
+        wah_exec_options_t eo = { .alloc = &ca };
+        assert_ok(wah_new_exec_context(&ectx, &m, &eo));
+        assert_ok(wah_instantiate(&ectx));
+        size_t allocs = cc.allocs;
+        wah_value_t r;
+        assert_ok(wah_call(&ectx, 0, NULL, 0, &r));
+        assert_eq_i32(r.i32, 1);
+        assert_eq_u64(cc.allocs, allocs);
+        wah_free_exec_context(&ectx);
+        wah_free_module(&m);
+        if (!tracking_ok("memory-grow-0", &cc)) return 1;
+    }
+
     // Regression: partial allocator (missing function pointer) caused NULL call.
     printf("Testing partial allocator validation...\n");
     {

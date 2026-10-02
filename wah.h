@@ -12323,6 +12323,7 @@ static bool wah_memory_grow_internal(
     if (new_pages < *old_pages || new_pages > fctx->memories[mem_idx].max_pages || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
         return false;
     }
+    if (pages_to_grow == 0) return true;
 
     size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
     uint64_t delta_bytes = new_memory_size - fctx->memories[mem_idx].size;
