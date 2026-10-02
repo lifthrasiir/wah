@@ -2450,6 +2450,41 @@ int main() {
         wah_free_module(&wasm_mod);
     }
 
+    printf("Testing objects allocated by element expressions are collected...\n");
+    {
+#define ELEM_LOOP(body) "block void loop void local.get 0 i32.eqz br_if 1 " body \
+    " local.get 0 i32.const 1 i32.sub local.set 0 br 0 end end end"
+        // Each iteration leaves 1 KB of garbage, which is about 20 times the memory budget in total
+        wah_module_t xm = {0}, pm = {0};
+        assert_ok(wah_parse_module_from_spec(&xm, "wasm \
+            types {[ array i8 mut, sub [] array anyref mut, fn [i32] [] ]} funcs {[ 2, 2 ]} \
+            tables {[ anyref limits.i32/2 1 1 ]} exports {[ {'init'} fn# 0, {'array'} fn# 1 ]} \
+            elements {[ elem.passive.expr anyref [ i32.const 1024 array.new_default 0 end ] ]} \
+            code {[ {[] " ELEM_LOOP("i32.const 0 i32.const 0 i32.const 1 table.init 0 0") "}, \
+                    {[1 type.ref.null 1] ref.null anyref i32.const 1 array.new 1 local.set 1 \
+                        " ELEM_LOOP("local.get 1 i32.const 0 i32.const 0 i32.const 1 array.init_elem 1 0") "} ]}"));
+#undef ELEM_LOOP
+        assert_ok(wah_parse_module_from_spec(&pm, "wasm types {[ fn [i32] [] ]} \
+            imports {[ {'x'} {'init'} fn# 0, {'x'} {'array'} fn# 0 ]} exports {[ {'init'} fn# 0, {'array'} fn# 1 ]}"));
+        wah_exec_options_t opts = { .limits = { .max_memory_bytes = 1u << 20 } };
+        wah_value_t iters = { .i32 = 20000 };
+        for (uint32_t f = 0; f < 2; f++) {
+            wah_exec_context_t x = {0}, p = {0};
+            assert_ok(wah_new_exec_context(&x, &xm, &opts));
+            assert_ok(wah_instantiate(&x));
+            assert_ok(wah_call(&x, f, &iters, 1, NULL));
+            // Also from another context, whose collections must cover objects allocated by x's expressions
+            assert_ok(wah_new_exec_context(&p, &pm, &opts));
+            assert_ok(wah_link_context(&p, "x", &x));
+            assert_ok(wah_instantiate(&p));
+            assert_ok(wah_call(&p, f, &iters, 1, NULL));
+            wah_free_exec_context(&p);
+            wah_free_exec_context(&x);
+        }
+        wah_free_module(&pm);
+        wah_free_module(&xm);
+    }
+
     printf("All GC tests passed.\n");
     return 0;
 }
