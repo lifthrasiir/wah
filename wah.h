@@ -3684,7 +3684,7 @@ static WAH_ALWAYS_INLINE double wah_fabs(double d) {
 // XXX: Clang doesn't support __builtin_roundeven(f) without recent enough -march, so we opt in for known archs
 static WAH_ALWAYS_INLINE float wah_nearest_f32(float f) {
 #if WAH_HAS_BUILTIN(__builtin_roundevenf) && defined(__clang__) && defined(__SSE4_1__)
-    return __builtin_roundevenf(f);
+    return wah_canonicalize_f32(__builtin_roundevenf(f));
 #else
     if (isnan(f)) return WAH_CANONICAL_NAN32.f;
     if (isinf(f) || f == 0.0f) return f;
@@ -3699,7 +3699,7 @@ static WAH_ALWAYS_INLINE float wah_nearest_f32(float f) {
 
 static WAH_ALWAYS_INLINE double wah_nearest_f64(double d) {
 #if WAH_HAS_BUILTIN(__builtin_roundeven) && defined(__clang__) && defined(__SSE4_1__)
-    return __builtin_roundeven(d);
+    return wah_canonicalize_f64(__builtin_roundeven(d));
 #else
     if (isnan(d)) return WAH_CANONICAL_NAN64.f;
     if (isinf(d) || d == 0.0) return d;
