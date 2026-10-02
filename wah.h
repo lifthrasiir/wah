@@ -5190,6 +5190,21 @@ static bool wah_cross_module_subtype_cached(wah_exec_context_t *ctx,
     return is_subtype;
 }
 
+// Host functions have no type index, so they match a function type of the module by their params and results,
+// like imports of host functions (see wah_validate_function_import_type).
+static bool wah_host_func_matches(wah_exec_context_t *ctx, const wah_function_t *fn, const wah_module_t *fn_module,
+                                  const wah_module_t *module, uint32_t type_idx) {
+    const wah_func_type_t *ft = &module->types[type_idx];
+    if (ft->param_count != fn->nparams || ft->result_count != fn->nresults) return false;
+    for (uint32_t i = 0; i < ft->param_count; ++i) {
+        if (!wah_cross_module_subtype_cached(ctx, module, ft->param_types[i], fn_module, fn->param_types[i])) return false;
+    }
+    for (uint32_t i = 0; i < ft->result_count; ++i) {
+        if (!wah_cross_module_subtype_cached(ctx, fn_module, fn->result_types[i], module, ft->result_types[i])) return false;
+    }
+    return true;
+}
+
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 static wah_error_t wah_field_type_layout(wah_type_t ft, uint32_t *out_size, wah_repr_t *out_repr) {
     *out_repr = WAH_REPR_NONE;
@@ -11920,7 +11935,8 @@ static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t r
             ctx->module->type_defs[target_idx].kind == WAH_COMP_FUNC) {
             const wah_function_t *fn = wah_ref_to_func(ref);
             const wah_module_t *fn_module = fn->fn_module ? fn->fn_module : ctx->module;
-            if (!fn->is_host && fn->local_idx < fn_module->wasm_function_count) {
+            if (fn->is_host) return wah_host_func_matches(ctx, fn, fn_module, ctx->module, target_idx);
+            if (fn->local_idx < fn_module->wasm_function_count) {
                 uint32_t fn_type = fn_module->function_type_indices[fn->local_idx];
                 return wah_cross_module_subtype_cached(ctx, fn_module, WAH_TYPE_FROM_IDX(fn_type, 0),
                                                        ctx->module, target);
@@ -13520,23 +13536,10 @@ WAH_RUN(ELEM_DROP) {
 // Common type-check + dispatch for call_ref family.
 // Expects actual_fn, type_idx in scope. CALL_HOST / CALL_WASM same convention as WAH_INDIRECT_BODY.
 #define WAH_REF_BODY(actual_fn, CALL_HOST, CALL_WASM) \
-    const wah_func_type_t *expected_func_type = &fctx->module->types[type_idx]; \
     if ((actual_fn)->is_host) { \
         const wah_module_t *actual_module = (actual_fn)->fn_module ? (actual_fn)->fn_module : fctx->module; \
-        WAH_ENSURE_GOTO(expected_func_type->param_count == (actual_fn)->nparams && \
-                        expected_func_type->result_count == (actual_fn)->nresults, WAH_ERROR_TRAP, cleanup); \
-        { bool _types_ok = true; \
-        for (uint32_t i = 0; i < expected_func_type->param_count; ++i) { \
-            if (!wah_cross_module_subtype_cached(ctx, fctx->module, expected_func_type->param_types[i], \
-                                                 actual_module, (actual_fn)->param_types[i])) \
-                { _types_ok = false; break; } \
-        } \
-        for (uint32_t i = 0; _types_ok && i < expected_func_type->result_count; ++i) { \
-            if (!wah_cross_module_subtype_cached(ctx, actual_module, (actual_fn)->result_types[i], \
-                                                 fctx->module, expected_func_type->result_types[i])) \
-                { _types_ok = false; break; } \
-        } \
-        WAH_ENSURE_GOTO(_types_ok, WAH_ERROR_TRAP, cleanup); } \
+        WAH_ENSURE_GOTO(wah_host_func_matches(ctx, (actual_fn), actual_module, fctx->module, type_idx), \
+                        WAH_ERROR_TRAP, cleanup); \
         CALL_HOST; \
     } else { \
         const wah_module_t *fn_module = (actual_fn)->fn_module ? (actual_fn)->fn_module : fctx->module; \

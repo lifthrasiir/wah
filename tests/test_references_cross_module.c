@@ -249,12 +249,49 @@ static void test_cross_module_repr_id_type_confusion() {
     wah_free_module(&provider);
 }
 
+static void host_inc(wah_call_context_t *ctx, void *userdata) {
+    (void)userdata;
+    wah_return_i32(ctx, wah_param_i32(ctx, 0) + 1);
+}
+
+// Host functions have no type index, so casts to concrete function types used to fail for them.
+static void test_host_func_ref_cast_concrete(void) {
+    printf("Testing casts of host function references to concrete function types...\n");
+    wah_module_t mod = {0}, host = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_module(&host, NULL));
+    assert_ok(wah_export_func(&host, "f", "(i32) -> i32", host_inc, NULL, NULL));
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[ fn [i32] [i32], fn [] [i32], fn [i32] [i64] ]} \
+        imports {[ {'h'} {'f'} fn# 0 ]} funcs {[ 1, 1, 1, 1 ]} \
+        elements {[ elem.declarative elem.funcref [0] ]} \
+        code {[ {[1 funcref] ref.func 0 local.set 0 local.get 0 ref.test 0 end}, \
+                {[1 funcref] ref.func 0 local.set 0 i32.const 41 local.get 0 ref.cast 0 call_ref 0 end}, \
+                {[1 funcref] ref.func 0 local.set 0 local.get 0 ref.test 2 end}, \
+                {[1 funcref] ref.func 0 local.set 0 local.get 0 ref.cast 2 drop i32.const 0 end} ]}"));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_link_module(&ctx, "h", &host));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t r;
+    assert_ok(wah_call(&ctx, 1, NULL, 0, &r));
+    assert_eq_i32(r.i32, 1);
+    assert_ok(wah_call(&ctx, 2, NULL, 0, &r));
+    assert_eq_i32(r.i32, 42);
+    assert_ok(wah_call(&ctx, 3, NULL, 0, &r));
+    assert_eq_i32(r.i32, 0);
+    assert_err(wah_call(&ctx, 4, NULL, 0, &r), WAH_ERROR_TRAP);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+    wah_free_module(&host);
+}
+
 int main() {
     test_cross_module_ref_test_abstract_struct_oob();
     test_cross_module_ref_test_abstract_array_oob();
     test_link_module_frame_ctx_wrong_module();
     test_gc_root_scan_imported_mutable_ref_global();
     test_cross_module_repr_id_type_confusion();
+    test_host_func_ref_cast_concrete();
     printf("All cross-module reference security tests passed!\n");
     return 0;
 }
