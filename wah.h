@@ -3078,35 +3078,43 @@ static inline wah_error_t wah_realloc(const wah_alloc_t *a, size_t count, size_t
         (ptr) = _alloc_ptr; \
     } while (0)
 
-#define WAH_ENSURE_CAP(arr, needed) do { \
-        size_t _cap_needed_size = (needed); \
-        WAH_ENSURE(_cap_needed_size <= UINT32_MAX, WAH_ERROR_TOO_LARGE); \
-        uint32_t _cap_needed = (uint32_t)_cap_needed_size; \
-        if (_cap_needed > arr##_cap) { \
-            uint32_t _nc = arr##_cap == 0 ? 8 : arr##_cap; \
-            while (_nc < _cap_needed) { \
-                WAH_ENSURE(_nc <= UINT32_MAX / 2, WAH_ERROR_TOO_LARGE); \
-                _nc *= 2; \
-            } \
-            WAH_REALLOC_ARRAY(arr, _nc); \
-            arr##_cap = _nc; \
+// Grows an array to hold at least `needed` elements by doubling its capacity *p_cap (from 8 when empty),
+// so that n appends only take O(log n) reallocations.
+static wah_error_t wah_grow_array(const wah_alloc_t *a, size_t needed, size_t elemsize, void **p_ptr, uint32_t *p_cap) {
+    if (needed <= *p_cap) return WAH_OK;
+    WAH_ENSURE(needed <= UINT32_MAX, WAH_ERROR_TOO_LARGE);
+    uint32_t new_cap = *p_cap ? *p_cap : 8;
+    while (new_cap < needed) {
+        WAH_ENSURE(new_cap <= UINT32_MAX / 2, WAH_ERROR_TOO_LARGE);
+        new_cap *= 2;
+    }
+    WAH_CHECK(wah_realloc(a, new_cap, elemsize, p_ptr));
+    *p_cap = new_cap;
+    return WAH_OK;
+}
+
+#define WAH_GROW_ARRAY(ptr, cap, needed) do { \
+        void *_grow_ptr = (ptr); \
+        wah_error_t _grow_err = wah_grow_array(alloc, (needed), sizeof(*(ptr)), &_grow_ptr, &(cap)); \
+        if (_grow_err != WAH_OK) { \
+            WAH_LOG("WAH_GROW_ARRAY(%s, %s, %s) failed", #ptr, #cap, #needed); \
+            return _grow_err; \
         } \
+        (ptr) = _grow_ptr; \
     } while (0)
 
-#define WAH_ENSURE_CAP_GOTO(arr, needed, label) do { \
-        size_t _cap_needed_size = (needed); \
-        WAH_ENSURE_GOTO(_cap_needed_size <= UINT32_MAX, WAH_ERROR_TOO_LARGE, label); \
-        uint32_t _cap_needed = (uint32_t)_cap_needed_size; \
-        if (_cap_needed > arr##_cap) { \
-            uint32_t _nc = arr##_cap == 0 ? 8 : arr##_cap; \
-            while (_nc < _cap_needed) { \
-                WAH_ENSURE_GOTO(_nc <= UINT32_MAX / 2, WAH_ERROR_TOO_LARGE, label); \
-                _nc *= 2; \
-            } \
-            WAH_REALLOC_ARRAY_GOTO(arr, _nc, label); \
-            arr##_cap = _nc; \
+#define WAH_GROW_ARRAY_GOTO(ptr, cap, needed, label) do { \
+        void *_grow_ptr = (ptr); \
+        err = wah_grow_array(alloc, (needed), sizeof(*(ptr)), &_grow_ptr, &(cap)); \
+        if (err != WAH_OK) { \
+            WAH_LOG("WAH_GROW_ARRAY_GOTO(%s, %s, %s, %s) failed", #ptr, #cap, #needed, #label); \
+            goto label; \
         } \
+        (ptr) = _grow_ptr; \
     } while (0)
+
+#define WAH_ENSURE_CAP(arr, needed) WAH_GROW_ARRAY(arr, arr##_cap, needed)
+#define WAH_ENSURE_CAP_GOTO(arr, needed, label) WAH_GROW_ARRAY_GOTO(arr, arr##_cap, needed, label)
 
 const char *wah_strerror(wah_error_t err) {
     switch (err) {
@@ -5000,15 +5008,7 @@ static wah_error_t wah_layout_slot_push(wah_layout_slot_list_t slots[4], uint32_
     WAH_ASSERT(size == 1 || size == 2 || size == 4 || size == 8);
     WAH_ASSERT((offset & (size - 1)) == 0);
     wah_layout_slot_list_t *list = &slots[wah_layout_slot_index(size)];
-    if (list->count == list->cap) {
-        if (list->cap > UINT32_MAX / 2) return WAH_ERROR_TOO_LARGE;
-        uint32_t new_cap = list->cap ? list->cap * 2 : 8;
-        if (new_cap < list->count + 1) return WAH_ERROR_TOO_LARGE;
-        void *new_offsets = list->offsets;
-        WAH_CHECK(wah_realloc(alloc, new_cap, sizeof(list->offsets[0]), &new_offsets));
-        list->offsets = (uint32_t *)new_offsets;
-        list->cap = new_cap;
-    }
+    WAH_GROW_ARRAY(list->offsets, list->cap, (size_t)list->count + 1);
     uint32_t i = list->count;
     while (i > 0 && list->offsets[i - 1] > offset) {
         list->offsets[i] = list->offsets[i - 1];
@@ -9982,14 +9982,7 @@ static inline void wah_recompute_poll_flag(wah_exec_context_t *ctx);
 
 static wah_error_t wah_register_dependent(wah_exec_context_t *provider, wah_exec_context_t *consumer) {
     const wah_alloc_t *alloc = &provider->alloc;
-    if (provider->dependent_count >= provider->dependents_cap) {
-        uint32_t new_cap = provider->dependents_cap == 0 ? 4 : provider->dependents_cap * 2;
-        void *new_ptr = provider->dependents;
-        wah_error_t err = wah_realloc(alloc, new_cap, sizeof(wah_exec_context_t *), &new_ptr);
-        if (err != WAH_OK) return err;
-        provider->dependents = (wah_exec_context_t **)new_ptr;
-        provider->dependents_cap = new_cap;
-    }
+    WAH_ENSURE_CAP(provider->dependents, (size_t)provider->dependent_count + 1);
     provider->dependents[provider->dependent_count++] = consumer;
     return WAH_OK;
 }
@@ -10060,14 +10053,7 @@ static void wah_gc_end(wah_exec_context_t *ctx) {
 }
 
 static wah_error_t wah_gc_register_dependent(wah_gc_state_t *gc, wah_exec_context_t *dep, const wah_alloc_t *alloc) {
-    if (gc->gc_dependent_count >= gc->gc_dependents_cap) {
-        uint32_t new_cap = gc->gc_dependents_cap == 0 ? 4 : gc->gc_dependents_cap * 2;
-        void *new_ptr = gc->gc_dependents;
-        wah_error_t err = wah_realloc(alloc, new_cap, sizeof(wah_exec_context_t *), &new_ptr);
-        if (err != WAH_OK) return err;
-        gc->gc_dependents = (wah_exec_context_t **)new_ptr;
-        gc->gc_dependents_cap = new_cap;
-    }
+    WAH_ENSURE_CAP(gc->gc_dependents, (size_t)gc->gc_dependent_count + 1);
     gc->gc_dependents[gc->gc_dependent_count++] = dep;
     return WAH_OK;
 }
