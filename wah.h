@@ -11567,7 +11567,7 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
         if (!exec_ctx->linked_modules[i].owns_ctx) continue;
         wah_exec_context_t *ictx = exec_ctx->linked_modules[i].ctx;
         if (!ictx) continue;
-        if (ictx->memories && ictx->memories != exec_ctx->memories) {
+        if (ictx->memories) {
             for (uint32_t m = 0; m < ictx->memory_count; ++m) {
                 if (ictx->memories[m].is_imported && ictx->memories[m].import_ctx) {
                     wah_exec_context_t *imp_owner = ictx->memories[m].import_ctx;
@@ -11576,7 +11576,7 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
                 }
             }
         }
-        if (ictx->tables && ictx->tables != exec_ctx->tables) {
+        if (ictx->tables) {
             for (uint32_t t = 0; t < ictx->table_count; ++t) {
                 if (ictx->tables[t].is_imported && ictx->tables[t].import_ctx) {
                     wah_exec_context_t *imp_owner = ictx->tables[t].import_ctx;
@@ -11598,14 +11598,14 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
             wah_free(alloc, exec_ctx->linked_modules[i].function_table); // Not adopted yet
             if (exec_ctx->linked_modules[i].owns_ctx) {
                 wah_exec_context_t *ictx = exec_ctx->linked_modules[i].ctx;
-                if (ictx->memories && ictx->memories != exec_ctx->memories) {
+                if (ictx->memories) {
                     for (uint32_t m = 0; m < ictx->memory_count; ++m) {
                         if (!ictx->memories[m].is_imported)
                             wah_free(alloc, ictx->memories[m].data);
                     }
                     wah_free(alloc, ictx->memories);
                 }
-                if (ictx->tables && ictx->tables != exec_ctx->tables) {
+                if (ictx->tables) {
                     for (uint32_t t = 0; t < ictx->table_count; ++t) {
                         if (!ictx->tables[t].is_imported)
                             wah_free(alloc, ictx->tables[t].entries);
@@ -17478,26 +17478,15 @@ static wah_error_t wah_create_tag_contexts_for_linked_modules(wah_exec_context_t
             if (ltotal_tags > 0) {
                 wah_exec_context_t *ictx = NULL;
                 WAH_CHECK(wah_malloc(alloc, 1, sizeof(wah_exec_context_t), (void **)&ictx));
+                // Memories and tables are left to wah_create_owned_linked_contexts
                 *ictx = (wah_exec_context_t){
-                    .alloc = ctx->alloc, .module = lmod, .memories = ctx->memories, .memory_count = ctx->memory_count,
-                    .tables = ctx->tables, .table_count = ctx->table_count,
+                    .alloc = ctx->alloc, .module = lmod,
                     .globals = g_offset ? ctx->globals + g_offset : ctx->globals, .global_count = wah_global_index_limit(lmod),
                     .gc = ctx->gc, .type_check_cache = ctx->type_check_cache, .tag_instance_count = 0,
                     .max_memory_bytes = UINT64_MAX, .budget_ctx = ctx, // Owned contexts are accounted by the primary
                 };
                 ctx->linked_modules[j].ctx = ictx;
                 ctx->linked_modules[j].owns_ctx = true;
-                uint32_t lmod_total_tables = lmod->import_table_count + lmod->table_count;
-                if (lmod_total_tables > 0 && lmod_total_tables > ctx->table_count) {
-                    WAH_MALLOC_ARRAY(ictx->tables, lmod_total_tables);
-                    memset(ictx->tables, 0, lmod_total_tables * sizeof(wah_table_inst_t));
-                    ictx->table_count = lmod_total_tables;
-                    for (uint32_t ti = 0; ti < lmod->import_table_count && ti < ctx->table_count; ti++) {
-                        ictx->tables[ti] = ctx->tables[ti];
-                        ictx->tables[ti].is_imported = true;
-                    }
-                    WAH_CHECK(wah_init_local_tables(ictx->tables, lmod, lmod_total_tables, ctx));
-                }
                 wah_adopt_linked_function_table(ctx, j, ictx);
                 WAH_MALLOC_ARRAY(ictx->tag_instances, ltotal_tags);
                 for (uint32_t t = 0; t < lmod->import_tag_count; t++) {
@@ -17509,7 +17498,6 @@ static wah_error_t wah_create_tag_contexts_for_linked_modules(wah_exec_context_t
                     ictx->tag_instances[slot] =
                         (wah_tag_instance_t){ .type_index = lmod->tags[t].type_index, .identity = &ictx->tag_instances[slot] };
                 }
-                ictx->is_instantiated = true;
             }
         }
         g_offset += wah_global_index_limit(lmod);
@@ -17956,17 +17944,6 @@ static wah_error_t wah_create_owned_linked_contexts(wah_exec_context_t *ctx) {
             wah_exec_context_t *ictx = NULL;
             if (tag_path_ictx) {
                 ictx = ctx->linked_modules[j].ctx;
-                if (ictx->tables && ictx->tables != ctx->tables) {
-                    for (uint32_t ti = lmod->import_table_count; ti < ictx->table_count; ti++) {
-                        if (ictx->tables[ti].entries) wah_free(alloc, ictx->tables[ti].entries);
-                        wah_budget_release(ctx, ictx->tables[ti].size * sizeof(wah_value_t));
-                    }
-                    wah_free(alloc, ictx->tables);
-                }
-                ictx->tables = NULL;
-                ictx->table_count = 0;
-                ictx->memories = NULL;
-                ictx->memory_count = 0;
             } else {
                 WAH_CHECK(wah_malloc(alloc, 1, sizeof(wah_exec_context_t), (void **)&ictx));
                 *ictx = (wah_exec_context_t){

@@ -4822,6 +4822,37 @@ int main() {
         wah_free_module(&y);
     }
 
+    // Regression: a linked module with tags got a context borrowing the tables of the primary, which was left
+    // marked as instantiated when the instantiation failed early, so that a GC in a linked context read the table
+    // types of the linked module out of range.
+    printf("Test: failed instantiation leaves no half-built context of a linked module with tags\n");
+    {
+        wah_module_t y = {0}, l = {0}, x = {0};
+        assert_ok(wah_parse_module_from_spec(&y, "wasm \
+            types {[ struct [i32 mut], fn [] [] ]} funcs {[ 1 ]} \
+            code {[ {[1 i32] loop void i32.const 0 struct.new 0 drop \
+                local.get 0 i32.const 1 i32.add local.tee 0 i32.const 200000 i32.lt_u br_if 0 end end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&l, "wasm \
+            types {[ fn [] [] ]} tags {[ tag.type# 0 ]} exports {[ {'e'} export.tag 0 ]}"));
+        assert_ok(wah_parse_module_from_spec(&x, "wasm types {[ fn [] [] ]} \
+            imports {[ {'l'} {'missing'} tag# tag.type# 0 ]} \
+            tables {[ funcref limits.i32/1 1, funcref limits.i32/1 1, funcref limits.i32/1 1 ]}"));
+        wah_exec_context_t yctx = {0}, xctx = {0};
+        assert_ok(wah_new_exec_context(&yctx, &y, NULL));
+        assert_ok(wah_instantiate(&yctx));
+        assert_ok(wah_new_exec_context(&xctx, &x, NULL));
+        assert_ok(wah_link_context(&xctx, "y", &yctx));
+        assert_ok(wah_link_module(&xctx, "l", &l));
+        assert_err(wah_instantiate(&xctx), WAH_ERROR_LINK_FAILED);
+        assert_ok(wah_call(&yctx, 0, NULL, 0, NULL)); // Collects garbage over the domain including xctx
+
+        wah_free_exec_context(&xctx);
+        wah_free_exec_context(&yctx);
+        wah_free_module(&x);
+        wah_free_module(&l);
+        wah_free_module(&y);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
