@@ -2550,7 +2550,7 @@ typedef struct {
 // --- Type Stack for Validation ---
 #define WAH_MAX_TYPE_STACK_SIZE 1024 // Maximum size of the type stack for validation
 typedef struct {
-    wah_type_t data[WAH_MAX_TYPE_STACK_SIZE];
+    wah_type_t *data; // WAH_MAX_TYPE_STACK_SIZE entries, only valid below sp
     uint32_t sp; // Stack pointer
     uint32_t lwm; // Lowest sp since the last ref map capture; slots below it are unchanged since then
 } wah_type_stack_t;
@@ -2767,7 +2767,7 @@ typedef struct {
     uint32_t max_global_idx; // For const_expr mode: globals before this index only
 
     // Control flow validation stack
-    wah_validation_control_frame_t control_stack[WAH_MAX_CONTROL_DEPTH];
+    wah_validation_control_frame_t *control_stack; // WAH_MAX_CONTROL_DEPTH entries, only valid below control_sp
     uint32_t control_sp;
 
     // Local initialization tracking for non-defaultable locals
@@ -2776,6 +2776,12 @@ typedef struct {
     uint32_t local_init_undo_len; // At most num_non_defaultable
     uint32_t num_non_defaultable; // Number of non-defaultable locals
 } wah_validation_context_t;
+
+// Stacks of a validation context are kept apart, so that resetting the context doesn't zero them.
+typedef struct {
+    wah_type_t type_stack[WAH_MAX_TYPE_STACK_SIZE];
+    wah_validation_control_frame_t control_stack[WAH_MAX_CONTROL_DEPTH];
+} wah_validation_storage_t;
 
 // --- Analyzed-Code IR (structured output of raw-Wasm decoding + validation) ---
 
@@ -8374,7 +8380,10 @@ static wah_error_t wah_compile_const_expr(
     uint32_t max_global_idx,
     wah_parsed_code_t *out
 ) {
-    wah_validation_context_t vctx = { .mode = WAH_ANALYZE_CONST_EXPR, .module = module, .max_global_idx = max_global_idx };
+    wah_validation_storage_t storage; // Uninitialized
+    wah_validation_context_t vctx = { .mode = WAH_ANALYZE_CONST_EXPR, .module = module, .max_global_idx = max_global_idx,
+                                      .type_stack = { .data = storage.type_stack },
+                                      .control_stack = storage.control_stack };
     wah_analyzed_code_t ac = {0};
     wah_error_t err = WAH_OK;
 
@@ -9002,7 +9011,8 @@ static wah_error_t wah_parse_local_decls(const uint8_t **ptr, const uint8_t *bod
 static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     wah_error_t err = WAH_OK;
     const wah_alloc_t *alloc = &module->alloc;
-    wah_validation_context_t vctx = {0};
+    wah_validation_storage_t storage; // Uninitialized
+    wah_validation_context_t vctx = { .type_stack = { .data = storage.type_stack }, .control_stack = storage.control_stack };
     wah_analyzed_code_t ac = {0};
 
     uint32_t count;
@@ -9037,13 +9047,11 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
             .module = module,
             .func_type = func_type,
             .total_locals = func_type->param_count + module->code_bodies[i].local_count,
+            .type_stack = { .data = storage.type_stack },
+            .control_stack = storage.control_stack,
         };
 
         // Set up local initialization tracking for non-defaultable locals
-        wah_free(alloc, vctx.local_inits); vctx.local_inits = NULL;
-        wah_free(alloc, vctx.local_init_undo); vctx.local_init_undo = NULL;
-        vctx.local_init_undo_len = 0;
-        vctx.num_non_defaultable = 0;
 
         uint32_t tl = vctx.total_locals;
         uint32_t pc = func_type->param_count;
