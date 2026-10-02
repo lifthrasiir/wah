@@ -4054,25 +4054,25 @@ static WAH_ALWAYS_INLINE __m128i wah_i32x4_relaxed_dot_i8x16_i7x16_add_s_sse2(__
 
 WAH_IF_SSE41(
     static WAH_ALWAYS_INLINE __m128i wah_i16x8_extend_high_i8x16_s_sse41(__m128i a) {
-        // Shuffle bytes 8-15 to low positions: [8,9,10,11,12,13,14,15, 0x80,...]
-        return wah_mm_cvtepi8_epi16(wah_mm_shuffle_epi8(a, _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8)));
+        // Shift bytes 8-15 to low positions (pshufb would need SSSE3)
+        return wah_mm_cvtepi8_epi16(_mm_srli_si128(a, 8));
     }
     static WAH_ALWAYS_INLINE __m128i wah_i16x8_extend_high_i8x16_u_sse41(__m128i a) {
-        return wah_mm_cvtepu8_epi16(wah_mm_shuffle_epi8(a, _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8)));
+        return wah_mm_cvtepu8_epi16(_mm_srli_si128(a, 8));
     }
     static WAH_ALWAYS_INLINE __m128i wah_i32x4_extend_high_i16x8_s_sse41(__m128i a) {
-        // Shuffle words 4-7 (bytes 8-15) to low positions
-        return wah_mm_cvtepi16_epi32(wah_mm_shuffle_epi8(a, _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8)));
+        // Shift words 4-7 (bytes 8-15) to low positions
+        return wah_mm_cvtepi16_epi32(_mm_srli_si128(a, 8));
     }
     static WAH_ALWAYS_INLINE __m128i wah_i32x4_extend_high_i16x8_u_sse41(__m128i a) {
-        return wah_mm_cvtepu16_epi32(wah_mm_shuffle_epi8(a, _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8)));
+        return wah_mm_cvtepu16_epi32(_mm_srli_si128(a, 8));
     }
     static WAH_ALWAYS_INLINE __m128i wah_i64x2_extend_high_i32x4_s_sse41(__m128i a) {
-        // Shuffle dwords 2-3 (bytes 8-15) to low positions
-        return wah_mm_cvtepi32_epi64(wah_mm_shuffle_epi8(a, _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8)));
+        // Shift dwords 2-3 (bytes 8-15) to low positions
+        return wah_mm_cvtepi32_epi64(_mm_srli_si128(a, 8));
     }
     static WAH_ALWAYS_INLINE __m128i wah_i64x2_extend_high_i32x4_u_sse41(__m128i a) {
-        return wah_mm_cvtepu32_epi64(wah_mm_shuffle_epi8(a, _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8)));
+        return wah_mm_cvtepu32_epi64(_mm_srli_si128(a, 8));
     }
 
     static WAH_ALWAYS_INLINE __m128i wah_i16x8_extmul_low_i8x16_s_sse41(__m128i a, __m128i b) {
@@ -4082,16 +4082,14 @@ WAH_IF_SSE41(
         return _mm_mullo_epi16(wah_mm_cvtepu8_epi16(a), wah_mm_cvtepu8_epi16(b));
     }
     static WAH_ALWAYS_INLINE __m128i wah_i16x8_extmul_high_i8x16_s_sse41(__m128i a, __m128i b) {
-        __m128i hi_shuf = _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8);
         return _mm_mullo_epi16(
-            wah_mm_cvtepi8_epi16(wah_mm_shuffle_epi8(a, hi_shuf)),
-            wah_mm_cvtepi8_epi16(wah_mm_shuffle_epi8(b, hi_shuf)));
+            wah_mm_cvtepi8_epi16(_mm_srli_si128(a, 8)),
+            wah_mm_cvtepi8_epi16(_mm_srli_si128(b, 8)));
     }
     static WAH_ALWAYS_INLINE __m128i wah_i16x8_extmul_high_i8x16_u_sse41(__m128i a, __m128i b) {
-        __m128i hi_shuf = _mm_set_epi8(0x80,0x80,0x80,0x80,0x80,0x80,0x80,0x80, 15,14,13,12,11,10,9,8);
         return _mm_mullo_epi16(
-            wah_mm_cvtepu8_epi16(wah_mm_shuffle_epi8(a, hi_shuf)),
-            wah_mm_cvtepu8_epi16(wah_mm_shuffle_epi8(b, hi_shuf)));
+            wah_mm_cvtepu8_epi16(_mm_srli_si128(a, 8)),
+            wah_mm_cvtepu8_epi16(_mm_srli_si128(b, 8)));
     }
 
     static WAH_ALWAYS_INLINE __m128i wah_i32x4_extmul_low_i16x8_s_sse41(__m128i a, __m128i b) {
