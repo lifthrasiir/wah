@@ -4628,6 +4628,39 @@ int main() {
         wah_free_module(&m);
     }
 
+    // Regression: an owned context created early (for tags) was scanned by the GC with unresolved mutable global
+    // imports after a failed instantiation, dereferencing NULL.
+    printf("Test: GC skips unresolved mutable global imports of a failed instantiation\n");
+    {
+        const char *y_spec = "wasm \
+            types {[ struct [i32 mut], fn [] [] ]} \
+            funcs {[ 1 ]} \
+            code {[ {[1 i32] loop void i32.const 0 struct.new 0 drop \
+                        local.get 0 i32.const 1 i32.add local.tee 0 i32.const 200000 i32.lt_u br_if 0 end end} ]}";
+        const char *m_spec = "wasm \
+            types {[ fn [] [] ]} \
+            imports {[ {'nowhere'} {'g'} global# anyref mut ]} \
+            tags {[ tag.type# 0 ]}";
+        wah_module_t y = {0}, m = {0}, w = {0};
+        assert_ok(wah_parse_module_from_spec(&y, y_spec));
+        assert_ok(wah_parse_module_from_spec(&m, m_spec));
+        assert_ok(wah_parse_module_from_spec(&w, "wasm"));
+        wah_exec_context_t yctx = {0}, wctx = {0};
+        assert_ok(wah_new_exec_context(&yctx, &y, NULL));
+        assert_ok(wah_instantiate(&yctx));
+        assert_ok(wah_new_exec_context(&wctx, &w, NULL));
+        assert_ok(wah_link_context(&wctx, "y", &yctx));
+        assert_ok(wah_link_module(&wctx, "m", &m));
+        assert_err(wah_instantiate(&wctx), WAH_ERROR_LINK_FAILED);
+        assert_ok(wah_call(&yctx, 0, NULL, 0, NULL)); // Marks from the domain including wctx
+
+        wah_free_exec_context(&wctx);
+        wah_free_exec_context(&yctx);
+        wah_free_module(&w);
+        wah_free_module(&m);
+        wah_free_module(&y);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

@@ -10396,9 +10396,9 @@ static void wah_gc_visit_module_globals(const wah_module_t *module, wah_value_t 
         wah_type_t gt = wah_global_type(module, i);
         if (!WAH_TYPE_IS_REF(gt)) continue;
         // Imported mutable globals store an indirection pointer in .ref,
-        // not a GC object. Dereference to visit the actual value.
+        // not a GC object. Dereference to visit the actual value, unless not resolved yet.
         if (i < module->import_global_count && module->global_imports[i].is_mutable) {
-            visitor((wah_value_t *)globals[i].ref, userdata);
+            if (globals[i].ref) visitor((wah_value_t *)globals[i].ref, userdata);
         } else {
             visitor(&globals[i], userdata);
         }
