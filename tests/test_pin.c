@@ -374,6 +374,34 @@ static void test_host_ref_before_instantiation(void) {
     }
 }
 
+static void test_pins_of_uninstantiated_context(void) {
+    // Regression: roots of contexts that are neither instantiated nor sharing references were skipped as a whole,
+    // so that a collection in the link domain freed host objects pinned into them.
+    printf("Testing pins of a context not instantiated yet survive collections in its link domain...\n");
+    wah_module_t bmod = {0}, cmod = {0};
+    assert_ok(wah_parse_module_from_spec(&bmod, "wasm \
+        types {[ struct [i32 mut], fn [] [] ]} funcs {[ 1 ]} exports {[ {'alloc'} fn# 0 ]} \
+        code {[ {[1 i32] loop void i32.const 0 struct.new 0 drop \
+                    local.get 0 i32.const 1 i32.add local.tee 0 i32.const 200000 i32.lt_u br_if 0 end end} ]}"));
+    assert_ok(wah_parse_module_from_spec(&cmod, "wasm"));
+    wah_exec_context_t b = {0}, c = {0};
+    assert_ok(wah_new_exec_context(&b, &bmod, NULL));
+    assert_ok(wah_instantiate(&b));
+    assert_ok(wah_new_exec_context(&c, &cmod, NULL));
+    assert_ok(wah_link_context(&c, "b", &b));
+    void *host = wah_gc_alloc_host(&b, 16), *pinned = NULL;
+    assert_true(host != NULL);
+    memcpy(host, "host object here", 16);
+    assert_ok(wah_pin_ref(&c, host, &pinned));
+    assert_ok(wah_call_by_name(&b, "alloc", NULL, 0, NULL));
+    assert_true(memcmp(host, "host object here", 16) == 0);
+    assert_ok(wah_unpin_ref(&c, pinned));
+    wah_free_exec_context(&c);
+    wah_free_exec_context(&b);
+    wah_free_module(&cmod);
+    wah_free_module(&bmod);
+}
+
 static void test_pins_of_owning_context(void) {
     printf("Testing host functions pin into their own context however wasm routes calls...\n");
     wah_module_t hmod = {0}, amod = {0}, bmod = {0};
@@ -463,6 +491,7 @@ int main(void) {
     test_call_pin();
     test_pin_host_ref();
     test_host_ref_before_instantiation();
+    test_pins_of_uninstantiated_context();
 
     printf("All pin tests passed!\n");
     return 0;

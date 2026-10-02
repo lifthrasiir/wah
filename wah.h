@@ -10503,6 +10503,13 @@ static void wah_gc_visit_module_globals(const wah_module_t *module, wah_value_t 
     }
 }
 
+static void wah_gc_visit_pins(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visitor, void *userdata) {
+    if (!ctx->pins) return;
+    for (uint32_t i = 0; i < ctx->pins->slot_count; i++) {
+        if (ctx->pins->slots[i].value.ref) visitor(&ctx->pins->slots[i].value, userdata);
+    }
+}
+
 static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t visitor, void *userdata) {
     if (!visitor) return;
 
@@ -10593,11 +10600,7 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
     }
 
     // 2a. References pinned by the host
-    if (ctx->pins) {
-        for (uint32_t i = 0; i < ctx->pins->slot_count; i++) {
-            if (ctx->pins->slots[i].value.ref) visitor(&ctx->pins->slots[i].value, userdata);
-        }
-    }
+    wah_gc_visit_pins(ctx, visitor, userdata);
 
     // 3. Table elements (primary module). Imported tables are visited by their owners, which are always in the domain.
     for (uint32_t t = 0; t < ctx->table_count; t++) {
@@ -10807,8 +10810,12 @@ static bool wah_gc_step_mark(wah_exec_context_t *ctx) {
     wah_gc_worklist_t wl = { .alloc = &ctx->alloc, .module = ctx->module };
     for (uint32_t i = 0; i < domain_count; i++) {
         wah_exec_context_t *c = domain[i];
-        // Failed or ongoing instantiations may have shared references to their functions already
-        if (c != ctx && !c->is_instantiated && !c->may_share_refs) continue;
+        // Failed or ongoing instantiations may have shared references to their functions already,
+        // and the host may have pinned references into any context
+        if (c != ctx && !c->is_instantiated && !c->may_share_refs) {
+            wah_gc_visit_pins(c, wah_gc_mark_visitor, &wl);
+            continue;
+        }
         wah_gc_enumerate_roots(c, wah_gc_mark_visitor, &wl);
     }
 
