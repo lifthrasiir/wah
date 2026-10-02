@@ -1181,6 +1181,10 @@ static void test_ref_value_types_require_features(void) {
         { "wasm types {[fn [] []]} funcs {[0]} code {[{[] ref.null anyref drop end}]}", WAH_FEATURE_GC },
         { "wasm types {[fn [exnref] []]}", WAH_FEATURE_EXCEPTION },
         { "wasm types {[fn [type.ref.null.exn] []]}", WAH_FEATURE_EXCEPTION },
+        { "wasm types {[fn [] []]} funcs {[0]} code {[{[] unreachable ref.test exnref drop end}]}",
+          WAH_FEATURE_EXCEPTION },
+        { "wasm types {[fn [] []]} funcs {[0]} code {[{[] unreachable ref.cast.null exnref drop end}]}",
+          WAH_FEATURE_EXCEPTION },
     };
     #undef NO_REF_TYPES
     for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {

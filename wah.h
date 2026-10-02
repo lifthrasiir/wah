@@ -7379,6 +7379,8 @@ cleanup_block:
             if (heap_type >= 0) {
                 WAH_ENSURE(WAH_TYIDX(heap_type) < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
             }
+            // Otherwise unchecked when the operand is unreachable
+            WAH_CHECK(wah_require_type_features(vctx->module, WAH_TYPE_AS_NULLABLE(heap_type)));
             wah_type_t ref_type; POP_INTO(&ref_type);
             WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
             if (ref_type != WAH_TYPE_BOT) {
