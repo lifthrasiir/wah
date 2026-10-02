@@ -330,6 +330,9 @@ typedef uint64_t wah_features_t;
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF) && !((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
 #error "WAH_FEATURE_TYPED_FUNCREF requires WAH_FEATURE_REF_TYPES"
 #endif
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && !((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+#error "WAH_FEATURE_EXCEPTION requires WAH_FEATURE_GC, which manages exception objects"
+#endif
 
 // Macro: WAH_FORCE_MUSTTAIL [user-definable]
 // Macro: WAH_FORCE_COMPUTED_GOTO [user-definable]
@@ -10389,7 +10392,7 @@ void *wah_gc_alloc_host(wah_exec_context_t *ctx, size_t size) {
     return wah_gc_alloc(ctx, NULL, WAH_REPR_HOST, (uint32_t)size);
 }
 
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
 static wah_exception_t *wah_gc_alloc_exception(wah_exec_context_t *ctx, uint32_t value_count) {
     uint32_t fields_size = (uint32_t)(sizeof(wah_exception_t) - sizeof(wah_gc_object_t));
     uint64_t payload64 = (uint64_t)fields_size + (uint64_t)value_count * (sizeof(wah_value_t) + sizeof(wah_type_t));
@@ -11838,7 +11841,7 @@ static wah_error_t wah_push_frame(
         fctx = frame->frame_ctx; \
     } while (0)
 
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
 // The handler stack is separately limited by the stack budget.
 static wah_error_t wah_grow_exception_handlers(wah_exec_context_t *ctx) {
     uint32_t needed = ctx->exception_handler_depth + 1;
@@ -11903,7 +11906,7 @@ static wah_error_t wah_throw_exception(wah_exec_context_t *ctx, wah_exception_t 
 
     return WAH_ERROR_EXCEPTION;
 }
-#endif // WAH_FEATURE_EXCEPTION && WAH_FEATURE_GC
+#endif // WAH_FEATURE_EXCEPTION
 
 static inline bool wah_ref_test_heap_type(wah_exec_context_t *ctx, wah_value_t ref_val, wah_type_t target) {
     void *ref = ref_val.ref;
@@ -12630,7 +12633,7 @@ WAH_RUN(BR_TABLE) {
     WAH_NEXT();
 }
 
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
 
 WAH_RUN(TRY_TABLE) {
     uint32_t catch_count_val = wah_decode_u32_le(&bytecode_ip);
@@ -12725,9 +12728,9 @@ WAH_RUN(THROW_REF) {
     WAH_CLEANUP();
 }
 
-#else // !WAH_FEATURE_EXCEPTION || !WAH_FEATURE_GC
+#else // !WAH_FEATURE_EXCEPTION
 WAH_NEVER_RUN(TRY_TABLE) WAH_NEVER_RUN(END_TRY_TABLE) WAH_NEVER_RUN(TRIM_HANDLERS) WAH_NEVER_RUN(THROW) WAH_NEVER_RUN(THROW_REF)
-#endif // WAH_FEATURE_EXCEPTION && WAH_FEATURE_GC
+#endif // WAH_FEATURE_EXCEPTION
 
 WAH_RUN(I32_CONST) { (*sp++).i32 = (int32_t)wah_decode_u32_le(&bytecode_ip); WAH_NEXT(); }
 WAH_RUN(I64_CONST) { (*sp++).i64 = (int64_t)wah_decode_u64_le(&bytecode_ip); WAH_NEXT(); }
@@ -15995,7 +15998,7 @@ cleanup:
 // Unlike a full wah_gc_step, this leaves non-exception GC objects (e.g.
 // function holders) intact even if they are not reachable from the
 // enumerated roots at this point.
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
 static void wah_gc_sweep_unreachable_exceptions(wah_exec_context_t *ctx) {
     wah_gc_state_t *gc = ctx->gc;
     if (!gc || gc->exception_count == 0) return;
@@ -16037,7 +16040,7 @@ static void wah_cancel_internal(wah_exec_context_t *ctx) {
     ctx->pending_exception = NULL;
 #endif
     if (ctx->lifecycle.state == WAH_EXEC_READY) {
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
         wah_gc_sweep_unreachable_exceptions(ctx);
 #endif
         return;
@@ -16047,7 +16050,7 @@ static void wah_cancel_internal(wah_exec_context_t *ctx) {
     ctx->frame_ptr = ctx->lifecycle.base_frame_ptr;
     ctx->exception_handler_depth = ctx->lifecycle.base_handler_depth;
     ctx->lifecycle = (struct wah_exec_lifecycle_s){0};
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
     wah_gc_sweep_unreachable_exceptions(ctx);
 #endif
 }

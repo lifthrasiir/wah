@@ -163,6 +163,21 @@ static int run_feature_tests(void) {
         wah_free_module(&mod);
     }
 
+    // Test 4b: compiled-in exceptions actually run
+    if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION) {
+        printf("Testing a thrown exception is caught...\n");
+        wah_exec_context_t ctx;
+        wah_value_t result;
+        assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+            types {[fn [] [], fn [] [i32]]} funcs {[1]} tags {[tag.type# 0]} \
+            code {[{[] block void try_table void [catch_all 0] throw 0 end end i32.const 7 end}]}"));
+        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 7);
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod);
+    }
+
     // Test 5: feature closure
     printf("Testing feature closure: RELAXED_SIMD implies SIMD...\n");
     assert_true(wah_feature_closure(WAH_FEATURE_RELAXED_SIMD) & WAH_FEATURE_SIMD);
