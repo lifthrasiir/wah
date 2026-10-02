@@ -639,6 +639,7 @@ private:
     struct wah_code_body_s *code_bodies;
     struct wah_global_s *globals;
     struct wah_memory_type_s *memories;
+    uint32_t globals_cap, memories_cap; // Grown by programmatic construction
     struct wah_table_type_s *tables;
     struct wah_element_segment_s *element_segments;
     struct wah_data_segment_s *data_segments;
@@ -3093,6 +3094,15 @@ static wah_error_t wah_grow_array(const wah_alloc_t *a, size_t needed, size_t el
     return WAH_OK;
 }
 
+// Same as wah_grow_array for an array without an explicit capacity, to be called before appending its
+// count-th element. The capacity is implicitly the smallest power of two not less than the count,
+// so such an array should be grown by this function only.
+static wah_error_t wah_grow_array_pow2(const wah_alloc_t *a, uint32_t count, size_t elemsize, void **p_ptr) {
+    if (count & (count - 1)) return WAH_OK;
+    WAH_ENSURE(count <= UINT32_MAX / 2, WAH_ERROR_TOO_LARGE);
+    return wah_realloc(a, count ? (size_t)count * 2 : 1, elemsize, p_ptr);
+}
+
 #define WAH_GROW_ARRAY(ptr, cap, needed) do { \
         void *_grow_ptr = (ptr); \
         wah_error_t _grow_err = wah_grow_array(alloc, (needed), sizeof(*(ptr)), &_grow_ptr, &(cap)); \
@@ -3108,6 +3118,16 @@ static wah_error_t wah_grow_array(const wah_alloc_t *a, size_t needed, size_t el
         err = wah_grow_array(alloc, (needed), sizeof(*(ptr)), &_grow_ptr, &(cap)); \
         if (err != WAH_OK) { \
             WAH_LOG("WAH_GROW_ARRAY_GOTO(%s, %s, %s, %s) failed", #ptr, #cap, #needed, #label); \
+            goto label; \
+        } \
+        (ptr) = _grow_ptr; \
+    } while (0)
+
+#define WAH_GROW_ARRAY_POW2_GOTO(ptr, count, label) do { \
+        void *_grow_ptr = (ptr); \
+        err = wah_grow_array_pow2(alloc, (count), sizeof(*(ptr)), &_grow_ptr); \
+        if (err != WAH_OK) { \
+            WAH_LOG("WAH_GROW_ARRAY_POW2_GOTO(%s, %s, %s) failed", #ptr, #count, #label); \
             goto label; \
         } \
         (ptr) = _grow_ptr; \
@@ -5159,7 +5179,9 @@ static wah_error_t wah_module_alloc_repr(wah_module_t *module, uint32_t typeidx,
     uint32_t new_id = module->repr_count;
     uint32_t new_count = new_id + 1;
 
-    WAH_CHECK(wah_realloc(alloc, new_count, sizeof(wah_repr_info_t *), (void **)&module->repr_infos));
+    void *new_infos = module->repr_infos;
+    WAH_CHECK(wah_grow_array_pow2(alloc, new_id, sizeof(wah_repr_info_t *), &new_infos));
+    module->repr_infos = (wah_repr_info_t **)new_infos;
 
     size_t info_size = sizeof(wah_repr_info_t) + info->count * sizeof(wah_repr_field_t);
     uint8_t *_alloc_bytes;
@@ -5214,7 +5236,7 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
     wah_module_clear_type_metadata(module);
     if (module->type_count == 0) return WAH_OK;
 
-    WAH_MALLOC_ARRAY_GOTO(canonical_map, module->type_count, cleanup);
+    WAH_MALLOC_ARRAY_GOTO(canonical_map, module->types_cap, cleanup);
     for (uint32_t i = 0; i < module->type_count; ++i) canonical_map[i] = i;
 
     // Find canonical rec groups by hash. Groups are sorted by hash instead of being put into a hash table,
@@ -5313,7 +5335,7 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
         #undef WAH_SUBTYPE_CHECK
     }
 
-    WAH_MALLOC_ARRAY_GOTO(module->typeidx_to_repr, module->type_count, cleanup);
+    WAH_MALLOC_ARRAY_GOTO(module->typeidx_to_repr, module->types_cap, cleanup);
     for (uint32_t i = 0; i < module->type_count; ++i) module->typeidx_to_repr[i] = WAH_REPR_NONE;
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
@@ -5376,23 +5398,18 @@ static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
     wah_error_t err;
     const wah_alloc_t *alloc = &module->alloc;
     uint32_t idx;
-    void *new_ptr;
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     wah_repr_info_t *info = NULL;
     wah_repr_t repr_id = WAH_REPR_NONE;
 #endif
 
-    WAH_ASSERT(module->type_count > 0);
+    WAH_ASSERT(module->type_count > 0 && module->type_count <= module->types_cap);
     idx = module->type_count - 1;
 
-    new_ptr = module->typeidx_to_repr;
-    WAH_CHECK(wah_realloc(alloc, module->type_count, sizeof(module->typeidx_to_repr[0]), &new_ptr));
-    module->typeidx_to_repr = (int32_t *)new_ptr;
+    // Kept as large as types by wah_type_section_ensure_capacity once allocated
+    if (!module->typeidx_to_repr) WAH_MALLOC_ARRAY(module->typeidx_to_repr, module->types_cap);
     module->typeidx_to_repr[idx] = WAH_REPR_NONE;
-
-    new_ptr = module->canonical_map;
-    WAH_CHECK(wah_realloc(alloc, module->type_count, sizeof(module->canonical_map[0]), &new_ptr));
-    module->canonical_map = (uint32_t *)new_ptr;
+    if (!module->canonical_map) WAH_MALLOC_ARRAY(module->canonical_map, module->types_cap);
     module->canonical_map[idx] = idx;
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
@@ -8452,8 +8469,13 @@ static wah_error_t wah_read_section_header(const uint8_t **ptr, const uint8_t *e
 static wah_error_t wah_type_section_ensure_capacity(wah_module_t *module, uint32_t needed) {
     const wah_alloc_t *alloc = &module->alloc;
     if (needed <= module->types_cap) return WAH_OK;
-    WAH_ENSURE_CAP(module->types, needed);
-    WAH_REALLOC_ARRAY(module->type_defs, module->types_cap);
+    uint32_t cap = module->types_cap; // Committed only when all arrays are grown
+    WAH_GROW_ARRAY(module->types, cap, needed);
+    WAH_REALLOC_ARRAY(module->type_defs, cap);
+    // Type metadata, once built, is kept as large as types
+    if (module->typeidx_to_repr) WAH_REALLOC_ARRAY(module->typeidx_to_repr, cap);
+    if (module->canonical_map) WAH_REALLOC_ARRAY(module->canonical_map, cap);
+    module->types_cap = cap;
     return WAH_OK;
 }
 
@@ -9098,6 +9120,7 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
 
     module->global_count = 0;
     WAH_MALLOC_ARRAY(module->globals, count);
+    module->globals_cap = count;
 
     for (uint32_t i = 0; i < count; ++i) {
         module->globals[i] = (wah_global_t){0};
@@ -9128,6 +9151,7 @@ static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *
     module->memory_count = count;
     if (count > 0) {
         WAH_MALLOC_ARRAY(module->memories, count);
+        module->memories_cap = count;
 
         for (uint32_t i = 0; i < count; ++i) {
             WAH_ENSURE(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF);
@@ -15532,10 +15556,8 @@ static bool wah_type_spec_parse_type(wah_type_spec_parser_t *p, bool allow_packe
 
 static wah_error_t wah_type_spec_push_type(wah_type_t **arr, uint32_t *count, wah_type_t type, const wah_alloc_t *alloc) {
     wah_error_t err;
-    uint32_t new_count = *count + 1;
-    WAH_REALLOC_ARRAY_GOTO(*arr, new_count, cleanup);
-    (*arr)[*count] = type;
-    *count = new_count;
+    WAH_GROW_ARRAY_POW2_GOTO(*arr, *count, cleanup);
+    (*arr)[(*count)++] = type;
     return WAH_OK;
 cleanup:
     return err;
@@ -15593,12 +15615,10 @@ cleanup:
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 static wah_error_t wah_type_spec_push_field(wah_type_def_t *td, wah_type_t type, bool is_mutable, const wah_alloc_t *alloc) {
     wah_error_t err;
-    uint32_t new_count = td->field_count + 1;
-    WAH_REALLOC_ARRAY_GOTO(td->field_types, new_count, cleanup);
-    WAH_REALLOC_ARRAY_GOTO(td->field_mutables, new_count, cleanup);
+    WAH_GROW_ARRAY_POW2_GOTO(td->field_types, td->field_count, cleanup);
+    WAH_GROW_ARRAY_POW2_GOTO(td->field_mutables, td->field_count, cleanup);
     td->field_types[td->field_count] = type;
-    td->field_mutables[td->field_count] = is_mutable;
-    td->field_count = new_count;
+    td->field_mutables[td->field_count++] = is_mutable;
     return WAH_OK;
 cleanup:
     return err;
@@ -16398,7 +16418,7 @@ static wah_error_t wah_export_global_internal(wah_module_t *mod, const char *nam
 
     WAH_CHECK_GOTO(wah_module_ensure_export(mod, name), cleanup);
 
-    WAH_REALLOC_ARRAY_GOTO(mod->globals, mod->global_count + 1, cleanup);
+    WAH_ENSURE_CAP_GOTO(mod->globals, (size_t)mod->global_count + 1, cleanup);
 
     name_copy = wah_strdup(name, alloc);
     WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
@@ -16427,7 +16447,7 @@ wah_error_t wah_export_memory(wah_module_t *mod, const char *name, uint64_t min_
 
     WAH_CHECK_GOTO(wah_module_ensure_export(mod, name), cleanup);
 
-    WAH_REALLOC_ARRAY_GOTO(mod->memories, mod->memory_count + 1, cleanup);
+    WAH_ENSURE_CAP_GOTO(mod->memories, (size_t)mod->memory_count + 1, cleanup);
 
     name_copy = wah_strdup(name, alloc);
     WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);

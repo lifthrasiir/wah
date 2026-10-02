@@ -140,6 +140,41 @@ static void *peak_realloc(void *ptr, size_t size, void *userdata) {
     return q;
 }
 
+// Arrays grown by n appends from external inputs should only take O(log n) reallocations.
+static size_t growth_reallocs;
+static void *growth_malloc(size_t size, void *userdata) { (void)userdata; return malloc(size); }
+static void *growth_realloc(void *ptr, size_t size, void *userdata) {
+    (void)userdata;
+    if (ptr) growth_reallocs++;
+    return realloc(ptr, size);
+}
+static void growth_free(void *ptr, void *userdata) { (void)userdata; free(ptr); }
+
+static int test_logarithmic_growth(void) {
+    enum { N = 1024 };
+    wah_alloc_t alloc = { growth_malloc, growth_realloc, growth_free, NULL };
+    wah_module_t mod;
+    assert_ok(wah_new_module(&mod, &alloc));
+    growth_reallocs = 0;
+    for (int i = 0; i < N; i++) {
+        char name[32];
+        wah_type_t t;
+        assert_ok(wah_define_type(&mod, &t, "fresh struct { i32 }"));
+        snprintf(name, sizeof(name), "g%d", i);
+        assert_ok(wah_export_global_i32(&mod, name, false, i));
+        snprintf(name, sizeof(name), "m%d", i);
+        assert_ok(wah_export_memory(&mod, name, 1, 1));
+    }
+    char spec[8 * N + 16] = "fn (i32";
+    for (int i = 1; i < N; i++) strcat(spec, ", i32");
+    strcat(spec, ")");
+    wah_type_t t;
+    assert_ok(wah_define_type(&mod, &t, spec));
+    printf("  %zu reallocations for %d types, globals and memories\n", growth_reallocs, N);
+    wah_free_module(&mod);
+    return growth_reallocs < N / 4;
+}
+
 int main(void) {
     tracking_alloc_t module_counts = {0};
     tracking_alloc_t context_counts = {0};
@@ -171,6 +206,7 @@ int main(void) {
     if (!tracking_ok("context", &context_counts) || !tracking_ok("module", &module_counts)) {
         return 1;
     }
+    if (!test_logarithmic_growth()) return 1;
 
     tracking_alloc_t builder_counts = {0};
     wah_alloc_t builder_alloc = { tracking_malloc, tracking_realloc, tracking_free, &builder_counts };
