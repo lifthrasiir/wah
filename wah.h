@@ -16249,8 +16249,10 @@ static wah_error_t wah_start_function_internal(
 
     wah_error_t err = wah_push_frame(ctx, fn_module, local_idx,
         ctx->sp - func_type->param_count, func_type->result_count, fn->fn_ctx, preflight_top);
-    if (err != WAH_OK) {
+    if (err != WAH_OK) { // wah_init_wasm_frame may fail after the frame was pushed
         ctx->sp = ctx->lifecycle.base_sp;
+        ctx->call_depth = ctx->lifecycle.base_call_depth;
+        ctx->frame_ptr = ctx->lifecycle.base_frame_ptr;
         ctx->lifecycle = (struct wah_exec_lifecycle_s){0};
         return err;
     }
