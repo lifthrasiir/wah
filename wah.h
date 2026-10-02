@@ -12372,9 +12372,10 @@ WAH_RUN(TRY_TABLE) {
 }
 
 WAH_RUN(END_TRY_TABLE) {
-    WAH_ASSERT(ctx->exception_handler_depth > 0);
+    WAH_ENSURE_GOTO(ctx->exception_handler_depth > 0, WAH_ERROR_TRAP, cleanup);
     ctx->exception_handler_depth--;
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 // Drops handlers of try_tables left by a branch, keeping `depth` handlers in the current frame.
@@ -12382,9 +12383,10 @@ WAH_RUN(TRIM_HANDLERS) {
     uint32_t depth = wah_decode_u32_le(&bytecode_ip);
     uint32_t base = ctx->exception_handler_depth;
     while (base > 0 && ctx->exception_handlers[base - 1].call_depth >= ctx->call_depth) base--;
-    WAH_ASSERT(base + depth <= ctx->exception_handler_depth);
+    WAH_ENSURE_GOTO(depth <= ctx->exception_handler_depth - base, WAH_ERROR_TRAP, cleanup);
     ctx->exception_handler_depth = base + depth;
     WAH_NEXT();
+    WAH_CLEANUP();
 }
 
 WAH_RUN(THROW) {
@@ -16729,7 +16731,7 @@ static wah_error_t wah_init_active_elem_segments(wah_exec_context_t *ctx) {
     for (uint32_t i = 0; i < module->element_segment_count; ++i) {
         const wah_element_segment_t *segment = &module->element_segments[i];
         if (!segment->is_active || segment->is_declarative) continue;
-        WAH_ASSERT(segment->table_idx < ctx->table_count);
+        WAH_ENSURE(segment->table_idx < ctx->table_count, WAH_ERROR_VALIDATION_FAILED);
         wah_value_t offset_val;
         WAH_CHECK(wah_eval_const_expr(ctx, &ctx->fuel, segment->offset_expr.bytecode, segment->offset_expr.bytecode_size, &offset_val));
         uint64_t offset;
