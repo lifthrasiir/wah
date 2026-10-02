@@ -374,10 +374,60 @@ static void test_host_ref_before_instantiation(void) {
     }
 }
 
+static void test_pins_of_owning_context(void) {
+    printf("Testing host functions pin into their own context however wasm routes calls...\n");
+    wah_module_t hmod = {0}, amod = {0}, bmod = {0};
+    wah_exec_context_t a = {0}, b = {0};
+    assert_ok(wah_new_module(&hmod, NULL));
+    assert_ok(wah_export_func(&hmod, "f", "(externref) -> externref", host_swap, NULL, NULL));
+    assert_ok(wah_parse_module_from_spec(&amod, "wasm \
+        types {[ struct [i32 mut], fn [externref] [externref], fn [] [] ]} \
+        imports {[ {'h'} {'f'} fn# 1 ]} funcs {[ 1, 2 ]} \
+        exports {[ {'wrap'} fn# 1, {'f'} fn# 0, {'churn'} fn# 2 ]} \
+        code {[ {[] local.get 0 call 0 end}, \
+                {[1 i32] loop void i32.const 0 struct.new 0 drop \
+                    local.get 0 i32.const 1 i32.add local.tee 0 i32.const 200000 i32.lt_u br_if 0 end end} ]}"));
+    // Calls A's host function through A's code and through A's re-export
+    assert_ok(wah_parse_module_from_spec(&bmod, "wasm types {[ fn [externref] [externref] ]} \
+        imports {[ {'A'} {'wrap'} fn# 0, {'A'} {'f'} fn# 0 ]} funcs {[ 0, 0 ]} \
+        exports {[ {'wrap'} fn# 2, {'f'} fn# 3 ]} \
+        code {[ {[] local.get 0 call 0 end}, {[] local.get 0 call 1 end} ]}"));
+    assert_ok(wah_new_exec_context(&a, &amod, NULL));
+    assert_ok(wah_link_module(&a, "h", &hmod));
+    assert_ok(wah_instantiate(&a));
+    assert_ok(wah_new_exec_context(&b, &bmod, NULL));
+    assert_ok(wah_link_context(&b, "A", &a));
+    assert_ok(wah_instantiate(&b));
+
+    // A pin of the host in A, whose token would be the first one of any other pin table
+    void *x = wah_gc_alloc_host(&a, 16), *x_pin = NULL;
+    assert_ok(wah_pin_ref(&a, x, &x_pin));
+    prev_pinned = NULL;
+    void *prev = NULL;
+    for (int i = 0; i < 6; i++) {
+        wah_exec_context_t *ctx = i % 2 ? &a : &b;
+        const char *name = i % 2 ? "wrap" : i % 4 ? "f" : "wrap";
+        void *obj = wah_gc_alloc_host(&a, 16);
+        wah_value_t arg = { .ref = obj }, r = {0};
+        assert_ok(wah_call_by_name(ctx, name, &arg, 1, &r));
+        assert_true(r.ref == prev);
+        prev = obj;
+        assert_ok(wah_call_by_name(&a, "churn", NULL, 0, NULL));
+    }
+    assert_ok(wah_unpin_ref(&a, x_pin));
+    wah_free_exec_context(&b);
+    wah_free_exec_context(&a);
+    prev_pinned = NULL;
+    wah_free_module(&bmod);
+    wah_free_module(&amod);
+    wah_free_module(&hmod);
+}
+
 int main(void) {
     test_swap("(externref) -> externref", "externref", "extern.convert_any", "any.convert_extern");
     test_swap("(anyref) -> anyref", "anyref", "", "");
     test_swap_reenter();
+    test_pins_of_owning_context();
     test_non_nullable_host_refs();
 
     test_misuse("returning a pinned reference", "(externref) -> externref", "externref", "externref",

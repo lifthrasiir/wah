@@ -1252,6 +1252,8 @@ void *wah_param_ref(const wah_call_context_t *ctx, size_t index);
 //   Get a reference parameter passed to a host function by index, pinned so that the host can keep it after
 //   the call. A pinned reference is opaque and can only be given to `wah_result_ref` in host function calls
 //   of the same execution context, until it is released by `wah_unpin_ref` or the context is freed.
+//   It belongs to the context that the host function was linked into, even when called through other
+//   contexts linked by `wah_link_context`.
 //   Pinned references can be also passed as parameters to `wah_call` and so on.
 //
 //   - idx [in]: Index of the parameter to retrieve. Must be less than the number of parameters.
@@ -2404,6 +2406,7 @@ static wah_opcode_t wah_x86_64_opcode(wah_opcode_t opcode, wah_x86_64_features_t
 
 struct wah_call_context_s {
     struct wah_exec_context_s *exec;
+    struct wah_exec_context_s *pin_ctx; // Owner of pinned references, fixed for the host function unlike exec
     const struct wah_module_s *module; // Module of the host function, which param_types and result_types refer to
 
     size_t nparams, nresults;
@@ -2675,7 +2678,7 @@ typedef struct wah_function_s {
     // WASM function fields (only valid when is_host == false)
     uint32_t local_idx;                    // local index within fn_module->code_bodies[]
     const struct wah_module_s *fn_module;  // owning module (NULL means ctx->module)
-    struct wah_exec_context_s *fn_ctx;     // owning exec context (NULL means current ctx)
+    struct wah_exec_context_s *fn_ctx;     // owning exec context (NULL means current ctx), also set for host functions
 } wah_function_t;
 
 typedef struct wah_function_holder_s {
@@ -9040,9 +9043,10 @@ static wah_error_t wah_validate_function_import_type(
     return WAH_OK;
 }
 
+// importer_ctx owns host functions not yet bound to any context, so re-exports can't change their pin_ctx.
 static void wah_bind_function_import_slot(
     wah_function_holder_t *slot, const wah_module_t *provider, wah_exec_context_t *provider_ctx,
-    const wah_export_t *exp, uint32_t provider_local_idx, const wah_function_t *src
+    const wah_export_t *exp, uint32_t provider_local_idx, const wah_function_t *src, wah_exec_context_t *importer_ctx
 ) {
     *slot = (wah_function_holder_t){ .header = (wah_gc_object_t)WAH_FUNCREF_HEADER, .func = *src };
     slot->func.global_idx = exp->index;
@@ -9050,6 +9054,8 @@ static void wah_bind_function_import_slot(
     if (!src->is_host) {
         slot->func.local_idx = provider_local_idx;
         slot->func.fn_ctx = provider_ctx;
+    } else if (!slot->func.fn_ctx) {
+        slot->func.fn_ctx = importer_ctx;
     }
 }
 
@@ -11405,9 +11411,9 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
     // Import slots are zero-initialized here; wah_instantiate() fills them in.
     // Local/host slots are shallow copies of module->functions[]; module->functions[]
     // is fully initialized at parse time (local_idx, global_idx, fn_module), so the
-    // copy needs only one per-instance fixup: fn_ctx for non-host wasm functions, so
-    // funcrefs into this table dispatch correctly even when handled by a third-party
-    // context that has not directly linked us.
+    // copy needs only one per-instance fixup: fn_ctx, so funcrefs into this table dispatch
+    // correctly even when handled by a third-party context that has not directly linked us
+    // (and host functions pin into this context).
     uint32_t import_count = module->import_function_count;
     WAH_ENSURE_GOTO(module->local_function_count <= UINT32_MAX - import_count, WAH_ERROR_TOO_LARGE, cleanup);
     uint32_t table_size = import_count + module->local_function_count;
@@ -11421,9 +11427,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
         // Copy local/host functions at offset import_count
         for (uint32_t i = 0; i < module->local_function_count; i++) {
             exec_ctx->function_table[import_count + i] = module->functions[i];
-            if (!module->functions[i].func.is_host) {
-                exec_ctx->function_table[import_count + i].func.fn_ctx = exec_ctx;
-            }
+            exec_ctx->function_table[import_count + i].func.fn_ctx = exec_ctx;
         }
     }
 
@@ -11943,8 +11947,10 @@ static wah_error_t wah_call_host_function_internal(
     uint32_t param_count,
     wah_value_t *results
 ) {
+    // Owned contexts pin into their primary, which the host knows
     wah_call_context_t call_ctx = {
-        .exec = exec_ctx, .module = fn->fn_module ? fn->fn_module : exec_ctx->module,
+        .exec = exec_ctx, .pin_ctx = fn->fn_ctx ? wah_budget_owner(fn->fn_ctx) : exec_ctx,
+        .module = fn->fn_module ? fn->fn_module : exec_ctx->module,
         .nparams = param_count, .params = params,
         .nresults = fn->nresults, .results = results,
         .param_types = fn->param_types, .result_types = fn->result_types,
@@ -16960,7 +16966,7 @@ void *wah_param_pinned_ref(wah_call_context_t *ctx, size_t index) {
     WAH_ASSERT(WAH_TYPE_IS_REF(ctx->param_types[index]) && "Parameter type mismatch");
     if (ctx->params[index].ref == NULL) return NULL;
     void *pinned = NULL;
-    wah_error_t err = wah_pin(ctx->exec, ctx->params[index], ctx->module,
+    wah_error_t err = wah_pin(ctx->pin_ctx, ctx->params[index], ctx->module,
                               WAH_TYPE_AS_NON_NULL(ctx->param_types[index]), &pinned);
     if (err != WAH_OK) {
         if (ctx->trap_reason == WAH_OK) ctx->trap_reason = err;
@@ -16986,7 +16992,7 @@ wah_error_t wah_unpin_ref(wah_exec_context_t *ctx, void *pinned_ref) {
 
 void wah_unpin_ref_from_host(wah_call_context_t *ctx, void *pinned_ref) {
     WAH_ASSERT(ctx && "Call context is NULL");
-    if (!wah_unpin(ctx->exec, pinned_ref)) wah_call_misuse(ctx);
+    if (!wah_unpin(ctx->pin_ctx, pinned_ref)) wah_call_misuse(ctx);
 }
 
 size_t wah_result_count(const wah_call_context_t *ctx) {
@@ -17017,8 +17023,8 @@ void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value) {
         return;
     }
     if (((uintptr_t)value & 3) == WAH_PIN_TAG) {
-        wah_pin_slot_t *s = wah_pinned_slot(ctx->exec, value);
-        if (!s || !wah_pin_accepts(ctx->exec, s, ctx->module, ctx->result_types[index])) {
+        wah_pin_slot_t *s = wah_pinned_slot(ctx->pin_ctx, value);
+        if (!s || !wah_pin_accepts(ctx->pin_ctx, s, ctx->module, ctx->result_types[index])) {
             wah_call_misuse(ctx);
             return;
         }
@@ -17269,7 +17275,7 @@ static wah_error_t wah_bind_linked_function_imports(wah_exec_context_t *ctx, uin
                                               &actual_ctx, &actual_local_idx, &src, &actual_global_idx));
         WAH_CHECK(wah_validate_function_import_type(&ctx->alloc, lmod, lfi->type_index, actual_provider, actual_local_idx, src));
         wah_gc_object_t header = table[fi].header;
-        wah_bind_function_import_slot(&table[fi], actual_provider, actual_ctx, exp, actual_local_idx, src);
+        wah_bind_function_import_slot(&table[fi], actual_provider, actual_ctx, exp, actual_local_idx, src, ctx);
         table[fi].header = header;
     }
     return WAH_OK;
@@ -17388,7 +17394,7 @@ static wah_error_t wah_resolve_primary_func_imports(wah_exec_context_t *ctx) {
                                               &provider_local_idx, &src, &provider_global_idx));
 
         WAH_CHECK(wah_validate_function_import_type(&ctx->alloc, module, fi->type_index, provider, provider_local_idx, src));
-        wah_bind_function_import_slot(&ctx->function_table[i], provider, provider_ctx, exp, provider_local_idx, src);
+        wah_bind_function_import_slot(&ctx->function_table[i], provider, provider_ctx, exp, provider_local_idx, src, ctx);
     }
     return WAH_OK;
 }
