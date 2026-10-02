@@ -11172,7 +11172,8 @@ cleanup:
     if (pthread_mutex_init(&timer->mutex, NULL) != 0) goto cleanup;
     if (pthread_condattr_init(&attr) != 0) goto cleanup_mutex;
 #if defined(CLOCK_MONOTONIC) && !defined(__APPLE__)
-    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    // Deadlines are given in CLOCK_MONOTONIC, which would always time out against the default clock
+    if (pthread_condattr_setclock(&attr, CLOCK_MONOTONIC) != 0) goto cleanup_attr;
 #endif
     if (pthread_cond_init(&timer->cond, &attr) != 0) goto cleanup_attr;
     pthread_condattr_destroy(&attr);
