@@ -1511,6 +1511,61 @@ int main() {
         wah_free_module(&m1);
     }
 
+    // Regression: the owner of a memory or table imported back via a re-export cycle had a stale alias
+    // when the other module grew it, and the code ran from a context linked by wah_link_context.
+    printf("Test: self-imported aliases updated on grow from another context (security regression)\n");
+    {
+        const char *m1_specs[] = {
+            "wasm types {[ fn [] [i32] ]} \
+                imports {[ {'M2'} {'m'} mem# limits.i32/1 1 ]} funcs {[ 0 ]} memories {[ limits.i32/1 1 ]} \
+                exports {[ {'m'} mem# 1, {'size'} fn# 0 ]} \
+                code {[ {[] i32.const 0 i32.load 2 0 drop memory.size 0 end} ]}",
+            "wasm types {[ fn [] [i32] ]} \
+                imports {[ {'M2'} {'t'} table# funcref limits.i32/1 1 ]} funcs {[ 0 ]} \
+                tables {[ funcref limits.i32/1 1 ]} \
+                exports {[ {'t'} table# 1, {'size'} fn# 0 ]} \
+                code {[ {[] i32.const 0 table.get 0 drop table.size 0 end} ]}",
+        };
+        const char *m2_specs[] = {
+            "wasm types {[ fn [] [i32] ]} \
+                imports {[ {'M1'} {'m'} mem# limits.i32/1 1 ]} funcs {[ 0 ]} \
+                exports {[ {'m'} mem# 0, {'grow'} fn# 0 ]} \
+                code {[ {[] i32.const 100 memory.grow 0 end} ]}",
+            "wasm types {[ fn [] [i32] ]} \
+                imports {[ {'M1'} {'t'} table# funcref limits.i32/1 1 ]} funcs {[ 0 ]} \
+                exports {[ {'t'} table# 0, {'grow'} fn# 0 ]} \
+                code {[ {[] ref.null funcref i32.const 1000 table.grow 0 end} ]}",
+        };
+        for (int i = 0; i < 2; i++) {
+            wah_module_t m1 = {0}, m2 = {0}, primary = {0}, outer = {0};
+            assert_ok(wah_parse_module_from_spec(&m1, m1_specs[i]));
+            assert_ok(wah_parse_module_from_spec(&m2, m2_specs[i]));
+            assert_ok(wah_parse_module_from_spec(&primary, "wasm types {[ fn [] [i32] ]} \
+                imports {[ {'M2'} {'grow'} fn# 0, {'M1'} {'size'} fn# 0 ]} exports {[ {'grow'} fn# 0, {'size'} fn# 1 ]}"));
+            assert_ok(wah_parse_module_from_spec(&outer, "wasm types {[ fn [] [i32] ]} \
+                imports {[ {'P'} {'grow'} fn# 0, {'P'} {'size'} fn# 0 ]} exports {[ {'grow'} fn# 0, {'size'} fn# 1 ]}"));
+            wah_exec_context_t ctx = {0}, octx = {0};
+            assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+            assert_ok(wah_link_module(&ctx, "M1", &m1));
+            assert_ok(wah_link_module(&ctx, "M2", &m2));
+            assert_ok(wah_instantiate(&ctx));
+            assert_ok(wah_new_exec_context(&octx, &outer, NULL));
+            assert_ok(wah_link_context(&octx, "P", &ctx));
+            assert_ok(wah_instantiate(&octx));
+            wah_value_t result;
+            assert_ok(wah_call_by_name(&octx, "grow", NULL, 0, &result));
+            assert_eq_i32(result.i32, 1);
+            assert_ok(wah_call_by_name(&octx, "size", NULL, 0, &result));
+            assert_eq_i32(result.i32, i == 0 ? 101 : 1001);
+            wah_free_exec_context(&octx);
+            wah_free_exec_context(&ctx);
+            wah_free_module(&outer);
+            wah_free_module(&primary);
+            wah_free_module(&m2);
+            wah_free_module(&m1);
+        }
+    }
+
     // Regression: linked module internal call must use the linked module's
     // function index space, not the primary module's function_table.
     printf("Test: linked module internal call uses correct function index space (security regression)\n");
