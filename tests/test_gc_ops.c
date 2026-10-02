@@ -982,6 +982,35 @@ static void test_array_new_data() {
     wah_free_module(&module);
 }
 
+static void test_array_new_data_empty_segment() {
+    printf("Testing array.new_data from an empty data segment...\n");
+
+    // The empty segment has no data buffer, which must not be passed to memcpy
+    const char *spec = "wasm \
+        types {[ array i8 mut, fn [] [i32] ]} \
+        funcs {[ 1 ]} \
+        datacount { 1 } \
+        code {[ {[] \
+            i32.const 0 i32.const 0 array.new_data 0 0 \
+            array.len \
+        end } ]} \
+        data {[ data.passive {%''} ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 0);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&module);
+}
+
 static void test_array_init_data() {
     printf("Testing array.init_data...\n");
 
@@ -1436,6 +1465,7 @@ int main() {
     test_array_copy();
     test_array_copy_nonnull_reject();
     test_array_new_data();
+    test_array_new_data_empty_segment();
     test_array_init_data();
     test_array_new_huge_i8_length_oom();
     test_struct_packed_fields();

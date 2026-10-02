@@ -12992,7 +12992,7 @@ WAH_RUN(ARRAY_NEW_DATA) {
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
     wah_bulk_fuel_charge(ctx, (uint64_t)size * info->size);
     uint8_t *elems = (uint8_t *)obj + sizeof(wah_gc_array_body_t);
-    memcpy(elems, seg->data + offset, (size_t)size * esz);
+    if (size > 0) memcpy(elems, seg->data + offset, (size_t)size * esz); // Empty segments have no data
     (*sp++).ref = obj;
     WAH_NEXT();
     WAH_CLEANUP();
