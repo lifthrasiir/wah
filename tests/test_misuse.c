@@ -78,6 +78,10 @@ static void test_module_builder_misuse(void) {
     wah_module_t mod = {0};
     assert_ok(wah_new_module(&mod, NULL));
     assert_err(wah_export_global_v128(&mod, "g", false, NULL), WAH_ERROR_MISUSE); // Used to dereference it
+    // Exported memories are i32 memories, limited to 65536 pages
+    assert_err(wah_export_memory(&mod, "m", 65537, UINT64_MAX), WAH_ERROR_MISUSE);
+    assert_err(wah_export_memory(&mod, "m", 1, 65537), WAH_ERROR_MISUSE);
+    assert_ok(wah_export_memory(&mod, "m", 1, 65536));
     wah_free_module(&mod);
 }
 

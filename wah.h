@@ -1191,8 +1191,8 @@ wah_error_t wah_export_typed_func(wah_module_t *mod, const char *name, wah_type_
 //   Exports a new memory from the module.
 //
 //   - name [in, borrowed]: Zero-terminated name of the export.
-//   - min_pages [in]: Initial memory size in WebAssembly pages (64KiB each).
-//   - max_pages [in]: Optional maximum memory size in pages. Use UINT64_MAX for no maximum.
+//   - min_pages [in]: Initial memory size in WebAssembly pages (64KiB each), at most 65536 as it is 32-bit.
+//   - max_pages [in]: Optional maximum memory size in pages, at most 65536. Use UINT64_MAX for no maximum.
 wah_error_t wah_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages);
 
 // Function: wah_export_global_*
@@ -16839,6 +16839,7 @@ wah_error_t wah_export_memory(wah_module_t *mod, const char *name, uint64_t min_
     const wah_alloc_t *alloc = &mod->alloc;
     WAH_ENSURE(min_pages > 0, WAH_ERROR_MISUSE);
     WAH_ENSURE(max_pages >= min_pages, WAH_ERROR_MISUSE);
+    WAH_ENSURE(min_pages <= 65536 && (max_pages <= 65536 || max_pages == UINT64_MAX), WAH_ERROR_MISUSE); // i32 memory
 
     WAH_CHECK_GOTO(wah_module_ensure_export(mod, name), cleanup);
 
