@@ -1145,6 +1145,42 @@ static void test_v128_locals_and_block_types_require_simd_feature(void) {
     wah_free_module(&module);
 }
 
+// Reference value types used to be accepted with their features disabled.
+static void test_ref_value_types_require_features(void) {
+    printf("Running test_ref_value_types_require_features...\n");
+    // GC and typed funcrefs imply reference types
+    #define NO_REF_TYPES (WAH_FEATURE_REF_TYPES | WAH_FEATURE_GC | WAH_FEATURE_TYPED_FUNCREF)
+    static const struct { const char *spec; wah_features_t missing; } cases[] = {
+        { "wasm types {[fn [externref] []]}", NO_REF_TYPES },
+        { "wasm types {[fn [] [funcref]]}", NO_REF_TYPES },
+        { "wasm types {[fn [] []]} funcs {[0]} code {[{[1 externref] end}]}", NO_REF_TYPES },
+        { "wasm types {[fn [] []]} funcs {[0]} code {[{[] block funcref unreachable end drop end}]}", NO_REF_TYPES },
+        { "wasm globals {[externref immut ref.null externref end]}", NO_REF_TYPES },
+        { "wasm imports {[{'m'} {'g'} global# funcref immut]}", NO_REF_TYPES },
+        { "wasm tables {[externref limits.i32/1 1]}", NO_REF_TYPES },
+        { "wasm imports {[{'m'} {'t'} table# externref limits.i32/1 1]}", NO_REF_TYPES },
+        { "wasm types {[fn [type.ref.func] []]}", WAH_FEATURE_TYPED_FUNCREF },
+        { "wasm types {[fn [] [], fn [type.ref.null 0] []]}", WAH_FEATURE_TYPED_FUNCREF },
+        { "wasm types {[fn [anyref] []]}", WAH_FEATURE_GC },
+        { "wasm types {[fn [type.ref.null.i31] []]}", WAH_FEATURE_GC },
+        { "wasm types {[fn [type.ref.null.none] []]}", WAH_FEATURE_GC },
+        { "wasm types {[fn [] []]} funcs {[0]} code {[{[1 type.ref.null.eq] end}]}", WAH_FEATURE_GC },
+        { "wasm types {[fn [] []]} funcs {[0]} code {[{[] ref.null anyref drop end}]}", WAH_FEATURE_GC },
+        { "wasm types {[fn [exnref] []]}", WAH_FEATURE_EXCEPTION },
+        { "wasm types {[fn [type.ref.null.exn] []]}", WAH_FEATURE_EXCEPTION },
+    };
+    #undef NO_REF_TYPES
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        wah_module_t module = {0};
+        wah_parse_options_t opts = { .features = WAH_FEATURE_ALL };
+        assert_ok(wah_parse_module_from_spec_ex(&module, &opts, cases[i].spec));
+        wah_free_module(&module);
+        opts.features = WAH_FEATURE_ALL & ~cases[i].missing;
+        assert_err(wah_parse_module_from_spec_ex(&module, &opts, cases[i].spec), WAH_ERROR_DISABLED_FEATURE);
+        wah_free_module(&module);
+    }
+}
+
 // Tracks the peak of outstanding allocation bytes.
 typedef struct { size_t cur, peak; } peak_alloc_t;
 
@@ -1348,6 +1384,7 @@ int main(void) {
     test_cast_metadata_memory_amplification();
     test_local_init_tracking_memory_amplification();
     test_v128_locals_and_block_types_require_simd_feature();
+    test_ref_value_types_require_features();
     test_parse_module_argument_errors();
     test_zero_params_zero_results_func_type();
     test_invalid_section_order_mem_table();
