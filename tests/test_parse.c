@@ -1181,6 +1181,37 @@ static void test_ref_value_types_require_features(void) {
     }
 }
 
+// Section forms introduced by later proposals used to be accepted with them disabled.
+static void test_section_forms_require_features(void) {
+    printf("Running test_section_forms_require_features...\n");
+    #define NO_REF_TYPES (WAH_FEATURE_REF_TYPES | WAH_FEATURE_GC | WAH_FEATURE_TYPED_FUNCREF)
+    static const struct { const char *spec; wah_features_t missing; } cases[] = {
+        { "wasm tables {[funcref limits.i32/1 1, funcref limits.i32/1 1]}", NO_REF_TYPES },
+        { "wasm imports {[{'m'} {'t'} table# funcref limits.i32/1 1]} tables {[funcref limits.i32/1 1]}", NO_REF_TYPES },
+        { "wasm types {[fn [] []]} funcs {[0]} elements {[elem.declarative elem.funcref [0]]} code {[{[] end}]}",
+          NO_REF_TYPES },
+        { "wasm types {[fn [] []]} funcs {[0]} elements {[elem.passive elem.funcref [0]]} code {[{[] end}]}",
+          WAH_FEATURE_BULK_MEMORY },
+        { "wasm types {[fn [] []]} funcs {[0]} tables {[funcref limits.i32/1 1]} \
+           elements {[elem.active.table# 0 i32.const 0 end elem.funcref [0]]} code {[{[] end}]}",
+          WAH_FEATURE_BULK_MEMORY },
+        { "wasm memories {[limits.i32/1 1]} data {[data.active.table# 0 i32.const 0 end {%'00'}]}",
+          WAH_FEATURE_BULK_MEMORY },
+        { "wasm data {[data.passive {%'00'}]}", WAH_FEATURE_BULK_MEMORY },
+        { "wasm datacount {0}", WAH_FEATURE_BULK_MEMORY },
+    };
+    #undef NO_REF_TYPES
+    for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {
+        wah_module_t module = {0};
+        wah_parse_options_t opts = { .features = WAH_FEATURE_ALL };
+        assert_ok(wah_parse_module_from_spec_ex(&module, &opts, cases[i].spec));
+        wah_free_module(&module);
+        opts.features = WAH_FEATURE_ALL & ~cases[i].missing;
+        assert_err(wah_parse_module_from_spec_ex(&module, &opts, cases[i].spec), WAH_ERROR_DISABLED_FEATURE);
+        wah_free_module(&module);
+    }
+}
+
 // Tracks the peak of outstanding allocation bytes.
 typedef struct { size_t cur, peak; } peak_alloc_t;
 
@@ -1385,6 +1416,7 @@ int main(void) {
     test_local_init_tracking_memory_amplification();
     test_v128_locals_and_block_types_require_simd_feature();
     test_ref_value_types_require_features();
+    test_section_forms_require_features();
     test_parse_module_argument_errors();
     test_zero_params_zero_results_func_type();
     test_invalid_section_order_mem_table();

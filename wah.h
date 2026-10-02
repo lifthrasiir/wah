@@ -9877,6 +9877,8 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
             WAH_ENSURE(flags <= 7, WAH_ERROR_MALFORMED);
 
             uint32_t mode = flags & 3;
+            if (flags != 0) WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_BULK_MEMORY));
+            if (mode == 3) WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_REF_TYPES));
             bool is_expr_elem = (flags & 4) != 0;
 
             segment->is_active = (mode == 0 || mode == 2);
@@ -10019,6 +10021,7 @@ static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *se
             ++module->data_segment_count;
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->flags));
+            if (segment->flags != 0x00) WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_BULK_MEMORY));
 
             if (segment->flags == 0x00) { // Active segment, memory index 0
                 segment->memory_idx = 0;
@@ -10055,6 +10058,7 @@ static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *se
 }
 
 static wah_error_t wah_parse_datacount_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
+    WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_BULK_MEMORY));
     WAH_CHECK(wah_decode_uleb128(ptr, section_end, &module->data_segment_count));
     module->has_data_count_section = true;
     return WAH_OK;
@@ -10165,6 +10169,7 @@ wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t
     }
     if (uses_multi_value) WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_MULTI_VALUE), cleanup_parse);
     if (uses_mut_import) WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_MUTABLE_GLOBALS), cleanup_parse);
+    if (wah_table_index_limit(module) > 1) WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_REF_TYPES), cleanup_parse);
 
     // Build the unified functions[] array for the WASM functions.
     // Host functions may be appended later via wah_export_func().
