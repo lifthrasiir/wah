@@ -340,6 +340,33 @@ int main() {
         wah_free_module(&module);
     }
 
+    // Regression: imported tables were visited once per import, so that importing a large table many times made
+    // every collection arbitrarily slow. Their owners visit them anyway.
+    printf("Testing root enumeration: imported tables are left to their owner...\n");
+    {
+        wah_module_t provider = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, "wasm \
+            tables {[ funcref limits.i32/2 3 3 ]} exports {[ {'t'} table# 0 ]}"));
+        assert_ok(wah_parse_module_from_spec(&module, "wasm \
+            imports {[ {'p'} {'t'} table# funcref limits.i32/1 3, {'p'} {'t'} table# funcref limits.i32/1 3 ]}"));
+        wah_exec_context_t pctx = {0};
+        assert_ok(wah_new_exec_context(&pctx, &provider, NULL));
+        assert_ok(wah_instantiate(&pctx));
+        assert_ok(wah_new_exec_context(&ctx, &module, NULL));
+        assert_ok(wah_link_context(&ctx, "p", &pctx));
+        assert_ok(wah_instantiate(&ctx));
+        uint32_t count = 0;
+        wah_gc_enumerate_roots(&ctx, count_ref_roots_visitor, &count);
+        assert_eq_u32(count, 0);
+        count = 0;
+        wah_gc_enumerate_roots(&pctx, count_ref_roots_visitor, &count);
+        assert_eq_u32(count, 3);
+        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&pctx);
+        wah_free_module(&module);
+        wah_free_module(&provider);
+    }
+
     printf("Testing root enumeration: NULL visitor is no-op...\n");
     {
         const char *spec = "wasm \

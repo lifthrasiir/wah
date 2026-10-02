@@ -10586,7 +10586,7 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
         const wah_module_t *linked = ctx->linked_modules[m].module;
         uint32_t linked_globals = wah_global_index_limit(linked);
         wah_exec_context_t *lctx = ctx->linked_modules[m].ctx;
-        if (linked_globals > 0 && (!lctx || ctx->linked_modules[m].owns_ctx)) { // Others are visited in 2b
+        if (linked_globals > 0 && (!lctx || ctx->linked_modules[m].owns_ctx)) { // Others visit their own roots
             wah_gc_visit_module_globals(linked, ctx->globals + g_offset, visitor, userdata);
         }
         g_offset += linked_globals;
@@ -10599,8 +10599,9 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
         }
     }
 
-    // 3. Table elements (primary module)
+    // 3. Table elements (primary module). Imported tables are visited by their owners, which are always in the domain.
     for (uint32_t t = 0; t < ctx->table_count; t++) {
+        if (ctx->tables[t].is_imported) continue;
         const wah_table_type_t *tt = wah_table_type(module, t);
         if (WAH_TYPE_IS_REF(tt->elem_type)) {
             for (uint64_t e = 0; e < ctx->tables[t].size; e++) {
@@ -10609,19 +10610,11 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
         }
     }
 
-    // 2b. Globals in externally linked contexts (wah_link_context path).
-    // owns_ctx contexts share ctx->globals and are already covered above.
+    // 3b. Table elements (owned contexts). Externally linked contexts are instantiated and visit their own roots,
+    // possibly once per name they are linked under otherwise.
     for (uint32_t m = 0; m < ctx->linked_module_count; m++) {
         wah_exec_context_t *lctx = ctx->linked_modules[m].ctx;
-        if (!lctx || ctx->linked_modules[m].owns_ctx) continue;
-        const wah_module_t *lmod = ctx->linked_modules[m].module;
-        wah_gc_visit_module_globals(lmod, lctx->globals, visitor, userdata);
-    }
-
-    // 3b. Table elements (linked module local tables)
-    for (uint32_t m = 0; m < ctx->linked_module_count; m++) {
-        wah_exec_context_t *lctx = ctx->linked_modules[m].ctx;
-        if (!lctx) continue;
+        if (!lctx || !ctx->linked_modules[m].owns_ctx) continue;
         const wah_module_t *lmod = ctx->linked_modules[m].module;
         for (uint32_t t = 0; t < lctx->table_count; t++) {
             if (lctx->tables[t].is_imported) continue;
