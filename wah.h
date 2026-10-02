@@ -5964,13 +5964,16 @@ static wah_error_t wah_decode_heap_type(const uint8_t **ptr, const uint8_t *end,
     return WAH_OK;
 }
 
-static wah_error_t wah_decode_ref_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type) {
+static wah_error_t wah_decode_ref_type(const uint8_t **ptr, const uint8_t *end, wah_module_t *module,
+                                       wah_type_t *out_type) {
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t byte = *(*ptr)++;
     if (wah_decode_abstract_heap_byte(byte, out_type)) {
         *out_type = WAH_TYPE_AS_NULLABLE(*out_type);
         return WAH_OK;
     }
+    // Long forms are introduced by typed funcrefs, which can't be told from short forms after decoding
+    if (byte == 0x63 || byte == 0x64) WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_TYPED_FUNCREF));
     if (byte == 0x63) {
         WAH_CHECK(wah_decode_heap_type(ptr, end, out_type));
         *out_type = WAH_TYPE_AS_NULLABLE(*out_type);
@@ -5983,7 +5986,8 @@ static wah_error_t wah_decode_ref_type(const uint8_t **ptr, const uint8_t *end, 
     return WAH_ERROR_MALFORMED;
 }
 
-static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, wah_type_t *out_type) {
+static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, wah_module_t *module,
+                                       wah_type_t *out_type) {
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t byte = **ptr;
     switch (byte) {
@@ -5992,19 +5996,19 @@ static wah_error_t wah_decode_val_type(const uint8_t **ptr, const uint8_t *end, 
         case 0x7D: *out_type = WAH_TYPE_F32; (*ptr)++; return WAH_OK;
         case 0x7C: *out_type = WAH_TYPE_F64; (*ptr)++; return WAH_OK;
         case 0x7B: *out_type = WAH_TYPE_V128; (*ptr)++; return WAH_OK;
-        default: return wah_decode_ref_type(ptr, end, out_type);
+        default: return wah_decode_ref_type(ptr, end, module, out_type);
     }
 }
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-static wah_error_t wah_decode_storage_type(const uint8_t **ptr, const uint8_t *end,
+static wah_error_t wah_decode_storage_type(const uint8_t **ptr, const uint8_t *end, wah_module_t *module,
                                             wah_type_t *out_type) {
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t byte = **ptr;
     switch (byte) {
         case 0x78: *out_type = WAH_TYPE_PACKED_I8; (*ptr)++; return WAH_OK;
         case 0x77: *out_type = WAH_TYPE_PACKED_I16; (*ptr)++; return WAH_OK;
-        default: return wah_decode_val_type(ptr, end, out_type);
+        default: return wah_decode_val_type(ptr, end, module, out_type);
     }
 }
 #endif // WAH_FEATURE_GC
@@ -6213,7 +6217,7 @@ static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, co
         (*code_ptr)++;
     } else if (block_type_peek >= 0x63 && block_type_peek <= 0x7F) {
         wah_type_t result_type;
-        WAH_CHECK(wah_decode_val_type(code_ptr, code_end, &result_type));
+        WAH_CHECK(wah_decode_val_type(code_ptr, code_end, vctx->module, &result_type));
         WAH_ENSURE(result_type < 0 || WAH_TYIDX(result_type) < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
         WAH_CHECK(wah_require_type_features(vctx->module, result_type));
         frame->single_result = result_type;
@@ -6836,7 +6840,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &vec_len));
             WAH_ENSURE(vec_len == 1, WAH_ERROR_VALIDATION_FAILED);
             wah_type_t sel_type;
-            WAH_CHECK(wah_decode_val_type(code_ptr, code_end, &sel_type));
+            WAH_CHECK(wah_decode_val_type(code_ptr, code_end, vctx->module, &sel_type));
             WAH_ENSURE(sel_type < 0 || WAH_TYIDX(sel_type) < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
             WAH_CHECK(wah_require_type_features(vctx->module, sel_type));
             POP(I32); POP(_(sel_type)); POP(_(sel_type));
@@ -8748,7 +8752,8 @@ static void wah_type_section_init_slot(wah_module_t *module, uint32_t idx) {
     module->type_defs[idx] = (wah_type_def_t){ .kind = WAH_COMP_FUNC, .is_final = true, .supertype = WAH_NO_SUPERTYPE };
 }
 
-static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end, wah_func_type_t *ft, const wah_alloc_t *alloc) {
+static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end, wah_func_type_t *ft, wah_module_t *module) {
+    const wah_alloc_t *alloc = &module->alloc;
     // Larger arities can't be used in validation anyway, but would make branch validation quadratic
     uint32_t param_count;
     WAH_CHECK(wah_decode_and_validate_count(ptr, end, &param_count, 1));
@@ -8756,7 +8761,7 @@ static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end, 
     ft->param_count = param_count;
     WAH_MALLOC_ARRAY(ft->param_types, param_count);
     for (uint32_t j = 0; j < param_count; ++j) {
-        WAH_CHECK(wah_decode_val_type(ptr, end, &ft->param_types[j]));
+        WAH_CHECK(wah_decode_val_type(ptr, end, module, &ft->param_types[j]));
     }
 
     uint32_t result_count;
@@ -8765,13 +8770,14 @@ static wah_error_t wah_parse_func_type(const uint8_t **ptr, const uint8_t *end, 
     ft->result_count = result_count;
     WAH_MALLOC_ARRAY(ft->result_types, result_count);
     for (uint32_t j = 0; j < result_count; ++j) {
-        WAH_CHECK(wah_decode_val_type(ptr, end, &ft->result_types[j]));
+        WAH_CHECK(wah_decode_val_type(ptr, end, module, &ft->result_types[j]));
     }
     return WAH_OK;
 }
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-static wah_error_t wah_parse_struct_type(const uint8_t **ptr, const uint8_t *end, wah_type_def_t *td, const wah_alloc_t *alloc) {
+static wah_error_t wah_parse_struct_type(const uint8_t **ptr, const uint8_t *end, wah_type_def_t *td, wah_module_t *module) {
+    const wah_alloc_t *alloc = &module->alloc;
     uint32_t field_count;
     WAH_CHECK(wah_decode_and_validate_count(ptr, end, &field_count, 2));
     td->field_count = field_count;
@@ -8781,7 +8787,7 @@ static wah_error_t wah_parse_struct_type(const uint8_t **ptr, const uint8_t *end
         memset(td->field_mutables, 0, field_count * sizeof(bool));
     }
     for (uint32_t j = 0; j < field_count; ++j) {
-        WAH_CHECK(wah_decode_storage_type(ptr, end, &td->field_types[j]));
+        WAH_CHECK(wah_decode_storage_type(ptr, end, module, &td->field_types[j]));
         WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
         uint8_t mut = *(*ptr)++;
         WAH_ENSURE(mut <= 1, WAH_ERROR_MALFORMED);
@@ -8791,11 +8797,12 @@ static wah_error_t wah_parse_struct_type(const uint8_t **ptr, const uint8_t *end
     return WAH_OK;
 }
 
-static wah_error_t wah_parse_array_type(const uint8_t **ptr, const uint8_t *end, wah_type_def_t *td, const wah_alloc_t *alloc) {
+static wah_error_t wah_parse_array_type(const uint8_t **ptr, const uint8_t *end, wah_type_def_t *td, wah_module_t *module) {
+    const wah_alloc_t *alloc = &module->alloc;
     td->field_count = 1;
     WAH_MALLOC_ARRAY(td->field_types, 1);
     WAH_MALLOC_ARRAY(td->field_mutables, 1);
-    WAH_CHECK(wah_decode_storage_type(ptr, end, &td->field_types[0]));
+    WAH_CHECK(wah_decode_storage_type(ptr, end, module, &td->field_types[0]));
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t mut = *(*ptr)++;
     WAH_ENSURE(mut <= 1, WAH_ERROR_MALFORMED);
@@ -8806,20 +8813,20 @@ static wah_error_t wah_parse_array_type(const uint8_t **ptr, const uint8_t *end,
 #endif // WAH_FEATURE_GC
 
 static wah_error_t wah_parse_composite_type(const uint8_t **ptr, const uint8_t *end,
-                                            wah_func_type_t *ft, wah_type_def_t *td, const wah_alloc_t *alloc) {
+                                            wah_func_type_t *ft, wah_type_def_t *td, wah_module_t *module) {
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t tag = *(*ptr)++;
     switch (tag) {
         case 0x60:
             td->kind = WAH_COMP_FUNC;
-            return wah_parse_func_type(ptr, end, ft, alloc);
+            return wah_parse_func_type(ptr, end, ft, module);
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
         case 0x5F:
             td->kind = WAH_COMP_STRUCT;
-            return wah_parse_struct_type(ptr, end, td, alloc);
+            return wah_parse_struct_type(ptr, end, td, module);
         case 0x5E:
             td->kind = WAH_COMP_ARRAY;
-            return wah_parse_array_type(ptr, end, td, alloc);
+            return wah_parse_array_type(ptr, end, td, module);
 #else
         case 0x5F: case 0x5E:
             return WAH_ERROR_DISABLED_FEATURE;
@@ -8830,7 +8837,7 @@ static wah_error_t wah_parse_composite_type(const uint8_t **ptr, const uint8_t *
 }
 
 static wah_error_t wah_parse_sub_type(const uint8_t **ptr, const uint8_t *end, uint32_t current_typeidx,
-                                      wah_func_type_t *ft, wah_type_def_t *td, const wah_alloc_t *alloc) {
+                                      wah_func_type_t *ft, wah_type_def_t *td, wah_module_t *module) {
     WAH_ENSURE(*ptr < end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t tag = **ptr;
 
@@ -8847,16 +8854,15 @@ static wah_error_t wah_parse_sub_type(const uint8_t **ptr, const uint8_t *end, u
             WAH_ENSURE(super_idx < current_typeidx, WAH_ERROR_VALIDATION_FAILED);
             td->supertype = super_idx;
         }
-        return wah_parse_composite_type(ptr, end, ft, td, alloc);
+        return wah_parse_composite_type(ptr, end, ft, td, module);
     }
 
     td->is_final = true;
     td->supertype = WAH_NO_SUPERTYPE;
-    return wah_parse_composite_type(ptr, end, ft, td, alloc);
+    return wah_parse_composite_type(ptr, end, ft, td, module);
 }
 
 static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
-    const wah_alloc_t *alloc = &module->alloc;
     uint32_t rec_count;
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &rec_count, 1));
 
@@ -8881,7 +8887,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
                 wah_type_section_init_slot(module, idx);
                 ++module->type_count;
                 WAH_CHECK(wah_parse_sub_type(ptr, section_end, idx,
-                                             &module->types[idx], &module->type_defs[idx], alloc));
+                                             &module->types[idx], &module->type_defs[idx], module));
                 if (module->type_defs[idx].kind == WAH_COMP_STRUCT || module->type_defs[idx].kind == WAH_COMP_ARRAY
                         || module->type_defs[idx].supertype != WAH_NO_SUPERTYPE || !module->type_defs[idx].is_final) {
                     WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_GC));
@@ -8897,7 +8903,7 @@ static wah_error_t wah_parse_type_section(const uint8_t **ptr, const uint8_t *se
             wah_type_section_init_slot(module, idx);
             ++module->type_count;
             WAH_CHECK(wah_parse_sub_type(ptr, section_end, idx,
-                                         &module->types[idx], &module->type_defs[idx], alloc));
+                                         &module->types[idx], &module->type_defs[idx], module));
             if (module->type_defs[idx].kind == WAH_COMP_STRUCT || module->type_defs[idx].kind == WAH_COMP_ARRAY
                     || tag == 0x50 || tag == 0x4F) { // Even `sub final` without supertypes
                 WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_GC));
@@ -9275,7 +9281,7 @@ static wah_error_t wah_parse_local_decls(const uint8_t **ptr, const uint8_t *bod
     for (uint32_t j = 0; j < num_entries; ++j) {
         uint32_t n; wah_type_t t;
         WAH_CHECK(wah_decode_uleb128(ptr, body_end, &n));
-        WAH_CHECK(wah_decode_val_type(ptr, body_end, &t));
+        WAH_CHECK(wah_decode_val_type(ptr, body_end, module, &t));
         WAH_ENSURE(UINT32_MAX - total >= n, WAH_ERROR_TOO_LARGE);
         total += n;
         WAH_ENSURE(total <= WAH_MAX_LOCAL_COUNT, WAH_ERROR_TOO_LARGE);
@@ -9386,7 +9392,7 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
         ++module->global_count;
 
         wah_type_t global_declared_type;
-        WAH_CHECK(wah_decode_val_type(ptr, section_end, &global_declared_type));
+        WAH_CHECK(wah_decode_val_type(ptr, section_end, module, &global_declared_type));
         WAH_ENSURE(global_declared_type < 0 || WAH_TYIDX(global_declared_type) < module->type_count, WAH_ERROR_VALIDATION_FAILED);
         WAH_CHECK(wah_require_type_features(module, global_declared_type));
         module->globals[i].type = global_declared_type;
@@ -9483,7 +9489,7 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
             }
 
             wah_type_t elem_type;
-            WAH_CHECK(wah_decode_ref_type(ptr, section_end, &elem_type));
+            WAH_CHECK(wah_decode_ref_type(ptr, section_end, module, &elem_type));
             WAH_ENSURE(elem_type < 0 || WAH_TYIDX(elem_type) < module->type_count, WAH_ERROR_VALIDATION_FAILED);
             if (elem_type != WAH_TYPE_FUNCREF) WAH_CHECK(wah_require_type_features(module, elem_type));
             module->tables[i].elem_type = elem_type;
@@ -9629,7 +9635,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             module->imports[i].index = import_table_count;
             import_table_count++;
 
-            WAH_CHECK_GOTO(wah_decode_ref_type(ptr, section_end, &ti->type.elem_type), cleanup);
+            WAH_CHECK_GOTO(wah_decode_ref_type(ptr, section_end, module, &ti->type.elem_type), cleanup);
             WAH_ENSURE_GOTO(ti->type.elem_type < 0 || WAH_TYIDX(ti->type.elem_type) < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
             if (ti->type.elem_type != WAH_TYPE_FUNCREF) WAH_CHECK_GOTO(wah_require_type_features(module, ti->type.elem_type), cleanup);
             WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
@@ -9698,7 +9704,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             module->imports[i].index = import_global_count;
             import_global_count++;
 
-            WAH_CHECK_GOTO(wah_decode_val_type(ptr, section_end, &gi->type), cleanup);
+            WAH_CHECK_GOTO(wah_decode_val_type(ptr, section_end, module, &gi->type), cleanup);
             WAH_ENSURE_GOTO(gi->type < 0 || WAH_TYIDX(gi->type) < module->type_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
             WAH_CHECK_GOTO(wah_require_type_features(module, gi->type), cleanup);
             WAH_ENSURE_GOTO(*ptr < section_end, WAH_ERROR_UNEXPECTED_EOF, cleanup);
@@ -9943,7 +9949,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
             segment->elem_type = WAH_TYPE_FUNCREF;
             if (mode > 0) {
                 if (is_expr_elem) {
-                    WAH_CHECK(wah_decode_ref_type(ptr, section_end, &segment->elem_type));
+                    WAH_CHECK(wah_decode_ref_type(ptr, section_end, module, &segment->elem_type));
                     WAH_ENSURE(WAH_TYPE_IS_REF(segment->elem_type), WAH_ERROR_VALIDATION_FAILED);
                     WAH_ENSURE(segment->elem_type < 0 || WAH_TYIDX(segment->elem_type) < module->type_count, WAH_ERROR_VALIDATION_FAILED);
                     if (segment->elem_type != WAH_TYPE_FUNCREF) WAH_CHECK(wah_require_type_features(module, segment->elem_type));

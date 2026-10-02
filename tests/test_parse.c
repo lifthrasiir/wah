@@ -1181,6 +1181,11 @@ static void test_ref_value_types_require_features(void) {
         { "wasm types {[fn [] []]} funcs {[0]} code {[{[] ref.null anyref drop end}]}", WAH_FEATURE_GC },
         { "wasm types {[fn [exnref] []]}", WAH_FEATURE_EXCEPTION },
         { "wasm types {[fn [type.ref.null.exn] []]}", WAH_FEATURE_EXCEPTION },
+        { "wasm types {[fn [type.ref.null.exn] []]}", WAH_FEATURE_TYPED_FUNCREF },
+        // Long forms of reference types are introduced by typed funcrefs, even for funcref and externref
+        { "wasm types {[fn [type.ref.null.func] []]}", WAH_FEATURE_TYPED_FUNCREF },
+        { "wasm types {[fn [] []]} funcs {[0]} code {[{[1 type.ref.null.extern] end}]}", WAH_FEATURE_TYPED_FUNCREF },
+        { "wasm tables {[type.ref.null.func limits.i32/1 1]}", WAH_FEATURE_TYPED_FUNCREF },
         { "wasm types {[fn [] []]} funcs {[0]} code {[{[] unreachable ref.test exnref drop end}]}",
           WAH_FEATURE_EXCEPTION },
         { "wasm types {[fn [] []]} funcs {[0]} code {[{[] unreachable ref.cast.null exnref drop end}]}",
