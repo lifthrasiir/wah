@@ -12312,6 +12312,8 @@ static wah_error_t wah_table_grow_internal(
         src->tables[src_idx].entries = new_table;
         src->tables[src_idx].size = new_size;
         wah_update_table_import_aliases(fctx, table_idx, src, src_idx, new_table, new_size);
+    } else { // Other slots of the same context may import this table back via linked modules
+        wah_update_table_import_aliases(fctx, table_idx, fctx, table_idx, new_table, new_size);
     }
     wah_propagate_table_import_aliases(ctx, fctx, owner_ctx, owner_idx, new_table, new_size);
     wah_free(grow_alloc, old_entries);
@@ -12370,6 +12372,9 @@ static bool wah_memory_grow_internal(
             src->memory_size = src->memories[0].size;
         }
         wah_update_memory_import_aliases(fctx, mem_idx, src, src_idx,
+                                         fctx->memories[mem_idx].data, fctx->memories[mem_idx].size);
+    } else { // Other slots of the same context may import this memory back via linked modules
+        wah_update_memory_import_aliases(fctx, mem_idx, fctx, mem_idx,
                                          fctx->memories[mem_idx].data, fctx->memories[mem_idx].size);
     }
     wah_propagate_memory_import_aliases(ctx, fctx, owner_ctx, owner_idx,
