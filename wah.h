@@ -2579,12 +2579,6 @@ static inline wah_gc_object_t *wah_gc_header(void *payload) {
 static inline void *wah_gc_payload(wah_gc_object_t *obj) {
     return (uint8_t *)obj + sizeof(wah_gc_object_t);
 }
-static inline uint32_t wah_gc_struct_alloc_size(const wah_repr_info_t *info) {
-    return (uint32_t)(sizeof(wah_gc_object_t) + info->size);
-}
-static inline size_t wah_gc_array_alloc_size(const wah_repr_info_t *info, uint32_t length) {
-    return sizeof(wah_gc_object_t) + sizeof(wah_gc_array_body_t) + (size_t)info->size * length;
-}
 // Visitor callback for root enumeration. Called once per live reference slot.
 // slot points to the wah_value_t containing the reference; type is its declared type.
 typedef void (*wah_gc_ref_visitor_t)(wah_value_t *slot, void *userdata);
@@ -2680,13 +2674,6 @@ typedef struct wah_export_s {
     uint8_t kind; // WASM export kind (0=func, 1=table, 2=mem, 3=global)
     uint32_t index; // Index into the respective module array (functions, tables, etc.)
 } wah_export_t;
-
-// --- Operand Stack ---
-typedef struct {
-    wah_value_t *data; // Dynamically allocated based on function requirements
-    uint32_t sp; // Stack pointer
-    uint32_t capacity; // Allocated capacity
-} wah_stack_t;
 
 // --- Type Stack for Validation ---
 #define WAH_MAX_TYPE_STACK_SIZE 1024 // Maximum size of the type stack for validation

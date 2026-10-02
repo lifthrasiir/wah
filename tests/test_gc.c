@@ -691,7 +691,7 @@ int main() {
             assert_not_null(obj);
             wah_gc_object_t *hdr = wah_gc_header(obj);
             assert_eq_u32(hdr->repr_id, (uint32_t)repr_id);
-            assert_eq_u32(hdr->size_bytes, wah_gc_struct_alloc_size(mod.repr_infos[repr_id]));
+            assert_eq_u32(hdr->size_bytes, (uint32_t)(sizeof(wah_gc_object_t) + mod.repr_infos[repr_id]->size));
 
             uint8_t *payload = (uint8_t *)obj;
             *(int32_t *)(payload + 0) = 42;
@@ -718,7 +718,8 @@ int main() {
             assert_not_null(obj);
             wah_gc_object_t *hdr = wah_gc_header(obj);
             assert_eq_u32(hdr->repr_id, (uint32_t)repr_id);
-            assert_eq_u32(hdr->size_bytes, (uint32_t)wah_gc_array_alloc_size(mod.repr_infos[repr_id], length));
+            assert_eq_u32(hdr->size_bytes, (uint32_t)(sizeof(wah_gc_object_t) + sizeof(wah_gc_array_body_t) +
+                                                      mod.repr_infos[repr_id]->size * length));
 
             wah_gc_array_body_t *body = (wah_gc_array_body_t *)obj;
             assert_eq_u32(body->length, 5);
