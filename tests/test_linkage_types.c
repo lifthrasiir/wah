@@ -625,6 +625,42 @@ static void test_host_import_concrete_ref_uses_linked_type_namespace() {
     wah_free_module(&provider);
 }
 
+// An abstract subtype against a concrete supertype must look up the supertype's kind in its own module.
+static void test_cross_module_abstract_sub_concrete_sup() {
+    printf("Testing cross-module abstract subtype against concrete supertype...\n");
+
+    // Provider type 0 is a function type; the result is (ref null none).
+    wah_module_t provider = {0}, consumer = {0}, bad_consumer = {0};
+    assert_ok(wah_new_module(&provider, NULL));
+    assert_ok(wah_export_func(&provider, "f", "() -> nullref", host_return_null_ref, NULL, NULL));
+    // Consumer type 0 is a struct type, so (ref null none) <: (ref null 0).
+    const char *consumer_spec = "wasm \
+        types {[ struct [i32 mut], fn [] [type.ref.null 0] ]} \
+        imports {[ {'p'} {'f'} fn# 1 ]}";
+    // Consumer type 0 is a function type, so (ref null none) is not its subtype.
+    const char *bad_consumer_spec = "wasm \
+        types {[ fn [] [], fn [] [type.ref.null 0] ]} \
+        imports {[ {'p'} {'f'} fn# 1 ]}";
+
+    assert_ok(wah_parse_module_from_spec(&consumer, consumer_spec));
+    assert_ok(wah_parse_module_from_spec(&bad_consumer, bad_consumer_spec));
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &consumer, NULL));
+    assert_ok(wah_link_module(&ctx, "p", &provider));
+    assert_ok(wah_instantiate(&ctx));
+    wah_free_exec_context(&ctx);
+
+    assert_ok(wah_new_exec_context(&ctx, &bad_consumer, NULL));
+    assert_ok(wah_link_module(&ctx, "p", &provider));
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+    wah_free_exec_context(&ctx);
+
+    wah_free_module(&bad_consumer);
+    wah_free_module(&consumer);
+    wah_free_module(&provider);
+}
+
 static void test_linked_module_ictx_table_type_validation() {
     printf("Testing linked module ictx table import type validation...\n");
 
@@ -785,6 +821,7 @@ int main() {
     test_cross_module_type_with_extra_types();
     test_cross_module_subtype_func_ref_test();
     test_host_import_concrete_ref_uses_linked_type_namespace();
+    test_cross_module_abstract_sub_concrete_sup();
     test_linked_module_ictx_table_type_validation();
     test_linked_module_ictx_memory_type_validation();
     printf("All linkage_types tests passed!\n");

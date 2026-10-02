@@ -5101,7 +5101,7 @@ static bool wah_cross_module_subtype(const wah_module_t *sub_m, wah_type_t sub_t
     if (sub_t == sup_t && sub_m == sup_m) return true;
     if (WAH_TYPE_IS_NULLABLE(sub_t) && !WAH_TYPE_IS_NULLABLE(sup_t)) return false;
     if (wah_cross_module_type_ref_eq(sub_m, sub_t, sup_m, sup_t)) return true;
-    if (sub_t < 0 || sup_t < 0) return wah_type_is_subtype(sub_t, sup_t, sub_m);
+    if (sub_t < 0 || sup_t < 0) return wah_type_is_subtype(sub_t, sup_t, sub_t < 0 ? sup_m : sub_m);
     // Strip nullability for structural comparison (non-null <: nullable is valid)
     wah_type_t sub_nn = WAH_TYPE_AS_NON_NULL(sub_t);
     wah_type_t sup_nn = WAH_TYPE_AS_NON_NULL(sup_t);
