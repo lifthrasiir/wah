@@ -2438,6 +2438,7 @@ static inline bool wah_repr_field_is_ref(const wah_repr_field_t *f) {
 typedef struct wah_type_def_s {
     wah_comp_type_kind_t kind;
     bool is_final;
+    bool non_defaultable; // Some field is a non-nullable reference, so struct.new_default is invalid
     uint32_t supertype;
     uint32_t field_count;
     wah_type_t *field_types;
@@ -7094,13 +7095,13 @@ cleanup_block:
             const wah_type_def_t *td = &vctx->module->type_defs[typeidx];
             WAH_ENSURE(td->kind == WAH_COMP_STRUCT, WAH_ERROR_VALIDATION_FAILED);
             if (opcode_val == WAH_OP_STRUCT_NEW) {
-                for (uint32_t j = td->field_count; j > 0; --j)
+                // Operands beyond the block base are all BOT when unreachable, so don't loop over them
+                uint32_t avail = vctx->current_stack_depth - wah_validation_block_base_height(vctx);
+                WAH_ENSURE(vctx->is_unreachable || td->field_count <= avail, WAH_ERROR_VALIDATION_FAILED);
+                for (uint32_t j = td->field_count; j > 0 && td->field_count - j < avail; --j)
                     WAH_CHECK(wah_validation_pop_field_value(vctx, td->field_types[j - 1]));
             } else {
-                for (uint32_t j = 0; j < td->field_count; ++j) {
-                    wah_type_t ft = td->field_types[j];
-                    WAH_ENSURE(!WAH_TYPE_IS_REF(ft) || WAH_TYPE_IS_NULLABLE(ft), WAH_ERROR_VALIDATION_FAILED);
-                }
+                WAH_ENSURE(!td->non_defaultable, WAH_ERROR_VALIDATION_FAILED);
             }
             PUSH(_(WAH_TYPE_FROM_IDX(typeidx, 0)));
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = typeidx);
@@ -8732,6 +8733,7 @@ static wah_error_t wah_parse_struct_type(const uint8_t **ptr, const uint8_t *end
         uint8_t mut = *(*ptr)++;
         WAH_ENSURE(mut <= 1, WAH_ERROR_MALFORMED);
         td->field_mutables[j] = (mut == 1);
+        if (WAH_TYPE_IS_REF(td->field_types[j]) && !WAH_TYPE_IS_NULLABLE(td->field_types[j])) td->non_defaultable = true;
     }
     return WAH_OK;
 }
@@ -15875,6 +15877,7 @@ static wah_error_t wah_type_spec_push_field(wah_type_def_t *td, wah_type_t type,
     WAH_GROW_ARRAY_POW2_GOTO(td->field_mutables, td->field_count, cleanup);
     td->field_types[td->field_count] = type;
     td->field_mutables[td->field_count++] = is_mutable;
+    if (WAH_TYPE_IS_REF(type) && !WAH_TYPE_IS_NULLABLE(type)) td->non_defaultable = true;
     return WAH_OK;
 cleanup:
     return err;

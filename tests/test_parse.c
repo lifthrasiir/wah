@@ -1210,6 +1210,38 @@ static void test_cast_metadata_memory_amplification(void) {
     assert_true(parse_peak_bytes(spec) < 4 * 1024 * 1024);
 }
 
+// struct.new_default (and struct.new in unreachable code) used to loop over all fields of a wide struct.
+static double parse_wide_struct_news_seconds(const char *body) {
+    enum { N = 50000 };
+    static const char head[] = "wasm types {[struct [i32 immut", field[] = ",i32 immut",
+        mid[] = "], fn [] []]} funcs {[1]} code {[{[] unreachable";
+    size_t body_len = strlen(body);
+    char *spec = (char *)malloc(128 + (size_t)N * (sizeof(field) + body_len));
+    assert_true(spec != NULL);
+    char *p = spec;
+    memcpy(p, head, sizeof(head) - 1); p += sizeof(head) - 1;
+    for (int i = 1; i < N; i++) { memcpy(p, field, sizeof(field) - 1); p += sizeof(field) - 1; }
+    memcpy(p, mid, sizeof(mid) - 1); p += sizeof(mid) - 1;
+    for (int i = 0; i < N; i++) { memcpy(p, body, body_len); p += body_len; }
+    strcpy(p, " end}]}");
+    wah_module_t module = {0};
+    clock_t start = clock();
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
+    wah_free_module(&module);
+    free(spec);
+    return elapsed;
+}
+
+static void test_wide_struct_new_validation_time(void) {
+    printf("Running test_wide_struct_new_validation_time...\n");
+    double new_default = parse_wide_struct_news_seconds(" struct.new_default 0 drop");
+    double new_unreachable = parse_wide_struct_news_seconds(" struct.new 0 drop");
+    printf("  struct.new_default: %.3fs, struct.new: %.3fs\n", new_default, new_unreachable);
+    assert_true(new_default < 1.0); // Would take 2.5G steps otherwise
+    assert_true(new_unreachable < 1.0);
+}
+
 // Distinct rec groups used to be compared against all previous ones of the same size.
 static double parse_distinct_func_types_seconds(int n) {
     // Type i = fn (ref null i-1) -> (), all distinct
@@ -1294,6 +1326,7 @@ int main(void) {
     test_poll_ref_map_memory_amplification();
     test_block_entry_with_many_locals_time();
     test_rec_group_canonicalization_time();
+    test_wide_struct_new_validation_time();
     test_cast_metadata_memory_amplification();
     test_local_init_tracking_memory_amplification();
     test_v128_locals_and_block_types_require_simd_feature();
