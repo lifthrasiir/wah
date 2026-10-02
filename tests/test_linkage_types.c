@@ -735,11 +735,14 @@ static void test_linked_module_ictx_memory_type_validation() {
 
 // Cross-module type equality used to recompute shared rec groups, taking exponential time for DAGs
 // like T_k = struct { ref null T_{k-1}, ref null T_{k-1} }.
-static void *failing_malloc(size_t size, void *userdata) { return *(bool *)userdata ? NULL : malloc(size); }
-static void *failing_realloc(void *ptr, size_t size, void *userdata) { return *(bool *)userdata ? NULL : realloc(ptr, size); }
+// Fails allocations of the initial memo of rec group pairs (64 keys) when set.
+static void *failing_malloc(size_t size, void *userdata) {
+    return *(bool *)userdata && size == 64 * sizeof(uint64_t) ? NULL : malloc(size);
+}
+static void *failing_realloc(void *ptr, size_t size, void *userdata) { (void)userdata; return realloc(ptr, size); }
 static void failing_free(void *ptr, void *userdata) { (void)userdata; free(ptr); }
 
-// The memo of rec group pairs is allocated by the provider's allocator, which fails after parsing when `oom` is set.
+// The memo of rec group pairs is allocated by the context's allocator, which fails it when `oom` is set.
 // Types are then treated as unequal, instead of comparing without the memo.
 static void test_cross_module_type_eq_dag(bool oom) {
     printf("Testing cross-module type equality of DAG-shaped types is fast%s...\n", oom ? " on OOM" : "");
@@ -759,12 +762,12 @@ static void test_cross_module_type_eq_dag(bool oom) {
 
     bool failing = false;
     wah_alloc_t alloc = { failing_malloc, failing_realloc, failing_free, &failing };
-    wah_parse_options_t opts = { .alloc = &alloc };
+    wah_exec_options_t opts = { .alloc = &alloc };
     wah_module_t prov = {0}, cons = {0};
-    assert_ok(wah_parse_module_from_spec_ex(&prov, &opts, prov_spec));
+    assert_ok(wah_parse_module_from_spec(&prov, prov_spec));
     assert_ok(wah_parse_module_from_spec(&cons, cons_spec));
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_new_exec_context(&ctx, &cons, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &cons, &opts));
     assert_ok(wah_link_module(&ctx, "p", &prov));
     failing = oom;
     clock_t start = clock();

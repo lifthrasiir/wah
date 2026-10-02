@@ -270,6 +270,36 @@ int main(void) {
         return 1;
     }
 
+    printf("Testing cross-module type checks don't use the parse allocator...\n");
+    {
+        tracking_alloc_t mc = {0};
+        wah_alloc_t ma = { tracking_malloc, tracking_realloc, tracking_free, &mc };
+        wah_parse_options_t po = { .alloc = &ma };
+        wah_module_t provider = {0}, user = {0};
+        // Comparing types referring to other types needs a memo
+        assert_ok(wah_parse_module_from_spec_ex(&provider, &po, "wasm \
+            types {[ fn [] [], fn [type.ref.null 0] [i32] ]} funcs {[ 1 ]} \
+            tables {[ funcref limits.i32/1 1 ]} exports {[ {'t'} table# 0 ]} \
+            elements {[ elem.active.table#0 i32.const 0 end [ 0 ] ]} code {[ {[] i32.const 42 end} ]}"));
+        assert_ok(wah_parse_module_from_spec_ex(&user, &po, "wasm \
+            types {[ fn [] [], fn [type.ref.null 0] [i32], fn [] [i32] ]} \
+            imports {[ {'P'} {'t'} table# funcref limits.i32/1 1 ]} funcs {[ 2 ]} \
+            code {[ {[] ref.null 0 i32.const 0 call_indirect 1 0 end} ]}"));
+        size_t allocs = mc.allocs;
+        wah_exec_context_t ectx = {0};
+        assert_ok(wah_new_exec_context(&ectx, &user, NULL));
+        assert_ok(wah_link_module(&ectx, "P", &provider));
+        assert_ok(wah_instantiate(&ectx));
+        wah_value_t r;
+        assert_ok(wah_call(&ectx, 0, NULL, 0, &r));
+        assert_eq_i32(r.i32, 42);
+        assert_eq_u64(mc.allocs, allocs);
+        wah_free_exec_context(&ectx);
+        wah_free_module(&user);
+        wah_free_module(&provider);
+        if (!tracking_ok("cross-module-type-check", &mc)) return 1;
+    }
+
     printf("Testing memory.grow 0 doesn't reallocate the memory...\n");
     {
         tracking_alloc_t cc = {0};

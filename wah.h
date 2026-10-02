@@ -5104,7 +5104,8 @@ static bool wah_cross_module_rec_group_eq(const wah_module_t *ma, uint32_t rga_s
     return true;
 }
 
-static bool wah_cross_module_type_ref_eq(const wah_module_t *ma, wah_type_t ta,
+// alloc is only used for temporary allocations.
+static bool wah_cross_module_type_ref_eq(const wah_alloc_t *alloc, const wah_module_t *ma, wah_type_t ta,
                                          const wah_module_t *mb, wah_type_t tb) {
     if (ta == tb && ta < 0) return true;
     if (ta < 0 || tb < 0) return ta == tb;
@@ -5125,30 +5126,30 @@ static bool wah_cross_module_type_ref_eq(const wah_module_t *ma, wah_type_t ta,
     if (rga_n != rgb_n) return false;
     if (ca - rga_s != cb - rgb_s) return false;
 
-    wah_type_eq_memo_t memo = { .alloc = &ma->alloc };
+    wah_type_eq_memo_t memo = { .alloc = alloc };
     bool eq = wah_cross_module_rec_group_eq(ma, rga_s, rga_n, mb, rgb_s, rgb_n, 0, &memo);
     wah_free(memo.alloc, memo.keys);
     return eq;
 }
 
-static bool wah_cross_module_subtype(const wah_module_t *sub_m, wah_type_t sub_t,
+static bool wah_cross_module_subtype(const wah_alloc_t *alloc, const wah_module_t *sub_m, wah_type_t sub_t,
                                      const wah_module_t *sup_m, wah_type_t sup_t) {
     if (sub_t == sup_t && sub_m == sup_m) return true;
     if (WAH_TYPE_IS_NULLABLE(sub_t) && !WAH_TYPE_IS_NULLABLE(sup_t)) return false;
-    if (wah_cross_module_type_ref_eq(sub_m, sub_t, sup_m, sup_t)) return true;
+    if (wah_cross_module_type_ref_eq(alloc, sub_m, sub_t, sup_m, sup_t)) return true;
     if (sub_t < 0 || sup_t < 0) return wah_type_is_subtype(sub_t, sup_t, sub_t < 0 ? sup_m : sub_m);
     // Strip nullability for structural comparison (non-null <: nullable is valid)
     wah_type_t sub_nn = WAH_TYPE_AS_NON_NULL(sub_t);
     wah_type_t sup_nn = WAH_TYPE_AS_NON_NULL(sup_t);
     if (sub_nn != sub_t || sup_nn != sup_t) {
-        if (wah_cross_module_type_ref_eq(sub_m, sub_nn, sup_m, sup_nn)) return true;
+        if (wah_cross_module_type_ref_eq(alloc, sub_m, sub_nn, sup_m, sup_nn)) return true;
     }
     // Walk supertype chain of sub_t
     uint32_t t = WAH_TYIDX(sub_t);
     while (t != WAH_NO_SUPERTYPE) {
         if (sub_m->type_defs[t].supertype == WAH_NO_SUPERTYPE) break;
         t = sub_m->type_defs[t].supertype;
-        if (wah_cross_module_type_ref_eq(sub_m, WAH_TYPE_FROM_IDX(t, 0), sup_m, sup_nn)) return true;
+        if (wah_cross_module_type_ref_eq(alloc, sub_m, WAH_TYPE_FROM_IDX(t, 0), sup_m, sup_nn)) return true;
     }
     return false;
 }
@@ -5165,14 +5166,13 @@ static inline uint32_t wah_type_check_cache_slot(const wah_module_t *sub_m, wah_
 static bool wah_cross_module_subtype_cached(wah_exec_context_t *ctx,
                                             const wah_module_t *sub_m, wah_type_t sub_t,
                                             const wah_module_t *sup_m, wah_type_t sup_t) {
-    if (!ctx) return wah_cross_module_subtype(sub_m, sub_t, sup_m, sup_t);
     uint32_t slot = wah_type_check_cache_slot(sub_m, sub_t, sup_m, sup_t);
     wah_type_check_cache_entry_t *entry = &ctx->type_check_cache[slot];
     if (entry->valid && entry->sub_module == sub_m && entry->sup_module == sup_m &&
         entry->sub_type == sub_t && entry->sup_type == sup_t) {
         return entry->is_subtype;
     }
-    bool is_subtype = wah_cross_module_subtype(sub_m, sub_t, sup_m, sup_t);
+    bool is_subtype = wah_cross_module_subtype(&ctx->alloc, sub_m, sub_t, sup_m, sup_t);
     *entry = (wah_type_check_cache_entry_t){
         .sub_module = sub_m, .sup_module = sup_m,
         .sub_type = sub_t, .sup_type = sup_t,
@@ -9010,7 +9010,7 @@ static const wah_export_t *wah_find_export(const wah_module_t *module, uint8_t k
 }
 
 static wah_error_t wah_validate_function_import_type(
-    const wah_module_t *importer, uint32_t import_type_idx,
+    const wah_alloc_t *alloc, const wah_module_t *importer, uint32_t import_type_idx,
     const wah_module_t *provider, uint32_t provider_local_idx,
     const wah_function_t *src
 ) {
@@ -9020,12 +9020,12 @@ static wah_error_t wah_validate_function_import_type(
         WAH_ENSURE(import_type->param_count == src->nparams, WAH_ERROR_LINK_FAILED);
         WAH_ENSURE(import_type->result_count == src->nresults, WAH_ERROR_LINK_FAILED);
         for (uint32_t p = 0; p < import_type->param_count; p++) {
-            WAH_ENSURE(wah_cross_module_subtype(importer, import_type->param_types[p],
+            WAH_ENSURE(wah_cross_module_subtype(alloc, importer, import_type->param_types[p],
                                                 provider, src->param_types[p]),
                        WAH_ERROR_LINK_FAILED);
         }
         for (uint32_t r = 0; r < import_type->result_count; r++) {
-            WAH_ENSURE(wah_cross_module_subtype(provider, src->result_types[r],
+            WAH_ENSURE(wah_cross_module_subtype(alloc, provider, src->result_types[r],
                                                 importer, import_type->result_types[r]),
                        WAH_ERROR_LINK_FAILED);
         }
@@ -9034,7 +9034,7 @@ static wah_error_t wah_validate_function_import_type(
     WAH_ENSURE(provider_local_idx < provider->wasm_function_count, WAH_ERROR_LINK_FAILED);
     uint32_t src_type_idx = provider->function_type_indices[provider_local_idx];
     WAH_ENSURE(src_type_idx < provider->type_count, WAH_ERROR_LINK_FAILED);
-    WAH_ENSURE(wah_cross_module_subtype(provider, WAH_TYPE_FROM_IDX(src_type_idx, 0),
+    WAH_ENSURE(wah_cross_module_subtype(alloc, provider, WAH_TYPE_FROM_IDX(src_type_idx, 0),
                                         importer, WAH_TYPE_FROM_IDX(import_type_idx, 0)),
                WAH_ERROR_LINK_FAILED);
     return WAH_OK;
@@ -9232,13 +9232,13 @@ static wah_error_t wah_bind_memory_import_slot(
 }
 
 static wah_error_t wah_bind_table_import_slot(
-    wah_table_inst_t *slot, const wah_module_t *importer, const wah_table_type_t *import_type,
+    const wah_alloc_t *alloc, wah_table_inst_t *slot, const wah_module_t *importer, const wah_table_type_t *import_type,
     const wah_module_t *provider, wah_exec_context_t *provider_ctx, uint32_t table_idx
 ) {
     WAH_ENSURE(provider_ctx && table_idx < provider_ctx->table_count, WAH_ERROR_LINK_FAILED);
     WAH_ENSURE(table_idx < wah_table_index_limit(provider), WAH_ERROR_LINK_FAILED);
     const wah_table_type_t *provider_type = wah_table_type(provider, table_idx);
-    WAH_ENSURE(wah_cross_module_type_ref_eq(provider, provider_type->elem_type,
+    WAH_ENSURE(wah_cross_module_type_ref_eq(alloc, provider, provider_type->elem_type,
                                             importer, import_type->elem_type), WAH_ERROR_LINK_FAILED);
     WAH_ENSURE(provider_type->addr_type == import_type->addr_type, WAH_ERROR_LINK_FAILED);
     if (import_type->max_elements != UINT64_MAX) {
@@ -16036,9 +16036,10 @@ static bool wah_host_object_accepts(wah_type_t type) {
     return heap_type == WAH_TYPE_EXTERN || heap_type == WAH_TYPE_ANY;
 }
 
-static bool wah_pin_accepts(const wah_pin_slot_t *s, const wah_module_t *module, wah_type_t type) {
+static bool wah_pin_accepts(const wah_exec_context_t *exec, const wah_pin_slot_t *s, const wah_module_t *module,
+                            wah_type_t type) {
     if (!s->module) return wah_host_object_accepts(type);
-    return wah_cross_module_subtype(s->module, s->type, module, type);
+    return wah_cross_module_subtype(&exec->alloc, s->module, s->type, module, type);
 }
 
 static wah_error_t wah_pin(wah_exec_context_t *exec, wah_value_t value, const wah_module_t *module, wah_type_t type,
@@ -16091,7 +16092,7 @@ static wah_error_t wah_load_host_params(const wah_exec_context_t *ctx, wah_value
             WAH_ENSURE(!((uintptr_t)value.ref & 1), WAH_ERROR_MISUSE); // The host can't make i31 references
             if (((uintptr_t)value.ref & 3) == WAH_PIN_TAG) {
                 const wah_pin_slot_t *s = wah_pinned_slot(ctx, value.ref);
-                WAH_ENSURE(s && wah_pin_accepts(s, module, types[i]), WAH_ERROR_MISUSE);
+                WAH_ENSURE(s && wah_pin_accepts(ctx, s, module, types[i]), WAH_ERROR_MISUSE);
                 value = s->value;
             } else {
                 WAH_ENSURE(wah_host_object_accepts(types[i]), WAH_ERROR_MISUSE);
@@ -17017,7 +17018,7 @@ void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value) {
     }
     if (((uintptr_t)value & 3) == WAH_PIN_TAG) {
         wah_pin_slot_t *s = wah_pinned_slot(ctx->exec, value);
-        if (!s || !wah_pin_accepts(s, ctx->module, ctx->result_types[index])) {
+        if (!s || !wah_pin_accepts(ctx->exec, s, ctx->module, ctx->result_types[index])) {
             wah_call_misuse(ctx);
             return;
         }
@@ -17266,7 +17267,7 @@ static wah_error_t wah_bind_linked_function_imports(wah_exec_context_t *ctx, uin
         const wah_function_t *src = NULL;
         WAH_CHECK(wah_resolve_function_export(ctx, provider, provider_ctx, exp->index, &actual_provider,
                                               &actual_ctx, &actual_local_idx, &src, &actual_global_idx));
-        WAH_CHECK(wah_validate_function_import_type(lmod, lfi->type_index, actual_provider, actual_local_idx, src));
+        WAH_CHECK(wah_validate_function_import_type(&ctx->alloc, lmod, lfi->type_index, actual_provider, actual_local_idx, src));
         wah_gc_object_t header = table[fi].header;
         wah_bind_function_import_slot(&table[fi], actual_provider, actual_ctx, exp, actual_local_idx, src);
         table[fi].header = header;
@@ -17386,19 +17387,19 @@ static wah_error_t wah_resolve_primary_func_imports(wah_exec_context_t *ctx) {
         WAH_CHECK(wah_resolve_function_export(ctx, linked, fi_linked_ctx, exp->index, &provider, &provider_ctx,
                                               &provider_local_idx, &src, &provider_global_idx));
 
-        WAH_CHECK(wah_validate_function_import_type(module, fi->type_index, provider, provider_local_idx, src));
+        WAH_CHECK(wah_validate_function_import_type(&ctx->alloc, module, fi->type_index, provider, provider_local_idx, src));
         wah_bind_function_import_slot(&ctx->function_table[i], provider, provider_ctx, exp, provider_local_idx, src);
     }
     return WAH_OK;
 }
 
 static wah_error_t wah_validate_global_import_type(
-    const wah_module_t *provider, wah_type_t provider_type, bool provider_mutable,
+    const wah_alloc_t *alloc, const wah_module_t *provider, wah_type_t provider_type, bool provider_mutable,
     const wah_module_t *importer, wah_type_t import_type, bool import_mutable
 ) {
-    WAH_ENSURE(wah_cross_module_subtype(provider, provider_type, importer, import_type) &&
+    WAH_ENSURE(wah_cross_module_subtype(alloc, provider, provider_type, importer, import_type) &&
                provider_mutable == import_mutable &&
-               (!import_mutable || wah_cross_module_subtype(importer, import_type, provider, provider_type)),
+               (!import_mutable || wah_cross_module_subtype(alloc, importer, import_type, provider, provider_type)),
                WAH_ERROR_LINK_FAILED);
     return WAH_OK;
 }
@@ -17450,7 +17451,7 @@ static wah_error_t wah_resolve_primary_global_imports(wah_exec_context_t *ctx, w
             !wah_is_owned_linked_ctx(ctx, gi_linked_ctx)) {
             wah_type_t vt1 = linked->global_imports[linked_global_idx].type, vt2 = gi->type;
             bool vt1_mut = linked->global_imports[linked_global_idx].is_mutable;
-            WAH_CHECK(wah_validate_global_import_type(linked, vt1, vt1_mut, module, vt2, gi->is_mutable));
+            WAH_CHECK(wah_validate_global_import_type(&ctx->alloc, linked, vt1, vt1_mut, module, vt2, gi->is_mutable));
             wah_bind_global_import_slot(import_srcs, ctx->globals, i, gi->is_mutable,
                 wah_resolved_global_slot(gi_linked_ctx, linked_global_idx, gi->is_mutable));
         } else if (linked_global_idx < linked->import_global_count) {
@@ -17461,7 +17462,7 @@ static wah_error_t wah_resolve_primary_global_imports(wah_exec_context_t *ctx, w
                                                 &global_provider_ctx, &global_local_idx, &global_global_idx));
             const wah_global_t *exported_global = &global_provider->globals[global_local_idx];
             wah_type_t vt1 = exported_global->type, vt2 = gi->type;
-            WAH_CHECK(wah_validate_global_import_type(global_provider, vt1, exported_global->is_mutable,
+            WAH_CHECK(wah_validate_global_import_type(&ctx->alloc, global_provider, vt1, exported_global->is_mutable,
                                                       module, vt2, gi->is_mutable));
             wah_value_t *prov_slot = global_provider_ctx
                 ? &global_provider_ctx->globals[global_global_idx]
@@ -17471,7 +17472,7 @@ static wah_error_t wah_resolve_primary_global_imports(wah_exec_context_t *ctx, w
             uint32_t linked_local_global_idx = linked_global_idx - linked->import_global_count;
             const wah_global_t *exported_global = &linked->globals[linked_local_global_idx];
             wah_type_t vt1 = exported_global->type, vt2 = gi->type;
-            WAH_CHECK(wah_validate_global_import_type(linked, vt1, exported_global->is_mutable,
+            WAH_CHECK(wah_validate_global_import_type(&ctx->alloc, linked, vt1, exported_global->is_mutable,
                                                       module, vt2, gi->is_mutable));
             if (gi_linked_ctx) {
                 wah_bind_global_import_slot(import_srcs, ctx->globals, i, gi->is_mutable,
@@ -17565,7 +17566,7 @@ static wah_error_t wah_resolve_linked_tag_imports(wah_exec_context_t *ctx) {
                 uint32_t prov_type_idx = prov_tag_idx < provider->import_tag_count
                     ? provider->tag_imports[prov_tag_idx].type_index
                     : provider->tags[prov_tag_idx - provider->import_tag_count].type_index;
-                WAH_ENSURE(wah_cross_module_type_ref_eq(provider, WAH_TYPE_FROM_IDX(prov_type_idx, 0),
+                WAH_ENSURE(wah_cross_module_type_ref_eq(&ctx->alloc, provider, WAH_TYPE_FROM_IDX(prov_type_idx, 0),
                                                         lmod, WAH_TYPE_FROM_IDX(lti->type_index, 0)), WAH_ERROR_LINK_FAILED);
                 const wah_tag_instance_t *identity;
                 WAH_CHECK(wah_resolve_tag_identity(ctx, provider, provider_ctx, prov_tag_idx, &identity));
@@ -17594,7 +17595,7 @@ static wah_error_t wah_resolve_primary_tag_imports(wah_exec_context_t *ctx) {
         uint32_t linked_type_idx = linked_tag_idx < linked->import_tag_count
             ? linked->tag_imports[linked_tag_idx].type_index
             : linked->tags[linked_tag_idx - linked->import_tag_count].type_index;
-        WAH_ENSURE(wah_cross_module_type_ref_eq(linked, WAH_TYPE_FROM_IDX(linked_type_idx, 0),
+        WAH_ENSURE(wah_cross_module_type_ref_eq(&ctx->alloc, linked, WAH_TYPE_FROM_IDX(linked_type_idx, 0),
                                                 module, WAH_TYPE_FROM_IDX(tgi->type_index, 0)), WAH_ERROR_LINK_FAILED);
 
         const wah_tag_instance_t *identity;
@@ -17637,7 +17638,7 @@ static wah_error_t wah_resolve_linked_global_imports(wah_exec_context_t *ctx, wa
                                                     &actual_provider_ctx, &actual_local_idx, &actual_global_idx));
                 const wah_global_t *exported_global = &actual_provider->globals[actual_local_idx];
                 wah_type_t vt1 = exported_global->type, vt2 = lgi->type;
-                WAH_CHECK(wah_validate_global_import_type(actual_provider, vt1, exported_global->is_mutable,
+                WAH_CHECK(wah_validate_global_import_type(&ctx->alloc, actual_provider, vt1, exported_global->is_mutable,
                                                           lmod, vt2, lgi->is_mutable));
                 wah_value_t *prov_slot;
                 if (actual_provider_ctx) {
@@ -17825,7 +17826,7 @@ static wah_error_t wah_resolve_primary_table_imports(wah_exec_context_t *ctx) {
         uint32_t linked_table_idx = exp->index;
         WAH_ENSURE(linked_table_idx < wah_table_index_limit(linked), WAH_ERROR_LINK_FAILED);
         const wah_table_type_t *linked_tt = wah_table_type(linked, linked_table_idx);
-        WAH_ENSURE(wah_cross_module_type_ref_eq(linked, linked_tt->elem_type,
+        WAH_ENSURE(wah_cross_module_type_ref_eq(&ctx->alloc, linked, linked_tt->elem_type,
                                                 module, ti->type.elem_type), WAH_ERROR_LINK_FAILED);
         WAH_ENSURE(linked_tt->addr_type == ti->type.addr_type, WAH_ERROR_LINK_FAILED);
         if (ti->type.max_elements != UINT64_MAX) {
@@ -18024,7 +18025,7 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                     const wah_export_t *texp = wah_find_export(tprov, 1, &tim->name);
                     tbl_pending = texp && tprov_ctx && !tprov_ctx->is_instantiated && texp->index < tprov->import_table_count;
                     if (texp && tprov_ctx && texp->index < tprov_ctx->table_count && !tbl_pending) {
-                        WAH_CHECK(wah_bind_table_import_slot(&ictx->tables[ti], lmod, &tim->type,
+                        WAH_CHECK(wah_bind_table_import_slot(&ctx->alloc, &ictx->tables[ti], lmod, &tim->type,
                                                              tprov, tprov_ctx, texp->index));
                         WAH_FOLLOW_IMPORT_CHAIN(ictx, ti, tprov_ctx, texp->index, wah_table_inst_t, tables);
                         tbl_found = true;
@@ -18039,7 +18040,7 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                         WAH_CHECK(wah_resolve_table_export(ctx, tprov, tprov_ctx, texp->index,
                                                            &rprov, &rprov_ctx, &rprov_idx));
                         if (rprov_ctx && rprov_idx < rprov_ctx->table_count) {
-                            WAH_CHECK(wah_bind_table_import_slot(&ictx->tables[ti], lmod, &tim->type,
+                            WAH_CHECK(wah_bind_table_import_slot(&ctx->alloc, &ictx->tables[ti], lmod, &tim->type,
                                                                  rprov, rprov_ctx, rprov_idx));
                             WAH_FOLLOW_IMPORT_CHAIN(ictx, ti, rprov_ctx, rprov_idx, wah_table_inst_t, tables);
                             tbl_found = true;
