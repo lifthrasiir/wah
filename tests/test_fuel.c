@@ -1010,6 +1010,34 @@ static void test_meter_at_branch_target_before_polled_loop(void) {
     wah_free_module(&mod);
 }
 
+// A polled loop right after a branch-target END recorded its header before the empty chunk there was retracted,
+// so back-edges landed in the middle of the next METER.
+static void test_loop_after_branch_target_end(void) {
+    printf("Testing loop back-edge right after a branch-target END...\n");
+
+    wah_module_t mod = {0};
+    PARSE_FUEL(&mod, "wasm \
+        types {[fn [] [i32]]} funcs {[0]} \
+        globals {[ i32 mut i32.const 0 end ]} \
+        code {[{[] \
+            block void br 0 end \
+            loop void \
+                global.get 0 i32.const 1 i32.add global.set 0 \
+                global.get 0 i32.const 3 i32.lt_u br_if 0 \
+            end \
+            global.get 0 \
+        end}]}");
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_instantiate(&ctx));
+    assert_ok(wah_set_fuel(&ctx, 1000));
+    wah_value_t result;
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 3);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 static char *repeat_spec(const char *pre, const char *rep, int n, const char *post) {
     size_t lp = strlen(pre), lr = strlen(rep), lq = strlen(post);
     char *s = malloc(lp + lr * (size_t)n + lq + 1), *p = s;
@@ -1146,6 +1174,7 @@ int main(void) {
     test_multi_value_resume();
     test_meter_chunk_reset_before_polled_loop();
     test_meter_at_branch_target_before_polled_loop();
+    test_loop_after_branch_target_end();
     test_long_straight_line_chunk();
     test_metered_code_size();
     test_branch_targets_are_metered();

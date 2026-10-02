@@ -7856,9 +7856,9 @@ static wah_error_t wah_lower_analyzed_code(const wah_module_t* module, const wah
         uint16_t opcode = instr->opcode;
 
         if (opcode == WAH_OP_BLOCK || opcode == WAH_OP_LOOP) {
-            uint32_t continuation_offset = buf_size;
+            if (emit_poll && (instr->flags & WAH_INSTR_FLAG_POLL) && opcode == WAH_OP_LOOP) WAH_METER_END_CHUNK();
+            uint32_t continuation_offset = buf_size; // After a possible retraction of an empty chunk
             if (emit_poll && (instr->flags & WAH_INSTR_FLAG_POLL)) {
-                if (opcode == WAH_OP_LOOP) WAH_METER_END_CHUNK();
                 WAH_EMIT_POLL();
                 if (opcode == WAH_OP_LOOP) meter_need_new_chunk = emit_meter;
             }
