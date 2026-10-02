@@ -2,6 +2,7 @@
 #include "wah_impl.h"
 #include "common.h"
 #include <stdio.h>
+#include <string.h>
 
 // 27d668b: Validate try_table catch handler types against target label types.
 static void test_try_table_catch_label_types() {
@@ -1028,6 +1029,64 @@ static void test_exception_oom() {
     wah_free_module(&mod);
 }
 
+// The payload of a catch to the function label was not counted in max_stack_depth when the body ends unreachable,
+// so rethrowing a wide exception there wrote past the frame (and here past the stack buffer).
+static void test_catch_to_function_label_counts_payload() {
+    printf("Testing catch to the function label counts the payload in the stack depth...\n");
+
+    char i32s[64 * 4], consts[64 * 16];
+    i32s[0] = consts[0] = '\0';
+    for (int i = 0; i < 64; i++) {
+        strcat(i32s, i ? ",i32" : "i32");
+        char buf[16];
+        snprintf(buf, sizeof buf, " i32.const %d", i);
+        strcat(consts, buf);
+    }
+    char spec[4096];
+    snprintf(spec, sizeof spec, "wasm \
+        types {[ fn [%s] [], fn [] [], fn [] [%s] ]} \
+        funcs {[ 1, 2 ]} \
+        tags {[ tag.type# 0 ]} \
+        globals {[ exnref mut ref.null exnref end ]} \
+        code {[ \
+            {[] \
+                block exnref \
+                    try_table void [catch_all_ref 0] %s throw 0 end \
+                    unreachable \
+                end \
+                global.set 0 \
+            end }, \
+            {[] \
+                try_table void [catch 0 0] global.get 0 throw_ref end \
+                unreachable \
+            end } \
+        ]}", i32s, i32s, consts);
+
+    wah_module_t mod = {0};
+    assert_ok(wah_parse_module_from_spec(&mod, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_instantiate(&ctx));
+    assert_ok(wah_call(&ctx, 0, NULL, 0, NULL));
+
+    wah_limits_t lim, small;
+    wah_get_limits(&ctx, &lim);
+    small = lim;
+    small.max_stack_bytes = 512; // Fits the frame but not the payload
+    assert_ok(wah_set_limits(&ctx, &small));
+    wah_value_t results[64];
+    uint32_t actual = 0;
+    assert_err(wah_call_multi(&ctx, 1, NULL, 0, results, 64, &actual), WAH_ERROR_STACK_OVERFLOW);
+
+    assert_ok(wah_set_limits(&ctx, &lim));
+    assert_ok(wah_call_multi(&ctx, 1, NULL, 0, results, 64, &actual));
+    assert_eq_u32(actual, 64);
+    for (int i = 0; i < 64; i++) assert_eq_i32(results[i].i32, i);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 static void test_cancel_does_not_free_exnref_in_global() {
     printf("Testing wah_cancel_internal does not free exnref held in a global...\n");
 
@@ -1119,6 +1178,7 @@ int main() {
     test_exception_survives_gc_on_stack();
     test_exception_oom();
     test_cancel_does_not_free_exnref_in_global();
+    test_catch_to_function_label_counts_payload();
     printf("All exception tests passed!\n");
     return 0;
 }

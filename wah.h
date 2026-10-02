@@ -7512,6 +7512,10 @@ cleanup_block:
                 // Values to discard below the try_table's stack base (which includes params) when caught
                 WAH_ENSURE_GOTO(frame->stack_height >= br_stack_height, WAH_ERROR_VALIDATION_FAILED, cleanup_try_table);
                 catch_entries[ci].drop = frame->stack_height + bt->param_count - br_stack_height;
+                // The payload may never be counted otherwise, e.g. for the function label in a body ending unreachable
+                if (br_stack_height + br_result_count > vctx->max_stack_depth) {
+                    vctx->max_stack_depth = br_stack_height + br_result_count;
+                }
 
                 uint32_t tag_param_count = 0;
                 const wah_type_t *tag_param_types = NULL;
