@@ -1402,9 +1402,23 @@ bool wah_gc_verify_heap(const wah_exec_context_t *ctx);
 //   Allocates an opaque host object on the GC heap.
 //   This object goes into `wah_value_t::ref` and can be stored in `externref` or `anyref`.
 //
+//   The object is collected once unreachable from WebAssembly, so the pointer is valid only until the next
+//   `wah_start`, `wah_call*` and so on, unless pinned by `wah_pin_ref`.
+//
 //   - size [in]: Size of the host object payload in bytes.
 //   - returns: Pointer to the payload of the allocated host object, or NULL on allocation failure.
 void *wah_gc_alloc_host(wah_exec_context_t *ctx, size_t size);
+
+// Function: wah_pin_ref
+//   Pins a host object from `wah_gc_alloc_host`, so that it is kept alive until released by `wah_unpin_ref`
+//   or the context is freed. Can be also called during host function calls of the context.
+//   The pinned reference can be used for `externref` and `anyref` like `wah_param_pinned_ref`,
+//   while the host object pointer itself also remains valid until released.
+//
+//   - host_ref [in]: Host object to pin. Pins nothing if NULL.
+//   - pinned_ref [out]: Pointer to store the pinned reference, or NULL if `host_ref` is NULL.
+//   - returns: WAH_ERROR_MISUSE if `host_ref` is not a host object.
+wah_error_t wah_pin_ref(wah_exec_context_t *ctx, void *host_ref, void **pinned_ref);
 
 // Function: wah_request_interrupt
 //   Requests an interrupt from the interpreter. Calling this multiple times does nothing.
@@ -2359,7 +2373,7 @@ struct wah_call_context_s {
 
 typedef struct wah_pin_slot_s {
     wah_value_t value;                 // Null if free
-    const struct wah_module_s *module; // Module which `type` refers to
+    const struct wah_module_s *module; // Module which `type` refers to, NULL for host objects from wah_pin_ref
     wah_type_t type;                   // Non-nullable static type of `value`
     uint32_t generation;
     uint32_t next_free;                // Index + 1 of the next free slot if free, 0 = none
@@ -15938,6 +15952,15 @@ static wah_pin_slot_t *wah_pinned_slot(const wah_exec_context_t *exec, const voi
     return s->value.ref && s->generation == generation ? s : NULL;
 }
 
+// Host objects pinned by wah_pin_ref have no module and fit both externref and anyref.
+static bool wah_pin_accepts(const wah_pin_slot_t *s, const wah_module_t *module, wah_type_t type) {
+    if (!s->module) {
+        wah_type_t heap_type = WAH_TYPE_AS_NON_NULL(type);
+        return heap_type == WAH_TYPE_EXTERN || heap_type == WAH_TYPE_ANY;
+    }
+    return wah_cross_module_subtype(s->module, s->type, module, type);
+}
+
 static wah_error_t wah_pin(wah_exec_context_t *exec, wah_value_t value, const wah_module_t *module, wah_type_t type,
                            void **out) {
     const wah_alloc_t *alloc = &exec->alloc;
@@ -15987,7 +16010,7 @@ static wah_error_t wah_load_host_params(const wah_exec_context_t *ctx, wah_value
             WAH_ENSURE(!((uintptr_t)value.ref & 1), WAH_ERROR_MISUSE); // The host can't make i31 references
             if (((uintptr_t)value.ref & 3) == WAH_PIN_TAG) {
                 const wah_pin_slot_t *s = wah_pinned_slot(ctx, value.ref);
-                WAH_ENSURE(s && wah_cross_module_subtype(s->module, s->type, module, types[i]), WAH_ERROR_MISUSE);
+                WAH_ENSURE(s && wah_pin_accepts(s, module, types[i]), WAH_ERROR_MISUSE);
                 value = s->value;
             }
         }
@@ -16831,6 +16854,15 @@ void *wah_param_pinned_ref(wah_call_context_t *ctx, size_t index) {
     return pinned;
 }
 
+wah_error_t wah_pin_ref(wah_exec_context_t *ctx, void *host_ref, void **pinned_ref) {
+    WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(pinned_ref, WAH_ERROR_MISUSE);
+    *pinned_ref = NULL;
+    if (!host_ref) return WAH_OK;
+    WAH_ENSURE(((uintptr_t)host_ref & 3) == 0 && wah_gc_header(host_ref)->repr_id == WAH_REPR_HOST, WAH_ERROR_MISUSE);
+    return wah_pin(ctx, (wah_value_t){ .ref = host_ref }, NULL, WAH_TYPE_ANY, pinned_ref);
+}
+
 wah_error_t wah_unpin_ref(wah_exec_context_t *ctx, void *pinned_ref) {
     WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(wah_unpin(ctx, pinned_ref), WAH_ERROR_MISUSE);
@@ -16871,7 +16903,7 @@ void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value) {
     }
     if (((uintptr_t)value & 3) == WAH_PIN_TAG) {
         wah_pin_slot_t *s = wah_pinned_slot(ctx->exec, value);
-        if (!s || !wah_cross_module_subtype(s->module, s->type, ctx->module, ctx->result_types[index])) {
+        if (!s || !wah_pin_accepts(s, ctx->module, ctx->result_types[index])) {
             wah_call_misuse(ctx);
             return;
         }

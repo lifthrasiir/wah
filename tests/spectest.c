@@ -132,7 +132,9 @@ static void *host_ref_for_id(spectest_env_t *env, wah_exec_context_t *ctx, uint3
         return NULL;
     }
     void *ptr = wah_gc_alloc_host(ctx, sizeof(uint32_t));
-    if (!ptr) return NULL;
+    void *pinned = NULL;
+    // Pinned until the context is freed, as host references are reused across calls
+    if (!ptr || wah_pin_ref(ctx, ptr, &pinned) != WAH_OK) return NULL;
     *(uint32_t *)ptr = id;
     env->host_refs[env->host_ref_count].id = id;
     env->host_refs[env->host_ref_count].ptr = ptr;

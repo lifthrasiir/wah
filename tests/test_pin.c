@@ -177,6 +177,53 @@ static void test_call_pin(void) {
     wah_free_module(&mod);
 }
 
+static void test_pin_host_ref(void) {
+    printf("Testing host objects pinned by wah_pin_ref survive garbage collections...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+    // 0: churn(), 1: keep(externref), 2: get() -> externref, 3: id(anyref) -> anyref
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[ struct [i32 mut], fn [] [], fn [externref] [], fn [] [externref], fn [anyref] [anyref] ]} \
+        funcs {[ 1, 2, 3, 4 ]} globals {[ externref mut ref.null externref end ]} \
+        code {[ {[1 i32] loop void i32.const 0 struct.new 0 drop \
+                    local.get 0 i32.const 1 i32.add local.tee 0 i32.const 200000 i32.lt_u br_if 0 end end}, \
+                {[] local.get 0 global.set 0 end}, \
+                {[] global.get 0 end}, \
+                {[] local.get 0 end} ]}"));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_instantiate(&ctx));
+
+    void *host = wah_gc_alloc_host(&ctx, 16);
+    assert_true(host != NULL);
+    void *pinned = NULL;
+    assert_ok(wah_pin_ref(&ctx, host, &pinned));
+    assert_true(pinned != NULL && pinned != host);
+    assert_ok(wah_call(&ctx, 0, NULL, 0, NULL));
+
+    // Both the raw and pinned forms of a pinned host object can be passed to externref and anyref
+    wah_value_t arg = { .ref = host }, r;
+    assert_ok(wah_call(&ctx, 1, &arg, 1, NULL));
+    assert_ok(wah_call(&ctx, 0, NULL, 0, NULL));
+    assert_ok(wah_call(&ctx, 2, NULL, 0, &r));
+    assert_true(r.ref == host);
+    arg.ref = pinned;
+    assert_ok(wah_call(&ctx, 1, &arg, 1, NULL));
+    assert_ok(wah_call(&ctx, 3, &arg, 1, &r));
+    assert_true(r.ref == host);
+
+    printf("Testing wah_pin_ref accepts only host objects...\n");
+    void *out = host;
+    assert_ok(wah_pin_ref(&ctx, NULL, &out));
+    assert_true(out == NULL);
+    assert_err(wah_pin_ref(&ctx, pinned, &out), WAH_ERROR_MISUSE);
+    assert_err(wah_pin_ref(&ctx, (void *)~(uintptr_t)0, &out), WAH_ERROR_MISUSE);
+    assert_ok(wah_unpin_ref(&ctx, pinned));
+    assert_err(wah_unpin_ref(&ctx, pinned), WAH_ERROR_MISUSE);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_swap("(externref) -> externref", "externref", "extern.convert_any", "any.convert_extern");
     test_swap("(anyref) -> anyref", "anyref", "", "");
@@ -212,6 +259,7 @@ int main(void) {
     }
 
     test_call_pin();
+    test_pin_host_ref();
 
     printf("All pin tests passed!\n");
     return 0;
