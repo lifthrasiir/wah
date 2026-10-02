@@ -1318,7 +1318,8 @@ void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value);
 // Function: wah_trap
 //   Traps from a host function with a specified reason.
 //
-//   - reason [in]: Error code to be propagated. Cannot be any non-error code like WAH_OK.
+//   - reason [in]: Error code to be propagated. Cannot be any non-error code like WAH_OK, which traps with
+//     WAH_ERROR_MISUSE instead unless caught by WAH_ASSERT.
 void wah_trap(wah_call_context_t *ctx, wah_error_t reason);
 
 // --- Linkage ---
@@ -17057,7 +17058,8 @@ void wah_trap(wah_call_context_t *ctx, wah_error_t reason) {
     WAH_ASSERT(ctx && "Call context is NULL");
     WAH_ASSERT(reason < 0 && "Cannot trap with a non-error code such as WAH_OK");
     WAH_ASSERT(ctx->trap_reason == WAH_OK && "Call context already has a trap reason set");
-    if (ctx->trap_reason == WAH_OK) ctx->trap_reason = reason;
+    // A status code would suspend the host call with its params where results are expected
+    if (ctx->trap_reason == WAH_OK) ctx->trap_reason = reason < 0 ? reason : WAH_ERROR_MISUSE;
 }
 
 // --- Linkage Implementation ---
