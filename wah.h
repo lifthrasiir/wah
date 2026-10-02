@@ -2308,12 +2308,13 @@ static wah_x86_64_features_t wah_x86_64_features(void) {
 #endif
     }
 
-    uint32_t avx512vl = avx512_usable && ((leaf7_ebx >> 31) & 1);
+    // Features whose opcodes were compiled out must not be reported, otherwise their opcodes have no handler
+    uint32_t avx512vl = (0 WAH_IF_AVX512(+ 1)) && avx512_usable && ((leaf7_ebx >> 31) & 1);
     return (wah_x86_64_features_t){
-        .ssse3 = (ecx >> 9) & 1,
-        .sse41 = (ecx >> 19) & 1,
-        .sse42 = (ecx >> 20) & 1,
-        .avx2 = avx_usable && ((leaf7_ebx >> 5) & 1),
+        .ssse3 = (0 WAH_IF_SSSE3(+ 1)) && ((ecx >> 9) & 1),
+        .sse41 = (0 WAH_IF_SSE41(+ 1)) && ((ecx >> 19) & 1),
+        .sse42 = (0 WAH_IF_SSE42(+ 1)) && ((ecx >> 20) & 1),
+        .avx2 = (0 WAH_IF_AVX2(+ 1)) && avx_usable && ((leaf7_ebx >> 5) & 1),
         .avx512f_vl = avx512vl && ((leaf7_ebx >> 16) & 1),
         .avx512dq_vl = avx512vl && ((leaf7_ebx >> 17) & 1),
         .avx512bw_vl = avx512vl && ((leaf7_ebx >> 30) & 1),
