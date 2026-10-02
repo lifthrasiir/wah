@@ -15059,7 +15059,7 @@ WAH_RUN(I16X8_Q15MULR_SAT_S) {
 }
 WAH_RUN(I16X8_ALL_TRUE)
     WAH_IF_X86_64({ sp[-1].i32 = (_mm_movemask_epi8(_mm_cmpeq_epi16(sp[-1]._m128i, _mm_setzero_si128())) == 0); WAH_NEXT(); },
-        V128_ALL_TRUE_OP(16, u16))
+        N128_UNARY_I32_OP(wah_all_true_i16x8_neon, V128_ALL_TRUE_OP(16, u16)))
 WAH_RUN(I16X8_BITMASK) M128I_UNARY_I32_OP(wah_i16x8_bitmask_sse2, N128_UNARY_I32_OP(wah_bitmask_i16x8_neon, V128_BITMASK_OP(16, i16)))
 WAH_RUN(I16X8_NARROW_I32X4_S)
     M128I_BINARY_OP(_mm_packs_epi32, N128_BINARY_OP(wah_i16x8_narrow_i32x4_s_neon,
