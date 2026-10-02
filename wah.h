@@ -4985,11 +4985,12 @@ static uint64_t wah_rec_group_hash(const wah_module_t *module, uint32_t rg_start
 // Pairs of rec groups (by start index) already known to be equal during a single equality check.
 // Rec groups only refer to earlier groups, and any inequality ends the whole check, so remembering
 // equal pairs is enough to avoid exponential time. Types are treated as unequal on OOM, which would
-// otherwise make the check exponential.
+// otherwise make the check exponential, so such results must not be cached.
 typedef struct {
     uint64_t *keys; // 0 = empty
     uint32_t count, cap;
     const wah_alloc_t *alloc;
+    bool oom;
 } wah_type_eq_memo_t;
 
 static inline uint64_t wah_type_eq_memo_key(uint32_t rga_s, uint32_t rgb_s) {
@@ -5011,6 +5012,7 @@ static bool wah_type_eq_memo_add(wah_type_eq_memo_t *memo, uint64_t key) {
         uint32_t new_cap = memo->cap ? memo->cap * 2 : 64;
         uint64_t *new_keys = NULL;
         if (new_cap < memo->cap || wah_malloc(memo->alloc, new_cap, sizeof(uint64_t), (void **)&new_keys) != WAH_OK) {
+            memo->oom = true;
             return false;
         }
         memset(new_keys, 0, new_cap * sizeof(uint64_t));
@@ -5114,9 +5116,9 @@ static bool wah_cross_module_rec_group_eq(const wah_module_t *ma, uint32_t rga_s
     return true;
 }
 
-// alloc is only used for temporary allocations.
-static bool wah_cross_module_type_ref_eq(const wah_alloc_t *alloc, const wah_module_t *ma, wah_type_t ta,
-                                         const wah_module_t *mb, wah_type_t tb) {
+// alloc is only used for temporary allocations. *oom (if given) is set when the result is false due to OOM.
+static bool wah_cross_module_type_ref_eq_oom(const wah_alloc_t *alloc, const wah_module_t *ma, wah_type_t ta,
+                                             const wah_module_t *mb, wah_type_t tb, bool *oom) {
     if (ta == tb && ta < 0) return true;
     if (ta < 0 || tb < 0) return ta == tb;
     if (WAH_TYPE_IS_NULLABLE(ta) != WAH_TYPE_IS_NULLABLE(tb)) return false;
@@ -5139,29 +5141,40 @@ static bool wah_cross_module_type_ref_eq(const wah_alloc_t *alloc, const wah_mod
     wah_type_eq_memo_t memo = { .alloc = alloc };
     bool eq = wah_cross_module_rec_group_eq(ma, rga_s, rga_n, mb, rgb_s, rgb_n, 0, &memo);
     wah_free(memo.alloc, memo.keys);
+    if (memo.oom && oom) *oom = true;
     return eq;
 }
 
-static bool wah_cross_module_subtype(const wah_alloc_t *alloc, const wah_module_t *sub_m, wah_type_t sub_t,
-                                     const wah_module_t *sup_m, wah_type_t sup_t) {
+static bool wah_cross_module_type_ref_eq(const wah_alloc_t *alloc, const wah_module_t *ma, wah_type_t ta,
+                                         const wah_module_t *mb, wah_type_t tb) {
+    return wah_cross_module_type_ref_eq_oom(alloc, ma, ta, mb, tb, NULL);
+}
+
+static bool wah_cross_module_subtype_oom(const wah_alloc_t *alloc, const wah_module_t *sub_m, wah_type_t sub_t,
+                                         const wah_module_t *sup_m, wah_type_t sup_t, bool *oom) {
     if (sub_t == sup_t && sub_m == sup_m) return true;
     if (WAH_TYPE_IS_NULLABLE(sub_t) && !WAH_TYPE_IS_NULLABLE(sup_t)) return false;
-    if (wah_cross_module_type_ref_eq(alloc, sub_m, sub_t, sup_m, sup_t)) return true;
+    if (wah_cross_module_type_ref_eq_oom(alloc, sub_m, sub_t, sup_m, sup_t, oom)) return true;
     if (sub_t < 0 || sup_t < 0) return wah_type_is_subtype(sub_t, sup_t, sub_t < 0 ? sup_m : sub_m);
     // Strip nullability for structural comparison (non-null <: nullable is valid)
     wah_type_t sub_nn = WAH_TYPE_AS_NON_NULL(sub_t);
     wah_type_t sup_nn = WAH_TYPE_AS_NON_NULL(sup_t);
     if (sub_nn != sub_t || sup_nn != sup_t) {
-        if (wah_cross_module_type_ref_eq(alloc, sub_m, sub_nn, sup_m, sup_nn)) return true;
+        if (wah_cross_module_type_ref_eq_oom(alloc, sub_m, sub_nn, sup_m, sup_nn, oom)) return true;
     }
     // Walk supertype chain of sub_t
     uint32_t t = WAH_TYIDX(sub_t);
     while (t != WAH_NO_SUPERTYPE) {
         if (sub_m->type_defs[t].supertype == WAH_NO_SUPERTYPE) break;
         t = sub_m->type_defs[t].supertype;
-        if (wah_cross_module_type_ref_eq(alloc, sub_m, WAH_TYPE_FROM_IDX(t, 0), sup_m, sup_nn)) return true;
+        if (wah_cross_module_type_ref_eq_oom(alloc, sub_m, WAH_TYPE_FROM_IDX(t, 0), sup_m, sup_nn, oom)) return true;
     }
     return false;
+}
+
+static bool wah_cross_module_subtype(const wah_alloc_t *alloc, const wah_module_t *sub_m, wah_type_t sub_t,
+                                     const wah_module_t *sup_m, wah_type_t sup_t) {
+    return wah_cross_module_subtype_oom(alloc, sub_m, sub_t, sup_m, sup_t, NULL);
 }
 
 static inline uint32_t wah_type_check_cache_slot(const wah_module_t *sub_m, wah_type_t sub_t,
@@ -5182,7 +5195,9 @@ static bool wah_cross_module_subtype_cached(wah_exec_context_t *ctx,
         entry->sub_type == sub_t && entry->sup_type == sup_t) {
         return entry->is_subtype;
     }
-    bool is_subtype = wah_cross_module_subtype(&ctx->alloc, sub_m, sub_t, sup_m, sup_t);
+    bool oom = false;
+    bool is_subtype = wah_cross_module_subtype_oom(&ctx->alloc, sub_m, sub_t, sup_m, sup_t, &oom);
+    if (oom) return is_subtype; // May turn out otherwise later
     *entry = (wah_type_check_cache_entry_t){
         .sub_module = sub_m, .sup_module = sup_m,
         .sub_type = sub_t, .sup_type = sup_t,

@@ -2,6 +2,7 @@
 #include "common.h"
 #include "wah_impl.h"
 #include <stdio.h>
+#include <stdlib.h>
 
 // Regression test for OOB read in wah_ref_test_heap_type (lines 10532-10533).
 // When a GC object allocated by module A (with struct types, high repr_id)
@@ -285,6 +286,42 @@ static void test_host_func_ref_cast_concrete(void) {
     wah_free_module(&host);
 }
 
+// Fails only allocations of the size of the first memo of cross-module type equality checks (64 keys).
+static int g_fail_memo_alloc = 0;
+static void *memo_failing_malloc(size_t n, void *ud) { (void)ud; return g_fail_memo_alloc && n == 64 * sizeof(uint64_t) ? NULL : malloc(n); }
+static void *memo_failing_realloc(void *p, size_t n, void *ud) { (void)ud; return realloc(p, n); }
+static void memo_failing_free(void *p, void *ud) { (void)ud; free(p); }
+
+// Regression: types were taken as unequal when the memo of the equality check couldn't grow, and that result was
+// kept in the cache of cross-module type checks, so that a transient OOM changed later results of ref.test.
+static void test_cross_module_type_check_oom_not_cached() {
+    printf("Testing cross-module type checks failed by OOM are not cached...\n");
+    wah_alloc_t alloc = { memo_failing_malloc, memo_failing_realloc, memo_failing_free, NULL };
+    wah_module_t lm = {0}, pm = {0};
+    // Type 1 refers to type 0 in another rec group, whose equality is memoized
+    assert_ok(wah_parse_module_from_spec(&lm, "wasm \
+        types {[ struct [], struct [type.ref.null 0 immut], fn [] [anyref] ]} funcs {[ 2 ]} \
+        exports {[ {'make'} fn# 0 ]} code {[ {[] ref.null 0 struct.new 1 end} ]}"));
+    assert_ok(wah_parse_module_from_spec(&pm, "wasm \
+        types {[ struct [], struct [type.ref.null 0 immut], fn [] [anyref], fn [] [i32] ]} \
+        imports {[ {'m'} {'make'} fn# 2 ]} funcs {[ 3 ]} exports {[ {'test'} fn# 1 ]} \
+        code {[ {[] call 0 ref.test 1 end} ]}"));
+    wah_exec_options_t opts = { .alloc = &alloc };
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &pm, &opts));
+    assert_ok(wah_link_module(&ctx, "m", &lm));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t res;
+    g_fail_memo_alloc = 1;
+    wah_call_by_name(&ctx, "test", NULL, 0, &res); // The result under OOM doesn't matter
+    g_fail_memo_alloc = 0;
+    assert_ok(wah_call_by_name(&ctx, "test", NULL, 0, &res));
+    assert_eq_i32(res.i32, 1);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&pm);
+    wah_free_module(&lm);
+}
+
 int main() {
     test_cross_module_ref_test_abstract_struct_oob();
     test_cross_module_ref_test_abstract_array_oob();
@@ -292,6 +329,7 @@ int main() {
     test_gc_root_scan_imported_mutable_ref_global();
     test_cross_module_repr_id_type_confusion();
     test_host_func_ref_cast_concrete();
+    test_cross_module_type_check_oom_not_cached();
     printf("All cross-module reference security tests passed!\n");
     return 0;
 }
