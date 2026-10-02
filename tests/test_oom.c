@@ -199,6 +199,27 @@ static wah_error_t op_parse_complex_module(oom_alloc_t *state, void *userdata) {
     return wah_parse_module_from_spec_ex(&c->module, &opts, spec);
 }
 
+// The decoded instruction array grows from 8 to 16 entries at the instruction after the 8th
+static wah_error_t op_parse_br_table_at_growth(oom_alloc_t *state, void *userdata) {
+    module_case_t *c = (module_case_t *)userdata;
+    wah_alloc_t alloc = make_oom_alloc(state);
+    wah_parse_options_t opts = { .alloc = &alloc, .features = WAH_FEATURE_ALL };
+    return wah_parse_module_from_spec_ex(&c->module, &opts, "wasm \
+        types {[ fn [i32] [] ]} funcs {[ 0 ]} \
+        code {[ {[] local.get 0 local.get 0 local.get 0 local.get 0 \
+                    local.get 0 local.get 0 local.get 0 local.get 0 br_table [0] 0 end} ]}");
+}
+
+static wah_error_t op_parse_try_table_at_growth(oom_alloc_t *state, void *userdata) {
+    module_case_t *c = (module_case_t *)userdata;
+    wah_alloc_t alloc = make_oom_alloc(state);
+    wah_parse_options_t opts = { .alloc = &alloc, .features = WAH_FEATURE_ALL };
+    return wah_parse_module_from_spec_ex(&c->module, &opts, "wasm \
+        types {[ fn [i32] [] ]} funcs {[ 0 ]} \
+        code {[ {[] local.get 0 drop local.get 0 drop local.get 0 drop local.get 0 drop \
+                    try_table void [catch_all 0] end end} ]}");
+}
+
 static wah_error_t op_define_type(oom_alloc_t *state, void *userdata) {
     module_case_t *c = (module_case_t *)userdata;
     wah_alloc_t alloc = make_oom_alloc(state);
@@ -417,6 +438,12 @@ int main(void) {
 
     module_case_t parse_case = {0};
     run_oom_loop("wah_parse_module", op_parse_complex_module, cleanup_module_case, &parse_case);
+
+    module_case_t br_table_case = {0};
+    run_oom_loop("wah_parse_module br_table", op_parse_br_table_at_growth, cleanup_module_case, &br_table_case);
+
+    module_case_t try_table_case = {0};
+    run_oom_loop("wah_parse_module try_table", op_parse_try_table_at_growth, cleanup_module_case, &try_table_case);
 
     module_case_t define_case = {0};
     run_oom_loop("wah_define_type", op_define_type, cleanup_module_case, &define_case);

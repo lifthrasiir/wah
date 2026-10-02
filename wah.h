@@ -6910,6 +6910,7 @@ cleanup_block:
             if (err != WAH_OK) goto cleanup_br_table;
 
             wah_validation_mark_unreachable(vctx);
+            WAH_ENSURE_CAP_GOTO(ac->instrs, ac->instr_count + 1, cleanup_br_table); // So that bt is not leaked
             EMIT_INSTR_EX(opcode_val, {
                 _di->imm.br_table = bt;
                 bt = NULL;
@@ -7440,6 +7441,7 @@ cleanup_block:
 
             wah_validation_save_local_inits(vctx, frame);
 
+            WAH_ENSURE_CAP_GOTO(ac->instrs, ac->instr_count + 1, cleanup_try_table); // So that catch_entries is not leaked
             EMIT_INSTR_EX(opcode_val, {
                 _di->imm.try_table.catch_count = catch_count;
                 _di->imm.try_table.catches = NULL;
