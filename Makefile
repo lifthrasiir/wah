@@ -65,6 +65,7 @@ $(patsubst %.c, %, $(IMPL_SRCS)): tests/test_%: tests/test_%.c tests/common.o wa
 	@rm -f tests/test_$*.o
 
 tests/test_spectest: tests/spectest.c tests/wast.c
+$(patsubst %.c, %, $(filter tests/test_feature_%, $(IMPL_SRCS))): tests/features.c
 
 # API-only tests: link with wah_impl.o + common.o
 $(patsubst %.c, %, $(API_SRCS)): tests/test_%: tests/test_%.c tests/wah_impl.o tests/common.o wah.h tests/common.h tests/wah_impl.h
