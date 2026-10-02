@@ -4701,7 +4701,7 @@ static inline wah_exec_context_t *wah_budget_owner(wah_exec_context_t *ctx) {
     return ctx->budget_ctx ? ctx->budget_ctx : ctx;
 }
 
-static void wah_budget_release(wah_exec_context_t *ctx, uint64_t bytes) {
+static inline void wah_budget_release(wah_exec_context_t *ctx, uint64_t bytes) {
     WAH_ASSERT(ctx->memory_bytes_committed >= bytes);
     ctx->memory_bytes_committed -= bytes;
 }
