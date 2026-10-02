@@ -6666,6 +6666,9 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             if (vctx->mode == WAH_ANALYZE_CONST_EXPR) {
                 WAH_ENSURE(global_idx < vctx->max_global_idx, WAH_ERROR_VALIDATION_FAILED);
                 WAH_ENSURE(!wah_global_is_mutable(vctx->module, global_idx), WAH_ERROR_VALIDATION_FAILED);
+                if (global_idx >= vctx->module->import_global_count) { // Only imported ones before GC
+                    WAH_CHECK(wah_require_feature(vctx->module, WAH_FEATURE_SHIFT_GC));
+                }
             }
             PUSH(_(wah_global_type(vctx->module, global_idx)));
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = global_idx);

@@ -1251,6 +1251,23 @@ static void test_table_init_expr_requires_feature(void) {
     wah_free_module(&module);
 }
 
+// Constant expressions reading defined (not imported) globals used to be accepted without GC.
+static void test_const_expr_defined_global_requires_gc(void) {
+    printf("Running test_const_expr_defined_global_requires_gc...\n");
+    const char *spec = "wasm globals {[ i32 immut i32.const 1 end, i32 immut global.get 0 end ]}";
+    wah_module_t module = {0};
+    wah_parse_options_t opts = { .features = WAH_FEATURE_ALL };
+    assert_ok(wah_parse_module_from_spec_ex(&module, &opts, spec));
+    wah_free_module(&module);
+    opts.features = WAH_FEATURE_ALL & ~WAH_FEATURE_GC;
+    assert_err(wah_parse_module_from_spec_ex(&module, &opts, spec), WAH_ERROR_DISABLED_FEATURE);
+    wah_free_module(&module);
+    // Imported globals are fine without GC
+    assert_ok(wah_parse_module_from_spec_ex(&module, &opts, "wasm \
+        imports {[ {'a'} {'b'} global# i32 immut ]} globals {[ i32 immut global.get 0 end ]}"));
+    wah_free_module(&module);
+}
+
 // Tracks the peak of outstanding allocation bytes.
 typedef struct { size_t cur, peak; } peak_alloc_t;
 
@@ -1459,6 +1476,7 @@ int main(void) {
     test_block_type_index_requires_multi_value();
     test_mutable_global_export_requires_feature();
     test_table_init_expr_requires_feature();
+    test_const_expr_defined_global_requires_gc();
     test_parse_module_argument_errors();
     test_zero_params_zero_results_func_type();
     test_invalid_section_order_mem_table();
