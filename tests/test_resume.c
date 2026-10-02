@@ -936,11 +936,19 @@ typedef struct {
 } wah_roots_fixture_t;
 
 enum { B_MAKE, B_GET, B_CLEAR, B_CHURN, B_USE };
-enum { A_GET, A_USE, A_HOST, A_TRAP, A_FETCH };
+enum { A_GET, A_USE, A_HOST, A_HOST_GC, A_TRAP, A_FETCH, A_TAIL };
 
 static void host_param_alive(wah_call_context_t *cc, void *ud) {
     (void)ud;
     wah_return_i32(cc, wah_param_ref(cc, 0) != NULL); // Reads the header of the object
+}
+
+// Re-entrant: collects garbage in `b` given as userdata before reading the parameter
+static void host_param_alive_after_gc(wah_call_context_t *cc, void *ud) {
+    wah_exec_context_t *bctx = (wah_exec_context_t *)ud;
+    assert_ok(wah_call(bctx, B_CLEAR, NULL, 0, NULL));
+    assert_ok(wah_call(bctx, B_CHURN, NULL, 0, NULL));
+    host_param_alive(cc, NULL);
 }
 
 static void roots_setup(wah_roots_fixture_t *f) {
@@ -958,13 +966,15 @@ static void roots_setup(wah_roots_fixture_t *f) {
                 {[] local.get 0 ref.cast 0 struct.get 0 0 end} ]}"));
     // A_TRAP leaves an i64 where the ref map of its last call had a reference
     assert_ok(wah_parse_module_from_spec(&f->a, "wasm \
-        types {[ fn [] [], fn [] [anyref], fn [anyref] [i32] ]} \
-        imports {[ {'b'} {'get'} fn# 1, {'b'} {'use'} fn# 2, {'h'} {'f'} fn# 2 ]} \
-        funcs {[ 0, 1 ]} \
+        types {[ fn [] [], fn [] [anyref], fn [anyref] [i32], fn [] [i32] ]} \
+        imports {[ {'b'} {'get'} fn# 1, {'b'} {'use'} fn# 2, {'h'} {'f'} fn# 2, {'h'} {'g'} fn# 2 ]} \
+        funcs {[ 0, 1, 3 ]} \
         code {[ {[] call 0 call 1 drop i64.const 17592186044416 unreachable end}, \
-                {[] call 0 end} ]}"));
+                {[] call 0 end}, \
+                {[] call 0 return_call 3 end} ]}"));
     assert_ok(wah_new_module(&f->h, NULL));
     assert_ok(wah_export_func(&f->h, "f", "(anyref) -> i32", host_param_alive, NULL, NULL));
+    assert_ok(wah_export_func(&f->h, "g", "(anyref) -> i32", host_param_alive_after_gc, &f->bctx, NULL));
     assert_ok(wah_new_exec_context(&f->bctx, &f->b, NULL));
     assert_ok(wah_instantiate(&f->bctx));
     assert_ok(wah_new_exec_context(&f->actx, &f->a, NULL));
@@ -1028,6 +1038,16 @@ static void test_host_entry_params_are_roots(void) {
     roots_teardown(&f);
 }
 
+static void test_host_tail_call_params_are_roots(void) {
+    printf("Testing parameters of a host function called by return_call are GC roots...\n");
+    wah_roots_fixture_t f;
+    roots_setup(&f);
+    wah_value_t r;
+    assert_ok(wah_call(&f.actx, A_TAIL, NULL, 0, &r));
+    assert_eq_i32(r.i32, 1);
+    roots_teardown(&f);
+}
+
 int main(void) {
     test_resume_straight_line();
     test_resume_loop();
@@ -1057,6 +1077,7 @@ int main(void) {
     test_trapped_frames_are_not_roots();
     test_finished_results_are_roots();
     test_host_entry_params_are_roots();
+    test_host_tail_call_params_are_roots();
 
     printf("\n=== All resume tests passed ===\n");
     return 0;

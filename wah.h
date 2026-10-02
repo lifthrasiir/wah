@@ -13547,6 +13547,26 @@ WAH_RUN(CALL_REF) {
     WAH_CLEANUP();
 }
 
+// Pops the current frame, moving its results to the caller.
+#define WAH_POP_CURRENT_FRAME() do { \
+    while (ctx->exception_handler_depth > 0 && \
+           ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) { \
+        ctx->exception_handler_depth--; \
+    } \
+    uint32_t results_to_keep_ = frame->result_count; \
+    wah_value_t *results_src_ = sp - results_to_keep_; \
+    sp = frame->locals; \
+    ctx->call_depth--; \
+    ctx->frame_ptr++; \
+    if (results_to_keep_ == 1) { \
+        *sp++ = *results_src_; \
+    } else if (results_to_keep_ > 0) { \
+        memmove(sp, results_src_, sizeof(wah_value_t) * results_to_keep_); \
+        sp += results_to_keep_; \
+    } \
+    RELOAD_FRAME(); \
+} while (0)
+
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TAIL_CALL)
 
 // Tail-call helper: reuse current frame for a wasm-to-wasm call.
@@ -13578,32 +13598,12 @@ WAH_RUN(CALL_REF) {
         fctx = frame->frame_ctx; \
     } while (0)
 
-// Tail-call helper for host functions: perform return, then call host function in caller context.
+// Tail-call helper for host functions: call the host function, then return.
+// The frame is kept during the call, so that the ref map of its POLL covers the parameters.
 #define WAH_TAIL_CALL_HOST(called_fn_) \
     do { \
-        const wah_function_t *tc_fn = (called_fn_); \
-        size_t tc_nparams = tc_fn->nparams; \
-        size_t tc_nresults = tc_fn->nresults; \
-        wah_value_t *tc_params_src = sp - tc_nparams; \
-        wah_value_t *tc_locals_dst = frame->locals; \
-        if (tc_nparams > 0) { \
-            memmove(tc_locals_dst, tc_params_src, sizeof(wah_value_t) * tc_nparams); \
-        } \
-        sp = tc_locals_dst + tc_nparams; \
-        ctx->call_depth--; \
-        ctx->frame_ptr++; \
-        wah_value_t *tc_param_vals = sp - tc_nparams; \
-        wah_value_t *tc_result_vals = sp; \
-        WAH_ENSURE_GOTO((uint8_t *)(tc_result_vals + tc_nresults) <= (uint8_t *)ctx->frame_ptr, WAH_ERROR_STACK_OVERFLOW, cleanup); \
-        memset(tc_result_vals, 0, sizeof(wah_value_t) * tc_nresults); \
-        frame->bytecode_ip = bytecode_ip; \
-        ctx->sp = sp; \
-        WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, tc_fn, tc_param_vals, (uint32_t)tc_nparams, tc_result_vals), cleanup); \
-        if (tc_nresults > 0) { \
-            memmove(tc_param_vals, tc_result_vals, sizeof(wah_value_t) * tc_nresults); \
-        } \
-        sp = tc_param_vals + tc_nresults; \
-        RELOAD_FRAME(); \
+        WAH_CALL_HOST_INLINE(called_fn_); \
+        WAH_POP_CURRENT_FRAME(); \
     } while (0)
 
 WAH_RUN(RETURN_CALL) {
@@ -13691,22 +13691,7 @@ WAH_NEVER_RUN(RETURN_CALL_REF)
 #endif // WAH_FEATURE_TAIL_CALL
 
 #define WAH_RETURN_CURRENT_FRAME() do { \
-    while (ctx->exception_handler_depth > 0 && \
-           ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) { \
-        ctx->exception_handler_depth--; \
-    } \
-    uint32_t results_to_keep_ = frame->result_count; \
-    wah_value_t *results_src_ = sp - results_to_keep_; \
-    sp = frame->locals; \
-    ctx->call_depth--; \
-    ctx->frame_ptr++; \
-    if (results_to_keep_ == 1) { \
-        *sp++ = *results_src_; \
-    } else if (results_to_keep_ > 0) { \
-        memmove(sp, results_src_, sizeof(wah_value_t) * results_to_keep_); \
-        sp += results_to_keep_; \
-    } \
-    RELOAD_FRAME(); \
+    WAH_POP_CURRENT_FRAME(); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
 } while (0)
