@@ -5,6 +5,7 @@
 #include <assert.h>
 #include "../wah.h"
 #include "common.h"
+#include "wah_impl.h"
 
 static const wah_parse_options_t fuel_opts = { .features = WAH_FEATURE_ALL, .enable_fuel_metering = true };
 
@@ -1019,6 +1020,30 @@ static char *repeat_spec(const char *pre, const char *rep, int n, const char *po
     return s;
 }
 
+// Slow islands of metered code used to precede each instruction with a 10-byte TICK.
+static void test_metered_code_size(void) {
+    printf("Testing size of metered straight-line code...\n");
+    enum { N = 10000 };
+    char *spec = repeat_spec("wasm types {[fn [] []]} funcs {[0]} code {[{[] ", "i32.const 0 drop ", N, "end}]}");
+    wah_module_t mod = {0};
+    PARSE_FUEL(&mod, spec);
+    free(spec);
+    uint32_t size = wah_debug_module_bytecode_size(&mod, 0);
+    printf("  %u bytes of bytecode for %d pairs of i32.const and drop\n", size, N);
+    assert_true(size < 30u * N); // Fast path is 8 bytes per pair, and slow path copies them with a TICK each
+
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_set_fuel(&ctx, 2 * N));
+    assert_ok(wah_start(&ctx, 0, NULL, 0));
+    assert_err(wah_resume(&ctx), WAH_STATUS_FUEL_EXHAUSTED); // Before the final END
+    assert_ok(wah_set_fuel(&ctx, 1));
+    assert_ok(wah_resume(&ctx));
+    assert_ok(wah_finish(&ctx, NULL, 0, NULL));
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 static void test_long_straight_line_chunk(void) {
     printf("Testing fuel accounting of very long straight-line code...\n");
 
@@ -1122,6 +1147,7 @@ int main(void) {
     test_meter_chunk_reset_before_polled_loop();
     test_meter_at_branch_target_before_polled_loop();
     test_long_straight_line_chunk();
+    test_metered_code_size();
     test_branch_targets_are_metered();
 
     printf("\n=== All fuel tests passed ===\n");
