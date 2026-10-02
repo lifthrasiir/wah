@@ -1394,6 +1394,19 @@ static void test_early_type_index_rejection(void) {
     }
 }
 
+// Excludes the spec DSL, which can be much slower than parsing itself (e.g. strncmp interceptors in GCC ASan)
+static double parse_seconds(const char *spec) {
+    uint8_t *data; size_t size;
+    assert_true(wah_build_spec_binary(&data, &size, "%t", spec));
+    wah_module_t module = {0};
+    clock_t start = clock();
+    assert_ok(wah_parse_module(&module, data, size, NULL));
+    double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
+    wah_free_module(&module);
+    free(data);
+    return elapsed;
+}
+
 // struct.new_default (and struct.new in unreachable code) used to loop over all fields of a wide struct.
 static double parse_wide_struct_news_seconds(const char *body) {
     enum { N = 50000 };
@@ -1408,11 +1421,7 @@ static double parse_wide_struct_news_seconds(const char *body) {
     memcpy(p, mid, sizeof(mid) - 1); p += sizeof(mid) - 1;
     for (int i = 0; i < N; i++) { memcpy(p, body, body_len); p += body_len; }
     strcpy(p, " end}]}");
-    wah_module_t module = {0};
-    clock_t start = clock();
-    assert_ok(wah_parse_module_from_spec(&module, spec));
-    double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
-    wah_free_module(&module);
+    double elapsed = parse_seconds(spec);
     free(spec);
     return elapsed;
 }
@@ -1434,11 +1443,7 @@ static double parse_distinct_func_types_seconds(int n) {
     char *p = spec + snprintf(spec, 64, "wasm types {[fn [] []");
     for (int i = 1; i < n; i++) p += snprintf(p, 40, ",fn [type.ref.null %d] []", i - 1);
     strcpy(p, "]}");
-    wah_module_t module = {0};
-    clock_t start = clock();
-    assert_ok(wah_parse_module_from_spec(&module, spec));
-    double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
-    wah_free_module(&module);
+    double elapsed = parse_seconds(spec);
     free(spec);
     return elapsed;
 }
@@ -1459,11 +1464,7 @@ static double parse_many_blocks_seconds(const char *locals) {
     char *p = spec + snprintf(spec, 256, "wasm types {[fn [] []]} funcs {[0]} code {[{[%s]", locals);
     for (int i = 0; i < N; i++) { memcpy(p, block, sizeof(block) - 1); p += sizeof(block) - 1; }
     strcpy(p, " end}]}");
-    wah_module_t module = {0};
-    clock_t start = clock();
-    assert_ok(wah_parse_module_from_spec(&module, spec));
-    double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
-    wah_free_module(&module);
+    double elapsed = parse_seconds(spec);
     free(spec);
     return elapsed;
 }
