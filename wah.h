@@ -1442,6 +1442,10 @@ bool wah_gc_verify_heap(const wah_exec_context_t *ctx);
 //   another link domain, for example as a parameter or a result or to `wah_pin_ref`, is a misuse that is not
 //   detected, because the GC of its own domain can free it while the other domain uses it.
 //
+//   Host objects carry no kind or size that the host can query, and WebAssembly can give any host object of the
+//   link domain wherever `externref` or `anyref` is expected. A host using host objects of different kinds or
+//   sizes should start every payload with a common header identifying its kind, and check it before use.
+//
 //   - size [in]: Size of the host object payload in bytes.
 //   - returns: Pointer to the payload of the allocated host object, or NULL on allocation failure.
 void *wah_gc_alloc_host(wah_exec_context_t *ctx, size_t size);
