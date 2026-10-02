@@ -998,6 +998,21 @@ static void test_trapped_frames_are_not_roots(void) {
     roots_teardown(&f);
 }
 
+static void test_finished_results_are_roots(void) {
+    printf("Testing results of a finished activation are GC roots until wah_finish...\n");
+    wah_roots_fixture_t f;
+    roots_setup(&f);
+    assert_ok(wah_start(&f.actx, A_FETCH, NULL, 0));
+    assert_ok(wah_resume(&f.actx));
+    roots_collect(&f);
+    wah_value_t r, r2;
+    uint32_t actual = 0;
+    assert_ok(wah_finish_pin(&f.actx, &r, 1, &actual));
+    assert_ok(wah_call(&f.actx, A_USE, &r, 1, &r2));
+    assert_eq_i32(r2.i32, 42);
+    roots_teardown(&f);
+}
+
 int main(void) {
     test_resume_straight_line();
     test_resume_loop();
@@ -1025,6 +1040,7 @@ int main(void) {
     test_resume_gc_ref_global();
     test_poll_yield_without_fuel();
     test_trapped_frames_are_not_roots();
+    test_finished_results_are_roots();
 
     printf("\n=== All resume tests passed ===\n");
     return 0;

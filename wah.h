@@ -10187,6 +10187,19 @@ static void wah_free_element_segment_data(wah_element_segment_t *segment, const 
 
 static inline void wah_recompute_poll_flag(wah_exec_context_t *ctx);
 
+// Result types of the entry function of the current activation, or NULL if none.
+static const wah_type_t *wah_entry_result_types(const wah_exec_context_t *ctx, const wah_module_t **out_module) {
+    const wah_function_t *fn = ctx->lifecycle.entry_fn;
+    if (!fn) return NULL;
+    if (fn->is_host) {
+        if (out_module) *out_module = fn->fn_module;
+        return fn->result_types;
+    }
+    const wah_module_t *module = fn->fn_module ? fn->fn_module : ctx->module;
+    if (out_module) *out_module = module;
+    return module->types[module->function_type_indices[fn->local_idx]].result_types;
+}
+
 static wah_error_t wah_register_dependent(wah_exec_context_t *provider, wah_exec_context_t *consumer) {
     const wah_alloc_t *alloc = &provider->alloc;
     WAH_ENSURE_CAP(provider->dependents, (size_t)provider->dependent_count + 1);
@@ -10446,6 +10459,15 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
             for (uint32_t n = code->parsed_code.poll_ref_tops[poll_idx]; n; n = nodes[n - 1].parent) {
                 if (nodes[n - 1].pos < actual_depth) visitor(&operand_base[nodes[n - 1].pos], userdata);
             }
+        }
+    }
+
+    // 1d. Results of a finished activation, until wah_finish
+    if (ctx->lifecycle.state == WAH_EXEC_FINISHED) {
+        const wah_type_t *result_types = wah_entry_result_types(ctx, NULL);
+        uint32_t result_count = ctx->lifecycle.entry_result_count;
+        for (uint32_t i = 0; result_types && i < result_count; i++) {
+            if (WAH_TYPE_IS_REF(result_types[i])) visitor(ctx->sp - result_count + i, userdata);
         }
     }
 
@@ -16150,19 +16172,8 @@ static wah_error_t wah_finish_internal(
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_FINISHED, WAH_ERROR_MISUSE);
     uint32_t result_count = ctx->lifecycle.entry_result_count;
     uint32_t copy_count = result_count < max_result_count ? result_count : max_result_count;
-    const wah_function_t *entry_fn = ctx->lifecycle.entry_fn;
-    const wah_type_t *result_types = NULL;
     const wah_module_t *result_module = NULL;
-    if (entry_fn) {
-        if (entry_fn->is_host) {
-            result_types = entry_fn->result_types;
-            result_module = entry_fn->fn_module;
-        } else {
-            result_module = entry_fn->fn_module ? entry_fn->fn_module : ctx->module;
-            uint32_t type_idx = result_module->function_type_indices[entry_fn->local_idx];
-            result_types = result_module->types[type_idx].result_types;
-        }
-    }
+    const wah_type_t *result_types = wah_entry_result_types(ctx, &result_module);
 
     if (results) {
         if (result_count == 0 && max_result_count > 0) {
