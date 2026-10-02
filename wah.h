@@ -2662,7 +2662,7 @@ typedef struct wah_data_segment_s {
     uint32_t memory_idx; // Only for active segments (flags & 0x02)
     wah_parsed_code_t offset_expr; // Preparsed offset expression for active segments
     uint32_t data_len;
-    const uint8_t *data; // Pointer to the raw data bytes within the WASM binary
+    const uint8_t *data; // Owned copy of the data bytes
 } wah_data_segment_t;
 
 // Unified function entry used in wah_module_t::functions[].
@@ -2841,8 +2841,6 @@ typedef struct wah_code_body_s {
     uint32_t local_count;
     uint32_t local_run_count;
     wah_local_run_t *local_runs;
-    uint32_t code_size;
-    const uint8_t *code; // Pointer to the raw instruction bytes within the WASM binary
     uint32_t max_stack_depth; // Maximum operand stack depth required
     uint32_t max_frame_slots; // local_count + max_stack_depth (preflight budget)
     wah_parsed_code_t parsed_code; // Pre-parsed opcodes and arguments for optimized execution
@@ -9354,8 +9352,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 
         WAH_CHECK_GOTO(wah_parse_local_decls(ptr, code_body_end, &module->code_bodies[i], module), cleanup);
 
-        module->code_bodies[i].code_size = (uint32_t)(code_body_end - *ptr);
-        module->code_bodies[i].code = *ptr;
+        const uint8_t *code_ptr = *ptr; // Borrowed from the binary, so not kept in the module
 
         const wah_func_type_t *func_type = &module->types[module->function_type_indices[i]];
         WAH_ENSURE_GOTO(UINT32_MAX - func_type->param_count >= module->code_bodies[i].local_count,
@@ -9380,9 +9377,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         wah_free_analyzed_code(&ac, alloc);
         ac = (wah_analyzed_code_t){0};
 
-        const uint8_t *code_ptr = module->code_bodies[i].code;
-        const uint8_t *code_end = code_ptr + module->code_bodies[i].code_size;
-        WAH_CHECK_GOTO(wah_analyze_stream(&code_ptr, code_end, &vctx, &module->code_bodies[i], 0, &ac), cleanup);
+        WAH_CHECK_GOTO(wah_analyze_stream(&code_ptr, code_body_end, &vctx, &module->code_bodies[i], 0, &ac), cleanup);
 
         module->code_bodies[i].parsed_code.poll_ref_tops = ac.poll_ref_tops;
         module->code_bodies[i].parsed_code.poll_count = ac.poll_count;
