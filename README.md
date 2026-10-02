@@ -2,7 +2,7 @@
 
 This is **WAH**, a [WebAssembly](https://webassembly.org/) interpreter implemented in a single C header file. It implements the WebAssembly 3.0 [deterministic profile](https://webassembly.github.io/spec/core/appendix/profiles.html#deterministic-profile-small-mathrm-det) -- GC, exception handling, relaxed SIMD, multi-memory, memory64/table64, tail calls, extended const, and everything else in the WASM 2.0/3.0 lineup -- and is designed to run untrusted modules in production with predictable resource bounds.
 
-WAH is a single C99 header (~16k lines). The public API is also C++11-compatible. There are no external dependencies beyond the standard library.
+WAH is a single C99 header (~19k lines). The public API is also C++11-compatible. There are no external dependencies beyond the standard library.
 
 ## Quick Start
 
