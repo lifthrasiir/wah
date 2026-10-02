@@ -4188,6 +4188,125 @@ int main() {
         wah_free_module(&lmod);
     }
 
+    // A linked module A reads B.g and B.r in its own globals, whose values are then read by the primary and C.
+    // Each should see final values regardless of the link order.
+    printf("Testing globals initialized from globals of linked modules initialized from imports...\n");
+    for (int order = 0; order < 2; ++order) {
+        wah_module_t b = {0}, a = {0}, c = {0}, p = {0};
+        assert_ok(wah_parse_module_from_spec(&b, "wasm \
+            types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+            globals {[ i32 immut i32.const 42 end, type.ref 0 immut ref.func 0 end ]} \
+            exports {[ {'g'} global# 0, {'r'} global# 1 ]} \
+            code {[ {[] i32.const 7 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&a, "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'b'} {'g'} global# i32 immut, {'b'} {'r'} global# type.ref 0 immut ]} \
+            globals {[ i32 immut global.get 0 end, type.ref 0 immut global.get 1 end ]} \
+            exports {[ {'h'} global# 2, {'hr'} global# 3 ]}"));
+        assert_ok(wah_parse_module_from_spec(&c, "wasm \
+            types {[ fn [] [i32] ]} imports {[ {'a'} {'h'} global# i32 immut ]} \
+            funcs {[ 0, 0 ]} globals {[ i32 immut global.get 0 end ]} \
+            exports {[ {'getimp'} fn# 0, {'getc'} fn# 1 ]} \
+            code {[ {[] global.get 0 end}, {[] global.get 1 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&p, "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'a'} {'h'} global# i32 immut, {'a'} {'hr'} global# type.ref 0 immut, \
+                       {'c'} {'getimp'} fn# 0, {'c'} {'getc'} fn# 0 ]} \
+            funcs {[ 0, 0, 0 ]} \
+            globals {[ i32 immut global.get 0 end, type.ref 0 immut global.get 1 end ]} \
+            code {[ {[] global.get 0 end}, {[] global.get 2 end}, {[] global.get 3 call_ref 0 end} ]}"));
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &p, NULL));
+        wah_module_t *mods[] = { &c, &a, &b };
+        const char *names[] = { "c", "a", "b" };
+        for (int i = 0; i < 3; ++i) {
+            int k = order ? i : 2 - i;
+            assert_ok(wah_link_module(&ctx, names[k], mods[k]));
+        }
+        assert_ok(wah_instantiate(&ctx));
+        static const int32_t expected[] = { 42, 42, 42, 42, 7 };
+        for (uint32_t f = 0; f < 5; ++f) {
+            wah_value_t r;
+            assert_ok(wah_call(&ctx, f, NULL, 0, &r));
+            assert_eq_i32(r.i32, expected[f]);
+        }
+        wah_free_exec_context(&ctx);
+        wah_free_module(&p);
+        wah_free_module(&c);
+        wah_free_module(&a);
+        wah_free_module(&b);
+    }
+
+    // Const exprs of linked modules should be evaluated once, so that every importer sees the same object.
+    printf("Testing GC objects in globals of linked modules are identical for every importer...\n");
+    {
+        wah_module_t b = {0}, c = {0}, p = {0};
+        assert_ok(wah_parse_module_from_spec(&b, "wasm \
+            types {[ struct [i32 mut], fn [] [type.ref.null.eq] ]} funcs {[ 1 ]} \
+            globals {[ type.ref.null.eq immut struct.new_default 0 end ]} \
+            exports {[ {'g'} global# 0, {'getg'} fn# 0 ]} code {[ {[] global.get 0 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&c, "wasm \
+            types {[ fn [] [type.ref.null.eq], fn [] [i32] ]} \
+            imports {[ {'b'} {'g'} global# type.ref.null.eq immut, {'b'} {'getg'} fn# 0 ]} funcs {[ 1 ]} \
+            exports {[ {'eq'} fn# 1 ]} code {[ {[] global.get 0 call 0 ref.eq end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&p, "wasm \
+            types {[ fn [] [type.ref.null.eq], fn [] [i32] ]} \
+            imports {[ {'b'} {'g'} global# type.ref.null.eq immut, {'b'} {'getg'} fn# 0, {'c'} {'eq'} fn# 1 ]} \
+            funcs {[ 1, 1 ]} globals {[ type.ref.null.eq immut global.get 0 end ]} \
+            code {[ {[] global.get 0 call 0 ref.eq end}, {[] global.get 1 call 0 ref.eq end} ]}"));
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &p, NULL));
+        assert_ok(wah_link_module(&ctx, "b", &b));
+        assert_ok(wah_link_module(&ctx, "c", &c));
+        assert_ok(wah_instantiate(&ctx));
+        for (uint32_t f = 1; f <= 3; ++f) {
+            wah_value_t r;
+            assert_ok(wah_call(&ctx, f, NULL, 0, &r));
+            assert_eq_i32(r.i32, 1);
+        }
+        wah_free_exec_context(&ctx);
+        wah_free_module(&p);
+        wah_free_module(&c);
+        wah_free_module(&b);
+    }
+
+    // The primary and a linked module may import globals from each other as long as no global depends on itself.
+    printf("Testing globals imported back and forth between the primary and a linked module...\n");
+    {
+        wah_module_t a = {0}, p = {0}, q = {0};
+        assert_ok(wah_parse_module_from_spec(&a, "wasm \
+            types {[]} imports {[ {'p'} {'g'} global# i32 immut ]} \
+            globals {[ i32 immut i32.const 2 end, i32 immut global.get 0 i32.const 10 i32.add end ]} \
+            exports {[ {'h'} global# 1, {'h2'} global# 2 ]}"));
+        assert_ok(wah_parse_module_from_spec(&p, "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'a'} {'h'} global# i32 immut, {'a'} {'h2'} global# i32 immut ]} \
+            funcs {[ 0 ]} \
+            globals {[ i32 immut i32.const 1 end, i32 immut global.get 0 global.get 1 i32.add end ]} \
+            exports {[ {'g'} global# 2 ]} \
+            code {[ {[] global.get 3 end} ]}"));
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &p, NULL));
+        assert_ok(wah_link_module(&ctx, "a", &a));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t r;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
+        assert_eq_i32(r.i32, 2 + (1 + 10));
+        wah_free_exec_context(&ctx);
+
+        printf("Testing cyclic global initialization between the primary and a linked module fails to link...\n");
+        assert_ok(wah_parse_module_from_spec(&q, "wasm \
+            types {[]} imports {[ {'a'} {'h2'} global# i32 immut ]} \
+            globals {[ i32 immut global.get 0 end ]} exports {[ {'g'} global# 1 ]}"));
+        assert_ok(wah_new_exec_context(&ctx, &q, NULL));
+        assert_ok(wah_link_module(&ctx, "a", &a));
+        assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+        wah_free_exec_context(&ctx);
+        wah_free_module(&q);
+        wah_free_module(&p);
+        wah_free_module(&a);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

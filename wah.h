@@ -2754,6 +2754,8 @@ typedef struct wah_global_s {
     wah_type_t type;
     bool is_mutable;
     wah_parsed_code_t init_expr; // Preparsed const expression (evaluated at instantiation)
+    uint32_t *deps; // Sorted distinct indices of globals read by init_expr, which are evaluated before this
+    uint32_t dep_count;
 } wah_global_t;
 
 // --- Analyzer Mode ---
@@ -8444,14 +8446,47 @@ static void wah_free_analyzed_code(wah_analyzed_code_t *ac, const wah_alloc_t *a
     *ac = (wah_analyzed_code_t){0};
 }
 
+static int wah_u32_cmp(const void *a, const void *b) {
+    uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+    return (x > y) - (x < y);
+}
+
+// Collects global indices read by an analyzed const expression into a sorted distinct array.
+static wah_error_t wah_collect_global_deps(const wah_analyzed_code_t *ac, const wah_alloc_t *alloc,
+                                           uint32_t **out_deps, uint32_t *out_count) {
+    uint32_t count = 0;
+    for (uint32_t i = 0; i < ac->instr_count; ++i) {
+        if (ac->instrs[i].opcode == WAH_OP_GLOBAL_GET) count++;
+    }
+    *out_deps = NULL;
+    *out_count = 0;
+    if (count == 0) return WAH_OK;
+    uint32_t *deps = NULL;
+    WAH_MALLOC_ARRAY(deps, count);
+    count = 0;
+    for (uint32_t i = 0; i < ac->instr_count; ++i) {
+        if (ac->instrs[i].opcode == WAH_OP_GLOBAL_GET) deps[count++] = ac->instrs[i].imm.u32;
+    }
+    qsort(deps, count, sizeof(uint32_t), wah_u32_cmp);
+    uint32_t n = 1;
+    for (uint32_t i = 1; i < count; ++i) {
+        if (deps[i] != deps[n - 1]) deps[n++] = deps[i];
+    }
+    *out_deps = deps;
+    *out_count = n;
+    return WAH_OK;
+}
+
 // Validates, analyzes, and lowers a const expression in one call.
+// Global indices read by the expression are also collected if `global` is given.
 static wah_error_t wah_compile_const_expr(
     const uint8_t **ptr,
     const uint8_t *section_end,
     wah_type_t expected_type,
     wah_module_t *module,
     uint32_t max_global_idx,
-    wah_parsed_code_t *out
+    wah_parsed_code_t *out,
+    wah_global_t *global
 ) {
     wah_validation_storage_t storage; // Uninitialized
     wah_validation_context_t vctx = { .mode = WAH_ANALYZE_CONST_EXPR, .module = module, .max_global_idx = max_global_idx,
@@ -8461,6 +8496,7 @@ static wah_error_t wah_compile_const_expr(
     wah_error_t err = WAH_OK;
 
     WAH_CHECK_GOTO(wah_analyze_stream(ptr, section_end, &vctx, NULL, expected_type, &ac), cleanup);
+    if (global) WAH_CHECK_GOTO(wah_collect_global_deps(&ac, &module->alloc, &global->deps, &global->dep_count), cleanup);
 
     if (out) {
         err = wah_lower_analyzed_code(module, &ac, out);
@@ -9195,7 +9231,8 @@ static wah_error_t wah_parse_global_section(const uint8_t **ptr, const uint8_t *
         module->globals[i].is_mutable = (mut_byte == 1);
 
         WAH_CHECK(wah_compile_const_expr(ptr, section_end, global_declared_type, module,
-                                         module->import_global_count + i, &module->globals[i].init_expr));
+                                         module->import_global_count + i, &module->globals[i].init_expr,
+                                         &module->globals[i]));
     }
     return WAH_OK;
 }
@@ -9315,7 +9352,7 @@ static wah_error_t wah_parse_table_section(const uint8_t **ptr, const uint8_t *s
                        WAH_ERROR_VALIDATION_FAILED);
 
             if (has_init_expr) {
-                WAH_CHECK(wah_compile_const_expr(ptr, section_end, elem_type, module, wah_global_index_limit(module), &module->tables[i].init_expr));
+                WAH_CHECK(wah_compile_const_expr(ptr, section_end, elem_type, module, wah_global_index_limit(module), &module->tables[i].init_expr, NULL));
             } else if (!WAH_TYPE_IS_NULLABLE(elem_type)) {
                 return WAH_ERROR_VALIDATION_FAILED;
             }
@@ -9736,7 +9773,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
                     wah_table_type(module, segment->table_idx)->addr_type == WAH_TYPE_I64) {
                     offset_type = WAH_TYPE_I64;
                 }
-                WAH_CHECK(wah_compile_const_expr(ptr, section_end, offset_type, module, wah_global_index_limit(module), &segment->offset_expr));
+                WAH_CHECK(wah_compile_const_expr(ptr, section_end, offset_type, module, wah_global_index_limit(module), &segment->offset_expr, NULL));
             }
 
             // Parse elemkind/reftype
@@ -9776,7 +9813,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
                 for (uint32_t j = 0; j < num_elems; ++j) {
                     if (is_expr_elem) {
                         WAH_CHECK(wah_compile_const_expr(ptr, section_end, segment->elem_type, module,
-                                                         wah_global_index_limit(module), NULL));
+                                                         wah_global_index_limit(module), NULL, NULL));
                     } else {
                         uint32_t funcidx;
                         WAH_CHECK(wah_decode_uleb128(ptr, section_end, &funcidx));
@@ -9805,7 +9842,7 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
                     uint32_t size = 0, cap = 0;
                     for (uint32_t j = 0; j < num_elems; ++j) {
                         wah_parsed_code_t parsed_expr = {0};
-                        WAH_CHECK(wah_compile_const_expr(ptr, section_end, segment->elem_type, module, wah_global_index_limit(module), &parsed_expr));
+                        WAH_CHECK(wah_compile_const_expr(ptr, section_end, segment->elem_type, module, wah_global_index_limit(module), &parsed_expr, NULL));
                         wah_error_t err = WAH_OK;
                         WAH_ENSURE_GOTO(parsed_expr.bytecode_size <= UINT32_MAX - size, WAH_ERROR_TOO_LARGE, cleanup_elem_expr);
                         WAH_GROW_ARRAY_GOTO(segment->u.expr.bytecode, cap, (size_t)size + parsed_expr.bytecode_size, cleanup_elem_expr);
@@ -9864,7 +9901,7 @@ static wah_error_t wah_parse_data_section(const uint8_t **ptr, const uint8_t *se
                 wah_type_t mem_addr_type = wah_memory_type(module, segment->memory_idx)->addr_type;
 
                 WAH_CHECK(wah_compile_const_expr(ptr, section_end, mem_addr_type, module,
-                                                 wah_global_index_limit(module), &segment->offset_expr));
+                                                 wah_global_index_limit(module), &segment->offset_expr, NULL));
             }
 
             WAH_CHECK(wah_decode_uleb128(ptr, section_end, &segment->data_len));
@@ -16121,6 +16158,7 @@ void wah_free_module(wah_module_t *module) {
     if (module->globals) {
         for (uint32_t i = 0; i < module->global_count; ++i) {
             wah_free_parsed_code(&module->globals[i].init_expr, alloc);
+            wah_free(alloc, module->globals[i].deps);
         }
         wah_free(alloc, module->globals);
     }
@@ -16915,6 +16953,7 @@ static void wah_leave_linked_eval(wah_exec_context_t *ctx, const wah_linked_eval
     ctx->function_table_count = saved->function_table_count;
 }
 
+// Makes room for globals of linked modules after the primary's ones. They are evaluated by wah_init_globals.
 static wah_error_t wah_prepare_linked_globals(wah_exec_context_t *ctx) {
     const wah_alloc_t *alloc = &ctx->alloc;
     const wah_module_t *module = ctx->module;
@@ -16935,68 +16974,11 @@ static wah_error_t wah_prepare_linked_globals(wah_exec_context_t *ctx) {
         memcpy(new_globals, ctx->globals, local_global_limit * sizeof(wah_value_t));
     }
 
-    uint32_t offset = local_global_limit;
-    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
-        const wah_module_t *linked = ctx->linked_modules[j].module;
-        wah_exec_context_t *lctx = ctx->linked_modules[j].ctx;
-        if (lctx) {
-            // Unused, see wah_linked_globals_offset
-            if (wah_global_index_limit(linked) > 0) {
-                memset(new_globals + offset, 0, wah_global_index_limit(linked) * sizeof(wah_value_t));
-            }
-        } else {
-            if (linked->import_global_count > 0) {
-                memset(new_globals + offset, 0, linked->import_global_count * sizeof(wah_value_t));
-            }
-            wah_linked_eval_state_t saved = wah_enter_linked_eval(ctx, j, new_globals + offset);
-            for (uint32_t k = 0; k < linked->global_count; k++) {
-                wah_error_t err = wah_eval_const_expr(ctx, &ctx->fuel, linked->globals[k].init_expr.bytecode,
-                                                      linked->globals[k].init_expr.bytecode_size,
-                                                      &new_globals[offset + linked->import_global_count + k]);
-                if (err != WAH_OK) {
-                    wah_leave_linked_eval(ctx, &saved);
-                    wah_free(alloc, new_globals);
-                    return err;
-                }
-            }
-            wah_leave_linked_eval(ctx, &saved);
-        }
-        offset += wah_global_index_limit(linked);
-    }
+    // Slots of contexts linked with wah_link_context are unused, see wah_linked_globals_offset
+    memset(new_globals + local_global_limit, 0, (total_globals - local_global_limit) * sizeof(wah_value_t));
 
     wah_free(alloc, ctx->globals);
     ctx->globals = new_globals;
-    return WAH_OK;
-}
-
-// Re-evaluate linked module local globals after their imports have been resolved.
-// wah_prepare_linked_globals already evaluates them once so that
-// wah_resolve_primary_global_imports can read linked exports, but at that point
-// linked import slots are zeroed. After wah_resolve_linked_global_imports fills
-// them in, globals initialized via (global.get $imported) must be re-evaluated.
-static wah_error_t wah_init_linked_globals(wah_exec_context_t *ctx) {
-    const wah_module_t *module = ctx->module;
-    wah_value_t *globals = ctx->globals;
-    uint32_t offset = wah_global_index_limit(module);
-    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
-        const wah_module_t *linked = ctx->linked_modules[j].module;
-        // Owned contexts may already exist for linked modules with tags.
-        // Without any globals, `globals` may be NULL where even adding 0 is UB.
-        if (linked->global_count > 0 && (!ctx->linked_modules[j].ctx || ctx->linked_modules[j].owns_ctx)) {
-            wah_linked_eval_state_t saved = wah_enter_linked_eval(ctx, j, globals + offset);
-            for (uint32_t k = 0; k < linked->global_count; k++) {
-                wah_error_t err = wah_eval_const_expr(ctx, &ctx->fuel, linked->globals[k].init_expr.bytecode,
-                                                      linked->globals[k].init_expr.bytecode_size,
-                                                      &globals[offset + linked->import_global_count + k]);
-                if (err != WAH_OK) {
-                    wah_leave_linked_eval(ctx, &saved);
-                    return err;
-                }
-            }
-            wah_leave_linked_eval(ctx, &saved);
-        }
-        offset += wah_global_index_limit(linked);
-    }
     return WAH_OK;
 }
 
@@ -17053,15 +17035,17 @@ static inline wah_value_t *wah_resolved_global_slot(wah_exec_context_t *owner_ct
     return imported_mutable ? (wah_value_t *)owner_ctx->globals[global_idx].ref : &owner_ctx->globals[global_idx];
 }
 
-static inline void wah_bind_global_import_slot(wah_value_t *dst, bool is_mutable, wah_value_t *src) {
+// Mutable imports point to the provider's slot, while immutable ones are copied by wah_init_globals.
+static inline void wah_bind_global_import_slot(wah_value_t **import_srcs, wah_value_t *globals, uint32_t slot,
+                                               bool is_mutable, wah_value_t *src) {
     if (is_mutable) {
-        dst->ref = src;
+        globals[slot].ref = src;
     } else {
-        *dst = *src;
+        import_srcs[slot] = src;
     }
 }
 
-static wah_error_t wah_resolve_primary_global_imports(wah_exec_context_t *ctx) {
+static wah_error_t wah_resolve_primary_global_imports(wah_exec_context_t *ctx, wah_value_t **import_srcs) {
     const wah_module_t *module = ctx->module;
     for (uint32_t i = 0; i < module->import_global_count; i++) {
         wah_global_import_t *gi = &module->global_imports[i];
@@ -17080,7 +17064,7 @@ static wah_error_t wah_resolve_primary_global_imports(wah_exec_context_t *ctx) {
             wah_type_t vt1 = linked->global_imports[linked_global_idx].type, vt2 = gi->type;
             bool vt1_mut = linked->global_imports[linked_global_idx].is_mutable;
             WAH_CHECK(wah_validate_global_import_type(linked, vt1, vt1_mut, module, vt2, gi->is_mutable));
-            wah_bind_global_import_slot(&ctx->globals[i], gi->is_mutable,
+            wah_bind_global_import_slot(import_srcs, ctx->globals, i, gi->is_mutable,
                 wah_resolved_global_slot(gi_linked_ctx, linked_global_idx, gi->is_mutable));
         } else if (linked_global_idx < linked->import_global_count) {
             const wah_module_t *global_provider = NULL;
@@ -17095,7 +17079,7 @@ static wah_error_t wah_resolve_primary_global_imports(wah_exec_context_t *ctx) {
             wah_value_t *prov_slot = global_provider_ctx
                 ? &global_provider_ctx->globals[global_global_idx]
                 : &ctx->globals[wah_linked_globals_offset(ctx, global_provider) + global_global_idx];
-            wah_bind_global_import_slot(&ctx->globals[i], gi->is_mutable, prov_slot);
+            wah_bind_global_import_slot(import_srcs, ctx->globals, i, gi->is_mutable, prov_slot);
         } else {
             uint32_t linked_local_global_idx = linked_global_idx - linked->import_global_count;
             const wah_global_t *exported_global = &linked->globals[linked_local_global_idx];
@@ -17103,11 +17087,11 @@ static wah_error_t wah_resolve_primary_global_imports(wah_exec_context_t *ctx) {
             WAH_CHECK(wah_validate_global_import_type(linked, vt1, exported_global->is_mutable,
                                                       module, vt2, gi->is_mutable));
             if (gi_linked_ctx) {
-                wah_bind_global_import_slot(&ctx->globals[i], gi->is_mutable,
+                wah_bind_global_import_slot(import_srcs, ctx->globals, i, gi->is_mutable,
                                             &gi_linked_ctx->globals[linked_global_idx]);
             } else {
                 uint32_t linked_globals_offset = wah_linked_globals_offset(ctx, linked);
-                wah_bind_global_import_slot(&ctx->globals[i], gi->is_mutable,
+                wah_bind_global_import_slot(import_srcs, ctx->globals, i, gi->is_mutable,
                                             &ctx->globals[linked_globals_offset + linked_global_idx]);
             }
         }
@@ -17239,18 +17223,7 @@ static void wah_fixup_linked_gc_contexts(wah_exec_context_t *ctx) {
     }
 }
 
-static wah_error_t wah_init_primary_globals(wah_exec_context_t *ctx) {
-    const wah_module_t *module = ctx->module;
-    uint32_t ig_count = module->import_global_count;
-    for (uint32_t i = 0; i < module->global_count; ++i) {
-        uint32_t slot = ig_count + i;
-        WAH_CHECK(wah_eval_const_expr(ctx, &ctx->fuel, module->globals[i].init_expr.bytecode,
-                                      module->globals[i].init_expr.bytecode_size, &ctx->globals[slot]));
-    }
-    return WAH_OK;
-}
-
-static wah_error_t wah_resolve_linked_global_imports(wah_exec_context_t *ctx) {
+static wah_error_t wah_resolve_linked_global_imports(wah_exec_context_t *ctx, wah_value_t **import_srcs) {
     const wah_module_t *module = ctx->module;
     uint32_t lg_offset = wah_global_index_limit(module);
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
@@ -17292,12 +17265,126 @@ static wah_error_t wah_resolve_linked_global_imports(wah_exec_context_t *ctx) {
                     uint32_t prov_offset = wah_linked_globals_offset(ctx, actual_provider);
                     prov_slot = &ctx->globals[prov_offset + actual_global_idx];
                 }
-                wah_bind_global_import_slot(&ctx->globals[lg_offset + gi_idx], lgi->is_mutable, prov_slot);
+                wah_bind_global_import_slot(import_srcs, ctx->globals, lg_offset + gi_idx, lgi->is_mutable, prov_slot);
             }
         }
         lg_offset += wah_global_index_limit(lmod);
     }
     return WAH_OK;
+}
+
+typedef struct {
+    uint32_t slot;
+    uint32_t unit;     // 0 for the primary, j + 1 for the linked module j
+    uint32_t next_dep; // Index of the next dependency to visit
+} wah_global_init_frame_t;
+
+// Returns the unit (see wah_global_init_frame_t) having the global slot of ctx->globals.
+static uint32_t wah_global_unit(const uint32_t *unit_offsets, uint32_t unit_count, uint32_t slot) {
+    uint32_t lo = 0, hi = unit_count;
+    while (hi - lo > 1) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if (unit_offsets[mid] <= slot) lo = mid; else hi = mid;
+    }
+    return lo;
+}
+
+// Resolves global imports of the primary and linked modules without their own contexts, and evaluates
+// their globals in the dependency order, so that every const expr is evaluated exactly once with the final
+// values of globals it reads. Immutable imports also depend on their providers, and cycles fail to link.
+static wah_error_t wah_init_globals(wah_exec_context_t *ctx) {
+    const wah_alloc_t *alloc = &ctx->alloc;
+    wah_error_t err = WAH_OK;
+    uint32_t unit_count = ctx->linked_module_count + 1;
+    uint32_t *unit_offsets = NULL;
+    wah_value_t **import_srcs = NULL;
+    uint8_t *state = NULL; // 0 = not visited, 1 = being visited, 2 = evaluated
+    wah_global_init_frame_t *stack = NULL;
+
+    WAH_MALLOC_ARRAY_GOTO(unit_offsets, unit_count, cleanup);
+    uint32_t total = wah_global_index_limit(ctx->module); // Overflow was checked by wah_prepare_linked_globals
+    unit_offsets[0] = 0;
+    for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
+        unit_offsets[j + 1] = total;
+        total += wah_global_index_limit(ctx->linked_modules[j].module);
+    }
+    if (total == 0) goto cleanup;
+
+    WAH_MALLOC_ARRAY_GOTO(import_srcs, total, cleanup);
+    for (uint32_t s = 0; s < total; s++) import_srcs[s] = NULL;
+    WAH_CHECK_GOTO(wah_resolve_primary_global_imports(ctx, import_srcs), cleanup);
+    WAH_CHECK_GOTO(wah_resolve_linked_global_imports(ctx, import_srcs), cleanup);
+
+    WAH_MALLOC_ARRAY_GOTO(state, total, cleanup);
+    WAH_MALLOC_ARRAY_GOTO(stack, total, cleanup);
+    for (uint32_t u = 0; u < unit_count; u++) {
+        const wah_linked_module_t *lm = u > 0 ? &ctx->linked_modules[u - 1] : NULL;
+        const wah_module_t *m = lm ? lm->module : ctx->module;
+        bool instantiated = lm && lm->ctx && !lm->owns_ctx;
+        for (uint32_t g = 0; g < wah_global_index_limit(m); g++) {
+            bool done = instantiated || (g < m->import_global_count && m->global_imports[g].is_mutable);
+            state[unit_offsets[u] + g] = done ? 2 : 0;
+        }
+    }
+
+    wah_value_t *globals = ctx->globals;
+    for (uint32_t root = 0; root < total; root++) {
+        if (state[root] != 0) continue;
+        uint32_t depth = 0;
+        stack[depth++] = (wah_global_init_frame_t){ .slot = root, .unit = wah_global_unit(unit_offsets, unit_count, root) };
+        state[root] = 1;
+        while (depth > 0) {
+            wah_global_init_frame_t *f = &stack[depth - 1];
+            uint32_t offset = unit_offsets[f->unit];
+            const wah_module_t *m = f->unit > 0 ? ctx->linked_modules[f->unit - 1].module : ctx->module;
+            uint32_t g = f->slot - offset;
+            bool imported = g < m->import_global_count;
+
+            // Find the next dependency not yet evaluated
+            uint32_t dep = UINT32_MAX;
+            if (imported) {
+                wah_value_t *src = import_srcs[f->slot];
+                WAH_ASSERT(src != NULL);
+                // Instantiated contexts have their own globals, which have been evaluated
+                if (f->next_dep++ == 0 && src >= globals && src < globals + total) dep = (uint32_t)(src - globals);
+            } else {
+                const wah_global_t *global = &m->globals[g - m->import_global_count];
+                if (f->next_dep < global->dep_count) dep = offset + global->deps[f->next_dep++];
+            }
+            if (dep != UINT32_MAX) {
+                if (state[dep] == 2) continue;
+                WAH_ENSURE_GOTO(state[dep] == 0, WAH_ERROR_LINK_FAILED, cleanup); // Cyclic initialization
+                state[dep] = 1;
+                stack[depth++] = (wah_global_init_frame_t){ .slot = dep,
+                                                            .unit = wah_global_unit(unit_offsets, unit_count, dep) };
+                continue;
+            }
+
+            if (imported) {
+                globals[f->slot] = *import_srcs[f->slot];
+            } else {
+                const wah_parsed_code_t *expr = &m->globals[g - m->import_global_count].init_expr;
+                if (f->unit == 0) {
+                    WAH_CHECK_GOTO(wah_eval_const_expr(ctx, &ctx->fuel, expr->bytecode, expr->bytecode_size,
+                                                       &globals[f->slot]), cleanup);
+                } else {
+                    wah_linked_eval_state_t saved = wah_enter_linked_eval(ctx, f->unit - 1, globals + offset);
+                    err = wah_eval_const_expr(ctx, &ctx->fuel, expr->bytecode, expr->bytecode_size, &globals[f->slot]);
+                    wah_leave_linked_eval(ctx, &saved);
+                    if (err != WAH_OK) goto cleanup;
+                }
+            }
+            state[f->slot] = 2;
+            depth--;
+        }
+    }
+
+cleanup:
+    wah_free(alloc, stack);
+    wah_free(alloc, state);
+    wah_free(alloc, import_srcs);
+    wah_free(alloc, unit_offsets);
+    return err;
 }
 
 #define WAH_FOLLOW_IMPORT_CHAIN(ctx, dst_idx, linked_ctx, linked_idx, entity_t, entities) do { \
@@ -17481,36 +17568,6 @@ static wah_error_t wah_resolve_primary_memory_imports(wah_exec_context_t *ctx) {
     return WAH_OK;
 }
 
-
-// wah_resolve_primary_global_imports copies immutable global values before linked globals are
-// finalized by wah_init_linked_globals, which may allocate new GC objects. Re-copy them.
-static wah_error_t wah_fixup_primary_global_imports(wah_exec_context_t *ctx) {
-    const wah_module_t *module = ctx->module;
-    for (uint32_t i = 0; i < module->import_global_count; i++) {
-        if (module->global_imports[i].is_mutable) continue;
-        wah_global_import_t *gi = &module->global_imports[i];
-        const wah_module_t *linked = NULL;
-        wah_exec_context_t *linked_ctx = NULL;
-        WAH_ENSURE(wah_find_linked_module(ctx, &gi->name, &linked, &linked_ctx, NULL), WAH_ERROR_LINK_FAILED);
-        if (linked_ctx && !wah_is_owned_linked_ctx(ctx, linked_ctx)) continue; // Already instantiated
-        const wah_export_t *exp = wah_find_export(linked, 3, &gi->name);
-        WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
-        uint32_t gidx = exp->index;
-        const wah_module_t *provider = linked;
-        wah_exec_context_t *provider_ctx = linked_ctx;
-        if (gidx < linked->import_global_count) {
-            uint32_t gl = 0;
-            WAH_CHECK(wah_resolve_global_export(ctx, linked, linked_ctx, gidx,
-                                                &provider, &provider_ctx, &gl, &gidx));
-        }
-        if (provider_ctx) {
-            ctx->globals[i] = provider_ctx->globals[gidx];
-        } else {
-            ctx->globals[i] = ctx->globals[wah_linked_globals_offset(ctx, provider) + gidx];
-        }
-    }
-    return WAH_OK;
-}
 
 // Creates owned contexts with their own memories and tables, so that imports between modules
 // can be bound regardless of the link order. Imports are bound by wah_finalize_owned_linked_contexts.
@@ -17796,21 +17853,17 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     WAH_CHECK_GOTO(wah_resolve_primary_func_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_create_linked_function_tables(ctx), cleanup);
     WAH_CHECK_GOTO(wah_prepare_linked_globals(ctx), cleanup);
-    WAH_CHECK_GOTO(wah_resolve_primary_global_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_create_tag_contexts_for_linked_modules(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_linked_tag_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_primary_tag_imports(ctx), cleanup);
     wah_fixup_linked_gc_contexts(ctx);
 
-    WAH_CHECK_GOTO(wah_init_primary_globals(ctx), cleanup);
-    WAH_CHECK_GOTO(wah_resolve_linked_global_imports(ctx), cleanup);
-    WAH_CHECK_GOTO(wah_init_linked_globals(ctx), cleanup);
+    WAH_CHECK_GOTO(wah_init_globals(ctx), cleanup);
     // Owned linked contexts should exist before the primary imports their memories and tables
     WAH_CHECK_GOTO(wah_create_owned_linked_contexts(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_primary_table_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_resolve_primary_memory_imports(ctx), cleanup);
     WAH_CHECK_GOTO(wah_finalize_owned_linked_contexts(ctx), cleanup);
-    WAH_CHECK_GOTO(wah_fixup_primary_global_imports(ctx), cleanup);
     // Everything after this may store references to this context into linked contexts
     ctx->may_share_refs = true;
     WAH_CHECK_GOTO(wah_init_table_init_exprs(ctx), cleanup);
