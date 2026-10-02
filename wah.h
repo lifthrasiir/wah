@@ -3451,32 +3451,23 @@ static WAH_ALWAYS_INLINE uint8x16_t wah_canonicalize_f64x2_neon(uint8x16_t v) {
 static WAH_ALWAYS_INLINE uint32_t wah_popcount_u32(uint32_t n) {
 #if WAH_HAS_BUILTIN(__builtin_popcount) || defined(__GNUC__)
     return __builtin_popcount(n);
-#elif defined(_MSC_VER)
-    return __popcnt(n);
 #else
-    // Generic software implementation
-    uint32_t count = 0;
-    while (n > 0) {
-        n &= (n - 1);
-        count++;
-    }
-    return count;
+    // Not MSVC __popcnt, which needs the POPCNT extension and is unavailable on ARM64
+    n = n - ((n >> 1) & UINT32_C(0x55555555));
+    n = (n & UINT32_C(0x33333333)) + ((n >> 2) & UINT32_C(0x33333333));
+    n = (n + (n >> 4)) & UINT32_C(0x0f0f0f0f);
+    return (n * UINT32_C(0x01010101)) >> 24;
 #endif
 }
 
 static WAH_ALWAYS_INLINE uint64_t wah_popcount_u64(uint64_t n) {
 #if WAH_HAS_BUILTIN(__builtin_popcountll) || defined(__GNUC__)
     return __builtin_popcountll(n);
-#elif defined(_MSC_VER)
-    return __popcnt64(n);
 #else
-    // Generic software implementation
-    uint64_t count = 0;
-    while (n > 0) {
-        n &= (n - 1);
-        count++;
-    }
-    return count;
+    n = n - ((n >> 1) & UINT64_C(0x5555555555555555));
+    n = (n & UINT64_C(0x3333333333333333)) + ((n >> 2) & UINT64_C(0x3333333333333333));
+    n = (n + (n >> 4)) & UINT64_C(0x0f0f0f0f0f0f0f0f);
+    return (n * UINT64_C(0x0101010101010101)) >> 56;
 #endif
 }
 
