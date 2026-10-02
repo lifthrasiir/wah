@@ -7987,6 +7987,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
     // Chunks are split before their cost and record count overflow uint16_t.
     #define WAH_METER_RECORD_INSTR_END() do { \
         if (emit_meter) { \
+            WAH_ASSERT(!meter_need_new_chunk && "instruction outside of a meter chunk"); \
             WAH_ENSURE_CAP_GOTO(meter_instr_records, meter_instr_record_count + 1, cleanup); \
             meter_instr_records[meter_instr_record_count++] = (wah_meter_instr_record_t){ \
                 .fast_offset = _meter_instr_start, .byte_length = buf_size - _meter_instr_start, \
@@ -8094,7 +8095,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                 }
                 WAH_LOWER_FINISH_FRAME(end_pos);
                 if (trim) {
-                    // Branches from inside try_tables land here
+                    // Branches from inside try_tables land here, so the chunk was reopened above as a branch target
                     WAH_METER_RECORD_INSTR_START();
                     _meter_ref_map = ac->instrs[ii + 1].ref_map; // The stack after this END
                     WAH_LOWER_U16(WAH_OP_TRIM_HANDLERS);
