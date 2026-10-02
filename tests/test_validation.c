@@ -3,6 +3,24 @@
 #include <stdio.h>
 #include <string.h>
 
+// Block parameters were popped against the new frame's stale stack height instead of the parent's,
+// so a nested block could consume operands below its parent's base.
+static void test_block_params_respect_parent_base() {
+    printf("Testing block params cannot be popped below the parent block...\n");
+    static const char *bodies[] = {
+        "i64.const 0 block void block 1 drop end i64.const 0 end drop",
+        "i64.const 0 block void loop 1 drop end i64.const 0 end drop",
+        "i64.const 0 block void i32.const 1 if 1 drop end i64.const 0 end drop",
+    };
+    for (size_t i = 0; i < sizeof(bodies) / sizeof(*bodies); i++) {
+        char spec[512];
+        snprintf(spec, sizeof(spec), "wasm types {[ fn [] [], fn [i64] [] ]} funcs {[ 0 ]} "
+                                     "code {[ {[] %s end } ]}", bodies[i]);
+        wah_module_t module = {0};
+        assert_err(wah_parse_module_from_spec(&module, spec), WAH_ERROR_VALIDATION_FAILED);
+    }
+}
+
 // b13c680: Fix a validation bug where some block types are entirely skipped.
 // Nested block/if/loop with complex block type (multi-param) must validate correctly.
 static void test_block_type_not_skipped() {
@@ -948,6 +966,7 @@ int main() {
     test_subtype_depth_limit();
     test_func_type_arity_limit();
     test_block_type_not_skipped();
+    test_block_params_respect_parent_base();
     test_if_complex_block_type();
     test_if_no_else_complex_block_type();
     test_loop_complex_block_type();

@@ -6617,8 +6617,10 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             }
 
             WAH_ENSURE(vctx->control_sp < WAH_MAX_CONTROL_DEPTH, WAH_ERROR_TOO_LARGE);
+            uint32_t parent_base = wah_validation_block_base_height(vctx);
             frame = &vctx->control_stack[vctx->control_sp++];
             frame_pushed = true;
+            frame->stack_height = parent_base; // Params are popped against the parent's base
             frame->opcode = (wah_opcode_t)opcode_val;
             frame->else_found = false;
             frame->is_unreachable = vctx->is_unreachable;
