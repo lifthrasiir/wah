@@ -9408,7 +9408,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             // Table import
             WAH_ENSURE_CAP_GOTO(table_imports, import_table_count + 1, cleanup_name);
             wah_table_import_t *ti = &table_imports[import_table_count];
-            ti->name = imp_name;
+            *ti = (wah_table_import_t){ .name = imp_name };
             module->imports[i].index = import_table_count;
             import_table_count++;
 
