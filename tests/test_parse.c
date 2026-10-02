@@ -1145,6 +1145,19 @@ static void test_v128_locals_and_block_types_require_simd_feature(void) {
     wah_free_module(&module);
 }
 
+static void test_typed_select_requires_reftypes_feature(void) {
+    printf("Running test_typed_select_requires_reftypes_feature...\n");
+    wah_module_t module = {0};
+    wah_parse_options_t opts = { .features = WAH_FEATURE_MVP };
+    const char *spec = "wasm types {[fn [] []]} funcs {[0]} \
+        code {[{[] i32.const 1 i32.const 2 i32.const 0 select.typed [i32] drop end}]}";
+    assert_err(wah_parse_module_from_spec_ex(&module, &opts, spec), WAH_ERROR_DISABLED_FEATURE);
+    wah_free_module(&module);
+    opts.features = WAH_FEATURE_MVP | WAH_FEATURE_REF_TYPES;
+    assert_ok(wah_parse_module_from_spec_ex(&module, &opts, spec));
+    wah_free_module(&module);
+}
+
 // Reference value types used to be accepted with their features disabled.
 static void test_ref_value_types_require_features(void) {
     printf("Running test_ref_value_types_require_features...\n");
@@ -1485,6 +1498,7 @@ int main(void) {
     test_cast_metadata_memory_amplification();
     test_local_init_tracking_memory_amplification();
     test_v128_locals_and_block_types_require_simd_feature();
+    test_typed_select_requires_reftypes_feature();
     test_ref_value_types_require_features();
     test_section_forms_require_features();
     test_block_type_index_requires_multi_value();

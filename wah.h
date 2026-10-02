@@ -1685,7 +1685,7 @@ typedef enum {
     X(TRY_TABLE,, 0x1F, EXCEPTION) \
     \
     /* Parametric Operators */ \
-    X(DROP,, 0x1A,) X(SELECT,, 0x1B,) X(SELECT_T,, 0x1C,) \
+    X(DROP,, 0x1A,) X(SELECT,, 0x1B,) X(SELECT_T,, 0x1C, REF_TYPES) \
     \
     /* Variable Access */ \
     X(LOCAL_GET,I, 0x20,) X(LOCAL_SET,I, 0x21,) X(LOCAL_TEE,I, 0x22,) X(GLOBAL_GET,I, 0x23,) X(GLOBAL_SET,I, 0x24,) \
