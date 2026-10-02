@@ -1050,7 +1050,7 @@ static void test_exception_oom() {
 
     // A module that throws. We run it under the OOM test infra in test_oom.c,
     // but here we just verify throw+catch works at the basic level after
-    // GC-managed exceptions — the OOM behavior is exercised by test_oom.c.
+    // GC-managed exceptions -- the OOM behavior is exercised by test_oom.c.
     const char *spec = "wasm \
         types {[ fn [] [i32], fn [i32] [] ]} \
         funcs {[ 0 ]} \
@@ -1229,11 +1229,11 @@ static void test_cancel_does_not_free_exnref_in_global() {
     assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
 
-    // Step 2: trap — triggers wah_cancel_internal
+    // Step 2: trap -- triggers wah_cancel_internal
     wah_error_t err = wah_call(&ctx, 1, NULL, 0, &result);
     assert(err == WAH_ERROR_TRAP);
 
-    // Step 3: read exnref from global and re-throw — UAF if cancel freed it
+    // Step 3: read exnref from global and re-throw -- UAF if cancel freed it
     assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
     assert_eq_i32(result.i32, 42);
 

@@ -84,10 +84,16 @@ if ($compilerKind -eq 'msvc') {
 # --- Compiler driver helpers ---
 $objExt = if ($compilerKind -eq 'msvc') { '.obj' } else { '.o' }
 
+# Test binaries are built into and run from a local temporary directory, because
+# network shares may create files without the execute permission (e.g. Samba with
+# a 0644 create mask), making freshly linked executables fail with "Access is denied".
+$binDir = Join-Path ([IO.Path]::GetTempPath()) "wah-test-$compilerKind"
+New-Item -ItemType Directory -Force $binDir | Out-Null
+
 # --- Bench command ---
 if ($filter -eq 'bench') {
     $benchSrc = "$projDir\bench\bench_coremark.c"
-    $benchExe = "$projDir\bench\bench_coremark.exe"
+    $benchExe = "$binDir\bench_coremark.exe"
     if ($compilerKind -eq 'msvc') {
         $benchCflags = @('/W4', '/O2', '/DWAH_ASSERT=assert')
     } else {
@@ -107,6 +113,8 @@ if ($filter -eq 'bench') {
         exit 1
     }
     Write-Host '## Running CoreMark benchmark...'
+    # A program that fails to start leaves $LASTEXITCODE untouched.
+    $global:LASTEXITCODE = -1
     & $benchExe
     $benchExit = $LASTEXITCODE
     Remove-Item $benchExe -ErrorAction SilentlyContinue
@@ -135,8 +143,8 @@ if ($filter -eq 'cpp') {
     $wahImplHdr = "$projDir\tests\wah_impl.h"
     $wahImplObj = "$projDir\tests\wah_impl$objExt"
     $cppSrc = "$projDir\tests\test_cpp.cpp"
-    $cppObj = "$projDir\tests\test_cpp$objExt"
-    $cppExe = "$projDir\tests\test_cpp.exe"
+    $cppObj = "$binDir\test_cpp$objExt"
+    $cppExe = "$binDir\test_cpp.exe"
 
     if (-not (Test-Path $cppSrc)) {
         Write-Host "## Error: tests\test_cpp.cpp not found."
@@ -191,6 +199,7 @@ if ($filter -eq 'cpp') {
 
     Write-Host '## Running test_cpp.cpp...'
     $saved = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    $global:LASTEXITCODE = -1
     & $cppExe
     $testExit = $LASTEXITCODE
     $ErrorActionPreference = $saved
@@ -334,7 +343,7 @@ foreach ($f in $apiTests)        { $testQueue += @{ File = $f; Standalone = $fal
 function Start-Compile($test) {
     $f = $test.File
     $name = $f.BaseName
-    $exe = "$projDir\tests\$name.exe"
+    $exe = "$script:binDir\$name.exe"
 
     # standalone: test.obj has WAH_IMPLEMENTATION, link with common.obj
     # api-only: test.obj has no WAH_IMPLEMENTATION, link with wah_impl.obj + common.obj
@@ -371,7 +380,7 @@ function Wait-Compile($job, $test) {
         Write-Host "## Compilation of $($test.File.Name) failed."
         return $null
     }
-    return "$script:projDir\tests\$($test.File.BaseName).exe"
+    return "$script:binDir\$($test.File.BaseName).exe"
 }
 
 $failed = $false
@@ -399,6 +408,8 @@ for ($i = 0; $i -lt $testQueue.Count; $i++) {
     # Run current test.
     Write-Host "## Running $($test.File.Name)..."
     $saved = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+    # A program that fails to start leaves $LASTEXITCODE untouched.
+    $global:LASTEXITCODE = -1
     & $currentExe
     $testExit = $LASTEXITCODE
     $ErrorActionPreference = $saved
@@ -406,7 +417,7 @@ for ($i = 0; $i -lt $testQueue.Count; $i++) {
 
     if ($testExit -ne 0) {
         Write-Host ''
-        Write-Host "## $($test.File.Name) failed."
+        Write-Host "## $($test.File.Name) failed. (binary kept at $currentExe)"
         if ($null -ne $nextJob) {
             Stop-Job $nextJob -ErrorAction SilentlyContinue
             Remove-Job $nextJob -Force -ErrorAction SilentlyContinue

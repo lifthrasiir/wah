@@ -1398,7 +1398,7 @@ int main() {
         wah_free_module(&provider);
     }
 
-    // Regression: same bug for tables — duplicate table import alias not updated on grow.
+    // Regression: same bug for tables -- duplicate table import alias not updated on grow.
     printf("Test: duplicate table import alias updated on grow (security regression)\n");
     {
         // Provider: 1 table (funcref, min 1, max 10), exports it.
@@ -1877,7 +1877,7 @@ int main() {
         wah_free_module(&host_mod);
     }
 
-    // Same scenario but with matching types — should succeed and call through.
+    // Same scenario but with matching types -- should succeed and call through.
     printf("Test: linked module with tag + correct imports calls through\n");
     {
         wah_module_t host_mod = {0};
@@ -2900,7 +2900,7 @@ int main() {
         assert_ok(wah_link_context(&user_ctx, "middle", &middle_ctx));
         assert_ok(wah_instantiate(&user_ctx));
 
-        // Set via provider, read via user — must see the same mutable global.
+        // Set via provider, read via user -- must see the same mutable global.
         wah_value_t set_arg = {.i32 = 99};
         assert_ok(wah_call_by_name(&user_ctx, "do_set", &set_arg, 1, NULL));
 

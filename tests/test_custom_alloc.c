@@ -329,7 +329,6 @@ int main(void) {
         assert_ok(wah_link_module(&ectx, "L", &linked_mod));
         assert_ok(wah_instantiate(&ectx));
 
-        wah_value_t result;
         assert_ok(wah_call_by_name(&ectx, "run", NULL, 0, &result));
 
         wah_free_exec_context(&ectx);

@@ -9771,7 +9771,7 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
         const wah_export_t **sorted;
         WAH_MALLOC_ARRAY_GOTO(sorted, count, cleanup);
         for (uint32_t i = 0; i < count; ++i) sorted[i] = &module->exports[i];
-        qsort(sorted, count, sizeof(*sorted), wah_export_name_cmp);
+        qsort((void *)sorted, count, sizeof(*sorted), wah_export_name_cmp); // cast avoids spurious MSVC C4090
         for (uint32_t i = 1; i < count && err == WAH_OK; ++i) {
             if (wah_export_name_cmp(&sorted[i - 1], &sorted[i]) == 0) err = WAH_ERROR_VALIDATION_FAILED;
         }
@@ -9779,7 +9779,7 @@ static wah_error_t wah_parse_export_section(const uint8_t **ptr, const uint8_t *
         if (err == WAH_OK) {
             for (uint32_t i = 0; i < count; ++i) module->export_order[i] = (uint32_t)(sorted[i] - module->exports);
         }
-        wah_free(alloc, sorted);
+        wah_free(alloc, (void *)sorted);
     }
 
 cleanup:

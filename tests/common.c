@@ -1233,7 +1233,7 @@ void assert_eq_u64(const char *file, int line, uint64_t actual, uint64_t expecte
 
 void assert_eq_f32(const char *file, int line, float actual, float expected, float epsilon, const char *expr) {
     if (fabsf(actual - expected) > epsilon) {
-        fprintf(stderr, "%s:%d: Assertion failed: %s (expected %f ± %f, got %f)\n",
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected %f +/- %f, got %f)\n",
                 file, line, expr, expected, epsilon, actual);
         exit(1);
     }
@@ -1241,7 +1241,7 @@ void assert_eq_f32(const char *file, int line, float actual, float expected, flo
 
 void assert_eq_f64(const char *file, int line, double actual, double expected, double epsilon, const char *expr) {
     if (fabs(actual - expected) > epsilon) {
-        fprintf(stderr, "%s:%d: Assertion failed: %s (expected %f ± %f, got %f)\n",
+        fprintf(stderr, "%s:%d: Assertion failed: %s (expected %f +/- %f, got %f)\n",
                 file, line, expr, expected, epsilon, actual);
         exit(1);
     }

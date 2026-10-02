@@ -718,7 +718,7 @@ int main() {
             assert_not_null(obj);
             wah_gc_object_t *hdr = wah_gc_header(obj);
             assert_eq_u32(hdr->repr_id, (uint32_t)repr_id);
-            assert_eq_u32(hdr->size_bytes, wah_gc_array_alloc_size(mod.repr_infos[repr_id], length));
+            assert_eq_u32(hdr->size_bytes, (uint32_t)wah_gc_array_alloc_size(mod.repr_infos[repr_id], length));
 
             wah_gc_array_body_t *body = (wah_gc_array_body_t *)obj;
             assert_eq_u32(body->length, 5);
@@ -1823,7 +1823,7 @@ int main() {
         // (by its global initializer). Primary GC must trace through the box, which is in
         // a different heap, to keep the primary-heap struct alive.
         wah_module_t env_mod = {0}, prov_mod = {0}, wasm_mod = {0};
-        wah_exec_context_t pctx = {0}, ctx = {0};
+        wah_exec_context_t pctx = {0}, ctx_lg = {0};
 
         assert_ok(wah_new_module(&env_mod, NULL));
         assert_ok(wah_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
@@ -1851,17 +1851,17 @@ int main() {
                 call 2 \
                 call 1 ref.cast 0 struct.get 0 0 \
                 end}]}"));
-        assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
-        assert_ok(wah_link_context(&ctx, "p", &pctx));
-        assert_ok(wah_link_module(&ctx, "env", &env_mod));
-        assert_ok(wah_gc_start(&ctx));
-        assert_ok(wah_instantiate(&ctx));
+        assert_ok(wah_new_exec_context(&ctx_lg, &wasm_mod, NULL));
+        assert_ok(wah_link_context(&ctx_lg, "p", &pctx));
+        assert_ok(wah_link_module(&ctx_lg, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx_lg));
+        assert_ok(wah_instantiate(&ctx_lg));
 
         wah_value_t result;
-        assert_ok(wah_call(&ctx, 3, NULL, 0, &result));
+        assert_ok(wah_call(&ctx_lg, 3, NULL, 0, &result));
         assert_eq_i32(result.i32, 42);
 
-        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&ctx_lg);
         wah_free_exec_context(&pctx);
         wah_free_module(&wasm_mod);
         wah_free_module(&prov_mod);
@@ -1875,7 +1875,7 @@ int main() {
         // The provider keeps 4 MiB alive in its own heap, which every collection of the primary traces.
         // The primary should not collect again before allocating a comparable amount.
         wah_module_t env_mod = {0}, prov_mod = {0}, wasm_mod = {0};
-        wah_exec_context_t pctx = {0}, ctx = {0};
+        wah_exec_context_t pctx = {0}, ctx_lg = {0};
 
         assert_ok(wah_new_module(&env_mod, NULL));
         assert_ok(wah_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
@@ -1894,21 +1894,21 @@ int main() {
             imports {[{'p'} {'len'} fn# 0, {'env'} {'gc'} fn# 1]} \
             funcs {[0]} \
             code {[{[] call 1 call 0 end}]}"));
-        assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
-        assert_ok(wah_link_context(&ctx, "p", &pctx));
-        assert_ok(wah_link_module(&ctx, "env", &env_mod));
-        assert_ok(wah_gc_start(&ctx));
-        assert_ok(wah_instantiate(&ctx));
+        assert_ok(wah_new_exec_context(&ctx_lg, &wasm_mod, NULL));
+        assert_ok(wah_link_context(&ctx_lg, "p", &pctx));
+        assert_ok(wah_link_module(&ctx_lg, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx_lg));
+        assert_ok(wah_instantiate(&ctx_lg));
 
         wah_value_t result;
-        assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+        assert_ok(wah_call(&ctx_lg, 2, NULL, 0, &result));
         assert_eq_i32(result.i32, 4194304);
 
         wah_gc_heap_stats_t stats;
-        wah_gc_heap_stats(&ctx, &stats);
+        wah_gc_heap_stats(&ctx_lg, &stats);
         assert_true(stats.allocation_threshold >= stats.allocated_bytes + 4194304);
 
-        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&ctx_lg);
         wah_free_exec_context(&pctx);
         wah_free_module(&wasm_mod);
         wah_free_module(&prov_mod);
@@ -1920,7 +1920,7 @@ int main() {
         // More contexts than the inline GC domain buffer; each provider keeps a struct in its global.
         enum { N = 10 };
         wah_module_t env_mod = {0}, prov_mod = {0}, wasm_mod = {0};
-        wah_exec_context_t pctx[N] = {{0}}, ctx = {0};
+        wah_exec_context_t pctx[N] = {{0}}, ctx_lg = {0};
 
         assert_ok(wah_new_module(&env_mod, NULL));
         assert_ok(wah_export_func(&env_mod, "gc", "()", host_trigger_gc, NULL, NULL));
@@ -1936,27 +1936,27 @@ int main() {
             funcs {[0]} \
             code {[{[] call 1 call 0 end}]}"));
 
-        assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
+        assert_ok(wah_new_exec_context(&ctx_lg, &wasm_mod, NULL));
         for (int i = 0; i < N; ++i) {
             char name[8];
             snprintf(name, sizeof(name), "p%d", i);
             assert_ok(wah_new_exec_context(&pctx[i], &prov_mod, NULL));
             assert_ok(wah_gc_start(&pctx[i]));
             assert_ok(wah_instantiate(&pctx[i]));
-            assert_ok(wah_link_context(&ctx, name, &pctx[i]));
+            assert_ok(wah_link_context(&ctx_lg, name, &pctx[i]));
         }
-        assert_ok(wah_link_module(&ctx, "env", &env_mod));
-        assert_ok(wah_gc_start(&ctx));
-        assert_ok(wah_instantiate(&ctx));
+        assert_ok(wah_link_module(&ctx_lg, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx_lg));
+        assert_ok(wah_instantiate(&ctx_lg));
 
         wah_value_t result;
-        assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+        assert_ok(wah_call(&ctx_lg, 2, NULL, 0, &result));
         assert_eq_i32(result.i32, 7);
         wah_gc_step(&pctx[0]);
-        assert_ok(wah_call(&ctx, 2, NULL, 0, &result));
+        assert_ok(wah_call(&ctx_lg, 2, NULL, 0, &result));
         assert_eq_i32(result.i32, 7);
 
-        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&ctx_lg);
         for (int i = 0; i < N; ++i) wah_free_exec_context(&pctx[i]);
         wah_free_module(&wasm_mod);
         wah_free_module(&prov_mod);
@@ -1975,7 +1975,7 @@ int main() {
         // dependent tracking fix, the provider GC would sweep the struct (only root
         // is on primary's stack), causing a UAF when primary reads the field.
         wah_module_t env_mod = {0}, prov_mod = {0}, wasm_mod = {0};
-        wah_exec_context_t pctx = {0}, ctx = {0};
+        wah_exec_context_t pctx = {0}, ctx_lg = {0};
 
         assert_ok(wah_new_module(&env_mod, NULL));
         assert_ok(wah_export_func(&env_mod, "gc_provider", "()", host_trigger_provider_gc, NULL, NULL));
@@ -2009,20 +2009,20 @@ int main() {
                 end}]}";
         assert_ok(wah_parse_module_from_spec(&wasm_mod, wasm_spec));
 
-        assert_ok(wah_new_exec_context(&ctx, &wasm_mod, NULL));
-        assert_ok(wah_link_context(&ctx, "p", &pctx));
-        assert_ok(wah_link_module(&ctx, "env", &env_mod));
-        assert_ok(wah_gc_start(&ctx));
-        assert_ok(wah_instantiate(&ctx));
+        assert_ok(wah_new_exec_context(&ctx_lg, &wasm_mod, NULL));
+        assert_ok(wah_link_context(&ctx_lg, "p", &pctx));
+        assert_ok(wah_link_module(&ctx_lg, "env", &env_mod));
+        assert_ok(wah_gc_start(&ctx_lg));
+        assert_ok(wah_instantiate(&ctx_lg));
 
         pctx.gc->allocation_threshold = 1;
 
         wah_value_t result;
-        assert_ok(wah_call(&ctx, 3, NULL, 0, &result));
+        assert_ok(wah_call(&ctx_lg, 3, NULL, 0, &result));
         assert_eq_i32(result.i32, 42);
 
         g_provider_ctx_for_gc = NULL;
-        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&ctx_lg);
         wah_free_exec_context(&pctx);
         wah_free_module(&wasm_mod);
         wah_free_module(&prov_mod);
@@ -2047,7 +2047,7 @@ int main() {
         // type 2: fn () -> (i32)   (func 0)
         // func 0: call trigger_gc as the FIRST instruction (empty stack),
         //         then allocate a struct (structref on operand stack),
-        //         then call trigger_gc again — the second call's POLL reads
+        //         then call trigger_gc again -- the second call's POLL reads
         //         the wrong ref map if the first call caused a double capture.
         assert_ok(wah_parse_module_from_spec(&wasm_mod, "wasm \
             types {[ struct [i32 mut], fn [] [], fn [] [i32] ]} \
@@ -2078,7 +2078,7 @@ int main() {
     }
 
     // Regression: ref map desync when function body starts with loop.
-    // Same root cause — the first-instr capture and loop-back-edge capture
+    // Same root cause -- the first-instr capture and loop-back-edge capture
     // are the same program point; duplicate ref map entry caused desync.
     printf("Testing GC ref map: function body starting with loop...\n");
     {

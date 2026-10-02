@@ -118,7 +118,7 @@ static void test_link_module_frame_ctx_wrong_module() {
         exports {[ {'make'} fn# 0 ]} \
         code {[ {[] struct.new_default 0 end } ]}";
 
-    // Consumer: NO struct types — different type layout from provider.
+    // Consumer: NO struct types -- different type layout from provider.
     // type 0 = fn [] -> [anyref]  (import signature)
     // type 1 = fn [] -> [i32]     (local function)
     // Provider's struct.new_default uses typeidx 0, but consumer's type 0 is
@@ -140,7 +140,7 @@ static void test_link_module_frame_ctx_wrong_module() {
     assert_ok(wah_gc_start(&ctx));
     assert_ok(wah_instantiate(&ctx));
 
-    // Should return 0 (non-null struct ref → ref.is_null = 0).
+    // Should return 0 (non-null struct ref -> ref.is_null = 0).
     wah_value_t result;
     assert_ok(wah_call(&ctx, 1, NULL, 0, &result));
     assert_eq_i32(result.i32, 0);
@@ -154,7 +154,7 @@ static void test_link_module_frame_ctx_wrong_module() {
 // funcref/externref global is present. The slot ctx->globals[i].ref stores a
 // pointer-to-wah_value_t (for indirection), but wah_gc_enumerate_roots was
 // visiting it as if .ref were a GC object, calling wah_gc_header() which
-// computes (ptr - sizeof(header)) — an out-of-bounds address.
+// computes (ptr - sizeof(header)) -- an out-of-bounds address.
 static void test_gc_root_scan_imported_mutable_ref_global() {
     printf("Testing GC root scan with imported mutable funcref global (security regression)...\n");
 
