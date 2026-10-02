@@ -4509,6 +4509,63 @@ int main() {
         wah_free_module(&def);
     }
 
+    // Regression: an owned context bound the zeroed memory/table import slot of a sibling not yet finalized,
+    // so it saw an empty memory/table and wrote it back to the sibling on grow.
+    printf("Test: owned context importing from an unfinalized sibling\n");
+    {
+        const char *a_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'b'} {'mem'} mem# limits.i32/1 0, {'b'} {'tbl'} table# funcref limits.i32/1 0 ]} \
+            funcs {[ 0, 0 ]} \
+            exports {[ {'f'} fn# 0, {'g'} fn# 1 ]} \
+            code {[ \
+                {[] i32.const 1 memory.grow 0 drop i32.const 65536 i32.const 42 i32.store 2 0 memory.size 0 end }, \
+                {[] ref.null funcref i32.const 1 table.grow 0 end } \
+            ]}";
+        const char *b_spec = "wasm \
+            imports {[ {'c'} {'mem'} mem# limits.i32/1 0, {'c'} {'tbl'} table# funcref limits.i32/1 0 ]} \
+            exports {[ {'mem'} mem# 0, {'tbl'} table# 0 ]}";
+        const char *c_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            funcs {[ 0, 0 ]} \
+            tables {[ funcref limits.i32/1 1 ]} \
+            memories {[ limits.i32/1 1 ]} \
+            exports {[ {'mem'} mem# 0, {'tbl'} table# 0, {'load'} fn# 0, {'tsize'} fn# 1 ]} \
+            code {[ {[] i32.const 65536 i32.load 2 0 end }, {[] table.size 0 end } ]}";
+        const char *primary_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'a'} {'f'} fn# 0, {'a'} {'g'} fn# 0, {'c'} {'load'} fn# 0, {'c'} {'tsize'} fn# 0 ]} \
+            exports {[ {'f'} fn# 0, {'g'} fn# 1, {'load'} fn# 2, {'tsize'} fn# 3 ]}";
+
+        wah_module_t a = {0}, b = {0}, c = {0}, primary = {0};
+        assert_ok(wah_parse_module_from_spec(&a, a_spec));
+        assert_ok(wah_parse_module_from_spec(&b, b_spec));
+        assert_ok(wah_parse_module_from_spec(&c, c_spec));
+        assert_ok(wah_parse_module_from_spec(&primary, primary_spec));
+
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "a", &a));
+        assert_ok(wah_link_module(&ctx, "b", &b));
+        assert_ok(wah_link_module(&ctx, "c", &c));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t res;
+        assert_ok(wah_call_by_name(&ctx, "f", NULL, 0, &res));
+        assert_eq_i32(res.i32, 2);
+        assert_ok(wah_call_by_name(&ctx, "load", NULL, 0, &res));
+        assert_eq_i32(res.i32, 42);
+        assert_ok(wah_call_by_name(&ctx, "g", NULL, 0, &res));
+        assert_eq_i32(res.i32, 1);
+        assert_ok(wah_call_by_name(&ctx, "tsize", NULL, 0, &res));
+        assert_eq_i32(res.i32, 2);
+
+        wah_free_exec_context(&ctx);
+        wah_free_module(&primary);
+        wah_free_module(&c);
+        wah_free_module(&b);
+        wah_free_module(&a);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }

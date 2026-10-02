@@ -17957,19 +17957,21 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
         if (ctx->linked_modules[j].owns_ctx && !ictx->is_instantiated) {
             for (uint32_t mi = 0; mi < lmod->import_memory_count; mi++) {
                 wah_memory_import_t *mim = &lmod->memory_imports[mi];
-                bool mem_found = false;
+                bool mem_found = false, mem_pending = false;
                 const wah_module_t *mprov = NULL;
                 wah_exec_context_t *mprov_ctx = NULL;
                 if (wah_find_linked_module(ctx, &mim->name, &mprov, &mprov_ctx, NULL)) {
                     const wah_export_t *mexp = wah_find_export(mprov, 2, &mim->name);
-                    if (mexp && mprov_ctx && mexp->index < mprov_ctx->memory_count) {
+                    // Imports of siblings not finalized yet are still zeroed, so resolve them through the chain
+                    mem_pending = mexp && mprov_ctx && !mprov_ctx->is_instantiated && mexp->index < mprov->import_memory_count;
+                    if (mexp && mprov_ctx && mexp->index < mprov_ctx->memory_count && !mem_pending) {
                         WAH_CHECK(wah_bind_memory_import_slot(&ictx->memories[mi], mprov, mprov_ctx,
                                                               mexp->index, &mim->type));
                         WAH_FOLLOW_IMPORT_CHAIN(ictx, mi, mprov_ctx, mexp->index, wah_memory_inst_t, memories);
                         mem_found = true;
                     }
                 }
-                if (!mem_found && ctx->memory_count > 0) {
+                if (!mem_found && !mem_pending && ctx->memory_count > 0) {
                     const wah_export_t *pexp = wah_find_export(module, 2, &mim->name);
                     if (pexp && pexp->index < ctx->memory_count) {
                         WAH_CHECK(wah_bind_memory_import_slot(&ictx->memories[mi], module, ctx,
@@ -18017,19 +18019,20 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
             }
             for (uint32_t ti = 0; ti < lmod->import_table_count; ti++) {
                 wah_table_import_t *tim = &lmod->table_imports[ti];
-                bool tbl_found = false;
+                bool tbl_found = false, tbl_pending = false;
                 const wah_module_t *tprov = NULL;
                 wah_exec_context_t *tprov_ctx = NULL;
                 if (wah_find_linked_module(ctx, &tim->name, &tprov, &tprov_ctx, NULL)) {
                     const wah_export_t *texp = wah_find_export(tprov, 1, &tim->name);
-                    if (texp && tprov_ctx && texp->index < tprov_ctx->table_count) {
+                    tbl_pending = texp && tprov_ctx && !tprov_ctx->is_instantiated && texp->index < tprov->import_table_count;
+                    if (texp && tprov_ctx && texp->index < tprov_ctx->table_count && !tbl_pending) {
                         WAH_CHECK(wah_bind_table_import_slot(&ictx->tables[ti], lmod, &tim->type,
                                                              tprov, tprov_ctx, texp->index));
                         WAH_FOLLOW_IMPORT_CHAIN(ictx, ti, tprov_ctx, texp->index, wah_table_inst_t, tables);
                         tbl_found = true;
                     }
                 }
-                if (!tbl_found && ctx->table_count > 0) {
+                if (!tbl_found && !tbl_pending && ctx->table_count > 0) {
                     const wah_export_t *pexp = wah_find_export(module, 1, &tim->name);
                     if (pexp && pexp->index < ctx->table_count) {
                         WAH_CHECK(wah_bind_table_import_slot(&ictx->tables[ti], lmod, &tim->type,
