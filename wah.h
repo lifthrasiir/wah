@@ -788,6 +788,7 @@ private:
 
     uint64_t max_memory_bytes;      // UINT64_MAX = no limit; 0 is a valid limit
     uint64_t memory_bytes_committed; // current total: linear mem + tables + GC heap
+    struct wah_exec_context_s *budget_ctx; // Charged for memories and tables owned by this context; NULL = itself
 
     struct wah_exec_lifecycle_s {
         wah_exec_state_t state;
@@ -921,6 +922,8 @@ typedef struct wah_limits_s {
     // Field: max_memory_bytes [default = UINT64_MAX (unlimited)]
     //   Maximum total bytes for linear memory, tables, and GC heap combined.
     //   Zero means the default (UINT64_MAX). Use `no_memory_bytes` to enforce a 0-byte limit.
+    //   Memories and tables are charged to the context owning them, even when imported or grown by
+    //   another context; those of modules linked with `wah_link_module` are owned by the linking context.
     uint64_t max_memory_bytes;
     // Field: fuel [default = UINT64_MAX (unlimited)]
     //   Execution fuel. The interpreter will stop with WAH_STATUS_FUEL_EXHAUSTED when fuel runs out.
@@ -4586,6 +4589,11 @@ static inline wah_error_t wah_table_byte_size(uint64_t elements, uint64_t *out_b
 
 static void wah_budget_charge(wah_exec_context_t *ctx, uint64_t bytes) {
     ctx->memory_bytes_committed += bytes;
+}
+
+// Owned contexts of linked modules are accounted by their primary.
+static inline wah_exec_context_t *wah_budget_owner(wah_exec_context_t *ctx) {
+    return ctx->budget_ctx ? ctx->budget_ctx : ctx;
 }
 
 static void wah_budget_release(wah_exec_context_t *ctx, uint64_t bytes) {
@@ -12044,17 +12052,13 @@ static wah_error_t wah_table_grow_internal(
         return WAH_OK;
     }
     uint64_t delta_bytes = delta * sizeof(wah_value_t);
-    if (!wah_budget_check(ctx, delta_bytes)) {
-        return WAH_OK;
-    }
-    if (fctx->tables[table_idx].import_ctx && fctx->tables[table_idx].is_imported) {
-        if (!wah_budget_check(fctx->tables[table_idx].import_ctx, delta_bytes)) {
-            return WAH_OK;
-        }
-    }
-
     wah_exec_context_t *owner = (fctx->tables[table_idx].is_imported && fctx->tables[table_idx].import_ctx)
         ? fctx->tables[table_idx].import_ctx : fctx;
+    wah_exec_context_t *budget_owner = wah_budget_owner(owner);
+    if (!wah_budget_check(budget_owner, delta_bytes)) {
+        return WAH_OK;
+    }
+
     const wah_alloc_t *grow_alloc = &owner->alloc;
     wah_value_t *new_table = NULL;
     wah_error_t err = wah_malloc(grow_alloc, (size_t)new_size, sizeof(wah_value_t), (void **)&new_table);
@@ -12070,7 +12074,7 @@ static wah_error_t wah_table_grow_internal(
     wah_value_t *old_entries = fctx->tables[table_idx].entries;
     fctx->tables[table_idx].entries = new_table;
     fctx->tables[table_idx].size = new_size;
-    wah_budget_charge(ctx, delta_bytes);
+    wah_budget_charge(budget_owner, delta_bytes);
 
     wah_exec_context_t *owner_ctx = owner;
     uint32_t owner_idx = table_idx;
@@ -12078,7 +12082,6 @@ static wah_error_t wah_table_grow_internal(
         wah_exec_context_t *src = fctx->tables[table_idx].import_ctx;
         uint32_t src_idx = fctx->tables[table_idx].import_idx;
         if (fctx->tables[table_idx].is_imported) {
-            if (src != ctx) wah_budget_charge(src, delta_bytes);
             owner_ctx = src;
             owner_idx = src_idx;
         }
@@ -12107,17 +12110,13 @@ static bool wah_memory_grow_internal(
 
     size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
     uint64_t delta_bytes = new_memory_size - fctx->memories[mem_idx].size;
-    if (!wah_budget_check(ctx, delta_bytes)) {
-        return false;
-    }
-    if (fctx->memories[mem_idx].import_ctx && fctx->memories[mem_idx].is_imported) {
-        if (!wah_budget_check(fctx->memories[mem_idx].import_ctx, delta_bytes)) {
-            return false;
-        }
-    }
-
     wah_exec_context_t *owner = (fctx->memories[mem_idx].is_imported && fctx->memories[mem_idx].import_ctx)
         ? fctx->memories[mem_idx].import_ctx : fctx;
+    wah_exec_context_t *budget_owner = wah_budget_owner(owner);
+    if (!wah_budget_check(budget_owner, delta_bytes)) {
+        return false;
+    }
+
     void *memory_data = fctx->memories[mem_idx].data;
     if (wah_realloc(&owner->alloc, new_memory_size, sizeof(*fctx->memories[mem_idx].data), &memory_data) != WAH_OK) {
         return false;
@@ -12129,7 +12128,7 @@ static bool wah_memory_grow_internal(
     }
     wah_bulk_fuel_charge(ctx, delta_bytes);
 
-    wah_budget_charge(ctx, delta_bytes);
+    wah_budget_charge(budget_owner, delta_bytes);
     fctx->memories[mem_idx].size = (uint64_t)new_memory_size;
     wah_exec_context_t *owner_ctx = owner;
     uint32_t owner_idx = mem_idx;
@@ -12137,7 +12136,6 @@ static bool wah_memory_grow_internal(
         wah_exec_context_t *src = fctx->memories[mem_idx].import_ctx;
         uint32_t src_idx = fctx->memories[mem_idx].import_idx;
         if (fctx->memories[mem_idx].is_imported) {
-            if (src != ctx) wah_budget_charge(src, delta_bytes);
             owner_ctx = src;
             owner_idx = src_idx;
         }
@@ -17133,7 +17131,7 @@ static wah_error_t wah_create_tag_contexts_for_linked_modules(wah_exec_context_t
                     .tables = ctx->tables, .table_count = ctx->table_count,
                     .globals = g_offset ? ctx->globals + g_offset : ctx->globals, .global_count = wah_global_index_limit(lmod),
                     .gc = ctx->gc, .type_check_cache = ctx->type_check_cache, .tag_instance_count = 0,
-                    .max_memory_bytes = UINT64_MAX, // Owned contexts are accounted by the primary
+                    .max_memory_bytes = UINT64_MAX, .budget_ctx = ctx, // Owned contexts are accounted by the primary
                 };
                 ctx->linked_modules[j].ctx = ictx;
                 ctx->linked_modules[j].owns_ctx = true;
@@ -17324,17 +17322,11 @@ static wah_error_t wah_import_existing_table(wah_exec_context_t *ctx, uint32_t d
                                              wah_exec_context_t *linked_ctx, uint32_t linked_table_idx,
                                              uint64_t min_elements) {
     WAH_ENSURE(linked_ctx->tables[linked_table_idx].size >= min_elements, WAH_ERROR_LINK_FAILED);
-    uint64_t imp_bytes = 0;
-    WAH_CHECK(wah_table_byte_size(linked_ctx->tables[linked_table_idx].size, &imp_bytes));
     ctx->tables[dst_idx].entries = linked_ctx->tables[linked_table_idx].entries;
     ctx->tables[dst_idx].size = linked_ctx->tables[linked_table_idx].size;
     ctx->tables[dst_idx].max_size = linked_ctx->tables[linked_table_idx].max_size;
     WAH_FOLLOW_IMPORT_CHAIN(ctx, dst_idx, linked_ctx, linked_table_idx, wah_table_inst_t, tables);
-    if (!wah_is_owned_linked_ctx(ctx, ctx->tables[dst_idx].import_ctx)) {
-        WAH_ENSURE(wah_budget_check(ctx, imp_bytes), WAH_ERROR_TOO_LARGE);
-        wah_budget_charge(ctx, imp_bytes);
-    }
-    return WAH_OK;
+    return WAH_OK; // Charged to the owner only
 }
 
 static wah_error_t wah_import_existing_memory(wah_exec_context_t *ctx, uint32_t dst_idx,
@@ -17342,16 +17334,11 @@ static wah_error_t wah_import_existing_memory(wah_exec_context_t *ctx, uint32_t 
                                               uint64_t min_pages) {
     uint64_t cur_pages = linked_ctx->memories[linked_mem_idx].size / WAH_WASM_PAGE_SIZE;
     WAH_ENSURE(cur_pages >= min_pages, WAH_ERROR_LINK_FAILED);
-    uint64_t imp_bytes = linked_ctx->memories[linked_mem_idx].size;
     ctx->memories[dst_idx].data = linked_ctx->memories[linked_mem_idx].data;
     ctx->memories[dst_idx].size = linked_ctx->memories[linked_mem_idx].size;
     ctx->memories[dst_idx].max_pages = linked_ctx->memories[linked_mem_idx].max_pages;
     WAH_FOLLOW_IMPORT_CHAIN(ctx, dst_idx, linked_ctx, linked_mem_idx, wah_memory_inst_t, memories);
-    if (!wah_is_owned_linked_ctx(ctx, ctx->memories[dst_idx].import_ctx)) {
-        WAH_ENSURE(wah_budget_check(ctx, imp_bytes), WAH_ERROR_TOO_LARGE);
-        wah_budget_charge(ctx, imp_bytes);
-    }
-    return WAH_OK;
+    return WAH_OK; // Charged to the owner only
 }
 
 static wah_error_t wah_alloc_local_table_import(wah_exec_context_t *ctx, uint32_t dst_idx,
@@ -17555,7 +17542,7 @@ static wah_error_t wah_create_owned_linked_contexts(wah_exec_context_t *ctx) {
                     .alloc = ctx->alloc, .module = lmod,
                     .globals = go ? ctx->globals + go : ctx->globals, .global_count = wah_global_index_limit(lmod),
                     .gc = ctx->gc, .type_check_cache = ctx->type_check_cache,
-                    .max_memory_bytes = UINT64_MAX, // Owned contexts are accounted by the primary
+                    .max_memory_bytes = UINT64_MAX, .budget_ctx = ctx, // Owned contexts are accounted by the primary
                 };
                 ctx->linked_modules[j].ctx = ictx;
                 ctx->linked_modules[j].owns_ctx = true;

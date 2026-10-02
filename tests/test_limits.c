@@ -740,6 +740,61 @@ static void test_grow_budget_linked_module_import(void) {
     wah_free_module(&linked);
 }
 
+// Memories and tables are charged to their owner only, whichever context imports or grows them.
+static void test_grow_budget_linked_context(void) {
+    uint64_t table_bytes = 10 * sizeof(wah_value_t);
+    static const char *const descs[] = {
+        "Testing grow by a function of a linked context charges its budget...\n",
+        "Testing grow of a memory and table imported from a linked context charges its budget only...\n",
+    };
+    static const char *const primary_specs[] = {
+        "wasm types {[ fn [i32] [i32] ]} \
+            imports {[ {'q'} {'grow_mem'} fn# 0, {'q'} {'grow_tab'} fn# 0 ]}",
+        "wasm types {[ fn [i32] [i32] ]} \
+            imports {[ {'q'} {'mem'} mem# limits.i32/1 1, {'q'} {'tab'} table# funcref limits.i32/1 10 ]} \
+            funcs {[ 0, 0 ]} \
+            code {[ {[] local.get 0 memory.grow 0 end}, {[] ref.null funcref local.get 0 table.grow 0 end} ]}",
+    };
+    wah_module_t provider = {0};
+    assert_ok(wah_parse_module_from_spec(&provider, "wasm \
+        types {[ fn [i32] [i32] ]} funcs {[ 0, 0 ]} \
+        tables {[ funcref limits.i32/1 10 ]} memories {[ limits.i32/1 1 ]} \
+        exports {[ {'mem'} mem# 0, {'tab'} table# 0, {'grow_mem'} fn# 0, {'grow_tab'} fn# 1 ]} \
+        code {[ {[] local.get 0 memory.grow 0 end}, {[] ref.null funcref local.get 0 table.grow 0 end} ]}"));
+
+    for (size_t i = 0; i < sizeof(primary_specs) / sizeof(*primary_specs); ++i) {
+        printf("%s", descs[i]);
+        wah_module_t primary = {0};
+        assert_ok(wah_parse_module_from_spec(&primary, primary_specs[i]));
+
+        wah_exec_context_t qctx = {0}, ctx = {0};
+        wah_exec_options_t qoptions = { .limits = { .max_memory_bytes = 2 * PAGE_SIZE + 2 * table_bytes } };
+        assert_ok(wah_new_exec_context(&qctx, &provider, &qoptions));
+        assert_ok(wah_instantiate(&qctx));
+        wah_exec_options_t options = { .limits = { .no_memory_bytes = true } };
+        assert_ok(wah_new_exec_context(&ctx, &primary, &options));
+        assert_ok(wah_link_context(&ctx, "q", &qctx));
+        assert_ok(wah_instantiate(&ctx));
+
+        wah_value_t arg = { .i32 = 1 }, r;
+        assert_ok(wah_call(&ctx, 0, &arg, 1, &r));
+        assert_eq_i32(r.i32, 1);
+        assert_ok(wah_call(&ctx, 0, &arg, 1, &r));
+        assert_eq_i32(r.i32, -1);
+
+        arg.i32 = 10;
+        assert_ok(wah_call(&ctx, 1, &arg, 1, &r));
+        assert_eq_i32(r.i32, 10);
+        assert_ok(wah_call(&ctx, 1, &arg, 1, &r));
+        assert_eq_i32(r.i32, -1);
+
+        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&qctx);
+        wah_free_module(&primary);
+    }
+    wah_free_module(&provider);
+}
+
 static void test_set_limits_atomic(void) {
     printf("Testing set_limits leaves limits unchanged on error...\n");
     wah_module_t mod = {0};
@@ -1039,6 +1094,7 @@ int main(void) {
     test_zero_page_memory_budget();
     test_imported_memory_budget();
     test_grow_budget_linked_module_import();
+    test_grow_budget_linked_context();
 
     // Phase 3: Fuel connection
     test_fuel_via_limits();
