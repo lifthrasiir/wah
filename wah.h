@@ -1439,7 +1439,8 @@ bool wah_gc_verify_heap(const wah_exec_context_t *ctx);
 //   This object goes into `wah_value_t::ref` and can be stored in `externref` or `anyref`.
 //
 //   The object is collected once unreachable from WebAssembly, so the pointer is valid only until the next
-//   `wah_start`, `wah_call*` and so on, unless pinned by `wah_pin_ref`.
+//   `wah_start`, `wah_call*` and so on, unless pinned by `wah_pin_ref`. One allocated during a host function call
+//   is valid only until the host function returns, unless pinned or given to WebAssembly as a result.
 //
 //   The object belongs to the link domain of the context (see `wah_link_context`). Giving it to a context of
 //   another link domain, for example as a parameter or a result or to `wah_pin_ref`, is a misuse that is not
