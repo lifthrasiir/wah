@@ -67,6 +67,9 @@ static const char detect_typed_funcref[] = "wasm \
 static const char detect_extended_const[] = "wasm \
     globals {[i32 immut i32.const 10 i32.const 20 i32.add end]}";
 
+static const char detect_multi_memory[] = "wasm \
+    memories {[limits.i32/1 1, limits.i32/1 1]}";
+
 static const char detect_mvp_add[] = "wasm \
     types {[fn [i32, i32] [i32]]} funcs {[0]} \
     code {[{[] local.get 0 local.get 1 i32.add end}]}";
@@ -93,6 +96,7 @@ static const struct feature_detect_test detect_tests[] = {
     { "gc",                        WAH_FEATURE_GC,              0, detect_gc },
     { "typed-function-references", WAH_FEATURE_TYPED_FUNCREF,   0, detect_typed_funcref },
     { "extended-const",            WAH_FEATURE_EXTENDED_CONST,  0, detect_extended_const },
+    { "multi-memory",              WAH_FEATURE_MULTI_MEMORY,    0, detect_multi_memory },
 };
 #define NUM_DETECT_TESTS (sizeof(detect_tests) / sizeof(detect_tests[0]))
 

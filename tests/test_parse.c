@@ -1217,6 +1217,13 @@ static void test_section_forms_require_features(void) {
         { "wasm data {[data.passive {%'00'}]}", WAH_FEATURE_BULK_MEMORY },
         { "wasm datacount {0}", WAH_FEATURE_BULK_MEMORY },
         { "wasm types {[sub.final [] fn [] []]}", WAH_FEATURE_GC },
+        { "wasm memories {[limits.i32/1 1, limits.i32/1 1]}", WAH_FEATURE_MULTI_MEMORY },
+        { "wasm imports {[{'m'} {'a'} mem# limits.i32/1 1, {'m'} {'b'} mem# limits.i32/1 1]}",
+          WAH_FEATURE_MULTI_MEMORY },
+        { "wasm imports {[{'m'} {'a'} mem# limits.i32/1 1]} memories {[limits.i32/1 1]}", WAH_FEATURE_MULTI_MEMORY },
+        // Even for memory 0, an explicit memory index is a multi-memory encoding (the align would be invalid)
+        { "wasm types {[fn [] []]} funcs {[0]} memories {[limits.i32/1 1]} \
+           code {[{[] i32.const 0 i32.load 66 0 0 drop end}]}", WAH_FEATURE_MULTI_MEMORY },
     };
     #undef NO_REF_TYPES
     for (size_t i = 0; i < sizeof(cases) / sizeof(*cases); i++) {

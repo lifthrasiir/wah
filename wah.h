@@ -302,6 +302,7 @@ typedef uint64_t wah_features_t;
 #define WAH_FEATURE_MEMORY64         (UINT64_C(1) << 12)  // Memory64 & table64 (3.0)
 #define WAH_FEATURE_RELAXED_SIMD     (UINT64_C(1) << 13)  // Relaxed SIMD (3.0)
 #define WAH_FEATURE_EXTENDED_CONST   (UINT64_C(1) << 14)  // Extended const expressions (3.0)
+#define WAH_FEATURE_MULTI_MEMORY     (UINT64_C(1) << 15)  // Multiple memories (3.0)
 
 // Macro: WAH_FEATURE_WASM_V2
 //   WebAssembly 2.0 features.
@@ -313,7 +314,7 @@ typedef uint64_t wah_features_t;
 #define WAH_FEATURE_WASM_V3 ( \
     WAH_FEATURE_WASM_V2 | WAH_FEATURE_TAIL_CALL | WAH_FEATURE_EXCEPTION | \
     WAH_FEATURE_GC | WAH_FEATURE_TYPED_FUNCREF | WAH_FEATURE_MEMORY64 | WAH_FEATURE_RELAXED_SIMD | \
-    WAH_FEATURE_EXTENDED_CONST)
+    WAH_FEATURE_EXTENDED_CONST | WAH_FEATURE_MULTI_MEMORY)
 // Macro: WAH_FEATURE_ALL
 //   A bitmap containing every supported feature.
 #define WAH_FEATURE_ALL WAH_FEATURE_WASM_V3
@@ -1641,6 +1642,7 @@ static inline wah_features_t wah_feature_closure(wah_features_t f) {
 #define WAH_FEATURE_SHIFT_MEMORY64           12
 #define WAH_FEATURE_SHIFT_RELAXED_SIMD       13
 #define WAH_FEATURE_SHIFT_EXTENDED_CONST     14
+#define WAH_FEATURE_SHIFT_MULTI_MEMORY       15
 
 static inline wah_error_t wah_require_feature(wah_module_t *module, int8_t shift) {
     if (shift == 0) return WAH_OK;
@@ -5862,12 +5864,14 @@ static inline wah_error_t wah_decode_sleb128_64(const uint8_t **ptr, const uint8
 // WebAssembly 3.0 memarg format: align:u32 [memidx:u32] offset:u64
 // If align is 0..63, memidx is assumed to be 0
 // If align is 64..127, memidx is present and align is adjusted by subtracting 64
-static inline wah_error_t wah_decode_memarg(const uint8_t **ptr, const uint8_t *end, wah_memarg_t *memarg) {
+static inline wah_error_t wah_decode_memarg(const uint8_t **ptr, const uint8_t *end, wah_module_t *module,
+                                            wah_memarg_t *memarg) {
     WAH_CHECK(wah_decode_uleb128(ptr, end, &memarg->align));
     WAH_ENSURE(memarg->align < 128, WAH_ERROR_MALFORMED);
     memarg->memidx = 0;
     // WebAssembly 3.0: if align >= 64, memidx is present
     if (memarg->align >= 64) {
+        WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_MULTI_MEMORY));
         WAH_CHECK(wah_decode_uleb128(ptr, end, &memarg->memidx));
         memarg->align -= 64; // adjust align to actual value
     }
@@ -6359,7 +6363,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
     switch (opcode_val) {
 #define LOAD_OP(T, max_lg_align) { \
             wah_memarg_t memarg; \
-            WAH_CHECK(wah_decode_memarg(code_ptr, code_end, &memarg)); \
+            WAH_CHECK(wah_decode_memarg(code_ptr, code_end, vctx->module, &memarg)); \
             WAH_ENSURE(memarg.align <= max_lg_align, WAH_ERROR_VALIDATION_FAILED); \
             WAH_ENSURE(memarg.memidx < wah_memory_index_limit(vctx->module), WAH_ERROR_VALIDATION_FAILED); \
             wah_type_t addr_type = wah_memory_type(vctx->module, memarg.memidx)->addr_type; \
@@ -6371,7 +6375,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
 #define STORE_OP(T, max_lg_align) { \
             wah_memarg_t memarg; \
-            WAH_CHECK(wah_decode_memarg(code_ptr, code_end, &memarg)); \
+            WAH_CHECK(wah_decode_memarg(code_ptr, code_end, vctx->module, &memarg)); \
             WAH_ENSURE(memarg.align <= max_lg_align, WAH_ERROR_VALIDATION_FAILED); \
             WAH_ENSURE(memarg.memidx < wah_memory_index_limit(vctx->module), WAH_ERROR_VALIDATION_FAILED); \
             wah_type_t addr_type = wah_memory_type(vctx->module, memarg.memidx)->addr_type; \
@@ -6383,7 +6387,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
 
 #define V128_LANE_OP(max_lg_align, is_load) { \
             wah_memarg_t memarg; \
-            WAH_CHECK(wah_decode_memarg(code_ptr, code_end, &memarg)); \
+            WAH_CHECK(wah_decode_memarg(code_ptr, code_end, vctx->module, &memarg)); \
             WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF); \
             uint8_t lane_idx = *(*code_ptr)++; \
             WAH_ENSURE(memarg.align <= max_lg_align, WAH_ERROR_VALIDATION_FAILED); \
@@ -9394,6 +9398,7 @@ static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *
     uint32_t count;
     // A memory entry requires at least 2 bytes (flags, min_pages_uleb128).
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 2));
+    if ((uint64_t)module->import_memory_count + count > 1) WAH_CHECK(wah_require_feature(module, WAH_FEATURE_SHIFT_MULTI_MEMORY));
 
     module->memory_count = count;
     if (count > 0) {
@@ -9633,6 +9638,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             WAH_ENSURE_GOTO(ti->type.min_elements <= ti->type.max_elements, WAH_ERROR_VALIDATION_FAILED, cleanup);
         } else if (kind == WAH_KIND_MEMORY) {
             // Memory import
+            if (import_memory_count > 0) WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_MULTI_MEMORY), cleanup_name);
             WAH_ENSURE_CAP_GOTO(memory_imports, import_memory_count + 1, cleanup_name);
             wah_memory_import_t *mi = &memory_imports[import_memory_count];
             mi->name = imp_name;
