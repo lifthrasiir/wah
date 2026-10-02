@@ -17146,6 +17146,7 @@ static wah_error_t wah_init_active_data_segments(wah_exec_context_t *ctx) {
             if (segment->data_len > 0) {
                 memcpy(ctx->memories[segment->memory_idx].data + offset, segment->data, segment->data_len);
             }
+            wah_data_seg_mark_dropped(ctx, i);
         }
     }
     return WAH_OK;

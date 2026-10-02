@@ -28,7 +28,7 @@ void wah_test_data_and_bulk_memory_ops() {
             {'copy_mem'} fn# 2, \
             {'get_byte'} fn# 3, \
         ]} \
-        datacount { 2 } \
+        datacount { 3 } \
         code {[ \
             {[] local.get 0 local.get 1 local.get 2 memory.init 0 0 end}, \
             {[] local.get 0 local.get 1 local.get 2 memory.init 1 0 end}, \
@@ -36,14 +36,15 @@ void wah_test_data_and_bulk_memory_ops() {
             {[] local.get 0 i32.load8_u align=1 offset=0 end}, \
         ]} \
         data {[ \
-            data.active.table#0 i32.const 0 end {%'01020304'}, \
+            data.passive {%'01020304'}, \
             data.passive {%'05060708'}, \
+            data.active.table#0 i32.const 0 end {%'01020304'}, \
         ]}";
 
     // Test 1: Parse module using DSL
     assert_ok(wah_parse_module_from_spec(&module, wasm_data_and_bulk_memory_spec));
     assert_eq_u32(wah_module_memory_count(&module), 1);
-    assert_eq_u32(wah_debug_module_data_segment_count(&module), 2);
+    assert_eq_u32(wah_debug_module_data_segment_count(&module), 3);
     assert_true(wah_debug_module_has_data_count_section(&module));
 
     // Test 2: Create and instantiate execution context
@@ -52,7 +53,7 @@ void wah_test_data_and_bulk_memory_ops() {
     assert_eq_u64(wah_debug_memory_size(&ctx, 0), wah_debug_wasm_page_size());
     assert_ok(wah_instantiate(&ctx));
 
-    // Verify initial memory state (active data segment 0 should be initialized)
+    // Verify initial memory state (active data segment 2 should be initialized)
     assert_eq_u32(wah_debug_memory_data(&ctx, 0)[0], 0x01);
     assert_eq_u32(wah_debug_memory_data(&ctx, 0)[1], 0x02);
     assert_eq_u32(wah_debug_memory_data(&ctx, 0)[2], 0x03);
@@ -569,6 +570,33 @@ static void test_data_drop() {
     wah_free_module(&module);
 }
 
+// Active data segments are dropped once instantiation has copied them.
+static void test_active_data_dropped() {
+    printf("Testing active data segments are dropped after instantiation...\n");
+
+    const char *spec = "wasm \
+        types {[ fn [i32] [] ]} \
+        funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1 ]} \
+        datacount { 1 } \
+        code {[ {[] i32.const 0 i32.const 0 local.get 0 memory.init 0 0 end } ]} \
+        data {[ data.active.table#0 i32.const 0 end {%'414243'} ]}";
+
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_value_t param = {.i32 = 0};
+    assert_ok(wah_call(&ctx, 0, &param, 1, NULL));
+    param.i32 = 1;
+    assert_err(wah_call(&ctx, 0, &param, 1, NULL), WAH_ERROR_TRAP);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&module);
+}
+
 // fd68111: Fix memory.grow to use actual max_pages and handle OOM gracefully.
 static void test_memory_grow_max_pages() {
     printf("Testing memory.grow respects max_pages (fd68111)...\n");
@@ -616,6 +644,7 @@ int main() {
     test_multiple_memories_data_segment();
     test_memory_no_max_is_unbounded();
     test_data_drop();
+    test_active_data_dropped();
     test_memory_grow_max_pages();
 
     printf("\nAll memory tests passed!\n");
