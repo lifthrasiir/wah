@@ -9489,7 +9489,7 @@ static wah_error_t wah_parse_memory_section(const uint8_t **ptr, const uint8_t *
 
             uint64_t page_limit = (module->memories[i].addr_type == WAH_TYPE_I32) ? 65536ULL : (1ULL << 48);
             WAH_ENSURE(module->memories[i].min_pages <= page_limit, WAH_ERROR_VALIDATION_FAILED);
-            WAH_ENSURE(module->memories[i].max_pages <= page_limit || module->memories[i].max_pages == UINT64_MAX, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(!(flags & 0x01) || module->memories[i].max_pages <= page_limit, WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(module->memories[i].min_pages <= module->memories[i].max_pages, WAH_ERROR_VALIDATION_FAILED);
         }
     }
@@ -9726,7 +9726,7 @@ static wah_error_t wah_parse_import_section(const uint8_t **ptr, const uint8_t *
             }
             uint64_t page_limit = (mi->type.addr_type == WAH_TYPE_I32) ? 65536ULL : (1ULL << 48);
             WAH_ENSURE_GOTO(mi->type.min_pages <= page_limit, WAH_ERROR_VALIDATION_FAILED, cleanup);
-            WAH_ENSURE_GOTO(mi->type.max_pages <= page_limit || mi->type.max_pages == UINT64_MAX, WAH_ERROR_VALIDATION_FAILED, cleanup);
+            WAH_ENSURE_GOTO(!(flags & 0x01) || mi->type.max_pages <= page_limit, WAH_ERROR_VALIDATION_FAILED, cleanup);
             WAH_ENSURE_GOTO(mi->type.min_pages <= mi->type.max_pages, WAH_ERROR_VALIDATION_FAILED, cleanup);
         } else if (kind == WAH_KIND_GLOBAL) {
             // Global import

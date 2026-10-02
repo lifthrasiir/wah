@@ -1280,6 +1280,21 @@ static void test_table64_linked_initial_size_overflow() {
     wah_free_module(&provider);
 }
 
+// Regression: an explicit maximum of 2^64-1 pages was taken as no maximum, accepting invalid memory types.
+static void test_memory_max_sentinel_rejected() {
+    printf("Testing explicit memory maximum of 2^64-1 pages is rejected...\n");
+    const char *specs[] = {
+        "wasm memories {[ limits.i32/2 0 %'ffffffffffffffffff01' ]}",
+        "wasm memories {[ limits.i64/2 0 %'ffffffffffffffffff01' ]}",
+        "wasm imports {[ {'m'} {'mem'} mem# limits.i32/2 0 %'ffffffffffffffffff01' ]}",
+        "wasm imports {[ {'m'} {'mem'} mem# limits.i64/2 0 %'ffffffffffffffffff01' ]}",
+    };
+    for (int i = 0; i < 4; i++) {
+        wah_module_t module = {0};
+        assert_err(wah_parse_module_from_spec(&module, specs[i]), WAH_ERROR_VALIDATION_FAILED);
+    }
+}
+
 int main() {
     test_memory_grow_clamp();
     test_memory64_large_limits_parsing();
@@ -1316,6 +1331,7 @@ int main() {
     test_table64_grow_overflow();
     test_table64_initial_size_overflow();
     test_table64_linked_initial_size_overflow();
+    test_memory_max_sentinel_rejected();
     printf("All memory64/table64 tests passed!\n");
     return 0;
 }
