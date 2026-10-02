@@ -12663,12 +12663,7 @@ WAH_RUN(TRY_TABLE) {
     handler->bytecode_base = bytecode_base;
     handler->handler_tag_instances = fctx->tag_instances;
     handler->handler_tag_instance_count = fctx->tag_instance_count;
-    for (uint32_t ci = 0; ci < catch_count_val; ci++) {
-        bytecode_ip += 1; // catch_kind
-        bytecode_ip += sizeof(uint32_t); // tag_idx
-        bytecode_ip += sizeof(uint32_t); // offset
-        bytecode_ip += sizeof(uint32_t); // drop
-    }
+    bytecode_ip += (size_t)catch_count_val * (1 + 3 * sizeof(uint32_t)); // catch_kind, tag_idx, offset, drop
     WAH_NEXT();
     WAH_CLEANUP();
 }
