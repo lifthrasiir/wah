@@ -1487,12 +1487,13 @@ void test_i32x4_relaxed_dot_i8x16_i7x16_add_s() {
     expected = (wah_v128_t){ .i32 = {765, 1785, 2805, 3825} };
     run_simd_ternary_op_test("i32x4.relaxed_dot_i8x16_i7x16_add_s (zero acc)", ternary_op_wasm_spec, &a, &b, &c, &expected);
 
-    // -128*-128 = 16384 per pair, 4 pairs per lane = 65536; acc=INT32_MAX wraps in uint32_t
+    // -128*-128 = 16384 per product, each i16 pair sum saturates to 32767, so a lane is 65534;
+    // acc=INT32_MAX wraps in uint32_t
     a = (wah_v128_t){{ 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80 }};
     b = (wah_v128_t){{ 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80 }};
     c = (wah_v128_t){ .i32 = {INT32_MAX, INT32_MAX, INT32_MAX, INT32_MAX} };
-    expected = (wah_v128_t){ .u32 = {(uint32_t)INT32_MAX + 65536, (uint32_t)INT32_MAX + 65536,
-                                     (uint32_t)INT32_MAX + 65536, (uint32_t)INT32_MAX + 65536} };
+    expected = (wah_v128_t){ .u32 = {(uint32_t)INT32_MAX + 65534, (uint32_t)INT32_MAX + 65534,
+                                     (uint32_t)INT32_MAX + 65534, (uint32_t)INT32_MAX + 65534} };
     run_simd_ternary_op_test("i32x4.relaxed_dot_i8x16_i7x16_add_s (overflow)", ternary_op_wasm_spec, &a, &b, &c, &expected);
 }
 

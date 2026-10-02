@@ -4037,6 +4037,10 @@ static WAH_ALWAYS_INLINE __m128i wah_i32x4_relaxed_dot_i8x16_i7x16_add_s_sse2(__
     // dots_hi[i] = a[8+2i]*b[8+2i] + a[9+2i]*b[9+2i] as i32 (4 results from bytes 8-15)
     __m128i dots_lo = _mm_madd_epi16(a_lo, b_lo);
     __m128i dots_hi = _mm_madd_epi16(a_hi, b_hi);
+    // Saturate dots to i16; only -128*-128 + -128*-128 = 32768 can overflow, which becomes 32767
+    __m128i sat = _mm_set1_epi32(32768);
+    dots_lo = _mm_add_epi32(dots_lo, _mm_cmpeq_epi32(dots_lo, sat));
+    dots_hi = _mm_add_epi32(dots_hi, _mm_cmpeq_epi32(dots_hi, sat));
     // Horizontal sum of adjacent pairs using float shuffle (SSE1, no SSSE3 required):
     // shuffle_ps(a, b, {0,2,0,2}) = [a[0],a[2],b[0],b[2]] (even lanes)
     // shuffle_ps(a, b, {1,3,1,3}) = [a[1],a[3],b[1],b[3]] (odd lanes)
@@ -15409,7 +15413,10 @@ WAH_RUN(I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S) M128I_TERNARY_OP(wah_i32x4_relaxed_
     for (int i = 0; i < 4; ++i) {
         int8_t a0 = a.i8[i*4], a1 = a.i8[i*4+1], a2 = a.i8[i*4+2], a3 = a.i8[i*4+3];
         int8_t b0 = b.i8[i*4], b1 = b.i8[i*4+1], b2 = b.i8[i*4+2], b3 = b.i8[i*4+3];
-        result.u32[i] = (uint32_t)c.i32[i] + (uint32_t)((int32_t)a0*b0) + (uint32_t)((int32_t)a1*b1) + (uint32_t)((int32_t)a2*b2) + (uint32_t)((int32_t)a3*b3);
+        int32_t lo = (int32_t)a0*b0 + (int32_t)a1*b1, hi = (int32_t)a2*b2 + (int32_t)a3*b3;
+        if (lo > 32767) lo = 32767; // Pairs are saturated to i16, and only 32768 can overflow
+        if (hi > 32767) hi = 32767;
+        result.u32[i] = (uint32_t)c.i32[i] + (uint32_t)lo + (uint32_t)hi;
     }
     sp[-3].v128 = result;
     sp -= 2;
