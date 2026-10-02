@@ -11542,12 +11542,13 @@ static inline wah_error_t wah_bind_frame_module(
     wah_exec_context_t *ctx, wah_call_frame_t *frame,
     const wah_module_t *fn_module, wah_exec_context_t *fn_ctx
 ) {
-    if (fn_module == ctx->module) {
+    // Another instance of the primary module may be reached through linked contexts
+    if (fn_ctx ? fn_ctx == ctx : fn_module == ctx->module) {
         frame->frame_globals = ctx->globals;
         frame->frame_function_table = ctx->function_table;
         frame->frame_function_table_count = ctx->function_table_count;
         frame->frame_ctx = ctx;
-    } else if (fn_ctx && fn_ctx != ctx) {
+    } else if (fn_ctx) {
         frame->frame_globals = fn_ctx->globals;
         frame->frame_function_table = fn_ctx->function_table;
         frame->frame_function_table_count = fn_ctx->function_table_count;

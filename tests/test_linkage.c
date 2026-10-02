@@ -4307,6 +4307,47 @@ int main() {
         wah_free_module(&a);
     }
 
+    printf("Testing functions of another instance of the primary module reached through a linked context...\n");
+    {
+        wah_module_t m = {0}, q = {0}, z = {0};
+        // Imports x.inc and exports its own inc, which updates its own instance
+        assert_ok(wah_parse_module_from_spec(&m, "wasm types {[ fn [] [i32] ]} \
+            imports {[ {'x'} {'inc'} fn# 0 ]} funcs {[ 0 ]} \
+            globals {[ i32 mut i32.const 0 end ]} exports {[ {'inc'} fn# 1 ]} \
+            code {[ {[] global.get 0 i32.const 1 i32.add global.set 0 global.get 0 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&q, "wasm types {[ fn [] [i32] ]} \
+            imports {[ {'y'} {'inc'} fn# 0 ]} exports {[ {'inc'} fn# 0 ]}"));
+        assert_ok(wah_parse_module_from_spec(&z, "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} \
+            exports {[ {'inc'} fn# 0 ]} code {[ {[] i32.const 0 end} ]}"));
+        wah_exec_context_t zctx = {0}, yctx = {0}, xctx = {0}, ctx = {0};
+        assert_ok(wah_new_exec_context(&zctx, &z, NULL));
+        assert_ok(wah_instantiate(&zctx));
+        assert_ok(wah_new_exec_context(&yctx, &m, NULL));
+        assert_ok(wah_link_context(&yctx, "x", &zctx));
+        assert_ok(wah_instantiate(&yctx));
+        assert_ok(wah_new_exec_context(&xctx, &q, NULL));
+        assert_ok(wah_link_context(&xctx, "y", &yctx));
+        assert_ok(wah_instantiate(&xctx));
+
+        assert_ok(wah_new_exec_context(&ctx, &m, NULL));
+        assert_ok(wah_link_context(&ctx, "x", &xctx));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t r;
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
+        assert_eq_i32(r.i32, 1);
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
+        assert_eq_i32(r.i32, 2);
+        assert_ok(wah_call(&ctx, 1, NULL, 0, &r));
+        assert_eq_i32(r.i32, 1);
+        wah_free_exec_context(&ctx);
+        wah_free_exec_context(&xctx);
+        wah_free_exec_context(&yctx);
+        wah_free_exec_context(&zctx);
+        wah_free_module(&z);
+        wah_free_module(&q);
+        wah_free_module(&m);
+    }
+
     printf("All linkage tests passed!\n");
     return 0;
 }
