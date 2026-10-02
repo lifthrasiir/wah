@@ -17244,7 +17244,8 @@ static wah_error_t wah_resolve_linked_global_imports(wah_exec_context_t *ctx) {
 #define WAH_FOLLOW_IMPORT_CHAIN(ctx, dst_idx, linked_ctx, linked_idx, entity_t, entities) do { \
     wah_exec_context_t *owner = linked_ctx; \
     uint32_t owner_idx = linked_idx; \
-    while (owner->entities[owner_idx].is_imported && owner->entities[owner_idx].import_ctx) { \
+    for (int depth_ = 0; owner->entities[owner_idx].is_imported && owner->entities[owner_idx].import_ctx; depth_++) { \
+        WAH_ENSURE(depth_ < WAH_REEXPORT_MAX_DEPTH, WAH_ERROR_LINK_FAILED); /* Cyclic re-exports */ \
         entity_t *entity = &owner->entities[owner_idx]; \
         owner = entity->import_ctx; \
         owner_idx = entity->import_idx; \

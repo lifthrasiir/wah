@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#ifndef _WIN32
+#include <unistd.h>
+#endif
 
 // Simple host function
 int host_func_called = 0;
@@ -1177,6 +1180,43 @@ int main() {
         wah_free_module(&mod_b);
         wah_free_module(&mod_a);
     }
+
+    // Bug: binding imported memories/tables of owned linked contexts followed import chains without bound,
+    // so cyclic re-exports (or a module linked under its own import name) looped forever.
+    printf("Test: cyclic memory/table re-exports fail to link\n");
+#ifndef _WIN32
+    alarm(10); // A regression would hang instead
+#endif
+    {
+        static const char *specs[][2] = {
+            { "wasm imports {[{'A'} {'m'} mem# limits.i32/1 0]} exports {[{'m'} mem# 0]}", NULL },
+            { "wasm imports {[{'B'} {'m'} mem# limits.i32/1 0]} exports {[{'m'} mem# 0]}",
+              "wasm imports {[{'A'} {'m'} mem# limits.i32/1 0]} exports {[{'m'} mem# 0]}" },
+            { "wasm imports {[{'A'} {'t'} table# funcref limits.i32/1 0]} exports {[{'t'} table# 0]}", NULL },
+            { "wasm imports {[{'B'} {'t'} table# funcref limits.i32/1 0]} exports {[{'t'} table# 0]}",
+              "wasm imports {[{'A'} {'t'} table# funcref limits.i32/1 0]} exports {[{'t'} table# 0]}" },
+        };
+        for (size_t i = 0; i < sizeof(specs) / sizeof(*specs); i++) {
+            wah_module_t mod_a = {0}, mod_b = {0}, primary = {0};
+            assert_ok(wah_parse_module_from_spec(&mod_a, specs[i][0]));
+            if (specs[i][1]) assert_ok(wah_parse_module_from_spec(&mod_b, specs[i][1]));
+            assert_ok(wah_parse_module_from_spec(&primary, "wasm"));
+
+            wah_exec_context_t ctx = {0};
+            assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+            assert_ok(wah_link_module(&ctx, "A", &mod_a));
+            if (specs[i][1]) assert_ok(wah_link_module(&ctx, "B", &mod_b));
+            assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+
+            wah_free_exec_context(&ctx);
+            wah_free_module(&primary);
+            if (specs[i][1]) wah_free_module(&mod_b);
+            wah_free_module(&mod_a);
+        }
+    }
+#ifndef _WIN32
+    alarm(0);
+#endif
 
     // Bug: wah_eval_const_expr used ctx->module (primary) when evaluating
     // linked module global init expressions, so global.get in a linked module's
