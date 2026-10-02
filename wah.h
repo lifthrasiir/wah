@@ -2024,7 +2024,7 @@ typedef enum {
 // Multi-version opcodes (multiple implementations with priority ordering)
 // These are handled manually in wah_x86_64_opcode function
 #define WAH_X86_64_EXTRA_OPCODES_MULTI(X) \
-    X(I8X16_POPCNT,avx2) X(I8X16_POPCNT,avx512bitalg_vl) \
+    X(I8X16_POPCNT,ssse3) X(I8X16_POPCNT,avx512bitalg_vl) \
     X(I32X4_TRUNC_SAT_F32X4_U,sse41) X(I32X4_TRUNC_SAT_F32X4_U,avx512f_vl)
 
 #endif
@@ -2361,7 +2361,7 @@ static wah_opcode_t wah_x86_64_opcode(wah_opcode_t opcode, wah_x86_64_features_t
         // Multi-version opcodes with priority ordering
         case WAH_OP_I8X16_POPCNT:
             if (features.avx512bitalg_vl) return WAH_OP_I8X16_POPCNT_avx512bitalg_vl;
-            if (features.avx2) return WAH_OP_I8X16_POPCNT_avx2;
+            if (features.ssse3) return WAH_OP_I8X16_POPCNT_ssse3;
             break;
         case WAH_OP_I32X4_TRUNC_SAT_F32X4_U:
             if (features.avx512f_vl) return WAH_OP_I32X4_TRUNC_SAT_F32X4_U_avx512f_vl;
@@ -4221,9 +4221,9 @@ WAH_IF_SSE42(
     }
 )
 
-WAH_IF_AVX2(
-    // AVX2 optimized popcount using SSSE3 pshufb lookup table
-    static WAH_ALWAYS_INLINE __m128i wah_i8x16_popcnt_avx2(__m128i v) {
+WAH_IF_SSSE3(
+    // Popcount using a pshufb lookup table
+    static WAH_ALWAYS_INLINE __m128i wah_i8x16_popcnt_ssse3(__m128i v) {
         // Split bytes into nibbles, look up popcount for each
         __m128i low_nibbles = _mm_and_si128(v, _mm_set1_epi8(0x0F));
         __m128i high_nibbles = _mm_and_si128(_mm_srli_epi16(v, 4), _mm_set1_epi8(0x0F));
@@ -15596,8 +15596,8 @@ WAH_IF_X86_64(
         WAH_RUN(I64X2_GE_S_sse42) M128I_BINARY_OP(wah_i64x2_ge_s_sse42)
     )
 
-    WAH_IF_AVX2(
-        WAH_RUN(I8X16_POPCNT_avx2) M128I_UNARY_OP(wah_i8x16_popcnt_avx2)
+    WAH_IF_SSSE3(
+        WAH_RUN(I8X16_POPCNT_ssse3) M128I_UNARY_OP(wah_i8x16_popcnt_ssse3)
     )
 
     WAH_IF_AVX512(
