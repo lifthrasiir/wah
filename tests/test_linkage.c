@@ -1652,25 +1652,32 @@ int main() {
     // as a pointer (arbitrary write).
     printf("Test: Linked module imported mutable global\n");
     {
-        // Primary module: has a mutable i64 global, exports it as "g",
-        // imports a function "write" from linked module "L",
-        // and has a "read_g" function to read back the global.
+        // Primary module: imports a function "write" from linked module "L"
+        // and a function "read" from linked module "G" to read back the global.
         wah_module_t primary = {0};
         assert_ok(wah_parse_module_from_spec(&primary, "wasm \
             types {[ fn [i64] [], fn [] [i64] ]} \
-            imports {[ {'L'} {'write'} fn# 0 ]} \
-            funcs {[ 0, 1 ]} \
-            globals {[ i64 mut i64.const 100 end ]} \
-            exports {[ {'run'} fn# 1, {'g'} export.global 0, {'read_g'} fn# 2 ]} \
-            code {[ {[] local.get 0 call 0 end}, {[] global.get 0 end} ]}"));
+            imports {[ {'L'} {'write'} fn# 0, {'G'} {'read'} fn# 1 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'run'} fn# 2, {'read_g'} fn# 1 ]} \
+            code {[ {[] local.get 0 call 0 end} ]}"));
 
-        // Linked module "L": imports mutable i64 global from "primary" (field "g"),
+        // Linked module "G": has a mutable i64 global, exports it as "g" with a reader.
+        wah_module_t provider = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, "wasm \
+            types {[ fn [] [i64] ]} \
+            funcs {[ 0 ]} \
+            globals {[ i64 mut i64.const 100 end ]} \
+            exports {[ {'g'} export.global 0, {'read'} fn# 0 ]} \
+            code {[ {[] global.get 0 end} ]}"));
+
+        // Linked module "L": imports mutable i64 global from "G" (field "g"),
         // has a local i64 global (to verify no aliasing), exports "write" that
         // sets the imported global.
         wah_module_t linked = {0};
         assert_ok(wah_parse_module_from_spec(&linked, "wasm \
             types {[ fn [i64] [] ]} \
-            imports {[ {'primary'} {'g'} export.global i64 mut ]} \
+            imports {[ {'G'} {'g'} export.global i64 mut ]} \
             funcs {[ 0 ]} \
             globals {[ i64 immut i64.const 999 end ]} \
             exports {[ {'write'} fn# 0 ]} \
@@ -1678,20 +1685,22 @@ int main() {
 
         wah_exec_context_t ctx = {0};
         assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "G", &provider));
         assert_ok(wah_link_module(&ctx, "L", &linked));
         assert_ok(wah_instantiate(&ctx));
 
-        // Call write(42) - should set primary's mutable global to 42
+        // Call write(42) - should set G's mutable global to 42
         wah_value_t arg = { .i64 = 42 };
         assert_ok(wah_call_by_name(&ctx, "run", &arg, 1, NULL));
 
-        // Read back the global through primary's read_g function
+        // Read back the global through G's read function
         wah_value_t result;
         assert_ok(wah_call_by_name(&ctx, "read_g", NULL, 0, &result));
         assert_eq_i64(result.i64, 42);
 
         wah_free_exec_context(&ctx);
         wah_free_module(&primary);
+        wah_free_module(&provider);
         wah_free_module(&linked);
     }
 
@@ -1727,7 +1736,7 @@ int main() {
     }
 
     // Regression: linked module global imports must be type-checked. Without
-    // this, a linked module can import a primary funcref global as mutable i64,
+    // this, a linked module can import another module's funcref global as mutable i64,
     // write an arbitrary integer into it, and later make call_indirect treat
     // that integer as a function reference pointer.
     printf("Test: linked module global import type mismatch rejected (security regression)\n");
@@ -1737,25 +1746,31 @@ int main() {
             types {[ fn [] [] ]} \
             imports {[ {'L'} {'poison'} fn# 0 ]} \
             funcs {[ 0 ]} \
-            globals {[ funcref mut ref.null funcref end ]} \
-            exports {[ {'g'} export.global 0, {'run'} fn# 1 ]} \
+            exports {[ {'run'} fn# 1 ]} \
             code {[ {[] call 0 end} ]}"));
+
+        wah_module_t provider = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, "wasm \
+            globals {[ funcref mut ref.null funcref end ]} \
+            exports {[ {'g'} export.global 0 ]}"));
 
         wah_module_t linked = {0};
         assert_ok(wah_parse_module_from_spec(&linked, "wasm \
             types {[ fn [] [] ]} \
-            imports {[ {'primary'} {'g'} export.global i64 mut ]} \
+            imports {[ {'G'} {'g'} export.global i64 mut ]} \
             funcs {[ 0 ]} \
             exports {[ {'poison'} fn# 0 ]} \
             code {[ {[] i64.const 1048576 global.set 0 end} ]}"));
 
         wah_exec_context_t ctx = {0};
         assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "G", &provider));
         assert_ok(wah_link_module(&ctx, "L", &linked));
         assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
 
         wah_free_exec_context(&ctx);
         wah_free_module(&primary);
+        wah_free_module(&provider);
         wah_free_module(&linked);
     }
 
@@ -1767,21 +1782,26 @@ int main() {
             types {[ fn [] [i64] ]} \
             imports {[ {'L'} {'read'} fn# 0 ]} \
             funcs {[ 0 ]} \
-            globals {[ i64 immut i64.const 777 end ]} \
-            exports {[ {'run'} fn# 1, {'g'} export.global 0 ]} \
+            exports {[ {'run'} fn# 1 ]} \
             code {[ {[] call 0 end} ]}"));
+
+        wah_module_t provider = {0};
+        assert_ok(wah_parse_module_from_spec(&provider, "wasm \
+            globals {[ i64 immut i64.const 777 end ]} \
+            exports {[ {'g'} export.global 0 ]}"));
 
         // Linked module: imports immutable i64 global, exports a function that reads it
         wah_module_t linked = {0};
         assert_ok(wah_parse_module_from_spec(&linked, "wasm \
             types {[ fn [] [i64] ]} \
-            imports {[ {'primary'} {'g'} export.global i64 immut ]} \
+            imports {[ {'G'} {'g'} export.global i64 immut ]} \
             funcs {[ 0 ]} \
             exports {[ {'read'} fn# 0 ]} \
             code {[ {[] global.get 0 end} ]}"));
 
         wah_exec_context_t ctx = {0};
         assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "G", &provider));
         assert_ok(wah_link_module(&ctx, "L", &linked));
         assert_ok(wah_instantiate(&ctx));
 
@@ -1791,6 +1811,7 @@ int main() {
 
         wah_free_exec_context(&ctx);
         wah_free_module(&primary);
+        wah_free_module(&provider);
         wah_free_module(&linked);
     }
 
@@ -2073,33 +2094,36 @@ int main() {
     // Regression: table.grow must propagate to linked module internal contexts (UAF).
     printf("Test: table.grow propagates to linked module internal contexts\n");
     {
-        // Primary module: owns a table, exports it and a grow function.
-        // Also imports "linked.size" to read the table size from the linked module.
+        // Primary module: re-exports the grow function of "owner" and the size function of "linked".
         const char *primary_spec = "wasm \
             types {[ fn [i32] [i32], fn [] [i32] ]} \
-            imports {[ {'linked'} {'size'} fn# 1 ]} \
-            funcs {[ 0, 1 ]} \
-            tables {[ funcref limits.i32/2 1 100 ]} \
-            exports {[ {'tbl'} table# 0, {'grow'} fn# 1, {'linked_size'} fn# 2 ]} \
-            code {[ \
-                {[] ref.null funcref local.get 0 table.grow 0 end }, \
-                {[] call 0 end } \
-            ]}";
+            imports {[ {'owner'} {'grow'} fn# 0, {'linked'} {'size'} fn# 1 ]} \
+            exports {[ {'grow'} fn# 0, {'linked_size'} fn# 1 ]}";
 
-        // Linked WASM module: imports "primary.tbl", exports table.size.
+        // Owner module: owns a table, exports it and a grow function.
+        const char *owner_spec = "wasm \
+            types {[ fn [i32] [i32] ]} \
+            funcs {[ 0 ]} \
+            tables {[ funcref limits.i32/2 1 100 ]} \
+            exports {[ {'tbl'} table# 0, {'grow'} fn# 0 ]} \
+            code {[ {[] ref.null funcref local.get 0 table.grow 0 end } ]}";
+
+        // Linked WASM module: imports "owner.tbl", exports table.size.
         const char *linked_spec = "wasm \
             types {[ fn [] [i32] ]} \
-            imports {[ {'primary'} {'tbl'} table# funcref limits.i32/2 1 100 ]} \
+            imports {[ {'owner'} {'tbl'} table# funcref limits.i32/2 1 100 ]} \
             funcs {[ 0 ]} \
             exports {[ {'size'} fn# 0 ]} \
             code {[ {[] table.size 0 end } ]}";
 
-        wah_module_t primary_mod = {0}, linked_mod = {0};
+        wah_module_t primary_mod = {0}, owner_mod = {0}, linked_mod = {0};
         assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+        assert_ok(wah_parse_module_from_spec(&owner_mod, owner_spec));
         assert_ok(wah_parse_module_from_spec(&linked_mod, linked_spec));
 
         wah_exec_context_t ctx = {0};
         assert_ok(wah_new_exec_context(&ctx, &primary_mod, NULL));
+        assert_ok(wah_link_module(&ctx, "owner", &owner_mod));
         assert_ok(wah_link_module(&ctx, "linked", &linked_mod));
         assert_ok(wah_instantiate(&ctx));
 
@@ -2119,6 +2143,7 @@ int main() {
 
         wah_free_exec_context(&ctx);
         wah_free_module(&linked_mod);
+        wah_free_module(&owner_mod);
         wah_free_module(&primary_mod);
     }
 
@@ -2966,32 +2991,39 @@ int main() {
         assert_ok(wah_export_func(&host_mod, "danger", "() -> i32", danger_host_func, NULL, NULL));
         assert_ok(wah_export_func(&host_mod, "safe", "() -> i32", safe_host_func, NULL, NULL));
 
-        // Primary: imports danger, has table with 1 slot filled with danger
-        // via active elem segment. Exports table and a call_indirect wrapper.
-        const char *primary_spec = "wasm \
+        // Env: imports danger, has table with 1 slot filled with danger
+        // via active elem segment. Exports the table.
+        const char *env_spec = "wasm \
             types {[ fn [] [i32] ]} \
             imports {[ {'host'} {'danger'} fn# 0 ]} \
-            funcs {[ 0 ]} \
             tables {[ funcref limits.i32/1 1 ]} \
-            exports {[ {'tbl'} table# 0, {'call_it'} fn# 1 ]} \
-            elements {[ elem.active.table#0 i32.const 0 end [0] ]} \
+            exports {[ {'tbl'} table# 0 ]} \
+            elements {[ elem.active.table#0 i32.const 0 end [0] ]}";
+
+        // Primary: imports the table from "env" and exports a call_indirect wrapper.
+        const char *primary_spec = "wasm \
+            types {[ fn [] [i32] ]} \
+            imports {[ {'env'} {'tbl'} table# funcref limits.i32/1 1 ]} \
+            funcs {[ 0 ]} \
+            exports {[ {'call_it'} fn# 0 ]} \
             code {[ {[] i32.const 0 call_indirect 0 0 end} ]}";
 
-        // Linked provider: imports table from "env" (falls back to primary
-        // module exports) and safe from host. Active elem segment overwrites
-        // slot 0 with safe function (fn#0 = safe import in linked module).
+        // Linked provider: imports table from "env" and safe from host. Active elem segment
+        // overwrites slot 0 with safe function (fn#0 = safe import in linked module).
         const char *linked_spec = "wasm \
             types {[ fn [] [i32] ]} \
             imports {[ {'env'} {'tbl'} table# funcref limits.i32/1 1, {'host'} {'safe'} fn# 0 ]} \
             elements {[ elem.active.table#0 i32.const 0 end [0] ]}";
 
-        wah_module_t primary_mod = {0}, linked_mod = {0};
+        wah_module_t primary_mod = {0}, env_mod = {0}, linked_mod = {0};
         assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+        assert_ok(wah_parse_module_from_spec(&env_mod, env_spec));
         assert_ok(wah_parse_module_from_spec(&linked_mod, linked_spec));
 
         wah_exec_context_t exec = {0};
         assert_ok(wah_new_exec_context(&exec, &primary_mod, NULL));
         assert_ok(wah_link_module(&exec, "host", &host_mod));
+        assert_ok(wah_link_module(&exec, "env", &env_mod));
         assert_ok(wah_link_module(&exec, "provider", &linked_mod));
         assert_ok(wah_instantiate(&exec));
 
@@ -3005,6 +3037,7 @@ int main() {
 
         wah_free_exec_context(&exec);
         wah_free_module(&linked_mod);
+        wah_free_module(&env_mod);
         wah_free_module(&primary_mod);
         wah_free_module(&host_mod);
     }
@@ -3012,13 +3045,17 @@ int main() {
     // Test: linked module active data segments initialize imported memory
     printf("Test: linked module active data segments initialize imported memory\n");
     {
-        // Primary: 1-page memory exported. Linked module imports it and writes
-        // data via active data segment.
+        // Env: 1-page memory exported. Primary and linked module import it,
+        // and the linked module writes data via active data segment.
+        const char *env_spec = "wasm \
+            memories {[ limits.i32/2 1 1 ]} \
+            exports {[ {'mem'} mem# 0 ]}";
+
         const char *primary_spec = "wasm \
             types {[ fn [] [i32] ]} \
+            imports {[ {'env'} {'mem'} mem# limits.i32/2 1 1 ]} \
             funcs {[ 0 ]} \
-            memories {[ limits.i32/2 1 1 ]} \
-            exports {[ {'read'} fn# 0, {'mem'} mem# 0 ]} \
+            exports {[ {'read'} fn# 0 ]} \
             code {[ {[] i32.const 0 i32.load 0 0 end} ]}";
 
         const char *linked_spec = "wasm \
@@ -3027,12 +3064,14 @@ int main() {
             datacount { 1 } \
             data {[ data.active.table#0 i32.const 0 end {%'78563412'} ]}";
 
-        wah_module_t primary_mod = {0}, linked_mod = {0};
+        wah_module_t primary_mod = {0}, env_mod = {0}, linked_mod = {0};
         assert_ok(wah_parse_module_from_spec(&primary_mod, primary_spec));
+        assert_ok(wah_parse_module_from_spec(&env_mod, env_spec));
         assert_ok(wah_parse_module_from_spec(&linked_mod, linked_spec));
 
         wah_exec_context_t exec = {0};
         assert_ok(wah_new_exec_context(&exec, &primary_mod, NULL));
+        assert_ok(wah_link_module(&exec, "env", &env_mod));
         assert_ok(wah_link_module(&exec, "provider", &linked_mod));
         assert_ok(wah_instantiate(&exec));
 
@@ -3042,6 +3081,7 @@ int main() {
 
         wah_free_exec_context(&exec);
         wah_free_module(&linked_mod);
+        wah_free_module(&env_mod);
         wah_free_module(&primary_mod);
     }
 
@@ -3383,29 +3423,34 @@ int main() {
     {
         printf("Testing linked module global init from imported global...\n");
 
-        // Primary: exports global g = 42, imports getH from linked module.
+        // Primary: imports getH from linked module.
         const char *primary_spec = "wasm \
             types {[ fn [] [i32] ]} \
-            imports {[ {'linked'} {'getH'} fn# 0 ]} \
+            imports {[ {'linked'} {'getH'} fn# 0 ]}";
+
+        // Provider: exports global g = 42.
+        const char *provider_spec = "wasm \
             globals {[ i32 immut i32.const 42 end ]} \
             exports {[ {'g'} global# 0 ]}";
 
-        // Linked module: imports g (global#0) from primary, defines local global
+        // Linked module: imports g (global#0) from provider, defines local global
         // h (global#1) = global.get 0, exports getH returning h.
         const char *linked_spec = "wasm \
             types {[ fn [] [i32] ]} \
-            imports {[ {'primary'} {'g'} global# i32 immut ]} \
+            imports {[ {'provider'} {'g'} global# i32 immut ]} \
             funcs {[ 0 ]} \
             globals {[ i32 immut global.get 0 end ]} \
             exports {[ {'getH'} fn# 0 ]} \
             code {[ {[] global.get 1 end } ]}";
 
-        wah_module_t primary = {0}, linked = {0};
+        wah_module_t primary = {0}, provider = {0}, linked = {0};
         assert_ok(wah_parse_module_from_spec(&primary, primary_spec));
+        assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
         assert_ok(wah_parse_module_from_spec(&linked, linked_spec));
 
         wah_exec_context_t ctx = {0};
         assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
+        assert_ok(wah_link_module(&ctx, "provider", &provider));
         assert_ok(wah_link_module(&ctx, "linked", &linked));
         assert_ok(wah_instantiate(&ctx));
 
@@ -3415,6 +3460,7 @@ int main() {
 
         wah_free_exec_context(&ctx);
         wah_free_module(&linked);
+        wah_free_module(&provider);
         wah_free_module(&primary);
     }
 
@@ -3841,42 +3887,43 @@ int main() {
         wah_free_module(&q);
     }
 
-    // An owned context registered as a dependent of its own primary (through a re-export chain)
-    // should be unregistered before the primary's dependent list is freed.
-    printf("Testing freeing a context with owned contexts depending on it...\n");
+    // The primary module has no name, so linked modules cannot import its exports under any module name,
+    // including the names of linked modules not exporting them.
+    printf("Testing linked modules cannot import the primary's exports...\n");
     {
-        wah_module_t p = {0}, a = {0}, b = {0};
+        static const char *const import_kinds[] = {
+            "fn# 0", "global# i32 immut", "mem# limits.i32/1 1", "table# funcref limits.i32/1 1", "tag# tag.type# 0",
+        };
+        static const char *const field_names[] = { "f", "g", "mem", "tab", "tag" };
+        static const char *const module_names[] = { "x", "b" };
+        wah_module_t p = {0}, b = {0};
         assert_ok(wah_parse_module_from_spec(&p, "wasm \
-            types {[ fn [i32] [i32] ]} \
-            imports {[ {'b'} {'load'} fn# 0 ]} \
+            types {[ fn [] [] ]} \
             funcs {[ 0 ]} \
-            memories {[ limits.i32/2 1 10 ]} \
-            exports {[ {'mem'} mem# 0, {'run'} fn# 1 ]} \
-            code {[ {[] local.get 0 call 0 end } ]}"));
-        // A imports P's memory through the primary's exports and re-exports it to B
-        assert_ok(wah_parse_module_from_spec(&a, "wasm \
-            imports {[ {'x'} {'mem'} mem# limits.i32/2 1 10 ]} \
-            exports {[ {'mem2'} mem# 0 ]}"));
-        assert_ok(wah_parse_module_from_spec(&b, "wasm \
-            types {[ fn [i32] [i32] ]} \
-            imports {[ {'a'} {'mem2'} mem# limits.i32/2 1 10 ]} \
-            funcs {[ 0 ]} \
-            exports {[ {'load'} fn# 0 ]} \
-            code {[ {[] local.get 0 i32.load 2 0 end } ]}"));
-
-        wah_exec_context_t ctx = {0};
-        assert_ok(wah_new_exec_context(&ctx, &p, NULL));
-        assert_ok(wah_link_module(&ctx, "a", &a));
-        assert_ok(wah_link_module(&ctx, "b", &b));
-        assert_ok(wah_instantiate(&ctx));
-
-        wah_value_t arg = {.i32 = 0}, res;
-        assert_ok(wah_call_by_name(&ctx, "run", &arg, 1, &res));
-        assert_eq_i32(res.i32, 0);
-
-        wah_free_exec_context(&ctx);
+            tables {[ funcref limits.i32/1 1 ]} \
+            memories {[ limits.i32/1 1 ]} \
+            tags {[ tag.type# 0 ]} \
+            globals {[ i32 immut i32.const 42 end ]} \
+            exports {[ {'f'} fn# 0, {'g'} global# 0, {'mem'} mem# 0, {'tab'} table# 0, {'tag'} export.tag 0 ]} \
+            code {[ {[] end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&b, "wasm"));
+        for (size_t k = 0; k < sizeof(import_kinds) / sizeof(*import_kinds); k++) {
+            for (size_t n = 0; n < sizeof(module_names) / sizeof(*module_names); n++) {
+                char spec[256];
+                snprintf(spec, sizeof(spec), "wasm types {[ fn [] [] ]} imports {[ {'%s'} {'%s'} %s ]}",
+                         module_names[n], field_names[k], import_kinds[k]);
+                wah_module_t a = {0};
+                assert_ok(wah_parse_module_from_spec(&a, spec));
+                wah_exec_context_t ctx = {0};
+                assert_ok(wah_new_exec_context(&ctx, &p, NULL));
+                assert_ok(wah_link_module(&ctx, "a", &a));
+                assert_ok(wah_link_module(&ctx, "b", &b));
+                assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
+                wah_free_exec_context(&ctx);
+                wah_free_module(&a);
+            }
+        }
         wah_free_module(&b);
-        wah_free_module(&a);
         wah_free_module(&p);
     }
 
@@ -4268,10 +4315,10 @@ int main() {
         wah_free_module(&b);
     }
 
-    // The primary and a linked module may import globals from each other as long as no global depends on itself.
-    printf("Testing globals imported back and forth between the primary and a linked module...\n");
+    // Linked modules may import globals from each other as long as no global depends on itself.
+    printf("Testing globals imported back and forth between linked modules...\n");
     {
-        wah_module_t a = {0}, p = {0}, q = {0};
+        wah_module_t a = {0}, p = {0}, q = {0}, m = {0}, e = {0};
         assert_ok(wah_parse_module_from_spec(&a, "wasm \
             types {[]} imports {[ {'p'} {'g'} global# i32 immut ]} \
             globals {[ i32 immut i32.const 2 end, i32 immut global.get 0 i32.const 10 i32.add end ]} \
@@ -4281,25 +4328,32 @@ int main() {
             imports {[ {'a'} {'h'} global# i32 immut, {'a'} {'h2'} global# i32 immut ]} \
             funcs {[ 0 ]} \
             globals {[ i32 immut i32.const 1 end, i32 immut global.get 0 global.get 1 i32.add end ]} \
-            exports {[ {'g'} global# 2 ]} \
+            exports {[ {'g'} global# 2, {'get'} fn# 0 ]} \
             code {[ {[] global.get 3 end} ]}"));
+        assert_ok(wah_parse_module_from_spec(&m, "wasm \
+            types {[ fn [] [i32] ]} imports {[ {'p'} {'get'} fn# 0 ]} exports {[ {'get'} fn# 0 ]}"));
         wah_exec_context_t ctx = {0};
-        assert_ok(wah_new_exec_context(&ctx, &p, NULL));
+        assert_ok(wah_new_exec_context(&ctx, &m, NULL));
         assert_ok(wah_link_module(&ctx, "a", &a));
+        assert_ok(wah_link_module(&ctx, "p", &p));
         assert_ok(wah_instantiate(&ctx));
         wah_value_t r;
-        assert_ok(wah_call(&ctx, 0, NULL, 0, &r));
+        assert_ok(wah_call_by_name(&ctx, "get", NULL, 0, &r));
         assert_eq_i32(r.i32, 2 + (1 + 10));
         wah_free_exec_context(&ctx);
 
-        printf("Testing cyclic global initialization between the primary and a linked module fails to link...\n");
+        printf("Testing cyclic global initialization between linked modules fails to link...\n");
         assert_ok(wah_parse_module_from_spec(&q, "wasm \
             types {[]} imports {[ {'a'} {'h2'} global# i32 immut ]} \
             globals {[ i32 immut global.get 0 end ]} exports {[ {'g'} global# 1 ]}"));
-        assert_ok(wah_new_exec_context(&ctx, &q, NULL));
+        assert_ok(wah_parse_module_from_spec(&e, "wasm"));
+        assert_ok(wah_new_exec_context(&ctx, &e, NULL));
         assert_ok(wah_link_module(&ctx, "a", &a));
+        assert_ok(wah_link_module(&ctx, "p", &q));
         assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
         wah_free_exec_context(&ctx);
+        wah_free_module(&e);
+        wah_free_module(&m);
         wah_free_module(&q);
         wah_free_module(&p);
         wah_free_module(&a);

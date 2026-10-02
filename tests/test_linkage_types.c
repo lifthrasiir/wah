@@ -664,8 +664,8 @@ static void test_cross_module_abstract_sub_concrete_sup() {
 static void test_linked_module_ictx_table_type_validation() {
     printf("Testing linked module ictx table import type validation...\n");
 
-    // Primary module exports an externref table.
-    const char *primary_spec = "wasm \
+    // Provider module exports an externref table.
+    const char *provider_spec = "wasm \
         types {[ fn [] [] ]} \
         funcs {[ 0 ]} \
         tables {[ externref limits.i32/1 4 ]} \
@@ -675,30 +675,33 @@ static void test_linked_module_ictx_table_type_validation() {
     // Linked module imports a structref table (type mismatch with externref).
     const char *linked_spec = "wasm \
         types {[ fn [] [] ]} \
-        imports {[ {'primary'} {'t'} table# structref limits.i32/1 4 ]} \
+        imports {[ {'p'} {'t'} table# structref limits.i32/1 4 ]} \
         funcs {[ 0 ]} \
         exports {[ {'g'} fn# 0 ]} \
         code {[ {[] end } ]}";
 
-    wah_module_t primary = {0}, linked = {0};
-    assert_ok(wah_parse_module_from_spec(&primary, primary_spec));
+    wah_module_t primary = {0}, provider = {0}, linked = {0};
+    assert_ok(wah_parse_module_from_spec(&primary, "wasm"));
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
     assert_ok(wah_parse_module_from_spec(&linked, linked_spec));
 
     wah_exec_context_t ctx = {0};
     assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
-    assert_ok(wah_link_module(&ctx, "primary", &linked));
+    assert_ok(wah_link_module(&ctx, "p", &provider));
+    assert_ok(wah_link_module(&ctx, "l", &linked));
     assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
 
     wah_free_exec_context(&ctx);
     wah_free_module(&linked);
+    wah_free_module(&provider);
     wah_free_module(&primary);
 }
 
 static void test_linked_module_ictx_memory_type_validation() {
     printf("Testing linked module ictx memory import type validation...\n");
 
-    // Primary module exports a memory with max 10 pages.
-    const char *primary_spec = "wasm \
+    // Provider module exports a memory with max 10 pages.
+    const char *provider_spec = "wasm \
         types {[ fn [] [] ]} \
         funcs {[ 0 ]} \
         memories {[ limits.i32/2 1 10 ]} \
@@ -708,22 +711,25 @@ static void test_linked_module_ictx_memory_type_validation() {
     // Linked module imports a memory with max 5 pages (provider max 10 > import max 5, should fail).
     const char *linked_spec = "wasm \
         types {[ fn [] [] ]} \
-        imports {[ {'primary'} {'m'} mem# limits.i32/2 1 5 ]} \
+        imports {[ {'p'} {'m'} mem# limits.i32/2 1 5 ]} \
         funcs {[ 0 ]} \
         exports {[ {'g'} fn# 0 ]} \
         code {[ {[] end } ]}";
 
-    wah_module_t primary = {0}, linked = {0};
-    assert_ok(wah_parse_module_from_spec(&primary, primary_spec));
+    wah_module_t primary = {0}, provider = {0}, linked = {0};
+    assert_ok(wah_parse_module_from_spec(&primary, "wasm"));
+    assert_ok(wah_parse_module_from_spec(&provider, provider_spec));
     assert_ok(wah_parse_module_from_spec(&linked, linked_spec));
 
     wah_exec_context_t ctx = {0};
     assert_ok(wah_new_exec_context(&ctx, &primary, NULL));
-    assert_ok(wah_link_module(&ctx, "primary", &linked));
+    assert_ok(wah_link_module(&ctx, "p", &provider));
+    assert_ok(wah_link_module(&ctx, "l", &linked));
     assert_err(wah_instantiate(&ctx), WAH_ERROR_LINK_FAILED);
 
     wah_free_exec_context(&ctx);
     wah_free_module(&linked);
+    wah_free_module(&provider);
     wah_free_module(&primary);
 }
 

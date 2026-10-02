@@ -695,11 +695,14 @@ static void test_memory_budget_linked_module_gc(void) {
     wah_free_module(&linked);
 }
 
-// A linked module growing a memory or table imported from the primary should charge the primary only once.
+// A linked module growing a memory or table imported from another linked module should charge the primary only once.
 static void test_grow_budget_linked_module_import(void) {
-    printf("Testing grow of the primary's memory and table by a linked module charges once...\n");
+    printf("Testing grow of a linked module's memory and table by another linked module charges once...\n");
     uint64_t table_bytes = 10 * sizeof(wah_value_t);
-    wah_module_t linked = {0}, primary = {0};
+    wah_module_t owner = {0}, linked = {0}, primary = {0};
+    assert_ok(wah_parse_module_from_spec(&owner, "wasm \
+        tables {[ funcref limits.i32/1 10 ]} memories {[ limits.i32/1 1 ]} \
+        exports {[ {'mem'} mem# 0, {'tab'} table# 0 ]}"));
     assert_ok(wah_parse_module_from_spec(&linked, "wasm \
         types {[ fn [i32] [i32] ]} \
         imports {[ {'p'} {'mem'} mem# limits.i32/1 1, {'p'} {'tab'} table# funcref limits.i32/1 10 ]} \
@@ -709,13 +712,12 @@ static void test_grow_budget_linked_module_import(void) {
                 {[] ref.null funcref local.get 0 table.grow 0 end} ]}"));
     assert_ok(wah_parse_module_from_spec(&primary, "wasm \
         types {[ fn [i32] [i32] ]} \
-        imports {[ {'l'} {'grow_mem'} fn# 0, {'l'} {'grow_tab'} fn# 0 ]} \
-        tables {[ funcref limits.i32/1 10 ]} memories {[ limits.i32/1 1 ]} \
-        exports {[ {'mem'} mem# 0, {'tab'} table# 0 ]}"));
+        imports {[ {'l'} {'grow_mem'} fn# 0, {'l'} {'grow_tab'} fn# 0 ]}"));
 
     wah_exec_context_t ctx = {0};
     wah_exec_options_t options = { .limits = { .max_memory_bytes = 3 * PAGE_SIZE + 3 * table_bytes } };
     assert_ok(wah_new_exec_context(&ctx, &primary, &options));
+    assert_ok(wah_link_module(&ctx, "p", &owner));
     assert_ok(wah_link_module(&ctx, "l", &linked));
     assert_ok(wah_instantiate(&ctx));
 
@@ -738,6 +740,7 @@ static void test_grow_budget_linked_module_import(void) {
     wah_free_exec_context(&ctx);
     wah_free_module(&primary);
     wah_free_module(&linked);
+    wah_free_module(&owner);
 }
 
 // Memories and tables are charged to their owner only, whichever context imports or grows them.

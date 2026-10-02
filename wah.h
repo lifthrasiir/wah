@@ -1311,6 +1311,9 @@ void wah_trap(wah_call_context_t *ctx, wah_error_t reason);
 //   it can't be the primary module or any other linked module (including modules of linked contexts),
 //   or WAH_ERROR_MISUSE is returned. Use `wah_link_context` to link multiple instances of a module.
 //
+//   Imports of the primary and linked modules are resolved by these names. The primary module has no name,
+//   so its exports can't be imported by linked modules.
+//
 //   - name [in, borrowed]: Name to link the module under. Must be unique among linked modules.
 //   - mod [in, borrowed]: Module to link. Must outlive the execution context.
 wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah_module_t *mod);
@@ -17470,12 +17473,7 @@ static wah_error_t wah_resolve_tag_identity(wah_exec_context_t *ctx, const wah_m
         const wah_import_name_t *name = &mod->tag_imports[tag_idx].name;
         const wah_module_t *next = NULL;
         wah_exec_context_t *next_ctx = NULL;
-        if (!wah_find_linked_module(ctx, name, &next, &next_ctx, NULL)) {
-            // Linked modules fall back to the primary's exports
-            WAH_ENSURE(mod_ctx != ctx && wah_find_export(ctx->module, 4, name), WAH_ERROR_LINK_FAILED);
-            next = ctx->module;
-            next_ctx = ctx;
-        }
+        WAH_ENSURE(wah_find_linked_module(ctx, name, &next, &next_ctx, NULL), WAH_ERROR_LINK_FAILED);
         const wah_export_t *exp = wah_find_export(next, 4, name);
         WAH_ENSURE(exp && exp->index < next->import_tag_count + next->tag_count, WAH_ERROR_LINK_FAILED);
         mod = next;
@@ -17486,7 +17484,6 @@ static wah_error_t wah_resolve_tag_identity(wah_exec_context_t *ctx, const wah_m
 }
 
 static wah_error_t wah_resolve_linked_tag_imports(wah_exec_context_t *ctx) {
-    const wah_module_t *module = ctx->module;
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
         const wah_module_t *lmod = ctx->linked_modules[j].module;
         wah_exec_context_t *ictx = ctx->linked_modules[j].ctx;
@@ -17495,13 +17492,7 @@ static wah_error_t wah_resolve_linked_tag_imports(wah_exec_context_t *ctx) {
                 wah_tag_import_t *lti = &lmod->tag_imports[t];
                 const wah_module_t *provider = NULL;
                 wah_exec_context_t *provider_ctx = NULL;
-                bool found = wah_find_linked_module(ctx, &lti->name, &provider, &provider_ctx, NULL);
-                if (!found && wah_find_export(module, 4, &lti->name)) {
-                    provider = module;
-                    provider_ctx = ctx;
-                    found = true;
-                }
-                WAH_ENSURE(found, WAH_ERROR_LINK_FAILED);
+                WAH_ENSURE(wah_find_linked_module(ctx, &lti->name, &provider, &provider_ctx, NULL), WAH_ERROR_LINK_FAILED);
                 const wah_export_t *exp = wah_find_export(provider, 4, &lti->name);
                 WAH_ENSURE(exp != NULL, WAH_ERROR_LINK_FAILED);
                 uint32_t prov_tag_idx = exp->index;
@@ -17570,13 +17561,6 @@ static wah_error_t wah_resolve_linked_global_imports(wah_exec_context_t *ctx, wa
                 const wah_export_t *gexp = NULL;
                 if (wah_find_linked_module(ctx, &lgi->name, &provider, &provider_ctx, &provider_linked_idx)) {
                     gexp = wah_find_export(provider, 3, &lgi->name);
-                }
-                if (!gexp) {
-                    gexp = wah_find_export(module, 3, &lgi->name);
-                    if (gexp) {
-                        provider = module;
-                        provider_ctx = ctx;
-                    }
                 }
                 WAH_ENSURE(gexp != NULL, WAH_ERROR_LINK_FAILED);
                 uint32_t prov_gidx = gexp->index;
@@ -17982,7 +17966,6 @@ static wah_error_t wah_create_owned_linked_contexts(wah_exec_context_t *ctx) {
 // Binds imports of owned contexts and builds their function tables.
 static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
     const wah_alloc_t *alloc = &ctx->alloc;
-    const wah_module_t *module = ctx->module;
     // Function imports are rebound below, and they should look unresolved to each other until then
     for (uint32_t j = 0; j < ctx->linked_module_count; j++) {
         wah_exec_context_t *ictx = ctx->linked_modules[j].ctx;
@@ -18008,15 +17991,6 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                         WAH_CHECK(wah_bind_memory_import_slot(&ictx->memories[mi], mprov, mprov_ctx,
                                                               mexp->index, &mim->type));
                         WAH_FOLLOW_IMPORT_CHAIN(ictx, mi, mprov_ctx, mexp->index, wah_memory_inst_t, memories);
-                        mem_found = true;
-                    }
-                }
-                if (!mem_found && !mem_pending && ctx->memory_count > 0) {
-                    const wah_export_t *pexp = wah_find_export(module, 2, &mim->name);
-                    if (pexp && pexp->index < ctx->memory_count) {
-                        WAH_CHECK(wah_bind_memory_import_slot(&ictx->memories[mi], module, ctx,
-                                                              pexp->index, &mim->type));
-                        WAH_FOLLOW_IMPORT_CHAIN(ictx, mi, ctx, pexp->index, wah_memory_inst_t, memories);
                         mem_found = true;
                     }
                 }
@@ -18069,15 +18043,6 @@ static wah_error_t wah_finalize_owned_linked_contexts(wah_exec_context_t *ctx) {
                         WAH_CHECK(wah_bind_table_import_slot(&ictx->tables[ti], lmod, &tim->type,
                                                              tprov, tprov_ctx, texp->index));
                         WAH_FOLLOW_IMPORT_CHAIN(ictx, ti, tprov_ctx, texp->index, wah_table_inst_t, tables);
-                        tbl_found = true;
-                    }
-                }
-                if (!tbl_found && !tbl_pending && ctx->table_count > 0) {
-                    const wah_export_t *pexp = wah_find_export(module, 1, &tim->name);
-                    if (pexp && pexp->index < ctx->table_count) {
-                        WAH_CHECK(wah_bind_table_import_slot(&ictx->tables[ti], lmod, &tim->type,
-                                                             module, ctx, pexp->index));
-                        WAH_FOLLOW_IMPORT_CHAIN(ictx, ti, ctx, pexp->index, wah_table_inst_t, tables);
                         tbl_found = true;
                     }
                 }
