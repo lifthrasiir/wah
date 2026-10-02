@@ -8720,6 +8720,7 @@ static wah_error_t wah_read_section_header(const uint8_t **ptr, const uint8_t *e
 static wah_error_t wah_type_section_ensure_capacity(wah_module_t *module, uint32_t needed) {
     const wah_alloc_t *alloc = &module->alloc;
     if (needed <= module->types_cap) return WAH_OK;
+    WAH_ENSURE(needed - 1 <= WAH_MAX_TYPE_INDEX, WAH_ERROR_TOO_LARGE); // Larger indices collide with built-in types
     uint32_t cap = module->types_cap; // Committed only when all arrays are grown
     WAH_GROW_ARRAY(module->types, cap, needed);
     WAH_REALLOC_ARRAY(module->type_defs, cap);
