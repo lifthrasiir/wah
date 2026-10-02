@@ -4944,7 +4944,8 @@ static uint64_t wah_rec_group_hash(const wah_module_t *module, uint32_t rg_start
 
 // Pairs of rec groups (by start index) already known to be equal during a single equality check.
 // Rec groups only refer to earlier groups, and any inequality ends the whole check, so remembering
-// equal pairs is enough to avoid exponential time. Memoization is silently disabled on OOM.
+// equal pairs is enough to avoid exponential time. Types are treated as unequal on OOM, which would
+// otherwise make the check exponential.
 typedef struct {
     uint64_t *keys; // 0 = empty
     uint32_t count, cap;
@@ -4965,11 +4966,13 @@ static bool wah_type_eq_memo_has(const wah_type_eq_memo_t *memo, uint64_t key) {
     return memo->cap > 0 && memo->keys[wah_type_eq_memo_slot(memo, key)] == key;
 }
 
-static void wah_type_eq_memo_add(wah_type_eq_memo_t *memo, uint64_t key) {
+static bool wah_type_eq_memo_add(wah_type_eq_memo_t *memo, uint64_t key) {
     if ((memo->count + 1) * 2 > memo->cap) {
         uint32_t new_cap = memo->cap ? memo->cap * 2 : 64;
         uint64_t *new_keys = NULL;
-        if (new_cap < memo->cap || wah_malloc(memo->alloc, new_cap, sizeof(uint64_t), (void **)&new_keys) != WAH_OK) return;
+        if (new_cap < memo->cap || wah_malloc(memo->alloc, new_cap, sizeof(uint64_t), (void **)&new_keys) != WAH_OK) {
+            return false;
+        }
         memset(new_keys, 0, new_cap * sizeof(uint64_t));
         wah_type_eq_memo_t grown = { .keys = new_keys, .cap = new_cap, .alloc = memo->alloc };
         for (uint32_t i = 0; i < memo->cap; i++) {
@@ -4984,6 +4987,7 @@ static void wah_type_eq_memo_add(wah_type_eq_memo_t *memo, uint64_t key) {
         memo->keys[i] = key;
         memo->count++;
     }
+    return true;
 }
 
 static bool wah_cross_module_rec_group_eq(const wah_module_t *ma, uint32_t rga_s, uint32_t rga_n,
@@ -5013,8 +5017,7 @@ static bool wah_cross_module_ref_in_recgroup(const wah_module_t *ma, wah_type_t 
     if (wah_type_eq_memo_has(memo, key)) return true;
     if (!wah_cross_module_rec_group_eq(ma, da->rec_group_start, da->rec_group_size,
                                        mb, db->rec_group_start, db->rec_group_size, depth + 1, memo)) return false;
-    wah_type_eq_memo_add(memo, key);
-    return true;
+    return wah_type_eq_memo_add(memo, key);
 }
 
 static bool wah_cross_module_type_eq_in_recgroup(const wah_module_t *ma, uint32_t ia, uint32_t rga_s, uint32_t rga_n,

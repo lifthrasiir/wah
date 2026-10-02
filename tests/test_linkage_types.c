@@ -729,8 +729,14 @@ static void test_linked_module_ictx_memory_type_validation() {
 
 // Cross-module type equality used to recompute shared rec groups, taking exponential time for DAGs
 // like T_k = struct { ref null T_{k-1}, ref null T_{k-1} }.
-static void test_cross_module_type_eq_dag() {
-    printf("Testing cross-module type equality of DAG-shaped types is fast...\n");
+static void *failing_malloc(size_t size, void *userdata) { return *(bool *)userdata ? NULL : malloc(size); }
+static void *failing_realloc(void *ptr, size_t size, void *userdata) { return *(bool *)userdata ? NULL : realloc(ptr, size); }
+static void failing_free(void *ptr, void *userdata) { (void)userdata; free(ptr); }
+
+// The memo of rec group pairs is allocated by the provider's allocator, which fails after parsing when `oom` is set.
+// Types are then treated as unequal, instead of comparing without the memo.
+static void test_cross_module_type_eq_dag(bool oom) {
+    printf("Testing cross-module type equality of DAG-shaped types is fast%s...\n", oom ? " on OOM" : "");
     enum { K = 30 };
     static char types[64 + K * 64], prov_spec[256 + sizeof(types)], cons_spec[256 + sizeof(types)];
     strcpy(types, "types {[ struct []");
@@ -745,17 +751,23 @@ static void test_cross_module_type_eq_dag() {
     snprintf(prov_spec, sizeof(prov_spec), "wasm %s funcs {[%d]} exports {[{'f'} fn# 0]} code {[{[] end}]}", types, K + 1);
     snprintf(cons_spec, sizeof(cons_spec), "wasm %s imports {[{'p'} {'f'} fn# %d]}", types, K + 1);
 
+    bool failing = false;
+    wah_alloc_t alloc = { failing_malloc, failing_realloc, failing_free, &failing };
+    wah_parse_options_t opts = { .alloc = &alloc };
     wah_module_t prov = {0}, cons = {0};
-    assert_ok(wah_parse_module_from_spec(&prov, prov_spec));
+    assert_ok(wah_parse_module_from_spec_ex(&prov, &opts, prov_spec));
     assert_ok(wah_parse_module_from_spec(&cons, cons_spec));
     wah_exec_context_t ctx = {0};
     assert_ok(wah_new_exec_context(&ctx, &cons, NULL));
     assert_ok(wah_link_module(&ctx, "p", &prov));
+    failing = oom;
     clock_t start = clock();
-    assert_ok(wah_instantiate(&ctx));
+    wah_error_t err = wah_instantiate(&ctx);
     double elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
     printf("  instantiated in %.3fs\n", elapsed);
     assert_true(elapsed < 1.0); // Would take 2^30 steps otherwise
+    if (oom) assert_err(err, WAH_ERROR_LINK_FAILED); else assert_ok(err);
+    failing = false;
     wah_free_exec_context(&ctx);
     wah_free_module(&cons);
     wah_free_module(&prov);
@@ -805,7 +817,8 @@ static void test_import_resolution_time() {
 
 int main() {
     test_import_resolution_time();
-    test_cross_module_type_eq_dag();
+    test_cross_module_type_eq_dag(false);
+    test_cross_module_type_eq_dag(true);
     test_cross_module_call_indirect();
     test_linked_module_imported_table_grow();
     test_elem_before_data_order();
