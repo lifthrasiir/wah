@@ -5445,19 +5445,14 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
     wah_free(alloc, group_keys); group_keys = NULL;
     wah_free(alloc, group_hashes); group_hashes = NULL;
 
+    // Subtype checks below compare supertype chains through canonical_map
+    module->canonical_map = canonical_map;
+    canonical_map = NULL;
     for (uint32_t i = 0; i < module->type_count; ++i) {
         wah_type_def_t *td = &module->type_defs[i];
         if (td->supertype == WAH_NO_SUPERTYPE) continue;
         wah_type_def_t *super_td = &module->type_defs[td->supertype];
-
-        #define WAH_SUBTYPE_CHECK(sub_t, sup_t) ( \
-            (sub_t) == (sup_t) || \
-            ((sub_t) >= 0 && (sup_t) >= 0 && (!WAH_TYPE_IS_NULLABLE(sub_t) || WAH_TYPE_IS_NULLABLE(sup_t)) && \
-             canonical_map[WAH_TYIDX(sub_t)] == canonical_map[WAH_TYIDX(sup_t)]) || \
-            wah_type_is_subtype((sub_t), (sup_t), module) || \
-            ((sub_t) >= 0 && (sup_t) >= 0 && wah_type_is_subtype(WAH_TYPE_FROM_IDX(canonical_map[WAH_TYIDX(sub_t)], WAH_TYPE_IS_NULLABLE(sub_t)), \
-                                                                 WAH_TYPE_FROM_IDX(canonical_map[WAH_TYIDX(sup_t)], WAH_TYPE_IS_NULLABLE(sup_t)), module)) \
-        )
+        const uint32_t *canon = module->canonical_map;
 
         if (td->kind == WAH_COMP_FUNC) {
             wah_func_type_t *sub_ft = &module->types[i];
@@ -5465,10 +5460,10 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
             WAH_ENSURE_GOTO(sub_ft->param_count == sup_ft->param_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
             WAH_ENSURE_GOTO(sub_ft->result_count == sup_ft->result_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
             for (uint32_t j = 0; j < sub_ft->param_count; ++j) {
-                WAH_ENSURE_GOTO(WAH_SUBTYPE_CHECK(sup_ft->param_types[j], sub_ft->param_types[j]), WAH_ERROR_VALIDATION_FAILED, cleanup);
+                WAH_ENSURE_GOTO(wah_type_is_subtype(sup_ft->param_types[j], sub_ft->param_types[j], module), WAH_ERROR_VALIDATION_FAILED, cleanup);
             }
             for (uint32_t j = 0; j < sub_ft->result_count; ++j) {
-                WAH_ENSURE_GOTO(WAH_SUBTYPE_CHECK(sub_ft->result_types[j], sup_ft->result_types[j]), WAH_ERROR_VALIDATION_FAILED, cleanup);
+                WAH_ENSURE_GOTO(wah_type_is_subtype(sub_ft->result_types[j], sup_ft->result_types[j], module), WAH_ERROR_VALIDATION_FAILED, cleanup);
             }
         } else if (td->kind == WAH_COMP_STRUCT) {
             WAH_ENSURE_GOTO(td->field_count >= super_td->field_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
@@ -5476,10 +5471,10 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
                 if (super_td->field_mutables[j]) {
                     WAH_ENSURE_GOTO(td->field_mutables[j], WAH_ERROR_VALIDATION_FAILED, cleanup);
                     wah_type_t st = super_td->field_types[j], tt = td->field_types[j];
-                    WAH_ENSURE_GOTO(st == tt || (st >= 0 && tt >= 0 && WAH_TYPE_IS_NULLABLE(st) == WAH_TYPE_IS_NULLABLE(tt) && canonical_map[WAH_TYIDX(st)] == canonical_map[WAH_TYIDX(tt)]), WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    WAH_ENSURE_GOTO(st == tt || (st >= 0 && tt >= 0 && WAH_TYPE_IS_NULLABLE(st) == WAH_TYPE_IS_NULLABLE(tt) && canon[WAH_TYIDX(st)] == canon[WAH_TYIDX(tt)]), WAH_ERROR_VALIDATION_FAILED, cleanup);
                 } else {
                     WAH_ENSURE_GOTO(!td->field_mutables[j], WAH_ERROR_VALIDATION_FAILED, cleanup);
-                    WAH_ENSURE_GOTO(WAH_SUBTYPE_CHECK(td->field_types[j], super_td->field_types[j]), WAH_ERROR_VALIDATION_FAILED, cleanup);
+                    WAH_ENSURE_GOTO(wah_type_is_subtype(td->field_types[j], super_td->field_types[j], module), WAH_ERROR_VALIDATION_FAILED, cleanup);
                 }
             }
         } else if (td->kind == WAH_COMP_ARRAY) {
@@ -5487,13 +5482,12 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
             if (super_td->field_mutables[0]) {
                 WAH_ENSURE_GOTO(td->field_mutables[0], WAH_ERROR_VALIDATION_FAILED, cleanup);
                 wah_type_t st = super_td->field_types[0], tt = td->field_types[0];
-                WAH_ENSURE_GOTO(st == tt || (st >= 0 && tt >= 0 && WAH_TYPE_IS_NULLABLE(st) == WAH_TYPE_IS_NULLABLE(tt) && canonical_map[WAH_TYIDX(st)] == canonical_map[WAH_TYIDX(tt)]), WAH_ERROR_VALIDATION_FAILED, cleanup);
+                WAH_ENSURE_GOTO(st == tt || (st >= 0 && tt >= 0 && WAH_TYPE_IS_NULLABLE(st) == WAH_TYPE_IS_NULLABLE(tt) && canon[WAH_TYIDX(st)] == canon[WAH_TYIDX(tt)]), WAH_ERROR_VALIDATION_FAILED, cleanup);
             } else {
                 WAH_ENSURE_GOTO(!td->field_mutables[0], WAH_ERROR_VALIDATION_FAILED, cleanup);
-                WAH_ENSURE_GOTO(WAH_SUBTYPE_CHECK(td->field_types[0], super_td->field_types[0]), WAH_ERROR_VALIDATION_FAILED, cleanup);
+                WAH_ENSURE_GOTO(wah_type_is_subtype(td->field_types[0], super_td->field_types[0], module), WAH_ERROR_VALIDATION_FAILED, cleanup);
             }
         }
-        #undef WAH_SUBTYPE_CHECK
     }
 
     WAH_MALLOC_ARRAY_GOTO(module->typeidx_to_repr, module->types_cap, cleanup);
@@ -5526,7 +5520,6 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
 
 #endif
 
-    module->canonical_map = canonical_map;
     return WAH_OK;
 
 cleanup:

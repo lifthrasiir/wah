@@ -387,6 +387,23 @@ static void test_subtype_validation_nullability() {
     }
 }
 
+// Declared subtyping must see through structurally duplicate types in the supertype chain.
+static void test_subtype_validation_duplicate_in_chain() {
+    printf("Testing subtype validation through a duplicate type in the chain...\n");
+    // Types 0 and 1 are equivalent, so type 2 <: 1 = 0 and (ref 2) <: (ref 0)
+    static const char *const good[] = {
+        "wasm types {[ sub [] struct [], sub [] struct [], sub [1] struct [], \
+                       sub [] struct [type.ref 0 immut], sub [3] struct [type.ref 2 immut] ]}",
+        "wasm types {[ sub [] struct [], sub [] struct [], sub [1] struct [], \
+                       sub [] fn [] [type.ref 0], sub [3] fn [] [type.ref 2] ]}",
+    };
+    for (size_t i = 0; i < sizeof(good) / sizeof(*good); ++i) {
+        wah_module_t mod = {0};
+        assert_ok(wah_parse_module_from_spec(&mod, good[i]));
+        wah_free_module(&mod);
+    }
+}
+
 // Regression: supertype cycle within a rec group caused infinite loops in chain walks.
 // Validate that supertype index must be strictly less than current type index.
 static void test_supertype_cycle() {
@@ -690,6 +707,7 @@ int main() {
     test_uninit_local_tracking();
     test_subtype_validation();
     test_subtype_validation_nullability();
+    test_subtype_validation_duplicate_in_chain();
     test_supertype_cycle();
     test_forward_ref_across_rec_groups();
     test_gc_mutability_check();
