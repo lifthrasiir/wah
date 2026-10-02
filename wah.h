@@ -789,6 +789,7 @@ private:
     uint64_t max_memory_bytes;      // UINT64_MAX = no limit; 0 is a valid limit
     uint64_t memory_bytes_committed; // current total: linear mem + tables + GC heap
     struct wah_exec_context_s *budget_ctx; // Charged for memories and tables owned by this context; NULL = itself
+    struct wah_pin_table_s *pins; // References pinned by wah_param_pinned_ref
 
     struct wah_exec_lifecycle_s {
         wah_exec_state_t state;
@@ -1204,6 +1205,22 @@ wah_v128_t wah_param_v128(const wah_call_context_t *ctx, size_t index);  // v128
 //   - idx [in]: Index of the parameter to retrieve. Must be less than the number of parameters.
 void *wah_param_ref(const wah_call_context_t *ctx, size_t index);
 
+// Function: wah_param_pinned_ref
+//   Get a reference parameter passed to a host function by index, pinned so that the host can keep it after
+//   the call. A pinned reference is opaque and can only be given to `wah_result_ref` in host function calls
+//   of the same execution context, until it is released by `wah_unpin_ref` or the context is freed.
+//
+//   - idx [in]: Index of the parameter to retrieve. Must be less than the number of parameters.
+//   - returns: The pinned reference, or NULL for a null reference. Also NULL on allocation failure,
+//     in which case the host function traps.
+void *wah_param_pinned_ref(wah_call_context_t *ctx, size_t index);
+
+// Function: wah_unpin_ref
+//   Releases a reference pinned by `wah_param_pinned_ref`. Valid only during the host function call.
+//   Does nothing for NULL. The host function traps with WAH_ERROR_MISUSE if `pinned_ref` is not
+//   a currently pinned reference.
+void wah_unpin_ref(wah_call_context_t *ctx, void *pinned_ref);
+
 // Function: wah_result_count
 //   Returns the number of results expected for a host function.
 //   Valid only during the host function call.
@@ -1233,6 +1250,9 @@ void wah_result_v128(wah_call_context_t *ctx, size_t index, const wah_v128_t *va
 //
 //   - index [in]: Index of the result to set. Must be less than the number of results.
 //   - value [in]: Value to set for the result. Can be NULL if the result type is nullable.
+//     Can be a pinned reference from `wah_param_pinned_ref`, whose parameter type should match the result type.
+//     A reference sanitized by `wah_param_ref` or a released pinned reference makes the host function trap
+//     with WAH_ERROR_MISUSE.
 void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value);
 
 // Macros: wah_return_*
@@ -2301,6 +2321,7 @@ static wah_opcode_t wah_x86_64_opcode(wah_opcode_t opcode, wah_x86_64_features_t
 
 struct wah_call_context_s {
     struct wah_exec_context_s *exec;
+    const struct wah_module_s *module; // Module of the host function, which param_types and result_types refer to
 
     size_t nparams, nresults;
     const wah_value_t *params;
@@ -2309,6 +2330,27 @@ struct wah_call_context_s {
 
     wah_error_t trap_reason;
 };
+
+// --- Pinned References ---
+// Pinned references are tagged with 0b10 in the lowest bits, unlike i31 (0bx1) and GC objects (0b00).
+// Other bits hold a slot index and its generation, which is bumped on release to detect stale references.
+#define WAH_PIN_TAG ((uintptr_t)2)
+#define WAH_PIN_SLOT_BITS (UINTPTR_MAX > 0xffffffffu ? 32 : 20)
+#define WAH_PIN_GEN_MASK (((uintptr_t)1 << (sizeof(uintptr_t) * 8 - 2 - WAH_PIN_SLOT_BITS)) - 1)
+
+typedef struct wah_pin_slot_s {
+    wah_value_t value;                 // Null if free
+    const struct wah_module_s *module; // Module which `type` refers to
+    wah_type_t type;                   // Non-nullable static type of `value`
+    uint32_t generation;
+    uint32_t next_free;                // Index + 1 of the next free slot if free, 0 = none
+} wah_pin_slot_t;
+
+typedef struct wah_pin_table_s {
+    wah_pin_slot_t *slots;
+    uint32_t slot_count, slots_cap;
+    uint32_t free_head; // Index + 1 of the first free slot, 0 = none
+} wah_pin_table_t;
 
 // --- Repr Metadata ---
 typedef int32_t wah_repr_t;
@@ -10381,6 +10423,13 @@ static void wah_gc_enumerate_roots(wah_exec_context_t *ctx, wah_gc_ref_visitor_t
         g_offset += linked_globals;
     }
 
+    // 2a. References pinned by the host
+    if (ctx->pins) {
+        for (uint32_t i = 0; i < ctx->pins->slot_count; i++) {
+            if (ctx->pins->slots[i].value.ref) visitor(&ctx->pins->slots[i].value, userdata);
+        }
+    }
+
     // 3. Table elements (primary module)
     for (uint32_t t = 0; t < ctx->table_count; t++) {
         const wah_table_type_t *tt = wah_table_type(module, t);
@@ -11332,6 +11381,8 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     wah_free(alloc, exec_ctx->stack_buffer);
     wah_free(alloc, exec_ctx->exception_handlers);
     wah_free(alloc, exec_ctx->type_check_cache);
+    if (exec_ctx->pins) wah_free(alloc, exec_ctx->pins->slots);
+    wah_free(alloc, exec_ctx->pins);
     wah_free(alloc, exec_ctx->dropped_elem_segments);
     wah_free(alloc, exec_ctx->dropped_data_segments);
     wah_free(alloc, exec_ctx->globals);
@@ -11780,7 +11831,7 @@ static wah_error_t wah_call_host_function_internal(
     wah_value_t *results
 ) {
     wah_call_context_t call_ctx = {
-        .exec = exec_ctx,
+        .exec = exec_ctx, .module = fn->fn_module ? fn->fn_module : exec_ctx->module,
         .nparams = param_count, .params = params,
         .nresults = fn->nresults, .results = results,
         .param_types = fn->param_types, .result_types = fn->result_types,
@@ -16652,6 +16703,79 @@ void *wah_param_ref(const wah_call_context_t *ctx, size_t index) {
     return wah_sanitize_host_ref(ctx->params[index].ref);
 }
 
+static void wah_call_misuse(wah_call_context_t *ctx) {
+    if (ctx->trap_reason == WAH_OK) ctx->trap_reason = WAH_ERROR_MISUSE;
+}
+
+// Returns the slot of a currently pinned reference, or NULL if it isn't one.
+static wah_pin_slot_t *wah_pinned_slot(const wah_exec_context_t *exec, const void *pinned_ref) {
+    uintptr_t bits = (uintptr_t)pinned_ref;
+    if ((bits & 3) != WAH_PIN_TAG || !exec->pins) return NULL;
+    bits >>= 2;
+    uintptr_t slot = bits & (((uintptr_t)1 << WAH_PIN_SLOT_BITS) - 1);
+    uintptr_t generation = bits >> WAH_PIN_SLOT_BITS;
+    if (slot >= exec->pins->slot_count) return NULL;
+    wah_pin_slot_t *s = &exec->pins->slots[slot];
+    return s->value.ref && s->generation == generation ? s : NULL;
+}
+
+static wah_error_t wah_pin(wah_exec_context_t *exec, wah_value_t value, const wah_module_t *module, wah_type_t type,
+                           void **out) {
+    const wah_alloc_t *alloc = &exec->alloc;
+    if (!exec->pins) {
+        WAH_MALLOC(exec->pins);
+        *exec->pins = (wah_pin_table_t){0};
+    }
+    wah_pin_table_t *pins = exec->pins;
+    uint32_t slot;
+    if (pins->free_head) {
+        slot = pins->free_head - 1;
+        pins->free_head = pins->slots[slot].next_free;
+    } else {
+        WAH_ENSURE((uintptr_t)pins->slot_count < ((uintptr_t)1 << WAH_PIN_SLOT_BITS), WAH_ERROR_TOO_LARGE);
+        WAH_ENSURE_CAP(pins->slots, (size_t)pins->slot_count + 1);
+        slot = pins->slot_count++;
+        pins->slots[slot].generation = 0;
+    }
+    wah_pin_slot_t *s = &pins->slots[slot];
+    s->value = value;
+    s->module = module;
+    s->type = type;
+    s->next_free = 0;
+    *out = (void *)(((((uintptr_t)s->generation << WAH_PIN_SLOT_BITS) | slot) << 2) | WAH_PIN_TAG);
+    return WAH_OK;
+}
+
+void *wah_param_pinned_ref(wah_call_context_t *ctx, size_t index) {
+    WAH_ASSERT(ctx && "Call context is NULL");
+    WAH_ASSERT(index < ctx->nparams && "Parameter index out of bounds");
+    WAH_ASSERT(WAH_TYPE_IS_REF(ctx->param_types[index]) && "Parameter type mismatch");
+    if (ctx->params[index].ref == NULL) return NULL;
+    void *pinned = NULL;
+    wah_error_t err = wah_pin(ctx->exec, ctx->params[index], ctx->module,
+                              WAH_TYPE_AS_NON_NULL(ctx->param_types[index]), &pinned);
+    if (err != WAH_OK) {
+        if (ctx->trap_reason == WAH_OK) ctx->trap_reason = err;
+        return NULL;
+    }
+    return pinned;
+}
+
+void wah_unpin_ref(wah_call_context_t *ctx, void *pinned_ref) {
+    WAH_ASSERT(ctx && "Call context is NULL");
+    if (!pinned_ref) return;
+    wah_pin_slot_t *s = wah_pinned_slot(ctx->exec, pinned_ref);
+    if (!s) {
+        wah_call_misuse(ctx);
+        return;
+    }
+    wah_pin_table_t *pins = ctx->exec->pins;
+    s->value = (wah_value_t){0};
+    s->generation = (uint32_t)((s->generation + 1) & WAH_PIN_GEN_MASK);
+    s->next_free = pins->free_head;
+    pins->free_head = (uint32_t)(s - pins->slots) + 1;
+}
+
 size_t wah_result_count(const wah_call_context_t *ctx) {
     WAH_ASSERT(ctx && "Call context is NULL");
     return ctx->nresults;
@@ -16675,10 +16799,22 @@ void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value) {
     WAH_ASSERT(WAH_TYPE_IS_REF(ctx->result_types[index]) && "Result type mismatch");
     WAH_ASSERT((value != NULL || WAH_TYPE_IS_NULLABLE(ctx->result_types[index])) &&
                "Non-nullable reference result cannot be set to NULL");
-    WAH_ASSERT((value == NULL || wah_ref_is_i31(value) ||
-                wah_gc_header(value)->repr_id == WAH_REPR_HOST ||
-                wah_type_hierarchy_top(ctx->result_types[index], NULL) != WAH_TYPE_EXTERN) &&
-               "externref result must be allocated with wah_gc_alloc_host");
+    if ((uintptr_t)value & 1) { // The host can't make i31 references, so this was sanitized
+        wah_call_misuse(ctx);
+        return;
+    }
+    if (((uintptr_t)value & 3) == WAH_PIN_TAG) {
+        wah_pin_slot_t *s = wah_pinned_slot(ctx->exec, value);
+        if (!s || !wah_cross_module_subtype(s->module, s->type, ctx->module, ctx->result_types[index])) {
+            wah_call_misuse(ctx);
+            return;
+        }
+        value = s->value.ref;
+    } else {
+        WAH_ASSERT((value == NULL || wah_gc_header(value)->repr_id == WAH_REPR_HOST ||
+                    wah_type_hierarchy_top(ctx->result_types[index], NULL) != WAH_TYPE_EXTERN) &&
+                   "externref result must be allocated with wah_gc_alloc_host");
+    }
     ctx->results[index].ref = value;
 }
 
