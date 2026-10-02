@@ -2725,8 +2725,8 @@ typedef struct wah_element_segment_s {
     union {
         uint32_t *func_indices;              // For is_expr_elem == false
         struct {
-            uint8_t **bytecodes;                // Array of pointers to each expression
-            uint32_t *bytecode_sizes;           // Array of sizes for each expression
+            uint8_t *bytecode;                  // Lowered expressions, concatenated
+            uint32_t *offsets;                  // Offset of each expression, followed by the total size
         } expr;
     } u;
 } wah_element_segment_t;
@@ -2921,6 +2921,13 @@ static inline wah_function_t *wah_ref_to_func(void *ref) {
 
 // Const expression functions
 static wah_error_t wah_eval_const_expr(wah_exec_context_t *ctx, int64_t *fuel, const uint8_t *bytecode, uint32_t bytecode_size, wah_value_t *result);
+
+// Evaluates the j-th expression of an element segment.
+static inline wah_error_t wah_eval_elem_expr(wah_exec_context_t *ctx, int64_t *fuel,
+                                             const wah_element_segment_t *segment, uint32_t j, wah_value_t *result) {
+    uint32_t start = segment->u.expr.offsets[j];
+    return wah_eval_const_expr(ctx, fuel, segment->u.expr.bytecode + start, segment->u.expr.offsets[j + 1] - start, result);
+}
 
 // Helpers to look up types across import+local index spaces
 static inline uint32_t wah_func_index_limit(const wah_module_t *m) { return m->import_function_count + m->wasm_function_count; }
@@ -9768,19 +9775,25 @@ static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t 
                         WAH_CHECK(wah_declare_func(module, segment->u.func_indices[j]));
                     }
                 } else {
-                    WAH_MALLOC_ARRAY(segment->u.expr.bytecodes, num_elems);
-                    WAH_MALLOC_ARRAY(segment->u.expr.bytecode_sizes, num_elems);
-
+                    WAH_MALLOC_ARRAY(segment->u.expr.offsets, (size_t)num_elems + 1);
+                    segment->u.expr.offsets[0] = 0;
+                    uint32_t size = 0, cap = 0;
                     for (uint32_t j = 0; j < num_elems; ++j) {
-                        segment->u.expr.bytecodes[j] = NULL;
-                        ++segment->num_elems;
-
                         wah_parsed_code_t parsed_expr = {0};
                         WAH_CHECK(wah_compile_const_expr(ptr, section_end, segment->elem_type, module, wah_global_index_limit(module), &parsed_expr));
-
-                        segment->u.expr.bytecode_sizes[j] = parsed_expr.bytecode_size;
-                        segment->u.expr.bytecodes[j] = parsed_expr.bytecode;
+                        wah_error_t err = WAH_OK;
+                        WAH_ENSURE_GOTO(parsed_expr.bytecode_size <= UINT32_MAX - size, WAH_ERROR_TOO_LARGE, cleanup_elem_expr);
+                        WAH_GROW_ARRAY_GOTO(segment->u.expr.bytecode, cap, (size_t)size + parsed_expr.bytecode_size, cleanup_elem_expr);
+                        memcpy(segment->u.expr.bytecode + size, parsed_expr.bytecode, parsed_expr.bytecode_size);
+                        size += parsed_expr.bytecode_size;
+                        segment->u.expr.offsets[j + 1] = size;
+                        ++segment->num_elems;
+                    cleanup_elem_expr:
+                        wah_free_parsed_code(&parsed_expr, alloc);
+                        WAH_CHECK(err);
                     }
+                    // Trim the excess capacity
+                    if (cap > size) WAH_REALLOC_ARRAY(segment->u.expr.bytecode, size);
                 }
             }
         }
@@ -10009,17 +10022,10 @@ static void wah_free_element_segment_data(wah_element_segment_t *segment, const 
         wah_free(alloc, segment->u.func_indices);
         segment->u.func_indices = NULL;
     } else {
-        if (segment->u.expr.bytecodes) {
-            for (uint32_t i = 0; i < segment->num_elems; ++i) {
-                wah_free(alloc, (void*)segment->u.expr.bytecodes[i]);
-            }
-            wah_free(alloc, segment->u.expr.bytecodes);
-            segment->u.expr.bytecodes = NULL;
-        }
-        if (segment->u.expr.bytecode_sizes) {
-            wah_free(alloc, segment->u.expr.bytecode_sizes);
-            segment->u.expr.bytecode_sizes = NULL;
-        }
+        wah_free(alloc, segment->u.expr.bytecode);
+        wah_free(alloc, segment->u.expr.offsets);
+        segment->u.expr.bytecode = NULL;
+        segment->u.expr.offsets = NULL;
     }
     wah_free_parsed_code(&segment->offset_expr, alloc);
 }
@@ -11757,8 +11763,7 @@ static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, wah_exec_context_t 
                 store_val.ref = wah_func_to_ref(wah_materialize_funcref(fctx, segment->u.func_indices[src_offset + i]));
             } else {
                 if (src_offset + i >= segment->num_elems) { *out_err = WAH_ERROR_TRAP; return done + j; }
-                wah_error_t e = wah_eval_const_expr(fctx, &ctx->fuel, segment->u.expr.bytecodes[src_offset + i],
-                                                    segment->u.expr.bytecode_sizes[src_offset + i], &store_val);
+                wah_error_t e = wah_eval_elem_expr(fctx, &ctx->fuel, segment, src_offset + i, &store_val);
                 if (e != WAH_OK) { *out_err = e; return done + j; }
             }
             wah_ref_store_table(fctx, table_idx, dst_offset + i, store_val);
@@ -11801,8 +11806,7 @@ static uint32_t wah_bulk_array_init_elem(wah_exec_context_t *ctx, wah_exec_conte
                     wah_func_to_ref(wah_materialize_funcref(fctx, seg->u.func_indices[src_offset + i]));
             } else {
                 wah_value_t ev;
-                wah_error_t e = wah_eval_const_expr(fctx, &ctx->fuel, seg->u.expr.bytecodes[src_offset + i],
-                                                    seg->u.expr.bytecode_sizes[src_offset + i], &ev);
+                wah_error_t e = wah_eval_elem_expr(fctx, &ctx->fuel, seg, src_offset + i, &ev);
                 if (e != WAH_OK) { *out_err = e; return done + j; }
                 ((void **)(elems))[dst_offset + i] = ev.ref;
             }
@@ -12798,8 +12802,7 @@ WAH_RUN(ARRAY_NEW_ELEM) {
             ((void **)elems)[i] = wah_func_to_ref(fn);
         } else {
             wah_value_t ev;
-            WAH_CHECK_GOTO(wah_eval_const_expr(fctx, &ctx->fuel, seg->u.expr.bytecodes[offset + i],
-                                               seg->u.expr.bytecode_sizes[offset + i], &ev), cleanup);
+            WAH_CHECK_GOTO(wah_eval_elem_expr(fctx, &ctx->fuel, seg, offset + i, &ev), cleanup);
             ((void **)elems)[i] = ev.ref;
         }
     }
@@ -16729,8 +16732,7 @@ static wah_error_t wah_init_active_elem_segments(wah_exec_context_t *ctx) {
                 if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == ctx->module) fn->fn_ctx = ctx;
                 ctx->tables[segment->table_idx].entries[offset + j].ref = wah_func_to_ref(fn);
             } else {
-                WAH_CHECK(wah_eval_const_expr(ctx, &ctx->fuel, segment->u.expr.bytecodes[j],
-                                              segment->u.expr.bytecode_sizes[j],
+                WAH_CHECK(wah_eval_elem_expr(ctx, &ctx->fuel, segment, j,
                                               &ctx->tables[segment->table_idx].entries[offset + j]));
             }
         }

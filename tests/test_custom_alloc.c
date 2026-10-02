@@ -203,6 +203,27 @@ static int test_non_defaultable_locals_cost(void) {
     return parse_alloc_bytes < 1024 * 1024;
 }
 
+// Expressions of element segments used to be allocated one by one, taking tens of bytes for 3-byte elements.
+static int test_element_exprs_allocations(void) {
+    enum { N = 100000 };
+    tracking_alloc_t counts = {0};
+    wah_alloc_t alloc = { tracking_malloc, tracking_realloc, tracking_free, &counts };
+    wah_parse_options_t opts = { .alloc = &alloc };
+    static const char elem[] = "ref.func 0 end, ";
+    char *spec = malloc(N * (sizeof(elem) - 1) + 256);
+    if (!spec) return 0;
+    char *p = spec + snprintf(spec, 256, "wasm types {[fn [] []]} funcs {[0]} elements {[ elem.passive.expr funcref [");
+    for (int i = 0; i < N; i++) { memcpy(p, elem, sizeof(elem) - 1); p += sizeof(elem) - 1; }
+    strcpy(p - 2, "] ]} code {[{[] end}]}");
+    wah_module_t mod;
+    assert_ok(wah_parse_module_from_spec_ex(&mod, &opts, spec));
+    free(spec);
+    size_t outstanding = counts.outstanding;
+    printf("  %zu allocations for %d element expressions\n", outstanding, N);
+    wah_free_module(&mod);
+    return outstanding < 100 && tracking_ok("element exprs", &counts);
+}
+
 int main(void) {
     tracking_alloc_t module_counts = {0};
     tracking_alloc_t context_counts = {0};
@@ -236,6 +257,7 @@ int main(void) {
     }
     if (!test_logarithmic_growth()) return 1;
     if (!test_non_defaultable_locals_cost()) return 1;
+    if (!test_element_exprs_allocations()) return 1;
 
     tracking_alloc_t builder_counts = {0};
     wah_alloc_t builder_alloc = { tracking_malloc, tracking_realloc, tracking_free, &builder_counts };
