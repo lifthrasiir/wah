@@ -377,7 +377,8 @@ typedef uint64_t wah_features_t;
 
 // Macro: WAH_BULK_CHECK_INTERVAL [user-definable, default = 16777216]
 //   How many items have to be processed in a bulk operation (e.g. memory.copy, table.init)
-//   before checking for fuel exhaustion and interrupts.
+//   before checking for fuel exhaustion and interrupts. Interrupts are also checked at the start of
+//   every bulk operation.
 //
 //   Fuel metering is still accurately done regardless of this interval, but higher values
 //   may cause longer stalls on interrupts while lower values may cause more overhead
@@ -1472,7 +1473,7 @@ wah_error_t wah_pin_ref(wah_exec_context_t *ctx, void *host_ref, void **pinned_r
 
 // Function: wah_request_interrupt
 //   Requests an interrupt from the interpreter. Calling this multiple times does nothing.
-//   The interpreter will yield at the next POLL/TICK point. Safe to call from another thread.
+//   The interpreter will yield at the next POLL/TICK point or bulk operation. Safe to call from another thread.
 void wah_request_interrupt(wah_exec_context_t *ctx);
 
 // Function: wah_request_interrupt_from_host
@@ -11843,6 +11844,12 @@ static inline bool wah_bulk_should_stop(const wah_exec_context_t *ctx) {
     goto cleanup; \
 } while (0)
 
+// Yields at the start of a bulk op if interrupted, since ops smaller than WAH_BULK_CHECK_INTERVAL don't check it
+// otherwise, and straight-line code has no TICK between them. The operands are still on the stack.
+#define WAH_BULK_CHECK_START(instr_start, ref_map) do { \
+    if (wah_bulk_should_interrupt(ctx)) WAH_BULK_YIELD(instr_start, ref_map); \
+} while (0)
+
 // Check for interrupt or fuel exhaustion at the end of a bulk-op chunk.
 #define WAH_BULK_CHECK(done, total) \
     ((done) < (total) && \
@@ -13203,6 +13210,7 @@ WAH_RUN(ARRAY_FILL) {
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
     uint32_t ref_map = wah_decode_u32_le(&bytecode_ip);
+    WAH_BULK_CHECK_START(instr_start, ref_map);
     uint32_t size = (uint32_t)(--sp)->i32;
     wah_value_t fill_val = *--sp;
     uint32_t offset = (uint32_t)(--sp)->i32;
@@ -13231,6 +13239,7 @@ WAH_RUN(ARRAY_FILL) {
 WAH_RUN(ARRAY_COPY) {
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t ref_map = wah_decode_u32_le(&bytecode_ip);
+    WAH_BULK_CHECK_START(instr_start, ref_map);
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t src_offset = (uint32_t)(--sp)->i32;
     void *src_obj = (--sp)->ref;
@@ -13295,6 +13304,7 @@ WAH_RUN(ARRAY_INIT_DATA) {
     uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
     uint32_t dataidx = wah_decode_u32_le(&bytecode_ip);
     uint32_t ref_map = wah_decode_u32_le(&bytecode_ip);
+    WAH_BULK_CHECK_START(instr_start, ref_map);
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t src_offset = (uint32_t)(--sp)->i32;
     uint32_t dst_offset = (uint32_t)(--sp)->i32;
@@ -13335,6 +13345,7 @@ WAH_RUN(ARRAY_INIT_ELEM) {
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t elemidx = wah_decode_u32_le(&bytecode_ip);
     uint32_t ref_map = wah_decode_u32_le(&bytecode_ip);
+    WAH_BULK_CHECK_START(instr_start, ref_map);
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t src_offset = (uint32_t)(--sp)->i32;
     uint32_t dst_offset = (uint32_t)(--sp)->i32;
@@ -13468,6 +13479,7 @@ WAH_RUN(GLOBAL_SET) {
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
     uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
     uint32_t ref_map = wah_decode_u32_le(&bytecode_ip); \
+    WAH_BULK_CHECK_START(instr_start, ref_map); \
     uint64_t size = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     wah_value_t val = *--sp; \
     uint64_t offset = (uint64_t)(uint##N##_t)(*--sp).i##N; \
@@ -13489,6 +13501,7 @@ WAH_RUN(GLOBAL_SET) {
     uint32_t dst_table_idx = wah_decode_u32_le(&bytecode_ip); \
     uint32_t src_table_idx = wah_decode_u32_le(&bytecode_ip); \
     uint32_t ref_map = wah_decode_u32_le(&bytecode_ip); \
+    WAH_BULK_CHECK_START(instr_start, ref_map); \
     uint64_t size = (uint64_t)(uint##Z##_t)(*--sp).i##Z; \
     uint64_t src_offset = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     uint64_t dst_offset = (uint64_t)(uint##M##_t)(*--sp).i##M; \
@@ -13519,6 +13532,7 @@ WAH_RUN(GLOBAL_SET) {
     uint32_t elem_idx = wah_decode_u32_le(&bytecode_ip); \
     uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
     uint32_t ref_map = wah_decode_u32_le(&bytecode_ip); \
+    WAH_BULK_CHECK_START(instr_start, ref_map); \
     uint32_t size = (*--sp).i32; \
     uint32_t src_offset = (*--sp).i32; \
     uint64_t dst_offset = (uint64_t)(uint##N##_t)(*--sp).i##N; \
@@ -14193,6 +14207,7 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
     uint32_t mem_idx = wah_decode_u32_le(&bytecode_ip); \
     uint32_t ref_map = wah_decode_u32_le(&bytecode_ip); \
+    WAH_BULK_CHECK_START(instr_start, ref_map); \
     WAH_ASSERT(mem_idx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); \
     \
     uint64_t size = (uint64_t)(uint##N##_t)(*--sp).i##N; \
@@ -14216,6 +14231,7 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
     uint32_t data_idx = wah_decode_u32_le(&bytecode_ip); \
     uint32_t mem_idx = wah_decode_u32_le(&bytecode_ip); \
     uint32_t ref_map = wah_decode_u32_le(&bytecode_ip); \
+    WAH_BULK_CHECK_START(instr_start, ref_map); \
     \
     WAH_ASSERT(mem_idx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); \
     WAH_ASSERT(data_idx < fctx->module->data_segment_count && "validation didn't catch out-of-bound data segment index"); \
@@ -14248,6 +14264,7 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
     uint32_t dest_mem_idx = wah_decode_u32_le(&bytecode_ip); \
     uint32_t src_mem_idx = wah_decode_u32_le(&bytecode_ip); \
     uint32_t ref_map = wah_decode_u32_le(&bytecode_ip); \
+    WAH_BULK_CHECK_START(instr_start, ref_map); \
     \
     WAH_ASSERT(dest_mem_idx < fctx->memory_count); \
     WAH_ASSERT(src_mem_idx < fctx->memory_count); \
