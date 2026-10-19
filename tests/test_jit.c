@@ -505,7 +505,7 @@ static void test_local_cache(void) {
 static void test_i32_upper_bits(void) {
     printf("Testing upper bits of i32 values...\n");
     const char *spec = "wasm types {[ fn [i32] [i64], fn [i32] [i32] ]} funcs {[ 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0 ]} \
-        memories {[ limits.i32/1 1 ]} globals {[ i32 mut i32.const -1 end ]} code {[ \
+        memories {[ limits.i32/2 1 2 ]} globals {[ i32 mut i32.const -1 end ]} code {[ \
         {[] local.get 0 i64.extend_i32_u end}, \
         {[] local.get 0 i32.load 2 0 end}, \
         {[] i32.const -1 i64.extend_i32_u end}, \
