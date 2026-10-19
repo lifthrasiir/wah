@@ -358,19 +358,32 @@ typedef uint64_t wah_features_t;
 //
 // Macro: WAH_USE_MUSTTAIL
 //   Defined if the interpreter is using guaranteed tail call dispatch.
-//   Available since GCC 15 and Clang 13. At least as fast as the computed goto dispatch.
+//   Used by default only with `preserve_none` (Clang 19+ on x86-64 and AArch64), which passes all handler
+//   arguments in registers. Otherwise some of them are passed in the stack, making it slower than computed goto.
 //
 // Macro: WAH_USE_COMPUTED_GOTO
 //   Defined if the interpreter is using computed goto dispatch.
 //   Available on GCC and Clang, but not MSVC. Much faster than the switch-based portable dispatch.
+//
+// Macro: WAH_MUSTTAIL_CC
+//   Calling convention of musttail dispatch handlers, i.e. `preserve_none` if available or empty otherwise.
+#if WAH_HAS_ATTRIBUTE(musttail) && WAH_HAS_ATTRIBUTE(preserve_none) && \
+    (defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(_M_ARM64))
+#define WAH_MUSTTAIL_CC __attribute__((preserve_none))
+#define WAH_HAS_PRESERVE_NONE_MUSTTAIL 1
+#else
+#define WAH_MUSTTAIL_CC
+#define WAH_HAS_PRESERVE_NONE_MUSTTAIL 0
+#endif
+
 #if defined(WAH_FORCE_SWITCH)
 // Force switch-based dispatch; skip musttail and computed goto.
 #elif defined(WAH_FORCE_COMPUTED_GOTO)
 #define WAH_USE_COMPUTED_GOTO
 #elif defined(WAH_FORCE_MUSTTAIL)
 #define WAH_USE_MUSTTAIL
-#elif WAH_HAS_ATTRIBUTE(musttail)
-#define WAH_USE_MUSTTAIL // clang 13+, GCC 15+
+#elif WAH_HAS_PRESERVE_NONE_MUSTTAIL
+#define WAH_USE_MUSTTAIL // clang 19+
 #elif defined(__GNUC__) || defined(__clang__)
 #define WAH_USE_COMPUTED_GOTO
 #endif
@@ -12628,9 +12641,9 @@ static bool wah_memory_grow_internal(
 #if defined(WAH_USE_MUSTTAIL) // --- Tail recursion dispatch ---
 
 #define WAH_RUN(opcode) \
-    static wah_error_t wah_run_##opcode(wah_exec_context_t *ctx, wah_call_frame_t *frame, \
-                                        const uint8_t *bytecode_ip, const uint8_t *bytecode_base, \
-                                        wah_value_t *sp, wah_exec_context_t *fctx, wah_error_t err)
+    static WAH_MUSTTAIL_CC wah_error_t wah_run_##opcode(wah_exec_context_t *ctx, wah_call_frame_t *frame, \
+                                                        const uint8_t *bytecode_ip, const uint8_t *bytecode_base, \
+                                                        wah_value_t *sp, wah_exec_context_t *fctx, wah_error_t err)
 
 #define WAH_NEXT() do { \
         (void)bytecode_base; (void)err; \
@@ -12646,9 +12659,9 @@ static bool wah_memory_grow_internal(
         return (err); \
     } while (0)
 
-static wah_error_t wah_run_single(wah_exec_context_t *ctx, wah_call_frame_t *frame,
-                                  const uint8_t *bytecode_ip, const uint8_t *bytecode_base,
-                                  wah_value_t *sp, wah_exec_context_t *fctx, wah_error_t err);
+static WAH_MUSTTAIL_CC wah_error_t wah_run_single(wah_exec_context_t *ctx, wah_call_frame_t *frame,
+                                                  const uint8_t *bytecode_ip, const uint8_t *bytecode_base,
+                                                  wah_value_t *sp, wah_exec_context_t *fctx, wah_error_t err);
 
 #elif defined(WAH_USE_COMPUTED_GOTO) // --- Computed GOTO dispatch ---
 
@@ -15836,9 +15849,9 @@ WAH_SIMD_OPCODES(WAH_SIMD_NEVER_RUN)
 
 #ifdef WAH_USE_MUSTTAIL
 
-static wah_error_t wah_run_single(wah_exec_context_t *ctx, wah_call_frame_t *frame,
-                                  const uint8_t *bytecode_ip, const uint8_t *bytecode_base,
-                                  wah_value_t *sp, wah_exec_context_t *fctx, wah_error_t err) {
+static WAH_MUSTTAIL_CC wah_error_t wah_run_single(wah_exec_context_t *ctx, wah_call_frame_t *frame,
+                                                  const uint8_t *bytecode_ip, const uint8_t *bytecode_base,
+                                                  wah_value_t *sp, wah_exec_context_t *fctx, wah_error_t err) {
     uint16_t opcode = wah_decode_u16_le(&bytecode_ip);
 
     switch (opcode) {
