@@ -450,6 +450,9 @@ static const uint8_t wah_jit_pin_fprs[] = { 13, 12, 11, 10, 9, 8 };
 #define WAH_JIT_PIN_GPR_COUNT 4
 #define WAH_JIT_PIN_FPR_COUNT 6
 
+// Weight of uses of locals at a loop depth for pinning. The few registers go to innermost loops.
+#define WAH_JIT_USE_WEIGHT(depth) ((uint64_t)1 << (3 * ((depth) < 8 ? (depth) : 8)))
+
 // rax, rcx, rdx, rsi, rdi, r8, r9 and xmm0-xmm13 are allocatable unless pinned
 static void wah_jit_init_regs(wah_jit_fn_t *f) {
     for (int r = 0; r < 32; r++) {
@@ -795,6 +798,10 @@ static const uint8_t wah_jit_pin_gprs[] = { 28, 27, 26, 25, 24, 23, 15, 14, 13, 
 static const uint8_t wah_jit_pin_fprs[] = { 15, 14, 13, 12, 11, 10, 9, 8 };
 #define WAH_JIT_PIN_GPR_COUNT 16
 #define WAH_JIT_PIN_FPR_COUNT 8
+
+// Weight of uses of locals at a loop depth for pinning. Small inner loops often run only a few iterations,
+// so exponential weights would give them all registers at the expense of their enclosing loops.
+#define WAH_JIT_USE_WEIGHT(depth) ((uint64_t)(4 * (uint64_t)(depth) + 1))
 
 // x0-x15 and v0-v29 are allocatable unless pinned
 static void wah_jit_init_regs(wah_jit_fn_t *f) {
@@ -3121,7 +3128,7 @@ static void wah_jit_free_fn(wah_jit_fn_t *f) {
     wah_free(f->alloc, f->stubs);
 }
 
-// Pins the most used locals to registers, weighting uses by loop depth.
+// Pins the most used locals to registers, weighting uses by loop depth as each architecture prefers.
 static void wah_jit_choose_pins(wah_jit_fn_t *f, const wah_code_body_t *body, const wah_analyzed_code_t *ac) {
     if (WAH_JIT_PIN_GPR_COUNT + WAH_JIT_PIN_FPR_COUNT == 0 || f->nlocals == 0) return;
     void *p = NULL;
@@ -3141,7 +3148,7 @@ static void wah_jit_choose_pins(wah_jit_fn_t *f, const wah_code_body_t *body, co
                 if (nblocks > 0 && --nblocks <= WAH_MAX_CONTROL_DEPTH) depth -= loops[nblocks];
                 break;
             case WAH_OP_LOCAL_GET: case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE:
-                score[in->imm.u32] += (uint64_t)1 << (3 * (depth < 8 ? depth : 8));
+                score[in->imm.u32] += WAH_JIT_USE_WEIGHT(depth);
                 break;
             default: break;
         }
