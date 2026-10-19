@@ -368,8 +368,11 @@ typedef uint64_t wah_features_t;
 //
 // Macro: WAH_MUSTTAIL_CC
 //   Calling convention of musttail dispatch handlers, i.e. `preserve_none` if available or empty otherwise.
+//   GCC 16 accepts `preserve_none` on Win64 but keeps the MS ABI and miscompiles musttail handlers with it
+//   (e.g. a pointer bumped by a post-increment gets dereferenced after the bump), so it is avoided there.
 #if WAH_HAS_ATTRIBUTE(musttail) && WAH_HAS_ATTRIBUTE(preserve_none) && \
-    (defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(_M_ARM64))
+    (defined(__x86_64__) || defined(_M_X64) || defined(__aarch64__) || defined(_M_ARM64)) && \
+    !(defined(__GNUC__) && !defined(__clang__) && defined(_WIN32))
 #define WAH_MUSTTAIL_CC __attribute__((preserve_none))
 #define WAH_HAS_PRESERVE_NONE_MUSTTAIL 1
 #else
