@@ -3,6 +3,7 @@ param(
     [switch]$clang,
     [switch]$gcc,
     [switch]$msvc,
+    [switch]$jit,
     [Parameter(ValueFromRemainingArguments)]
     [string[]]$Remaining
 )
@@ -136,6 +137,15 @@ if ($compilerKind -eq 'msvc') {
         $cflags += '-DWAH_ASSERT=assert'
     }
 }
+# -jit builds wah_impl with wahjit.h, so that API-only tests (including spec tests) run natively where possible.
+if ($jit) {
+    $cflags += if ($compilerKind -eq 'msvc') { '/DWAH_TEST_JIT' } else { '-DWAH_TEST_JIT' }
+}
+# Records whether -jit was given like the Makefile, so that switching it rebuilds wah_impl
+$buildModeFile = "$projDir\tests\.build_mode"
+$buildMode = if ($jit) { 'jit' } else { 'interp' }
+$prevBuildMode = if (Test-Path $buildModeFile) { (Get-Content $buildModeFile -Raw).Trim() } else { '' }
+if ($prevBuildMode -ne $buildMode) { [IO.File]::WriteAllText($buildModeFile, "$buildMode`n") }
 
 if ($filter -eq 'cpp') {
     $wahH = "$projDir\wah.h"
@@ -259,6 +269,7 @@ function Test-ObjUpToDate($obj, [string[]]$deps) {
 }
 
 $wahH = "$projDir\wah.h"
+$wahJitH = "$projDir\wahjit.h"
 $commonSrc = "$projDir\tests\common.c"
 $commonHdr = "$projDir\tests\common.h"
 
@@ -270,7 +281,7 @@ $wahImplObjOk = $true
 $wahImplSrc = "$projDir\tests\wah_impl.c"
 $wahImplHdr = "$projDir\tests\wah_impl.h"
 if ($apiTests.Count -gt 0) {
-    $wahImplObjOk = Test-ObjUpToDate $wahImplObj @($wahH, $wahImplSrc, $wahImplHdr)
+    $wahImplObjOk = Test-ObjUpToDate $wahImplObj @($wahH, $wahJitH, $wahImplSrc, $wahImplHdr, $buildModeFile)
 }
 
 # -O1 for wah_impl so that musttail dispatch compiles to actual tail calls;
@@ -448,6 +459,7 @@ if ($failed) {
         if ($clang) { $cppArgs += '-clang' }
         if ($gcc) { $cppArgs += '-gcc' }
         if ($msvc) { $cppArgs += '-msvc' }
+        if ($jit) { $cppArgs += '-jit' }
         $cppArgs += 'cpp'
 
         Write-Host '## Running C++ smoke test...'

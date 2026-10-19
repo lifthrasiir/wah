@@ -383,7 +383,9 @@ static void test_fallback(void) {
     wah_value_t r;
     assert_ok(wah_call(&a.ctx, 0, NULL, 0, &r));
     assert_eq_i32(r.i32, 1);
+#ifdef WAH_JIT
     assert_true(a.module.jit == NULL);
+#endif
     inst_free(&a);
 }
 
