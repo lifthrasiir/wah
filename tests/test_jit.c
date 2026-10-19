@@ -483,6 +483,33 @@ static void test_local_cache(void) {
     }
 }
 
+// i32 values whose 64-bit representations may have upper bits set, used as addresses, br_table indices and
+// zero-extended operands. Params are given with garbage in their upper halves, which wasm can't observe.
+static void test_i32_upper_bits(void) {
+    printf("Testing upper bits of i32 values...\n");
+    const char *spec = "wasm types {[ fn [i32] [i64], fn [i32] [i32] ]} funcs {[ 0, 1, 0, 1, 0, 1, 0, 0, 0, 1, 1, 0 ]} \
+        memories {[ limits.i32/1 1 ]} globals {[ i32 mut i32.const -1 end ]} code {[ \
+        {[] local.get 0 i64.extend_i32_u end}, \
+        {[] local.get 0 i32.load 2 0 end}, \
+        {[] i32.const -1 i64.extend_i32_u end}, \
+        {[] i32.const -4 i32.load 2 0 end}, \
+        {[] local.get 0 i64.extend_i32_s i64.const 0x100000000 i64.or i32.wrap_i64 i64.extend_i32_u end}, \
+        {[] local.get 0 i64.extend_i32_u i64.const 0x700000000 i64.or i32.wrap_i64 i32.load 2 0 end}, \
+        {[] local.get 0 f64.convert_i32_s f32.demote_f64 i32.reinterpret_f32 i64.extend_i32_u end}, \
+        {[] local.get 0 memory.grow 0 i64.extend_i32_u end}, \
+        {[] global.get 0 i64.extend_i32_u end}, \
+        {[1 i32] i32.const -4 local.set 1 local.get 1 i32.load 2 0 end}, \
+        {[] block void block void block void \
+            local.get 0 i64.extend_i32_u i64.const 0x100000000 i64.or i32.wrap_i64 br_table [0, 1] 2 \
+            end i32.const 10 return end i32.const 11 return end i32.const 12 end}, \
+        {[] local.get 0 f64.convert_i32_u i64.trunc_sat_f64_u end} ]}";
+    static const int32_t args[] = { 0, 1, 4, -1, -4, 65532, 65533, 0x10000, (int32_t)0x80000000 };
+    for (size_t i = 0; i < COUNT(args); i++) {
+        wah_value_t p = { .i64 = (int64_t)(0xdeadbeef00000000ull | (uint32_t)args[i]) };
+        for (uint32_t fn = 0; fn < 12; fn++) check_call(spec, NULL, fn, &p, 1, 1);
+    }
+}
+
 static void test_fallback(void) {
     printf("Testing interpreter fallback...\n");
     // Modules using reference types are interpreted
@@ -507,6 +534,7 @@ int main(void) {
     test_suspend();
     test_pinned_locals();
     test_local_cache();
+    test_i32_upper_bits();
     test_fallback();
     printf("All JIT tests passed.\n");
     return 0;
