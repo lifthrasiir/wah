@@ -359,7 +359,8 @@ typedef uint64_t wah_features_t;
 // Macro: WAH_USE_MUSTTAIL
 //   Defined if the interpreter is using guaranteed tail call dispatch.
 //   Used by default only with `preserve_none` (Clang 19+ on x86-64 and AArch64), which passes all handler
-//   arguments in registers. Otherwise some of them are passed in the stack, making it slower than computed goto.
+//   arguments in registers preserved across calls. Otherwise they have to be saved around calls, or even
+//   passed in the stack (Win64 passes only 4 arguments in registers), which can make it slower than computed goto.
 //
 // Macro: WAH_USE_COMPUTED_GOTO
 //   Defined if the interpreter is using computed goto dispatch.
@@ -806,6 +807,7 @@ private:
     bool poisoned; // A context in the same link domain was freed, so only freeing is allowed
     uint32_t exception_handler_depth; // Of exception_handlers below
     uint32_t exception_handlers_cap;
+    wah_error_t run_err; // Error being returned by musttail handlers, WAH_OK otherwise
 
     // Pending exception (set by throw, consumed by try_table catch or propagated)
     struct wah_exception_s *pending_exception;
@@ -12022,7 +12024,7 @@ static wah_error_t wah_push_frame(
         if (ctx->call_depth == 0) goto cleanup; \
         frame = ctx->frame_ptr; \
         bytecode_ip = frame->bytecode_ip; \
-        bytecode_base = frame->code->parsed_code.bytecode; \
+        WAH_RELOAD_BYTECODE_BASE(); \
         fctx = frame->frame_ctx; \
     } while (0)
 
@@ -12640,14 +12642,39 @@ static bool wah_memory_grow_internal(
 
 #if defined(WAH_USE_MUSTTAIL) // --- Tail recursion dispatch ---
 
+// Handlers take as few arguments as possible, so that they stay in registers preserved across calls.
+// The bytecode base is reloaded on taken branches, and the error code is only needed on error paths,
+// so it lives in ctx->run_err, which is WAH_OK whenever a handler is entered.
 #define WAH_RUN(opcode) \
     static WAH_MUSTTAIL_CC wah_error_t wah_run_##opcode(wah_exec_context_t *ctx, wah_call_frame_t *frame, \
-                                                        const uint8_t *bytecode_ip, const uint8_t *bytecode_base, \
-                                                        wah_value_t *sp, wah_exec_context_t *fctx, wah_error_t err)
+                                                        const uint8_t *bytecode_ip, wah_value_t *sp, \
+                                                        wah_exec_context_t *fctx)
+
+typedef WAH_MUSTTAIL_CC wah_error_t (*wah_run_fn_t)(wah_exec_context_t *ctx, wah_call_frame_t *frame,
+                                                    const uint8_t *bytecode_ip, wah_value_t *sp,
+                                                    wah_exec_context_t *fctx);
+
+#define WAH_RUN_DECL(opcode, ...) WAH_RUN(opcode);
+#define WAH_EXTRA_RUN_DECL(opcode, suffix) WAH_RUN_DECL(opcode##_##suffix)
+WAH_OPCODES(WAH_RUN_DECL)
+WAH_INTERNAL_OPCODES(WAH_RUN_DECL)
+WAH_EXTRA_OPCODES(WAH_EXTRA_RUN_DECL)
+#undef WAH_RUN_DECL
+#undef WAH_EXTRA_RUN_DECL
+
+static const wah_run_fn_t wah_run_table[] = {
+#define WAH_RUN_ENTRY(opcode, ...) [WAH_OP_##opcode] = wah_run_##opcode,
+#define WAH_EXTRA_RUN_ENTRY(opcode, suffix) WAH_RUN_ENTRY(opcode##_##suffix)
+    WAH_OPCODES(WAH_RUN_ENTRY)
+    WAH_INTERNAL_OPCODES(WAH_RUN_ENTRY)
+    WAH_EXTRA_OPCODES(WAH_EXTRA_RUN_ENTRY)
+#undef WAH_RUN_ENTRY
+#undef WAH_EXTRA_RUN_ENTRY
+};
 
 #define WAH_NEXT() do { \
-        (void)bytecode_base; (void)err; \
-        __attribute__((musttail)) return wah_run_single(ctx, frame, bytecode_ip, bytecode_base, sp, fctx, err); \
+        __attribute__((musttail)) return wah_run_table[wah_read_u16_le(bytecode_ip)]( \
+            ctx, frame, bytecode_ip + sizeof(uint16_t), sp, fctx); \
     } while (0)
 
 #define WAH_CLEANUP() goto cleanup; cleanup: do { \
@@ -12656,12 +12683,14 @@ static bool wah_memory_grow_internal(
             frame->bytecode_ip = bytecode_ip; \
         } \
         ctx->sp = sp; \
-        return (err); \
+        wah_error_t cleanup_err = err; \
+        err = WAH_OK; \
+        return cleanup_err; \
     } while (0)
 
-static WAH_MUSTTAIL_CC wah_error_t wah_run_single(wah_exec_context_t *ctx, wah_call_frame_t *frame,
-                                                  const uint8_t *bytecode_ip, const uint8_t *bytecode_base,
-                                                  wah_value_t *sp, wah_exec_context_t *fctx, wah_error_t err);
+#define err (ctx->run_err)
+#define WAH_BYTECODE_BASE() (frame->code->parsed_code.bytecode)
+#define WAH_RELOAD_BYTECODE_BASE() ((void)0)
 
 #elif defined(WAH_USE_COMPUTED_GOTO) // --- Computed GOTO dispatch ---
 
@@ -12693,6 +12722,8 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
     #define WAH_RUN(opcode) wah_op_##opcode: bytecode_ip += sizeof(uint16_t);
     #define WAH_NEXT() goto *wah_opcode_labels[wah_read_u16_le(bytecode_ip)]
     #define WAH_CLEANUP() goto cleanup
+    #define WAH_BYTECODE_BASE() bytecode_base
+    #define WAH_RELOAD_BYTECODE_BASE() (bytecode_base = frame->code->parsed_code.bytecode)
 
 #else // --- Default switch-based interpreter ---
 
@@ -12714,11 +12745,20 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
         #define WAH_RUN(opcode) break; case WAH_OP_##opcode:
         #define WAH_NEXT() break
         #define WAH_CLEANUP() goto cleanup
+        #define WAH_BYTECODE_BASE() bytecode_base
+        #define WAH_RELOAD_BYTECODE_BASE() (bytecode_base = frame->code->parsed_code.bytecode)
 
 #endif
 
 //------------------------------------------------------------------------------
-#define WAH_NEVER_RUN(opcode) WAH_RUN(opcode) { (void)bytecode_base; WAH_UNREACHABLE(); WAH_NEXT(); }
+// Unlike WAH_CHECK_GOTO, err is assigned only on failure: it is WAH_OK otherwise, and
+// assigning to ctx->run_err in musttail handlers would cost a store on fast paths.
+#define WAH_RUN_CHECK(expr) do { \
+    wah_error_t _err = (expr); \
+    if (_err != WAH_OK) { err = _err; WAH_LOG("WAH_RUN_CHECK(%s) failed due to: %s", #expr, wah_strerror(err)); goto cleanup; } \
+} while(0)
+
+#define WAH_NEVER_RUN(opcode) WAH_RUN(opcode) { WAH_UNREACHABLE(); WAH_NEXT(); }
 
 WAH_NEVER_RUN(NOP) // Removed by preparser
 WAH_NEVER_RUN(BLOCK) // Converted to bytecode offsets
@@ -12737,11 +12777,11 @@ WAH_RUN(POLL) {
     if (WAH_POLL_FLAG_LOAD(ctx->poll_flag)) {
         frame->bytecode_ip = bytecode_ip;
         ctx->sp = sp;
-        WAH_CHECK_GOTO(wah_poll_handler(ctx), cleanup);
+        WAH_RUN_CHECK(wah_poll_handler(ctx));
         sp = ctx->sp;
         frame = ctx->frame_ptr;
         bytecode_ip = frame->bytecode_ip;
-        bytecode_base = frame->code->parsed_code.bytecode;
+        WAH_RELOAD_BYTECODE_BASE();
         fctx = frame->frame_ctx;
     }
     WAH_NEXT();
@@ -12754,7 +12794,7 @@ WAH_RUN(METER) {
     ctx->fuel -= cost;
     if (ctx->fuel < 0) {
         ctx->fuel += cost;
-        bytecode_ip = bytecode_base + slow_offset;
+        bytecode_ip = WAH_BYTECODE_BASE() + slow_offset;
     }
     WAH_NEXT();
 }
@@ -12784,14 +12824,14 @@ WAH_RUN(TICK) {
 WAH_RUN(IF) {
     uint32_t offset = wah_decode_u32_le(&bytecode_ip);
     if ((*--sp).i32 == 0) {
-        bytecode_ip = bytecode_base + offset;
+        bytecode_ip = WAH_BYTECODE_BASE() + offset;
     }
     WAH_NEXT();
 }
 
 WAH_RUN(ELSE) { // This is an unconditional jump
     uint32_t offset = wah_decode_u32_le(&bytecode_ip);
-    bytecode_ip = bytecode_base + offset;
+    bytecode_ip = WAH_BYTECODE_BASE() + offset;
     WAH_NEXT();
 }
 
@@ -12810,7 +12850,7 @@ WAH_RUN(BR) {
     uint32_t keep = wah_decode_u32_le(&bytecode_ip);
     uint32_t drop = wah_decode_u32_le(&bytecode_ip);
     WAH_DROP_KEEP(keep, drop);
-    bytecode_ip = bytecode_base + offset;
+    bytecode_ip = WAH_BYTECODE_BASE() + offset;
     WAH_NEXT();
 }
 
@@ -12820,7 +12860,7 @@ WAH_RUN(BR_IF) {
     uint32_t drop = wah_decode_u32_le(&bytecode_ip);
     if ((*--sp).i32 != 0) {
         WAH_DROP_KEEP(keep, drop);
-        bytecode_ip = bytecode_base + offset;
+        bytecode_ip = WAH_BYTECODE_BASE() + offset;
     }
     WAH_NEXT();
 }
@@ -12836,7 +12876,7 @@ WAH_RUN(BR_TABLE) {
     uint32_t target_offset = wah_read_u32_le(record_ip);
     uint32_t drop = wah_read_u32_le(record_ip + sizeof(uint32_t));
     WAH_DROP_KEEP(keep, drop);
-    bytecode_ip = bytecode_base + target_offset;
+    bytecode_ip = WAH_BYTECODE_BASE() + target_offset;
     WAH_NEXT();
 }
 
@@ -12845,14 +12885,14 @@ WAH_RUN(BR_TABLE) {
 WAH_RUN(TRY_TABLE) {
     uint32_t catch_count_val = wah_decode_u32_le(&bytecode_ip);
     if (ctx->exception_handler_depth == ctx->exception_handlers_cap) {
-        WAH_CHECK_GOTO(wah_grow_exception_handlers(ctx), cleanup);
+        WAH_RUN_CHECK(wah_grow_exception_handlers(ctx));
     }
     wah_exception_handler_t *handler = &ctx->exception_handlers[ctx->exception_handler_depth++];
     handler->call_depth = ctx->call_depth;
     handler->sp_base = sp;
     handler->catch_table = bytecode_ip;
     handler->catch_count = catch_count_val;
-    handler->bytecode_base = bytecode_base;
+    handler->bytecode_base = WAH_BYTECODE_BASE();
     handler->handler_tag_instances = fctx->tag_instances;
     handler->handler_tag_instance_count = fctx->tag_instance_count;
     bytecode_ip += (size_t)catch_count_val * (1 + 3 * sizeof(uint32_t)); // catch_kind, tag_idx, offset, drop
@@ -12992,7 +13032,7 @@ WAH_RUN(BR_ON_NULL) {
     if (sp[-1].ref == NULL) {
         --sp;
         WAH_DROP_KEEP(keep, drop);
-        bytecode_ip = bytecode_base + offset;
+        bytecode_ip = WAH_BYTECODE_BASE() + offset;
     }
     WAH_NEXT();
 }
@@ -13003,7 +13043,7 @@ WAH_RUN(BR_ON_NON_NULL) {
     uint32_t drop = wah_decode_u32_le(&bytecode_ip);
     if (sp[-1].ref != NULL) {
         WAH_DROP_KEEP(keep, drop);
-        bytecode_ip = bytecode_base + offset;
+        bytecode_ip = WAH_BYTECODE_BASE() + offset;
     } else {
         --sp;
     }
@@ -13068,7 +13108,7 @@ WAH_RUN(BR_ON_CAST) {
     }
     if (matches) {
         WAH_DROP_KEEP(keep, drop);
-        bytecode_ip = bytecode_base + offset;
+        bytecode_ip = WAH_BYTECODE_BASE() + offset;
     }
     WAH_NEXT();
     WAH_CLEANUP();
@@ -13089,7 +13129,7 @@ WAH_RUN(BR_ON_CAST_FAIL) {
     }
     if (!matches) {
         WAH_DROP_KEEP(keep, drop);
-        bytecode_ip = bytecode_base + offset;
+        bytecode_ip = WAH_BYTECODE_BASE() + offset;
     }
     WAH_NEXT();
     WAH_CLEANUP();
@@ -13305,7 +13345,7 @@ WAH_RUN(ARRAY_NEW_ELEM) {
             ((void **)elems)[i] = wah_func_to_ref(fn);
         } else {
             wah_value_t ev;
-            WAH_CHECK_GOTO(wah_eval_elem_expr(fctx, ctx, seg, offset + i, &ev), cleanup);
+            WAH_RUN_CHECK(wah_eval_elem_expr(fctx, ctx, seg, offset + i, &ev));
             ((void **)elems)[i] = ev.ref;
         }
     }
@@ -13570,7 +13610,7 @@ WAH_RUN(GLOBAL_SET) {
     \
     uint64_t old_size; \
     bool grew; \
-    WAH_CHECK_GOTO(wah_table_grow_internal(ctx, fctx, table_idx, delta, init_val, &old_size, &grew), cleanup); \
+    WAH_RUN_CHECK(wah_table_grow_internal(ctx, fctx, table_idx, delta, init_val, &old_size, &grew)); \
     (*sp++).i##N = grew ? (int##N##_t)old_size : -1; \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
@@ -13700,7 +13740,7 @@ WAH_RUN(ELEM_DROP) {
         memset(result_vals, 0, sizeof(wah_value_t) * nresults); \
         frame->bytecode_ip = bytecode_ip; \
         ctx->sp = sp; \
-        WAH_CHECK_GOTO(wah_call_host_function_internal(ctx, (the_fn), param_vals, (uint32_t)nparams, result_vals), cleanup); \
+        WAH_RUN_CHECK(wah_call_host_function_internal(ctx, (the_fn), param_vals, (uint32_t)nparams, result_vals)); \
         if (nresults > 0) { \
             memmove(param_vals, result_vals, sizeof(wah_value_t) * nresults); \
         } \
@@ -13714,7 +13754,7 @@ WAH_RUN(ELEM_DROP) {
         wah_value_t *new_locals_ = sp - (func_type_)->param_count; \
         wah_value_t *preflight_top_ = new_locals_ + (func_type_)->param_count + called_code_->max_frame_slots; \
         frame->bytecode_ip = bytecode_ip; \
-        WAH_CHECK_GOTO(wah_push_frame(ctx, (fn_module_), (local_idx_), new_locals_, (func_type_)->result_count, (fn_ctx_), preflight_top_), cleanup); \
+        WAH_RUN_CHECK(wah_push_frame(ctx, (fn_module_), (local_idx_), new_locals_, (func_type_)->result_count, (fn_ctx_), preflight_top_)); \
         uint32_t num_locals_ = called_code_->local_count; \
         if (num_locals_ > 0) { \
             memset(sp, 0, sizeof(wah_value_t) * num_locals_); \
@@ -13866,9 +13906,9 @@ WAH_RUN(CALL_REF) {
             sp += tc_num_locals; \
             wah_locals_fuel_charge(ctx, tc_num_locals); \
         } \
-        WAH_CHECK_GOTO(wah_init_wasm_frame(ctx, frame, tc_module, tc_local_idx, tc_code, tc_locals_dst, (result_count_), tc_ctx), cleanup); \
+        WAH_RUN_CHECK(wah_init_wasm_frame(ctx, frame, tc_module, tc_local_idx, tc_code, tc_locals_dst, (result_count_), tc_ctx)); \
         bytecode_ip = frame->bytecode_ip; \
-        bytecode_base = frame->code->parsed_code.bytecode; \
+        WAH_RELOAD_BYTECODE_BASE(); \
         fctx = frame->frame_ctx; \
     } while (0)
 
@@ -14063,8 +14103,8 @@ WAH_RUN(END) { // End of function
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
     if (!(mem0)) { WAH_ASSERT(memidx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, \
-        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr), cleanup); \
+    WAH_RUN_CHECK(wah_check_effective_addr(addr, offset, N/8, \
+        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr)); \
     (*sp++).value_field = cast wah_read_##T##_le( \
         ((mem0) ? fctx->memory_base : fctx->memories[memidx].data) + effective_addr); \
     WAH_NEXT(); \
@@ -14079,8 +14119,8 @@ WAH_RUN(END) { // End of function
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
     if (!(mem0)) { WAH_ASSERT(memidx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, \
-        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr), cleanup); \
+    WAH_RUN_CHECK(wah_check_effective_addr(addr, offset, N/8, \
+        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr)); \
     wah_write_##T##_le( \
         ((mem0) ? fctx->memory_base : fctx->memories[memidx].data) + effective_addr, cast (val)); \
     WAH_NEXT(); \
@@ -14093,7 +14133,7 @@ WAH_RUN(END) { // End of function
 }
 #define CONVERT_CHECK(from_field, call, ty, cast, to_field) { \
     ty res; \
-    WAH_CHECK_GOTO(call(sp[-1].from_field, &res), cleanup); \
+    WAH_RUN_CHECK(call(sp[-1].from_field, &res)); \
     sp[-1].to_field = cast (res); \
     WAH_NEXT(); \
     WAH_CLEANUP(); \
@@ -14427,7 +14467,6 @@ WAH_RUN(SELECT) {
 }
 
 WAH_RUN(UNREACHABLE) {
-    (void)bytecode_base;
     (void)fctx;
     err = WAH_ERROR_TRAP;
     WAH_CLEANUP();
@@ -14512,8 +14551,8 @@ WAH_RUN(UNREACHABLE) {
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
     if (!(mem0)) { WAH_ASSERT(memidx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, (read_size), \
-        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr), cleanup); \
+    WAH_RUN_CHECK(wah_check_effective_addr(addr, offset, (read_size), \
+        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr)); \
     uint8_t *_mem_base = (mem0) ? fctx->memory_base : fctx->memories[memidx].data
 
 #define V128_LOAD_HALF_OP(mem0, addr_expr, N, elem_ty, cast) { \
@@ -14543,8 +14582,8 @@ WAH_RUN(UNREACHABLE) {
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
     if (!(mem0)) { WAH_ASSERT(memidx < fctx->memory_count && "validation didn't catch out-of-bound memory index"); } \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, \
-        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr), cleanup); \
+    WAH_RUN_CHECK(wah_check_effective_addr(addr, offset, N/8, \
+        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr)); \
     WAH_ASSERT(lane_idx < 128/N && "validation didn't catch out-of-bound lane index"); \
     val.u##N[lane_idx] = wah_read_u##N##_le( \
         ((mem0) ? fctx->memory_base : fctx->memories[memidx].data) + effective_addr); \
@@ -14640,8 +14679,8 @@ WAH_RUN(V128_LOAD64_LANE_i32_mem0) V128_LOAD_LANE_OP(1, WAH_SP_ADDR_I32, 64)
     uint64_t addr = (addr_expr); \
     uint64_t effective_addr; \
     if (!(mem0)) { WAH_ASSERT(memidx < fctx->memory_count); } \
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, N/8, \
-        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr), cleanup); \
+    WAH_RUN_CHECK(wah_check_effective_addr(addr, offset, N/8, \
+        (mem0) ? fctx->memory_size : fctx->memories[memidx].size, &effective_addr)); \
     WAH_ASSERT(lane_idx < 128/N); \
     wah_write_u##N##_le( \
         ((mem0) ? fctx->memory_base : fctx->memories[memidx].data) + effective_addr, val.u##N[lane_idx]); \
@@ -14666,7 +14705,7 @@ WAH_RUN(V128_STORE) {
     uint32_t addr = (uint32_t)(*--sp).i32;
     uint64_t effective_addr;
     WAH_ASSERT(memidx < fctx->memory_count && "validation didn't catch out-of-bound memory index");
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memories[memidx].size, &effective_addr), cleanup);
+    WAH_RUN_CHECK(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memories[memidx].size, &effective_addr));
     memcpy(fctx->memories[memidx].data + effective_addr, &val, sizeof(wah_v128_t));
     WAH_NEXT();
     WAH_CLEANUP();
@@ -14677,7 +14716,7 @@ WAH_RUN(V128_STORE_i32_mem0) {
     wah_v128_t val = (*--sp).v128;
     uint32_t addr = (uint32_t)(*--sp).i32;
     uint64_t effective_addr;
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memory_size, &effective_addr), cleanup);
+    WAH_RUN_CHECK(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memory_size, &effective_addr));
     memcpy(fctx->memory_base + effective_addr, &val, sizeof(wah_v128_t));
     WAH_NEXT();
     WAH_CLEANUP();
@@ -14781,7 +14820,7 @@ WAH_RUN(V128_STORE_i64) {
     uint64_t addr = (uint64_t)(*--sp).i64;
     uint64_t effective_addr;
     WAH_ASSERT(memidx < fctx->memory_count && "validation didn't catch out-of-bound memory index");
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memories[memidx].size, &effective_addr), cleanup);
+    WAH_RUN_CHECK(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memories[memidx].size, &effective_addr));
     memcpy(fctx->memories[memidx].data + effective_addr, &val, sizeof(wah_v128_t));
     WAH_NEXT();
     WAH_CLEANUP();
@@ -14792,7 +14831,7 @@ WAH_RUN(V128_STORE_i64_mem0) {
     wah_v128_t val = (*--sp).v128;
     uint64_t addr = (uint64_t)(*--sp).i64;
     uint64_t effective_addr;
-    WAH_CHECK_GOTO(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memory_size, &effective_addr), cleanup);
+    WAH_RUN_CHECK(wah_check_effective_addr(addr, offset, sizeof(wah_v128_t), fctx->memory_size, &effective_addr));
     memcpy(fctx->memory_base + effective_addr, &val, sizeof(wah_v128_t));
     WAH_NEXT();
     WAH_CLEANUP();
@@ -15849,35 +15888,17 @@ WAH_SIMD_OPCODES(WAH_SIMD_NEVER_RUN)
 
 #ifdef WAH_USE_MUSTTAIL
 
-static WAH_MUSTTAIL_CC wah_error_t wah_run_single(wah_exec_context_t *ctx, wah_call_frame_t *frame,
-                                                  const uint8_t *bytecode_ip, const uint8_t *bytecode_base,
-                                                  wah_value_t *sp, wah_exec_context_t *fctx, wah_error_t err) {
-    uint16_t opcode = wah_decode_u16_le(&bytecode_ip);
-
-    switch (opcode) {
-        #define WAH_OPCODE_CASES(opcode, ...) \
-            case WAH_OP_##opcode: __attribute__((musttail)) return wah_run_##opcode(ctx, frame, bytecode_ip, bytecode_base, sp, fctx, err);
-        #define WAH_EXTRA_OPCODE_CASES(opcode, suffix) WAH_OPCODE_CASES(opcode##_##suffix)
-        WAH_OPCODES(WAH_OPCODE_CASES)
-        WAH_INTERNAL_OPCODES(WAH_OPCODE_CASES)
-        WAH_EXTRA_OPCODES(WAH_EXTRA_OPCODE_CASES)
-        #undef WAH_OPCODE_CASES
-        #undef WAH_EXTRA_OPCODE_CASES
-        #undef WAH_INTERNAL_OPCODE_CASES
-    default:
-        WAH_UNREACHABLE();
-    }
-}
+#undef err
 
 static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
     // These are pointers to the current frame's state for faster access.
     wah_call_frame_t *frame = ctx->frame_ptr;
     const uint8_t *bytecode_ip = frame->bytecode_ip;
-    const uint8_t *bytecode_base = frame->code->parsed_code.bytecode;
     wah_value_t *sp = ctx->sp;
     wah_exec_context_t *fctx = frame->frame_ctx;   // Module-local context for table/memory access
 
-    return wah_run_single(ctx, frame, bytecode_ip, bytecode_base, sp, fctx, WAH_OK);
+    WAH_ASSERT(ctx->run_err == WAH_OK);
+    return wah_run_table[wah_read_u16_le(bytecode_ip)](ctx, frame, bytecode_ip + sizeof(uint16_t), sp, fctx);
 }
 
 #else
