@@ -552,14 +552,14 @@ enum {
 #define WAH_JR_FP 20
 #define WAH_JR_MEM 21
 #define WAH_JR_MEMSZ 22
-#define WAH_JR_LIMIT 23
-#define WAH_JR_GLOBALS 24
-#define WAH_JR_FPCR_HOST 25
-#define WAH_JR_FPCR_JIT 26
 #define WAH_JR_T0 16
 #define WAH_JR_T1 17
 #define WAH_JR_VT0 30
 #define WAH_JR_VT1 31
+
+// The trampoline frame at sp, which has to be 16-byte aligned
+typedef struct { uint64_t x29, x30, x19[10], d8[8], fpcr_host, pad; } wah_a64_frame_t;
+#define WAH_A64_FRAME_OFF(field) ((uint32_t)offsetof(wah_a64_frame_t, field))
 
 #define WAH_JC_EQ WAH_A64_EQ
 #define WAH_JC_NE WAH_A64_NE
@@ -714,6 +714,9 @@ static void wah_a64_ldst(wah_jit_fn_t *f, uint32_t op, int rt, int rn, uint64_t 
     uint32_t sz = WAH_A64_LDST_SIZE(op);
     if ((off & ((1u << sz) - 1)) == 0 && (off >> sz) < 4096) {
         wah_a64(f, op | (uint32_t)(off >> sz) << 10 | (uint32_t)rn << 5 | (uint32_t)rt);
+    } else if (rn == WAH_JR_T1) { // Such as globals, using x16 for offsets over 24 bits
+        wah_a64_add_imm(f, WAH_JR_T1, WAH_JR_T1, off);
+        wah_a64(f, op | (uint32_t)WAH_JR_T1 << 5 | (uint32_t)rt);
     } else {
         wah_a64_mov_imm(f, true, WAH_JR_T1, off);
         wah_a64_rrr(f, WAH_A64_ADD, true, WAH_JR_T1, rn, WAH_JR_T1);
@@ -775,12 +778,19 @@ static void wah_a64_call_abs(wah_jit_fn_t *f, uintptr_t fn) {
     wah_a64(f, 0xD63F0000u | (uint32_t)WAH_JR_T0 << 5); // BLR x16
 }
 
+// Sets FPCR for the JIT, using x16. Default NaN mode makes every NaN result canonical, and everything else stays at
+// the IEEE defaults.
+static void wah_a64_set_fpcr(wah_jit_fn_t *f) {
+    wah_a64_movw(f, WAH_A64_MOVZ, true, WAH_JR_T0, 0x200, 1);
+    wah_a64(f, 0xD51B4400u | WAH_JR_T0); // MSR FPCR, x16
+}
+
 // Primitives used by the shared code ///////////////////////////////////////////
 
-// Registers for pinned locals, in the order of preference
-static const uint8_t wah_jit_pin_gprs[] = { 28, 27, 15, 14, 13, 12, 11, 10, 9 };
+// Registers for pinned locals, in the order of preference. The operand stack cache keeps at least x0-x5.
+static const uint8_t wah_jit_pin_gprs[] = { 28, 27, 26, 25, 24, 23, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6 };
 static const uint8_t wah_jit_pin_fprs[] = { 15, 14, 13, 12, 11, 10, 9, 8 };
-#define WAH_JIT_PIN_GPR_COUNT 9
+#define WAH_JIT_PIN_GPR_COUNT 16
 #define WAH_JIT_PIN_FPR_COUNT 8
 
 // x0-x15 and v0-v29 are allocatable unless pinned
@@ -1974,8 +1984,10 @@ static void wah_jit_zero_loop(wah_jit_fn_t *f, uint32_t off, uint32_t n) {
 //
 // - x19: exec context, x20: frame base
 // - x21/x22: base and size of memory 0, reloaded after anything that may grow memories
-// - x23: limit of the value stack, x24: globals, x25/x26: FPCR of the host and the JIT
-// - x0-x15, v0-v7 and v16-v29: operand stack cache, x16/x17 and v30/v31: scratch
+// - x28-x23, x15-x6 and v15-v8: pinned locals in this order, otherwise the operand stack cache (if below x16)
+// - x0-x5, v0-v7 and v16-v29: operand stack cache, x16/x17 and v30/v31: scratch
+//
+// sp stays at the trampoline frame, which also keeps the FPCR of the host.
 //
 // Wasm calls are BL, whose callees save x30 into their link slots. FPCR is set to the default NaN mode,
 // which makes every NaN result canonical.
@@ -2066,13 +2078,19 @@ static void wah_jit_call_helper(wah_jit_fn_t *f, uintptr_t fn, const wah_jit_arg
             case WAH_JA_SLOT_U32: wah_a64_ldst(f, WAH_A64_LDRW, r, WAH_JR_FP, wah_jit_slot_off(f, args[i].v)); break;
         }
     }
-    if (host) wah_a64(f, 0xD51B4400u | WAH_JR_FPCR_HOST); // MSR FPCR
+    if (host) {
+        wah_a64_ldst(f, WAH_A64_LDRX, WAH_JR_T1, WAH_A64_SP, WAH_A64_FRAME_OFF(fpcr_host));
+        wah_a64(f, 0xD51B4400u | WAH_JR_T1); // MSR FPCR, x17
+    }
     wah_a64_call_abs(f, fn);
-    if (host) wah_a64(f, 0xD51B4400u | WAH_JR_FPCR_JIT);
+    if (host) wah_a64_set_fpcr(f);
 }
 
 // Returns a register holding the address of globals.
-static int wah_jit_globals(wah_jit_fn_t *f) { (void)f; return WAH_JR_GLOBALS; }
+static int wah_jit_globals(wah_jit_fn_t *f) {
+    wah_a64_ldst(f, WAH_A64_LDRX, WAH_JR_T1, WAH_JR_CTX, WAH_JIT_CTX_OFF(globals));
+    return WAH_JR_T1;
+}
 
 static void wah_jit_memory_size(wah_jit_fn_t *f, uint32_t mem_idx) {
     int d = wah_jit_alloc(f, false);
@@ -2426,7 +2444,8 @@ static void wah_jit_emit_stub(wah_jit_fn_t *f, const wah_jit_stub_t *s) {
 // Checks the stack and saves the return address. Declared locals are zeroed by the caller.
 static void wah_jit_prologue(wah_jit_fn_t *f) {
     wah_a64_add_imm(f, WAH_JR_T1, WAH_JR_FP, f->frame_bytes);
-    wah_a64_rrr(f, WAH_A64_SUBS, true, WAH_A64_ZR, WAH_JR_T1, WAH_JR_LIMIT);
+    wah_a64_ldst(f, WAH_A64_LDRX, WAH_JR_T0, WAH_JR_CTX, WAH_JIT_CTX_OFF(frame_ptr)); // The limit
+    wah_a64_rrr(f, WAH_A64_SUBS, true, WAH_A64_ZR, WAH_JR_T1, WAH_JR_T0);
     wah_jit_bcond(f, WAH_A64_HI, f->l_stack);
     wah_a64_ldst(f, WAH_A64_STRX, 30, WAH_JR_FP, f->link_off);
 }
@@ -3117,13 +3136,27 @@ static void wah_jit_compile_body(wah_jit_fn_t *f, uint32_t local_idx, const wah_
     // Prologue: check the stack, save the return address, zero declared locals and poll
     jm->func_pos[local_idx] = wah_jit_pos(f);
     wah_jit_prologue(f);
-    uint32_t first = f->ft->param_count, nzero = body->local_count;
+    // Pinned declared locals are zeroed in registers only, as their slots are not read until stored
+    uint32_t first = f->ft->param_count, nzero = 0;
+    for (uint32_t i = first; i < f->nlocals; i++) nzero += !f->pin_of || f->pin_of[i] < 0;
     if (nzero <= 8) {
-        for (uint32_t i = 0; i < nzero; i++) wah_jit_store_imm(f, WAH_JR_FP, (uint64_t)(first + i) * sizeof(wah_value_t), 0);
+        for (uint32_t i = first; i < f->nlocals; i++) {
+            if (!f->pin_of || f->pin_of[i] < 0) wah_jit_store_imm(f, WAH_JR_FP, (uint64_t)i * sizeof(wah_value_t), 0);
+        }
     } else {
-        wah_jit_zero_loop(f, first * (uint32_t)sizeof(wah_value_t), nzero);
+        wah_jit_zero_loop(f, first * (uint32_t)sizeof(wah_value_t), body->local_count);
     }
-    wah_jit_sync_pins(f, false);
+    for (uint32_t i = 0; i < f->npins; i++) {
+        const wah_jit_pin_t *p = &f->pins[i];
+        if (p->idx < first) {
+            wah_jit_ldst(f, false, p->fp, true, p->reg, WAH_JR_FP, p->idx * (uint32_t)sizeof(wah_value_t));
+        } else if (p->fp) {
+            wah_jit_mov_imm(f, WAH_JR_T0, 0);
+            wah_jit_gpr_to_fpr(f, p->reg, WAH_JR_T0);
+        } else {
+            wah_jit_mov_imm(f, p->reg, 0);
+        }
+    }
     wah_jit_poll_check(f);
 
     for (uint32_t i = 0; i < ac->instr_count && !f->fail; i++) {
@@ -3253,38 +3286,42 @@ static void wah_jit_trampoline(wah_jit_fn_t *f) {
 
 // Generates the trampoline: wah_error_t entry(ctx, code, resume_pc, fp) calls code or jumps to resume_pc.
 static void wah_jit_trampoline(wah_jit_fn_t *f) {
-    wah_a64(f, 0xA9800000u | (uint32_t)(-20 & 0x7f) << 15 | 30u << 10 | WAH_A64_SP << 5 | 29u); // STP x29, x30, [sp, #-160]!
+    wah_a64(f, 0xA9800000u | (uint32_t)(-(int)sizeof(wah_a64_frame_t) / 8 & 0x7f) << 15 | 30u << 10 |
+               WAH_A64_SP << 5 | 29u); // STP x29, x30, [sp, #-size]!
     wah_a64_addsub_imm(f, WAH_A64_ADDI, true, 29, WAH_A64_SP, 0, false);
-    for (int i = 0; i < 5; i++) { // STP x19+2i, x20+2i, [sp, #16+16i]
-        wah_a64(f, 0xA9000000u | (uint32_t)(2 + 2 * i) << 15 | (uint32_t)(20 + 2 * i) << 10 | WAH_A64_SP << 5 | (uint32_t)(19 + 2 * i));
+    for (int i = 0; i < 5; i++) { // STP x19+2i, x20+2i, [sp, #x19+16i]
+        wah_a64(f, 0xA9000000u | (WAH_A64_FRAME_OFF(x19) / 8 + 2 * i) << 15 |
+                   (uint32_t)(20 + 2 * i) << 10 | WAH_A64_SP << 5 | (uint32_t)(19 + 2 * i));
     }
-    for (int i = 0; i < 4; i++) { // STP d8+2i, d9+2i, [sp, #96+16i]
-        wah_a64(f, 0x6D000000u | (uint32_t)(12 + 2 * i) << 15 | (uint32_t)(9 + 2 * i) << 10 | WAH_A64_SP << 5 | (uint32_t)(8 + 2 * i));
+    for (int i = 0; i < 4; i++) { // STP d8+2i, d9+2i, [sp, #d8+16i]
+        wah_a64(f, 0x6D000000u | (WAH_A64_FRAME_OFF(d8) / 8 + 2 * i) << 15 |
+                   (uint32_t)(9 + 2 * i) << 10 | WAH_A64_SP << 5 | (uint32_t)(8 + 2 * i));
     }
     wah_a64_mov(f, true, WAH_JR_CTX, 0);
     wah_a64_mov(f, true, WAH_JR_FP, 3);
-    wah_a64(f, 0xD53B4400u | WAH_JR_FPCR_HOST); // MRS x25, FPCR
-    // Default NaN mode makes every NaN result canonical, and everything else stays at the IEEE defaults
-    wah_a64_movw(f, WAH_A64_MOVZ, true, WAH_JR_FPCR_JIT, 0x200, 1);
-    wah_a64(f, 0xD51B4400u | WAH_JR_FPCR_JIT);
+    wah_a64(f, 0xD53B4400u | WAH_JR_T0); // MRS x16, FPCR
+    wah_a64_ldst(f, WAH_A64_STRX, WAH_JR_T0, WAH_A64_SP, WAH_A64_FRAME_OFF(fpcr_host));
+    wah_a64_set_fpcr(f);
     wah_a64_ldst(f, WAH_A64_LDRX, WAH_JR_MEM, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_base));
     wah_a64_ldst(f, WAH_A64_LDRX, WAH_JR_MEMSZ, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_size));
-    wah_a64_ldst(f, WAH_A64_LDRX, WAH_JR_LIMIT, WAH_JR_CTX, WAH_JIT_CTX_OFF(frame_ptr));
-    wah_a64_ldst(f, WAH_A64_LDRX, WAH_JR_GLOBALS, WAH_JR_CTX, WAH_JIT_CTX_OFF(globals));
     wah_a64(f, 0xB5000000u | 4u << 5 | 2u); // CBNZ x2, BR x2 below
     wah_a64(f, 0xD63F0000u | 1u << 5);      // BLR x1, returning here
     wah_a64_movw(f, WAH_A64_MOVZ, false, 0, 0, 0);
     wah_a64(f, 0x14000002u);                // B exit
     wah_a64(f, 0xD61F0000u | 2u << 5);      // BR x2
     f->jm->exit_pos = wah_jit_pos(f);
-    wah_a64(f, 0xD51B4400u | WAH_JR_FPCR_HOST);
+    wah_a64_ldst(f, WAH_A64_LDRX, WAH_JR_T0, WAH_A64_SP, WAH_A64_FRAME_OFF(fpcr_host));
+    wah_a64(f, 0xD51B4400u | WAH_JR_T0); // MSR FPCR, x16
     for (int i = 3; i >= 0; i--) { // LDP
-        wah_a64(f, 0x6D400000u | (uint32_t)(12 + 2 * i) << 15 | (uint32_t)(9 + 2 * i) << 10 | WAH_A64_SP << 5 | (uint32_t)(8 + 2 * i));
+        wah_a64(f, 0x6D400000u | (WAH_A64_FRAME_OFF(d8) / 8 + 2 * i) << 15 |
+                   (uint32_t)(9 + 2 * i) << 10 | WAH_A64_SP << 5 | (uint32_t)(8 + 2 * i));
     }
     for (int i = 4; i >= 0; i--) {
-        wah_a64(f, 0xA9400000u | (uint32_t)(2 + 2 * i) << 15 | (uint32_t)(20 + 2 * i) << 10 | WAH_A64_SP << 5 | (uint32_t)(19 + 2 * i));
+        wah_a64(f, 0xA9400000u | (WAH_A64_FRAME_OFF(x19) / 8 + 2 * i) << 15 |
+                   (uint32_t)(20 + 2 * i) << 10 | WAH_A64_SP << 5 | (uint32_t)(19 + 2 * i));
     }
-    wah_a64(f, 0xA8C00000u | 20u << 15 | 30u << 10 | WAH_A64_SP << 5 | 29u); // LDP x29, x30, [sp], #160
+    wah_a64(f, 0xA8C00000u | (uint32_t)(sizeof(wah_a64_frame_t) / 8) << 15 | 30u << 10 |
+               WAH_A64_SP << 5 | 29u); // LDP x29, x30, [sp], #size
     wah_a64(f, 0xD65F03C0u);
 }
 
