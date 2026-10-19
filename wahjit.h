@@ -161,6 +161,8 @@ typedef struct {
     const wah_module_t *module;
     const wah_func_type_t *ft;
     uint32_t nlocals, max_stack, frame_bytes, link_off;
+    const wah_decoded_instr_t *instrs; // Instructions of the function, and the index of the one being compiled
+    uint32_t ninstrs, instr_idx;
     int8_t *pin_of;          // Register of each local if pinned, plus WAH_JIT_PIN_FP for FPRs, -1 otherwise
     wah_jit_pin_t pins[WAH_JIT_MAX_PINS];
     uint32_t npins, gpr_pins, fpr_pins; // Masks of pinned registers
@@ -168,6 +170,7 @@ typedef struct {
     wah_jit_val_t *vals;
     uint32_t h;
     int32_t gpr[32], fpr[32];
+    int32_t gpr_local[32], fpr_local[32]; // Unpinned local whose value a free register still holds, -1 if none
 
     wah_jit_ctl_t *ctl;
     uint32_t nctl, ctl_cap;
@@ -961,21 +964,38 @@ static void wah_jit_flush(wah_jit_fn_t *f) {
 // Forgets register contents, as at a merge point where everything is in slots.
 static void wah_jit_reset(wah_jit_fn_t *f, uint32_t h) {
     wah_jit_init_regs(f);
+    for (int r = 0; r < 32; r++) f->gpr_local[r] = f->fpr_local[r] = -1;
     for (uint32_t i = 0; i < h; i++) f->vals[i] = (wah_jit_val_t){ .kind = WAH_JV_SLOT };
     f->h = h;
 }
 
+// Returns a free register, preferring those not holding values of locals, or -1 if none.
+static int wah_jit_free_reg(wah_jit_fn_t *f, bool fp) {
+    const int32_t *owner = fp ? f->fpr : f->gpr, *local = fp ? f->fpr_local : f->gpr_local;
+    int any = -1;
+    for (int r = 31; r >= 0; r--) {
+        if (owner[r] != WAH_JO_FREE) continue;
+        if (local[r] < 0) return r;
+        if (any < 0) any = r;
+    }
+    return any;
+}
+
 // Returns a register reserved as WAH_JO_TEMP, spilling the deepest cached value if needed.
-// Registers are tried from the highest, which on x86-64 avoids those with special uses.
+// Registers are tried from the highest, which on x86-64 avoids those with special uses,
+// and those holding values of locals are taken last.
 static int wah_jit_alloc(wah_jit_fn_t *f, bool fp) {
     int32_t *owner = fp ? f->fpr : f->gpr;
-    for (int r = 31; r >= 0; r--) {
-        if (owner[r] == WAH_JO_FREE) { owner[r] = WAH_JO_TEMP; return r; }
+    int r = wah_jit_free_reg(f, fp);
+    if (r >= 0) {
+        owner[r] = WAH_JO_TEMP;
+        (fp ? f->fpr_local : f->gpr_local)[r] = -1;
+        return r;
     }
     for (uint32_t i = 0; i < f->h; i++) {
         wah_jit_val_t *v = &f->vals[i];
         if (v->kind == (fp ? WAH_JV_FPR : WAH_JV_GPR)) {
-            int r = v->reg;
+            r = v->reg;
             wah_jit_spill(f, i);
             owner[r] = WAH_JO_TEMP;
             return r;
@@ -1313,6 +1333,7 @@ static void wah_x64_fconst(wah_jit_fn_t *f, int type, int x, double v) {
 // Frees register r for the instruction being compiled, moving its value elsewhere.
 static void wah_x64_take_gpr(wah_jit_fn_t *f, int r) {
     int32_t i = f->gpr[r];
+    f->gpr_local[r] = -1;
     if (i >= 0) {
         int n = -1;
         for (int k = 31; k >= 0 && n < 0; k--) if (f->gpr[k] == WAH_JO_FREE) n = k;
@@ -1320,6 +1341,7 @@ static void wah_x64_take_gpr(wah_jit_fn_t *f, int r) {
             wah_x64_mov(f, true, n, r);
             f->vals[i].reg = (uint8_t)n;
             f->gpr[n] = i;
+            f->gpr_local[n] = -1;
         } else {
             wah_jit_spill(f, (uint32_t)i);
         }
@@ -2604,6 +2626,22 @@ static void wah_jit_end(wah_jit_fn_t *f) {
     }
 }
 
+// Whether local idx is read by one of the next few instructions before being set, without control flow in between.
+static bool wah_jit_read_soon(const wah_jit_fn_t *f, uint32_t idx) {
+    for (uint32_t j = f->instr_idx + 1; j < f->ninstrs && j <= f->instr_idx + 32; j++) {
+        const wah_decoded_instr_t *in = &f->instrs[j];
+        switch (in->opcode) {
+            case WAH_OP_LOCAL_GET: if (in->imm.u32 == idx) return true; break;
+            case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE: if (in->imm.u32 == idx) return false; break;
+            case WAH_OP_BLOCK: case WAH_OP_LOOP: case WAH_OP_IF: case WAH_OP_ELSE: case WAH_OP_END:
+            case WAH_OP_BR: case WAH_OP_BR_IF: case WAH_OP_BR_TABLE: case WAH_OP_RETURN: case WAH_OP_UNREACHABLE:
+            case WAH_OP_CALL: case WAH_OP_CALL_INDIRECT: return false;
+            default: break;
+        }
+    }
+    return false;
+}
+
 static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wah_decoded_instr_t *in,
                           const wah_decoded_instr_t *next) {
     uint16_t op = in->opcode;
@@ -2732,8 +2770,13 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
                 break;
             }
             bool fp = wah_jit_is_fp_type(wah_jit_local_type(f, body, idx));
-            int r = wah_jit_alloc(f, fp);
-            wah_jit_ldst(f, false, fp, true, r, WAH_JR_FP, idx * (uint32_t)sizeof(wah_value_t));
+            const int32_t *local = fp ? f->fpr_local : f->gpr_local;
+            int c = 31;
+            while (c >= 0 && local[c] != (int32_t)idx) c--;
+            int r = wah_jit_alloc(f, fp); // c if it is the only free register, still holding the value
+            if (c < 0) wah_jit_ldst(f, false, fp, true, r, WAH_JR_FP, idx * (uint32_t)sizeof(wah_value_t));
+            else if (r != c && fp) wah_jit_fmov(f, r, c);
+            else if (r != c) wah_jit_mov64(f, r, c);
             if (fp) wah_jit_push_fpr(f, r);
             else wah_jit_push_gpr(f, r);
             break;
@@ -2750,12 +2793,31 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
                 }
                 break;
             }
+            bool fp = wah_jit_is_fp_type(wah_jit_local_type(f, body, idx));
+            for (int r = 0; r < 32; r++) { // Registers holding the old value
+                if (f->gpr_local[r] == (int32_t)idx) f->gpr_local[r] = -1;
+                if (f->fpr_local[r] == (int32_t)idx) f->fpr_local[r] = -1;
+            }
             if (op == WAH_OP_LOCAL_TEE && f->vals[f->h - 1].kind == WAH_JV_SLOT) {
-                if (wah_jit_is_fp_type(wah_jit_local_type(f, body, in->imm.u32))) wah_jit_to_fpr(f, f->h - 1);
+                if (fp) wah_jit_to_fpr(f, f->h - 1);
                 else wah_jit_to_gpr(f, f->h - 1);
             }
             wah_jit_copy_val(f, f->h - 1, off);
-            if (op == WAH_OP_LOCAL_SET) wah_jit_drop(f);
+            const wah_jit_val_t *v = &f->vals[f->h - 1];
+            int32_t *local = fp ? f->fpr_local : f->gpr_local;
+            if (v->kind != (fp ? WAH_JV_FPR : WAH_JV_GPR)) {
+                if (op == WAH_OP_LOCAL_SET) wah_jit_drop(f);
+            } else if (op == WAH_OP_LOCAL_SET) { // The freed register keeps the value until reused
+                local[v->reg] = (int32_t)idx;
+                wah_jit_drop(f);
+            } else if (wah_jit_read_soon(f, idx)) { // Copied to a free register, as the value on the stack may change
+                int c = wah_jit_free_reg(f, fp);
+                if (c >= 0) {
+                    if (fp) wah_jit_fmov(f, c, v->reg);
+                    else wah_jit_mov64(f, c, v->reg);
+                    local[c] = (int32_t)idx;
+                }
+            }
             break;
         }
         case WAH_OP_GLOBAL_GET: case WAH_OP_GLOBAL_SET: {
@@ -3124,6 +3186,8 @@ static void wah_jit_compile_body(wah_jit_fn_t *f, uint32_t local_idx, const wah_
         }
         f->vals = (wah_jit_val_t *)p;
     }
+    f->instrs = ac->instrs;
+    f->ninstrs = ac->instr_count;
     wah_jit_choose_pins(f, body, ac);
     wah_jit_reset(f, 0);
     f->l_trap = wah_jit_new_label(f);
@@ -3160,6 +3224,7 @@ static void wah_jit_compile_body(wah_jit_fn_t *f, uint32_t local_idx, const wah_
     wah_jit_poll_check(f);
 
     for (uint32_t i = 0; i < ac->instr_count && !f->fail; i++) {
+        f->instr_idx = i;
         wah_jit_instr(f, body, &ac->instrs[i], i + 1 < ac->instr_count ? &ac->instrs[i + 1] : NULL);
     }
     if (!f->dead || f->nctl != 0) WAH_JIT_FAIL(f, "unbalanced control"); // The function-level END should have been compiled

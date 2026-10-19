@@ -446,6 +446,43 @@ static void test_pinned_locals(void) {
     wah_free_module(&env);
 }
 
+// Unpinned locals whose values are reused from registers after local.set and local.tee
+static void test_local_cache(void) {
+    printf("Testing values of locals kept in registers...\n");
+    // Locals 1-20 are pinned by a loop, so that 21-25 and 26-28 (f64) stay in slots
+    char spec[8192];
+    size_t cap = sizeof(spec);
+    int n = snprintf(spec, cap, "wasm types {[ fn [i32] [i32], fn [i32] [i64] ]} funcs {[ 0, 1 ]} code {[ \
+        {[] local.get 0 i32.const 7 i32.mul end}, {[25 i32, 3 f64] \
+        local.get 0 i32.const 3 i32.and local.set 1 block void loop void");
+    for (int k = 2; k <= 20; k++) {
+        n += snprintf(spec + n, cap - (size_t)n, " local.get %d local.get %d i32.add i32.const %d i32.xor local.set %d",
+                      k, k - 1, k, k);
+    }
+    n += snprintf(spec + n, cap - (size_t)n, " local.get 1 i32.const 1 i32.add local.tee 1 i32.const 9 i32.lt_u br_if 0 end end \
+        local.get 0 i32.const 3 i32.mul local.tee 21 i32.const 1 i32.add local.set 22 \
+        local.get 21 local.get 22 i32.add local.set 23 \
+        local.get 23 local.get 0 local.set 23 local.get 23 i32.sub local.set 24 \
+        local.get 0 i32.const 5 i32.add local.set 25 local.get 0 i32.const 6 i32.add local.set 25 \
+        local.get 0 i32.const 9 i32.add local.set 22 i32.const 77 local.set 22 local.get 22 local.get 23 i32.add local.set 23 \
+        local.get 0 i32.const 4 i32.add local.set 22 local.get 2 local.set 22 local.get 22 local.get 23 i32.add local.set 23");
+    for (int k = 1; k <= 8; k++) n += snprintf(spec + n, cap - (size_t)n, " local.get 0 i32.const %d i32.mul", k * 11);
+    for (int k = 1; k < 8; k++) n += snprintf(spec + n, cap - (size_t)n, " i32.add");
+    n += snprintf(spec + n, cap - (size_t)n, " local.get 25 i32.add local.get 24 i32.add local.set 24 \
+        local.get 0 f64.convert_i32_s f64.const 1.5f64 f64.add local.tee 26 f64.sqrt local.set 27 \
+        local.get 26 local.get 27 f64.mul local.tee 28 local.get 26 local.set 28 local.get 28 f64.sub local.set 26 \
+        local.get 21 call 0 local.set 22 local.get 21 local.get 22 i32.add local.set 21 \
+        local.get 21 i64.extend_i32_u i64.const 32 i64.shl local.get 24 i64.extend_i32_u i64.or \
+        local.get 23 local.get 25 i32.add i64.extend_i32_s i64.add \
+        local.get 26 i64.trunc_sat_f64_s i64.add local.get 27 i64.trunc_sat_f64_s i64.add");
+    for (int k = 1; k <= 20; k++) n += snprintf(spec + n, cap - (size_t)n, " local.get %d i64.extend_i32_u i64.add", k);
+    snprintf(spec + n, cap - (size_t)n, " end} ]}");
+    for (size_t i = 0; i < COUNT(I32_SAMPLES); i++) {
+        wah_value_t p = { .i32 = I32_SAMPLES[i] };
+        check_call(spec, NULL, 1, &p, 1, 1);
+    }
+}
+
 static void test_fallback(void) {
     printf("Testing interpreter fallback...\n");
     // Modules using reference types are interpreted
@@ -469,6 +506,7 @@ int main(void) {
     test_calls();
     test_suspend();
     test_pinned_locals();
+    test_local_cache();
     test_fallback();
     printf("All JIT tests passed.\n");
     return 0;
