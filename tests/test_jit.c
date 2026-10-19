@@ -76,18 +76,13 @@ static void check_i32(const char *spec, uint32_t func_idx, int32_t arg) {
     check_call(spec, NULL, func_idx, &p, 1, 1);
 }
 
-static void check_i64(const char *spec, uint32_t func_idx, int64_t a0, int64_t a1) {
-    wah_value_t p[2] = { { .i64 = a0 }, { .i64 = a1 } };
-    check_call(spec, NULL, func_idx, p, 2, 1);
-}
-
 static const int32_t I32_SAMPLES[] = { 0, 1, -1, 2, 7, 31, 32, 33, 100, -100, 0x7fffffff, (int32_t)0x80000000, 12345678 };
 static const int64_t I64_SAMPLES[] = { 0, 1, -1, 3, 63, 64, 65, 1000, -1000, INT64_MAX, INT64_MIN, 0x123456789abcdefLL };
 #define COUNT(a) (sizeof(a) / sizeof(*(a)))
 
 static void test_integer_ops(void) {
     printf("Testing integer operations...\n");
-    // Binary operations with both a register and constant operand
+    // Binary operations with both a register and constant operand, also returning operands to check they are kept
     static const char *ops32[] = {
         "i32.add", "i32.sub", "i32.mul", "i32.div_s", "i32.div_u", "i32.rem_s", "i32.rem_u", "i32.and", "i32.or",
         "i32.xor", "i32.shl", "i32.shr_s", "i32.shr_u", "i32.rotl", "i32.rotr", "i32.eq", "i32.ne", "i32.lt_s",
@@ -102,29 +97,30 @@ static void test_integer_ops(void) {
     };
     char spec[1024];
     for (size_t k = 0; k < COUNT(ops32); k++) {
-        snprintf(spec, sizeof(spec), "wasm types {[ fn [i32, i32] [i32], fn [i32] [i32] ]} funcs {[ 0, 1, 1, 1 ]} code {[ "
-                 "{[] local.get 0 local.get 1 %s end}, {[] local.get 0 i32.const 5 %s end}, "
-                 "{[] local.get 0 i32.const -1 %s end}, {[] local.get 0 i32.const 4096 %s end} ]}",
+        snprintf(spec, sizeof(spec), "wasm types {[ fn [i32, i32] [i32, i32, i32], fn [i32] [i32, i32] ]} funcs {[ 0, 1, 1, 1 ]} code {[ "
+                 "{[] local.get 0 local.get 1 %s local.get 0 local.get 1 end}, {[] local.get 0 i32.const 5 %s local.get 0 end}, "
+                 "{[] local.get 0 i32.const -1 %s local.get 0 end}, {[] local.get 0 i32.const 4096 %s local.get 0 end} ]}",
                  ops32[k], ops32[k], ops32[k], ops32[k]);
         for (size_t i = 0; i < COUNT(I32_SAMPLES); i++) {
             for (size_t j = 0; j < COUNT(I32_SAMPLES); j++) {
                 wah_value_t p[2] = { { .i32 = I32_SAMPLES[i] }, { .i32 = I32_SAMPLES[j] } };
-                check_call(spec, NULL, 0, p, 2, 1);
+                check_call(spec, NULL, 0, p, 2, 3);
             }
-            for (uint32_t fn = 1; fn <= 3; fn++) check_i32(spec, fn, I32_SAMPLES[i]);
+            for (uint32_t fn = 1; fn <= 3; fn++) check_call(spec, NULL, fn, (wah_value_t[]){ { .i32 = I32_SAMPLES[i] } }, 1, 2);
         }
     }
     for (size_t k = 0; k < COUNT(ops64) + COUNT(cmp64); k++) {
         bool cmp = k >= COUNT(ops64);
         const char *op = cmp ? cmp64[k - COUNT(ops64)] : ops64[k];
         const char *rt = cmp ? "i32" : "i64";
-        snprintf(spec, sizeof(spec), "wasm types {[ fn [i64, i64] [%s] ]} funcs {[ 0, 0 ]} code {[ "
-                 "{[] local.get 0 local.get 1 %s end}, {[] local.get 0 i64.const 3 %s end} ]}", rt, op, op);
+        snprintf(spec, sizeof(spec), "wasm types {[ fn [i64, i64] [%s, i64, i64] ]} funcs {[ 0, 0 ]} code {[ "
+                 "{[] local.get 0 local.get 1 %s local.get 0 local.get 1 end}, "
+                 "{[] local.get 0 i64.const 3 %s local.get 0 local.get 1 end} ]}", rt, op, op);
         for (size_t i = 0; i < COUNT(I64_SAMPLES); i++) {
             for (size_t j = 0; j < COUNT(I64_SAMPLES); j++) {
-                check_i64(spec, 0, I64_SAMPLES[i], I64_SAMPLES[j]);
+                check_call(spec, NULL, 0, (wah_value_t[]){ { .i64 = I64_SAMPLES[i] }, { .i64 = I64_SAMPLES[j] } }, 2, 3);
             }
-            check_i64(spec, 1, I64_SAMPLES[i], 0);
+            check_call(spec, NULL, 1, (wah_value_t[]){ { .i64 = I64_SAMPLES[i] }, { .i64 = 0 } }, 2, 3);
         }
     }
     // Unary operations and conversions
@@ -134,13 +130,13 @@ static void test_integer_ops(void) {
         "i64.extend_i32_s i64.const 32 i64.shr_s i32.wrap_i64",
     };
     for (size_t k = 0; k < COUNT(un32); k++) {
-        snprintf(spec, sizeof(spec), "wasm types {[ fn [i32] [i32] ]} funcs {[ 0 ]} code {[ {[] local.get 0 %s end} ]}", un32[k]);
-        for (size_t i = 0; i < COUNT(I32_SAMPLES); i++) check_i32(spec, 0, I32_SAMPLES[i]);
+        snprintf(spec, sizeof(spec), "wasm types {[ fn [i32] [i32, i32] ]} funcs {[ 0 ]} code {[ {[] local.get 0 %s local.get 0 end} ]}", un32[k]);
+        for (size_t i = 0; i < COUNT(I32_SAMPLES); i++) check_call(spec, NULL, 0, (wah_value_t[]){ { .i32 = I32_SAMPLES[i] } }, 1, 2);
     }
     static const char *un64[] = { "i64.clz", "i64.ctz", "i64.popcnt", "i64.extend8_s", "i64.extend16_s", "i64.extend32_s" };
     for (size_t k = 0; k < COUNT(un64); k++) {
-        snprintf(spec, sizeof(spec), "wasm types {[ fn [i64, i64] [i64] ]} funcs {[ 0 ]} code {[ {[] local.get 0 %s end} ]}", un64[k]);
-        for (size_t i = 0; i < COUNT(I64_SAMPLES); i++) check_i64(spec, 0, I64_SAMPLES[i], 0);
+        snprintf(spec, sizeof(spec), "wasm types {[ fn [i64, i64] [i64, i64] ]} funcs {[ 0 ]} code {[ {[] local.get 0 %s local.get 0 end} ]}", un64[k]);
+        for (size_t i = 0; i < COUNT(I64_SAMPLES); i++) check_call(spec, NULL, 0, (wah_value_t[]){ { .i64 = I64_SAMPLES[i] }, { .i64 = 0 } }, 2, 2);
     }
 }
 
@@ -168,15 +164,15 @@ static void test_float_ops(void) {
             if (k < COUNT(bin)) op = bin[k];
             else if (k < COUNT(bin) + COUNT(cmp)) { op = cmp[k - COUNT(bin)]; rt = "i32"; }
             else { op = un[k - COUNT(bin) - COUNT(cmp)]; unary = true; }
-            snprintf(spec, sizeof(spec), "wasm types {[ fn [%s, %s] [%s] ]} funcs {[ 0 ]} code {[ "
-                     "{[] local.get 0 %s %s.%s end} ]}", t, t, rt, unary ? "" : "local.get 1", t, op);
+            snprintf(spec, sizeof(spec), "wasm types {[ fn [%s, %s] [%s, %s, %s] ]} funcs {[ 0 ]} code {[ "
+                     "{[] local.get 0 %s %s.%s local.get 0 local.get 1 end} ]}", t, t, rt, t, t, unary ? "" : "local.get 1", t, op);
             for (size_t i = 0; i < n; i++) {
                 for (size_t j = 0; j < (unary ? 1 : n); j++) {
                     wah_value_t p[2];
                     memset(p, 0, sizeof(p));
                     if (w) { p[0].i64 = (int64_t)f64s[i]; p[1].i64 = (int64_t)f64s[j]; }
                     else { p[0].i32 = (int32_t)f32s[i]; p[1].i32 = (int32_t)f32s[j]; }
-                    check_call(spec, NULL, 0, p, 2, 1);
+                    check_call(spec, NULL, 0, p, 2, 3);
                 }
             }
         }
@@ -188,35 +184,35 @@ static void test_float_ops(void) {
         for (size_t k = 0; k < COUNT(conv); k++) {
             char op[64];
             snprintf(op, sizeof(op), conv[k], t);
-            snprintf(spec, sizeof(spec), "wasm types {[ fn [%s] [%s] ]} funcs {[ 0 ]} code {[ {[] local.get 0 %s end} ]}",
-                     t, conv[k][1] == '6' ? "i64" : "i32", op);
+            snprintf(spec, sizeof(spec), "wasm types {[ fn [%s] [%s, %s] ]} funcs {[ 0 ]} code {[ {[] local.get 0 %s local.get 0 end} ]}",
+                     t, conv[k][1] == '6' ? "i64" : "i32", t, op);
             for (size_t i = 0; i < n; i++) {
                 wah_value_t p;
                 memset(&p, 0, sizeof(p));
                 if (w) p.i64 = (int64_t)f64s[i];
                 else p.i32 = (int32_t)f32s[i];
-                check_call(spec, NULL, 0, &p, 1, 1);
+                check_call(spec, NULL, 0, &p, 1, 2);
             }
         }
     }
     static const char *misc[] = {
-        "fn [f64] [f32] ]} funcs {[ 0 ]} code {[ {[] local.get 0 f32.demote_f64 end} ]}",
-        "fn [f32] [f64] ]} funcs {[ 0 ]} code {[ {[] local.get 0 f64.promote_f32 end} ]}",
-        "fn [f32] [i32] ]} funcs {[ 0 ]} code {[ {[] local.get 0 i32.reinterpret_f32 end} ]}",
-        "fn [f64] [i64] ]} funcs {[ 0 ]} code {[ {[] local.get 0 f64.const 1.5f64 f64.add i64.reinterpret_f64 end} ]}",
-        "fn [i64] [f32] ]} funcs {[ 0 ]} code {[ {[] local.get 0 f32.convert_i64_s end} ]}",
-        "fn [i64] [f32] ]} funcs {[ 0 ]} code {[ {[] local.get 0 f32.convert_i64_u end} ]}",
-        "fn [i64] [f64] ]} funcs {[ 0 ]} code {[ {[] local.get 0 i32.wrap_i64 f64.convert_i32_s end} ]}",
-        "fn [i64] [f64] ]} funcs {[ 0 ]} code {[ {[] local.get 0 i32.wrap_i64 f64.convert_i32_u end} ]}",
-        "fn [i64] [f64] ]} funcs {[ 0 ]} code {[ {[] local.get 0 f64.convert_i64_u f64.const 0.25f64 f64.mul end} ]}",
+        "fn [f64] [f32, f64] ]} funcs {[ 0 ]} code {[ {[] local.get 0 f32.demote_f64 local.get 0 end} ]}",
+        "fn [f32] [f64, f32] ]} funcs {[ 0 ]} code {[ {[] local.get 0 f64.promote_f32 local.get 0 end} ]}",
+        "fn [f32] [i32, f32] ]} funcs {[ 0 ]} code {[ {[] local.get 0 i32.reinterpret_f32 local.get 0 end} ]}",
+        "fn [f64] [i64, f64] ]} funcs {[ 0 ]} code {[ {[] local.get 0 f64.const 1.5f64 f64.add i64.reinterpret_f64 local.get 0 end} ]}",
+        "fn [i64] [f32, i64] ]} funcs {[ 0 ]} code {[ {[] local.get 0 f32.convert_i64_s local.get 0 end} ]}",
+        "fn [i64] [f32, i64] ]} funcs {[ 0 ]} code {[ {[] local.get 0 f32.convert_i64_u local.get 0 end} ]}",
+        "fn [i64] [f64, i64] ]} funcs {[ 0 ]} code {[ {[] local.get 0 i32.wrap_i64 f64.convert_i32_s local.get 0 end} ]}",
+        "fn [i64] [f64, i64] ]} funcs {[ 0 ]} code {[ {[] local.get 0 i32.wrap_i64 f64.convert_i32_u local.get 0 end} ]}",
+        "fn [i64] [f64, i64] ]} funcs {[ 0 ]} code {[ {[] local.get 0 f64.convert_i64_u f64.const 0.25f64 f64.mul local.get 0 end} ]}",
     };
     for (size_t k = 0; k < COUNT(misc); k++) {
         snprintf(spec, sizeof(spec), "wasm types {[ %s", misc[k]);
         for (size_t i = 0; i < COUNT(f64s); i++) {
             wah_value_t p = { .i64 = (int64_t)f64s[i] };
-            check_call(spec, NULL, 0, &p, 1, 1);
+            check_call(spec, NULL, 0, &p, 1, 2);
             p.i64 = (int64_t)f32s[i];
-            check_call(spec, NULL, 0, &p, 1, 1);
+            check_call(spec, NULL, 0, &p, 1, 2);
         }
     }
 }
@@ -374,6 +370,82 @@ static void test_suspend(void) {
     check_i32(rec, 0, 0);
 }
 
+// Locals pinned to registers, with more locals than registers, across suspensions and calls
+static void test_pinned_locals(void) {
+    printf("Testing pinned locals...\n");
+    // Old values on the stack survive setting the local, and sets from constants, slots and other locals
+    const char *alias = "wasm types {[ fn [i32] [i32], fn [f64] [f64] ]} funcs {[ 0, 1 ]} code {[ {[1 i32] \
+        local.get 0 local.get 0 i32.const 5 i32.add local.set 0 local.get 0 i32.sub \
+        local.get 0 local.get 0 i32.const 3 i32.mul local.tee 0 i32.add local.get 0 i32.add i32.add \
+        i32.const 7 local.set 1 local.get 1 i32.add \
+        block i32 local.get 0 local.get 0 br_if 0 end local.set 1 local.get 1 i32.add \
+        local.get 0 local.set 1 local.get 1 local.get 0 local.set 0 i32.add end}, \
+        {[] local.get 0 local.get 0 f64.const 1.5f64 f64.mul local.set 0 local.get 0 f64.sub end} ]}";
+    for (size_t i = 0; i < COUNT(I32_SAMPLES); i++) check_i32(alias, 0, I32_SAMPLES[i]);
+    wah_value_t p = { .f64 = 3.25 };
+    check_call(alias, NULL, 1, &p, 1, 1);
+
+    // Pinned locals as operands of select and global.set, read again afterwards
+    const char *ops = "wasm types {[ fn [i32, f64, f64] [i32, f64, i32, f64, f64, i32] ]} \
+        imports {[ {'env'} {'g'} export.global i32 mut ]} funcs {[ 0 ]} \
+        globals {[ i32 mut i32.const 5 end, f64 mut f64.const 0.5f64 end, i64 immut i64.const 7 end ]} code {[ {[] \
+        local.get 0 i32.const 3 i32.mul global.set 0 local.get 1 global.set 2 \
+        global.get 0 global.get 1 i32.add local.get 0 i32.add global.set 1 \
+        global.get 1 global.get 2 local.get 2 f64.add \
+        local.get 0 local.get 0 i32.const 1 i32.add local.get 0 select \
+        local.get 1 local.get 2 local.get 0 select \
+        local.get 1 local.get 2 f64.add global.set 2 global.get 2 local.get 1 f64.add \
+        global.get 3 i32.wrap_i64 local.get 0 i32.add end} ]}";
+    wah_module_t genv;
+    assert_ok(wah_new_module(&genv, NULL));
+    assert_ok(wah_export_global_i32(&genv, "g", true, 0));
+    for (size_t i = 0; i < COUNT(I32_SAMPLES); i++) {
+        wah_value_t q[3] = { { .i32 = I32_SAMPLES[i] }, { .f64 = -1.25 * i }, { .f64 = 2.5 } };
+        check_call(ops, &genv, 0, q, 3, 6);
+    }
+    wah_free_module(&genv);
+
+    // 12 i32 and 2 f64 locals updated in a loop which interrupts itself, and a recursive call
+    char spec[4096];
+    int n = snprintf(spec, sizeof(spec), "wasm types {[ fn [] [], fn [i32] [i32] ]} imports {[ {'env'} {'interrupt'} fn# 0 ]} \
+        funcs {[ 1 ]} code {[ {[12 i32, 2 f64] local.get 0 i32.const 2 i32.lt_u if i32 local.get 0 else loop void");
+    for (int k = 1; k <= 12; k++) {
+        n += snprintf(spec + n, sizeof(spec) - (size_t)n, " local.get %d local.get 0 i32.add i32.const %d i32.xor local.set %d", k, k, k);
+    }
+    n += snprintf(spec + n, sizeof(spec) - (size_t)n, " local.get 13 local.get 0 f64.convert_i32_s f64.add local.tee 13 \
+        local.get 14 f64.sub local.set 14 \
+        local.get 0 i32.const 100 i32.rem_u i32.eqz if void call 0 end \
+        local.get 0 i32.const 1 i32.sub local.tee 0 br_if 0 end \
+        local.get 13 i32.trunc_f64_s local.get 14 i32.trunc_f64_s i32.add i32.const 1 call 1 i32.add");
+    for (int k = 1; k <= 12; k++) n += snprintf(spec + n, sizeof(spec) - (size_t)n, " local.get %d i32.add", k);
+    snprintf(spec + n, sizeof(spec) - (size_t)n, " end end} ]}");
+
+    wah_module_t env;
+    assert_ok(wah_new_module(&env, NULL));
+    assert_ok(wah_export_func(&env, "interrupt", "() -> ()", host_interrupt, NULL, NULL));
+    int32_t results[2];
+    int yields[2];
+    for (int native = 0; native < 2; native++) {
+        jit_inst_t a;
+        inst_new(&a, spec, !native, &env);
+        wah_value_t arg = { .i32 = 1000 }, r;
+        assert_ok(wah_start(&a.ctx, 1, &arg, 1));
+        wah_error_t err;
+        yields[native] = 0;
+        while ((err = wah_resume(&a.ctx)) == WAH_STATUS_YIELDED) yields[native]++;
+        assert_ok(err);
+        uint32_t nr;
+        assert_ok(wah_finish(&a.ctx, &r, 1, &nr));
+        results[native] = r.i32;
+        assert_true(ran_natively(&a) == (native && EXPECT_NATIVE));
+        inst_free(&a);
+    }
+    assert_eq_i32(results[1], results[0]);
+    assert_eq_i32(yields[1], yields[0]);
+    assert_eq_i32(yields[0], 10);
+    wah_free_module(&env);
+}
+
 static void test_fallback(void) {
     printf("Testing interpreter fallback...\n");
     // Modules using reference types are interpreted
@@ -396,6 +468,7 @@ int main(void) {
     test_memory();
     test_calls();
     test_suspend();
+    test_pinned_locals();
     test_fallback();
     printf("All JIT tests passed.\n");
     return 0;

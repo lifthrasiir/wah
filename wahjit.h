@@ -107,13 +107,19 @@ typedef struct wah_jit_ctx_s {
     wah_error_t err;            // Error from a helper returning a pointer
 } wah_jit_ctx_t;
 
-// A value on the operand stack being compiled
-enum { WAH_JV_SLOT, WAH_JV_GPR, WAH_JV_FPR, WAH_JV_CONST, WAH_JV_FLAGS };
+// A value on the operand stack being compiled. LGPR and LFPR are values of locals pinned to registers,
+// read from them until the local is set.
+enum { WAH_JV_SLOT, WAH_JV_GPR, WAH_JV_FPR, WAH_JV_CONST, WAH_JV_FLAGS, WAH_JV_LGPR, WAH_JV_LFPR };
 typedef struct {
     uint8_t kind;
-    uint8_t reg; // Register for GPR and FPR, condition code for FLAGS
-    int64_t imm; // Value for CONST
+    uint8_t reg; // Register for GPR, FPR, LGPR and LFPR, condition code for FLAGS
+    int64_t imm; // Value for CONST, local index for LGPR and LFPR
 } wah_jit_val_t;
+
+// A local living in a register during the whole function, except around calls and suspensions
+typedef struct { uint32_t idx; uint8_t reg; bool fp; } wah_jit_pin_t;
+#define WAH_JIT_MAX_PINS 32
+#define WAH_JIT_PIN_FP 32
 
 // Owners of registers, otherwise an index of the operand stack
 #define WAH_JO_FREE (-1)
@@ -155,6 +161,9 @@ typedef struct {
     const wah_module_t *module;
     const wah_func_type_t *ft;
     uint32_t nlocals, max_stack, frame_bytes, link_off;
+    int8_t *pin_of;          // Register of each local if pinned, plus WAH_JIT_PIN_FP for FPRs, -1 otherwise
+    wah_jit_pin_t pins[WAH_JIT_MAX_PINS];
+    uint32_t npins, gpr_pins, fpr_pins; // Masks of pinned registers
 
     wah_jit_val_t *vals;
     uint32_t h;
@@ -255,8 +264,6 @@ enum {
 #define WAH_JR_FP WAH_X64_RBP
 #define WAH_JR_MEM WAH_X64_R12
 #define WAH_JR_MEMSZ WAH_X64_R13
-#define WAH_JR_LIMIT WAH_X64_R14
-#define WAH_JR_GLOBALS WAH_X64_R15
 #define WAH_JR_T0 WAH_X64_R11
 #define WAH_JR_T1 WAH_X64_R10
 #define WAH_JR_VT0 15
@@ -433,14 +440,24 @@ static void wah_x64_call_abs(wah_jit_fn_t *f, uintptr_t fn);
 
 // Primitives used by the shared code ///////////////////////////////////////////
 
-// rax, rcx, rdx, rsi, rdi, r8, r9 and xmm0-xmm13 are allocatable
+// Registers for pinned locals, in the order of preference. The operand stack cache keeps at least rax, rcx, rdx, rsi
+// and rdi, as division and shifts need rax, rdx and rcx.
+static const uint8_t wah_jit_pin_gprs[] = { WAH_X64_R15, WAH_X64_R14, WAH_X64_R9, WAH_X64_R8 };
+static const uint8_t wah_jit_pin_fprs[] = { 13, 12, 11, 10, 9, 8 };
+#define WAH_JIT_PIN_GPR_COUNT 4
+#define WAH_JIT_PIN_FPR_COUNT 6
+
+// rax, rcx, rdx, rsi, rdi, r8, r9 and xmm0-xmm13 are allocatable unless pinned
 static void wah_jit_init_regs(wah_jit_fn_t *f) {
     for (int r = 0; r < 32; r++) {
-        f->gpr[r] = r <= WAH_X64_RDX || r == WAH_X64_RSI || r == WAH_X64_RDI || r == WAH_X64_R8 || r == WAH_X64_R9
-                    ? WAH_JO_FREE : WAH_JO_NONE;
-        f->fpr[r] = r < 14 ? WAH_JO_FREE : WAH_JO_NONE;
+        f->gpr[r] = (r <= WAH_X64_RDX || r == WAH_X64_RSI || r == WAH_X64_RDI || r == WAH_X64_R8 || r == WAH_X64_R9) &&
+                    !(f->gpr_pins >> r & 1) ? WAH_JO_FREE : WAH_JO_NONE;
+        f->fpr[r] = r < 14 && !(f->fpr_pins >> r & 1) ? WAH_JO_FREE : WAH_JO_NONE;
     }
 }
+
+static void wah_jit_mov64(wah_jit_fn_t *f, int rd, int rs) { wah_x64_mov(f, true, rd, rs); }
+static void wah_jit_fmov(wah_jit_fn_t *f, int vd, int vs) { wah_x64_rr(f, WAH_X64_MOVAPS_LOAD, 0, vd, vs); }
 
 // Loads or stores a 32-bit or 64-bit (wide) value at [base + off].
 static void wah_jit_ldst(wah_jit_fn_t *f, bool store, bool fp, bool wide, int r, int base, uint64_t off) {
@@ -760,13 +777,22 @@ static void wah_a64_call_abs(wah_jit_fn_t *f, uintptr_t fn) {
 
 // Primitives used by the shared code ///////////////////////////////////////////
 
-// x0-x15, v0-v7 and v16-v29 are allocatable
+// Registers for pinned locals, in the order of preference
+static const uint8_t wah_jit_pin_gprs[] = { 28, 27, 15, 14, 13, 12, 11, 10, 9 };
+static const uint8_t wah_jit_pin_fprs[] = { 15, 14, 13, 12, 11, 10, 9, 8 };
+#define WAH_JIT_PIN_GPR_COUNT 9
+#define WAH_JIT_PIN_FPR_COUNT 8
+
+// x0-x15 and v0-v29 are allocatable unless pinned
 static void wah_jit_init_regs(wah_jit_fn_t *f) {
     for (int r = 0; r < 32; r++) {
-        f->gpr[r] = r < 16 ? WAH_JO_FREE : WAH_JO_NONE;
-        f->fpr[r] = r < 8 || (r >= 16 && r < 30) ? WAH_JO_FREE : WAH_JO_NONE;
+        f->gpr[r] = r < 16 && !(f->gpr_pins >> r & 1) ? WAH_JO_FREE : WAH_JO_NONE;
+        f->fpr[r] = r < 30 && !(f->fpr_pins >> r & 1) ? WAH_JO_FREE : WAH_JO_NONE;
     }
 }
+
+static void wah_jit_mov64(wah_jit_fn_t *f, int rd, int rs) { wah_a64_mov(f, true, rd, rs); }
+static void wah_jit_fmov(wah_jit_fn_t *f, int vd, int vs) { wah_a64(f, 0x1E604000u | (uint32_t)vs << 5 | (uint32_t)vd); } // FMOV d, d
 
 // Loads or stores a 32-bit or 64-bit (wide) value at [base + off].
 static void wah_jit_ldst(wah_jit_fn_t *f, bool store, bool fp, bool wide, int r, int base, uint64_t off) {
@@ -893,8 +919,8 @@ static uint32_t wah_jit_slot_off(const wah_jit_fn_t *f, uint32_t i) { return (f-
 static void wah_jit_copy_val(wah_jit_fn_t *f, uint32_t i, uint32_t off) {
     const wah_jit_val_t *v = &f->vals[i];
     switch (v->kind) {
-        case WAH_JV_GPR: wah_jit_ldst(f, true, false, true, v->reg, WAH_JR_FP, off); break;
-        case WAH_JV_FPR: wah_jit_ldst(f, true, true, true, v->reg, WAH_JR_FP, off); break;
+        case WAH_JV_GPR: case WAH_JV_LGPR: wah_jit_ldst(f, true, false, true, v->reg, WAH_JR_FP, off); break;
+        case WAH_JV_FPR: case WAH_JV_LFPR: wah_jit_ldst(f, true, true, true, v->reg, WAH_JR_FP, off); break;
         case WAH_JV_CONST: wah_jit_store_imm(f, WAH_JR_FP, off, v->imm); break;
         case WAH_JV_FLAGS:
             wah_jit_setcc(f, WAH_JR_T0, v->reg);
@@ -956,6 +982,8 @@ static int wah_jit_to_gpr(wah_jit_fn_t *f, uint32_t i) {
     int r = wah_jit_alloc(f, false);
     switch (v->kind) {
         case WAH_JV_FPR: wah_jit_fpr_to_gpr(f, r, v->reg); f->fpr[v->reg] = WAH_JO_FREE; break;
+        case WAH_JV_LGPR: wah_jit_mov64(f, r, v->reg); break;
+        case WAH_JV_LFPR: wah_jit_fpr_to_gpr(f, r, v->reg); break;
         case WAH_JV_CONST: wah_jit_mov_imm(f, r, (uint64_t)v->imm); break;
         case WAH_JV_FLAGS: wah_jit_setcc(f, r, v->reg); break;
         case WAH_JV_SLOT: wah_jit_ldst(f, false, false, true, r, WAH_JR_FP, wah_jit_slot_off(f, i)); break;
@@ -971,6 +999,8 @@ static int wah_jit_to_fpr(wah_jit_fn_t *f, uint32_t i) {
     int r = wah_jit_alloc(f, true);
     switch (v->kind) {
         case WAH_JV_GPR: wah_jit_gpr_to_fpr(f, r, v->reg); f->gpr[v->reg] = WAH_JO_FREE; break;
+        case WAH_JV_LGPR: wah_jit_gpr_to_fpr(f, r, v->reg); break;
+        case WAH_JV_LFPR: wah_jit_fmov(f, r, v->reg); break;
         case WAH_JV_CONST:
             wah_jit_mov_imm(f, WAH_JR_T0, (uint64_t)v->imm);
             wah_jit_gpr_to_fpr(f, r, WAH_JR_T0);
@@ -1001,8 +1031,34 @@ static int wah_jit_pop_fpr(wah_jit_fn_t *f) {
     return r;
 }
 
+// Pops a value only to be read, which may be a pinned register.
+static int wah_jit_pop_gpr_ro(wah_jit_fn_t *f) {
+    const wah_jit_val_t *v = &f->vals[f->h - 1];
+    if (v->kind != WAH_JV_LGPR) return wah_jit_pop_gpr(f);
+    f->h--;
+    return v->reg;
+}
+
+static int wah_jit_pop_fpr_ro(wah_jit_fn_t *f) {
+    const wah_jit_val_t *v = &f->vals[f->h - 1];
+    if (v->kind != WAH_JV_LFPR) return wah_jit_pop_fpr(f);
+    f->h--;
+    return v->reg;
+}
+
+// A destination register for operands a and b (-1 if none), reusing them if they are temporaries.
+// Operands other than the destination should be freed afterwards.
+static int wah_jit_dest(wah_jit_fn_t *f, bool fp, int a, int b) {
+    const int32_t *owner = fp ? f->fpr : f->gpr;
+    if (owner[a] == WAH_JO_TEMP) return a;
+    if (b >= 0 && owner[b] == WAH_JO_TEMP) return b;
+    return wah_jit_alloc(f, fp);
+}
+
 static void wah_jit_free_gpr(wah_jit_fn_t *f, int r) { if (f->gpr[r] == WAH_JO_TEMP) f->gpr[r] = WAH_JO_FREE; }
 static void wah_jit_free_fpr(wah_jit_fn_t *f, int r) { if (f->fpr[r] == WAH_JO_TEMP) f->fpr[r] = WAH_JO_FREE; }
+
+static bool wah_jit_is_fpr(uint8_t kind) { return kind == WAH_JV_FPR || kind == WAH_JV_LFPR; }
 
 static void wah_jit_push(wah_jit_fn_t *f, wah_jit_val_t v) {
     if (v.kind == WAH_JV_GPR) f->gpr[v.reg] = (int32_t)f->h;
@@ -1018,6 +1074,19 @@ static void wah_jit_drop(wah_jit_fn_t *f) {
     if (v->kind == WAH_JV_FPR) f->fpr[v->reg] = WAH_JO_FREE;
 }
 
+// Frees operands a and b (-1 if none) except d, then pushes d.
+static void wah_jit_finish_gpr(wah_jit_fn_t *f, int d, int a, int b) {
+    if (a != d) wah_jit_free_gpr(f, a);
+    if (b >= 0 && b != d) wah_jit_free_gpr(f, b);
+    wah_jit_push_gpr(f, d);
+}
+
+static void wah_jit_finish_fpr(wah_jit_fn_t *f, int d, int a, int b) {
+    if (a != d) wah_jit_free_fpr(f, a);
+    if (b >= 0 && b != d) wah_jit_free_fpr(f, b);
+    wah_jit_push_fpr(f, d);
+}
+
 // A condition for branches, either flags or a register to compare with zero.
 typedef struct { bool flags; int cond, reg; } wah_jit_cond_t;
 
@@ -1027,7 +1096,7 @@ static wah_jit_cond_t wah_jit_pop_cond(wah_jit_fn_t *f) {
         f->h--;
         return (wah_jit_cond_t){ .flags = true, .cond = v->reg };
     }
-    return (wah_jit_cond_t){ .flags = false, .reg = wah_jit_pop_gpr(f) };
+    return (wah_jit_cond_t){ .flags = false, .reg = wah_jit_pop_gpr_ro(f) };
 }
 
 static void wah_jit_branch_if(wah_jit_fn_t *f, wah_jit_cond_t c, bool when, uint32_t label) {
@@ -1036,6 +1105,51 @@ static void wah_jit_branch_if(wah_jit_fn_t *f, wah_jit_cond_t c, bool when, uint
 }
 
 static void wah_jit_release_cond(wah_jit_fn_t *f, wah_jit_cond_t c) { if (!c.flags) wah_jit_free_gpr(f, c.reg); }
+
+// Stores pinned locals to their slots, or loads them back.
+static void wah_jit_sync_pins(wah_jit_fn_t *f, bool store) {
+    for (uint32_t i = 0; i < f->npins; i++) {
+        const wah_jit_pin_t *p = &f->pins[i];
+        wah_jit_ldst(f, store, p->fp, true, p->reg, WAH_JR_FP, p->idx * (uint32_t)sizeof(wah_value_t));
+    }
+}
+
+// Sets the pinned local at idx to the top of the stack, which is kept.
+static void wah_jit_set_pinned(wah_jit_fn_t *f, uint32_t idx) {
+    int d = f->pin_of[idx] & (WAH_JIT_PIN_FP - 1);
+    bool fp = (f->pin_of[idx] & WAH_JIT_PIN_FP) != 0;
+    for (uint32_t i = 0; i + 1 < f->h; i++) { // Old values of the local are copied first
+        wah_jit_val_t *v = &f->vals[i];
+        if ((v->kind == WAH_JV_LGPR || v->kind == WAH_JV_LFPR) && v->imm == (int64_t)idx) {
+            if (v->kind == WAH_JV_LFPR) wah_jit_to_fpr(f, i);
+            else wah_jit_to_gpr(f, i);
+        }
+    }
+    const wah_jit_val_t *v = &f->vals[f->h - 1];
+    switch (v->kind) {
+        case WAH_JV_GPR: case WAH_JV_LGPR:
+            if (fp) wah_jit_gpr_to_fpr(f, d, v->reg);
+            else if (v->reg != d) wah_jit_mov64(f, d, v->reg);
+            break;
+        case WAH_JV_FPR: case WAH_JV_LFPR:
+            if (!fp) wah_jit_fpr_to_gpr(f, d, v->reg);
+            else if (v->reg != d) wah_jit_fmov(f, d, v->reg);
+            break;
+        case WAH_JV_CONST:
+            if (fp) {
+                wah_jit_mov_imm(f, WAH_JR_T0, (uint64_t)v->imm);
+                wah_jit_gpr_to_fpr(f, d, WAH_JR_T0);
+            } else {
+                wah_jit_mov_imm(f, d, (uint64_t)v->imm);
+            }
+            break;
+        case WAH_JV_FLAGS:
+            wah_jit_setcc(f, fp ? WAH_JR_T0 : d, v->reg);
+            if (fp) wah_jit_gpr_to_fpr(f, d, WAH_JR_T0);
+            break;
+        case WAH_JV_SLOT: wah_jit_ldst(f, false, fp, true, d, WAH_JR_FP, wah_jit_slot_off(f, f->h - 1)); break;
+    }
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // Runtime helpers called from native code /////////////////////////////////////
@@ -1159,8 +1273,9 @@ static void wah_jit_data_drop(wah_exec_context_t *ctx, uint32_t data_idx) { wah_
 // Generated code uses the following registers:
 //
 // - rbx: exec context, rbp: frame base, r12/r13: base and size of memory 0 (reloaded after anything that may grow
-//   memories), r14: limit of the value stack, r15: globals
-// - rax, rcx, rdx, rsi, rdi, r8, r9 and xmm0-xmm13: operand stack cache, r10/r11 and xmm14/xmm15: scratch
+//   memories)
+// - r15, r14, r9, r8 and xmm13-xmm8: pinned locals in this order, otherwise the operand stack cache
+// - rax, rcx, rdx, rsi, rdi and xmm0-xmm7: operand stack cache, r10/r11 and xmm14/xmm15: scratch
 //
 // rsp stays at the trampoline frame, where helpers can be called right away. Wasm calls push return addresses
 // as usual but callees immediately pop them into their link slots. MXCSR is set to the default during the execution,
@@ -1294,6 +1409,12 @@ static void wah_jit_call_helper(wah_jit_fn_t *f, uintptr_t fn, const wah_jit_arg
     if (host) wah_x64_mem(f, WAH_X64_MXCSR, 0, 2, WAH_X64_RSP, -1, 0, WAH_X64_MXCSR_OFF + 4);
 }
 
+// Returns a register holding the address of globals, which is loaded into T1.
+static int wah_jit_globals(wah_jit_fn_t *f) {
+    wah_jit_ldst(f, false, false, true, WAH_JR_T1, WAH_JR_CTX, WAH_JIT_CTX_OFF(globals));
+    return WAH_JR_T1;
+}
+
 static void wah_jit_memory_size(wah_jit_fn_t *f, uint32_t mem_idx) {
     int d = wah_jit_alloc(f, false);
     if (mem_idx != 0) {
@@ -1321,28 +1442,30 @@ static void wah_jit_icmp(wah_jit_fn_t *f, bool sf, int cond, bool fuse) {
     uint32_t w = sf ? WAH_X64_W : 0;
     int32_t imm;
     int a;
+    int b = -1;
     if (wah_x64_top_imm32(f, sf, &imm)) {
         f->h--;
-        a = wah_jit_pop_gpr(f);
+        a = wah_jit_pop_gpr_ro(f);
         wah_x64_alu_imm(f, 7, w, a, imm);
     } else {
-        int b = wah_jit_pop_gpr(f);
-        a = wah_jit_pop_gpr(f);
+        b = wah_jit_pop_gpr_ro(f);
+        a = wah_jit_pop_gpr_ro(f);
         wah_x64_rr(f, WAH_X64_CMP, w, a, b);
-        wah_jit_free_gpr(f, b);
     }
     if (fuse) {
         wah_jit_free_gpr(f, a);
+        if (b >= 0) wah_jit_free_gpr(f, b);
         wah_jit_push(f, (wah_jit_val_t){ .kind = WAH_JV_FLAGS, .reg = (uint8_t)cond });
     } else {
-        wah_jit_setcc(f, a, cond);
-        wah_jit_push_gpr(f, a);
+        int d = wah_jit_dest(f, false, a, b); // MOV doesn't change flags
+        wah_jit_setcc(f, d, cond);
+        wah_jit_finish_gpr(f, d, a, b);
     }
 }
 
 // Unordered operands set ZF, PF and CF, so only ordered conditions can be flags.
 static void wah_jit_fcmp(wah_jit_fn_t *f, int type, int kind, bool fuse) {
-    int b = wah_jit_pop_fpr(f), a = wah_jit_pop_fpr(f);
+    int b = wah_jit_pop_fpr_ro(f), a = wah_jit_pop_fpr_ro(f);
     bool swap = kind == WAH_JFC_LT || kind == WAH_JFC_LE;
     wah_x64_ucomis(f, type, swap ? b : a, swap ? a : b);
     wah_jit_free_fpr(f, a);
@@ -1383,7 +1506,7 @@ static void wah_jit_ibinop(wah_jit_fn_t *f, bool sf, int kind) {
         wah_jit_push_gpr(f, a);
         return;
     }
-    int b = wah_jit_pop_gpr(f), a = wah_jit_pop_gpr(f);
+    int b = wah_jit_pop_gpr_ro(f), a = wah_jit_pop_gpr(f);
     wah_x64_rr(f, ops[kind], w, a, b);
     wah_jit_free_gpr(f, b);
     wah_jit_push_gpr(f, a);
@@ -1432,7 +1555,7 @@ static void wah_jit_shift(wah_jit_fn_t *f, bool sf, int kind) {
         return;
     }
     wah_x64_take_gpr(f, WAH_X64_RCX);
-    int b = wah_jit_pop_gpr(f), a = wah_jit_pop_gpr(f);
+    int b = wah_jit_pop_gpr_ro(f), a = wah_jit_pop_gpr(f);
     wah_x64_mov(f, false, WAH_X64_RCX, b);
     wah_x64_rr(f, WAH_X64_GRP2_CL, w, digits[kind], a);
     wah_jit_free_gpr(f, b);
@@ -1450,7 +1573,7 @@ static void wah_jit_divrem(wah_jit_fn_t *f, bool sf, int kind) {
     uint32_t w = sf ? WAH_X64_W : 0;
     wah_x64_take_gpr(f, WAH_X64_RAX);
     wah_x64_take_gpr(f, WAH_X64_RDX);
-    int b = wah_jit_pop_gpr(f), a = wah_jit_pop_gpr(f);
+    int b = wah_jit_pop_gpr_ro(f), a = wah_jit_pop_gpr(f);
     if (!nonzero) wah_jit_cbz(f, false, sf, b, f->l_trap);
     uint32_t skip = 0, done = 0;
     if (is_signed && !not_neg1) {
@@ -1483,7 +1606,7 @@ static void wah_jit_divrem(wah_jit_fn_t *f, bool sf, int kind) {
 
 static void wah_jit_fbinop(wah_jit_fn_t *f, int type, int kind) {
     static const uint32_t ops[] = { WAH_X64_ADDS, WAH_X64_SUBS, WAH_X64_MULS, WAH_X64_DIVS };
-    int b = wah_jit_pop_fpr(f), a = wah_jit_pop_fpr(f);
+    int b = wah_jit_pop_fpr_ro(f), a = wah_jit_pop_fpr(f);
     if (kind == WAH_JF_MIN || kind == WAH_JF_MAX) { // MINSS/MAXSS don't follow wasm on NaN and zeros of both signs
         bool min = kind == WAH_JF_MIN;
         wah_x64_ucomis(f, type, a, b);
@@ -1502,8 +1625,7 @@ static void wah_jit_fbinop(wah_jit_fn_t *f, int type, int kind) {
         wah_x64_rr(f, WAH_X64_FP(type) | ops[kind], 0, a, b);
         wah_x64_canonicalize(f, type, a);
     }
-    wah_jit_free_fpr(f, b);
-    wah_jit_push_fpr(f, a);
+    wah_jit_finish_fpr(f, a, a, b);
 }
 
 static void wah_jit_funop(wah_jit_fn_t *f, int type, int kind) {
@@ -1681,7 +1803,7 @@ static void wah_jit_convert(wah_jit_fn_t *f, int type, bool sf, bool is_signed) 
 
 // Bounds-checks the address on the stack, and returns the base with the address in T0 to be added with *disp.
 static int wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size, int *size_reg, int32_t *disp) {
-    int a = wah_jit_pop_gpr(f);
+    int a = wah_jit_pop_gpr_ro(f);
     int base = WAH_JR_MEM, limit = WAH_JR_MEMSZ;
     *size_reg = -1;
     if (m->memidx != 0) {
@@ -1739,13 +1861,13 @@ static void wah_jit_store(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size_
     int r = -1;
     bool fp = false;
     int64_t imm = v->imm;
-    if (v->kind == WAH_JV_FPR && fp_ok) {
-        r = wah_jit_pop_fpr(f);
+    if ((v->kind == WAH_JV_FPR || v->kind == WAH_JV_LFPR) && fp_ok) {
+        r = wah_jit_pop_fpr_ro(f);
         fp = true;
     } else if (v->kind == WAH_JV_CONST && (size_log2 < 3 || imm == (int32_t)imm)) {
         f->h--;
     } else {
-        r = wah_jit_pop_gpr(f);
+        r = wah_jit_pop_gpr_ro(f);
     }
     int size_reg;
     int32_t disp;
@@ -1769,10 +1891,10 @@ static void wah_jit_store(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size_
 
 static void wah_jit_select(wah_jit_fn_t *f) {
     wah_jit_cond_t c = wah_jit_pop_cond(f);
-    bool fp = f->vals[f->h - 1].kind == WAH_JV_FPR || f->vals[f->h - 2].kind == WAH_JV_FPR;
+    bool fp = wah_jit_is_fpr(f->vals[f->h - 1].kind) || wah_jit_is_fpr(f->vals[f->h - 2].kind);
     int b, a;
-    if (fp) { b = wah_jit_pop_fpr(f); a = wah_jit_pop_fpr(f); }
-    else { b = wah_jit_pop_gpr(f); a = wah_jit_pop_gpr(f); }
+    if (fp) { b = wah_jit_pop_fpr_ro(f); a = wah_jit_pop_fpr(f); }
+    else { b = wah_jit_pop_gpr_ro(f); a = wah_jit_pop_gpr(f); }
     int cond = c.cond;
     if (!c.flags) {
         wah_x64_rr(f, WAH_X64_TEST, 0, c.reg, c.reg);
@@ -1794,15 +1916,27 @@ static void wah_jit_select(wah_jit_fn_t *f) {
 
 static void wah_jit_emit_stub(wah_jit_fn_t *f, const wah_jit_stub_t *s) {
     wah_jit_bind(f, s->stub);
-    if (s->poll) {
+    uint32_t resume = s->resume;
+    if (s->poll) { // Pinned locals are kept in slots while suspended, and restored when resumed or continued
+        uint32_t suspend = wah_jit_new_label(f);
+        wah_jit_sync_pins(f, true);
         wah_jit_call_helper(f, (uintptr_t)wah_jit_poll, (const wah_jit_arg_t[]){ { WAH_JA_CTX, 0 } }, 1, false);
-        wah_jit_cbz(f, false, false, WAH_JR_RET, s->cont);
+        wah_jit_cbz(f, true, false, WAH_JR_RET, suspend);
+        wah_jit_sync_pins(f, false);
+        wah_jit_b(f, s->cont);
+        if (f->npins > 0) {
+            resume = wah_jit_new_label(f);
+            wah_jit_bind(f, resume);
+            wah_jit_sync_pins(f, false);
+            wah_jit_b(f, s->resume);
+        }
+        wah_jit_bind(f, suspend);
     }
     // eax is a status to suspend with, or an error
     wah_x64_rr(f, WAH_X64_TEST, 0, WAH_JR_RET, WAH_JR_RET);
     wah_jit_bcond(f, WAH_X64_S, f->l_err);
     wah_jit_ldst(f, false, false, true, WAH_JR_T0, WAH_JR_CTX, WAH_JIT_CTX_OFF(jit));
-    wah_jit_adr(f, WAH_JR_T1, s->resume);
+    wah_jit_adr(f, WAH_JR_T1, resume);
     wah_jit_ldst(f, true, false, true, WAH_JR_T1, WAH_JR_T0, offsetof(wah_jit_ctx_t, resume_pc));
     wah_jit_ldst(f, true, false, true, WAH_JR_FP, WAH_JR_T0, offsetof(wah_jit_ctx_t, resume_fp));
     wah_jit_exit(f);
@@ -1813,7 +1947,7 @@ static void wah_jit_prologue(wah_jit_fn_t *f) {
     wah_x64_byte(f, 0x41); // POP r11
     wah_x64_byte(f, 0x58u + (WAH_JR_T0 & 7));
     wah_x64_mem(f, WAH_X64_LEA, WAH_X64_W, WAH_JR_T1, WAH_JR_FP, -1, 0, (int32_t)f->frame_bytes);
-    wah_x64_rr(f, WAH_X64_CMP, WAH_X64_W, WAH_JR_T1, WAH_JR_LIMIT);
+    wah_x64_mem(f, WAH_X64_CMP, WAH_X64_W, WAH_JR_T1, WAH_JR_CTX, -1, 0, (int32_t)WAH_JIT_CTX_OFF(frame_ptr)); // The limit
     wah_jit_bcond(f, WAH_X64_A, f->l_stack);
     wah_jit_ldst(f, true, false, true, WAH_JR_T0, WAH_JR_FP, f->link_off);
 }
@@ -1937,6 +2071,9 @@ static void wah_jit_call_helper(wah_jit_fn_t *f, uintptr_t fn, const wah_jit_arg
     if (host) wah_a64(f, 0xD51B4400u | WAH_JR_FPCR_JIT);
 }
 
+// Returns a register holding the address of globals.
+static int wah_jit_globals(wah_jit_fn_t *f) { (void)f; return WAH_JR_GLOBALS; }
+
 static void wah_jit_memory_size(wah_jit_fn_t *f, uint32_t mem_idx) {
     int d = wah_jit_alloc(f, false);
     int src = WAH_JR_MEMSZ;
@@ -1964,28 +2101,30 @@ static void wah_jit_icmp(wah_jit_fn_t *f, bool sf, int cond, bool fuse) {
     uint32_t imm;
     bool neg;
     int a;
+    int b = -1;
     if (wah_a64_top_imm12(f, sf, &imm, &neg)) {
         f->h--;
-        a = wah_jit_pop_gpr(f);
+        a = wah_jit_pop_gpr_ro(f);
         wah_a64_addsub_imm(f, neg ? WAH_A64_ADDSI : WAH_A64_SUBSI, sf, WAH_A64_ZR, a, imm, false);
     } else {
-        int b = wah_jit_pop_gpr(f);
-        a = wah_jit_pop_gpr(f);
+        b = wah_jit_pop_gpr_ro(f);
+        a = wah_jit_pop_gpr_ro(f);
         wah_a64_rrr(f, WAH_A64_SUBS, sf, WAH_A64_ZR, a, b);
-        wah_jit_free_gpr(f, b);
     }
     if (fuse) {
         wah_jit_free_gpr(f, a);
+        if (b >= 0) wah_jit_free_gpr(f, b);
         wah_jit_push(f, (wah_jit_val_t){ .kind = WAH_JV_FLAGS, .reg = (uint8_t)cond });
     } else {
-        wah_a64_cset(f, a, cond);
-        wah_jit_push_gpr(f, a);
+        int d = wah_jit_dest(f, false, a, b);
+        wah_a64_cset(f, d, cond);
+        wah_jit_finish_gpr(f, d, a, b);
     }
 }
 
 static void wah_jit_fcmp(wah_jit_fn_t *f, int type, int kind, bool fuse) {
     static const int conds[] = { WAH_A64_EQ, WAH_A64_NE, WAH_A64_MI, WAH_A64_GT, WAH_A64_LS, WAH_A64_GE };
-    int b = wah_jit_pop_fpr(f), a = wah_jit_pop_fpr(f);
+    int b = wah_jit_pop_fpr_ro(f), a = wah_jit_pop_fpr_ro(f);
     wah_a64_fp2(f, WAH_A64_FCMP, type, 0, a, b);
     wah_jit_free_fpr(f, a);
     wah_jit_free_fpr(f, b);
@@ -2004,30 +2143,32 @@ static void wah_jit_ibinop(wah_jit_fn_t *f, bool sf, int kind) {
     bool neg;
     if ((kind == WAH_JI_ADD || kind == WAH_JI_SUB) && wah_a64_top_imm12(f, sf, &imm, &neg)) {
         f->h--;
-        int a = wah_jit_pop_gpr(f);
-        wah_a64_addsub_imm(f, (kind == WAH_JI_SUB) != neg ? WAH_A64_SUBI : WAH_A64_ADDI, sf, a, a, imm, false);
-        wah_jit_push_gpr(f, a);
+        int a = wah_jit_pop_gpr_ro(f), d = wah_jit_dest(f, false, a, -1);
+        wah_a64_addsub_imm(f, (kind == WAH_JI_SUB) != neg ? WAH_A64_SUBI : WAH_A64_ADDI, sf, d, a, imm, false);
+        wah_jit_finish_gpr(f, d, a, -1);
         return;
     }
-    int b = wah_jit_pop_gpr(f), a = wah_jit_pop_gpr(f);
-    wah_a64_rrr(f, ops[kind], sf, a, a, b);
-    wah_jit_free_gpr(f, b);
-    wah_jit_push_gpr(f, a);
+    int b = wah_jit_pop_gpr_ro(f), a = wah_jit_pop_gpr_ro(f), d = wah_jit_dest(f, false, a, b);
+    wah_a64_rrr(f, ops[kind], sf, d, a, b);
+    wah_jit_finish_gpr(f, d, a, b);
 }
 
 static void wah_jit_iunop(wah_jit_fn_t *f, bool sf, int kind) {
-    int a = wah_jit_pop_gpr(f);
+    int a = wah_jit_pop_gpr_ro(f), d = wah_jit_dest(f, false, a, -1);
     switch (kind) {
-        case WAH_JI_CTZ: wah_a64_rrr(f, WAH_A64_RBIT, sf, a, a, 0); // Fall through
-        case WAH_JI_CLZ: wah_a64_rrr(f, WAH_A64_CLZ, sf, a, a, 0); break;
+        case WAH_JI_CTZ:
+            wah_a64_rrr(f, WAH_A64_RBIT, sf, d, a, 0);
+            wah_a64_rrr(f, WAH_A64_CLZ, sf, d, d, 0);
+            break;
+        case WAH_JI_CLZ: wah_a64_rrr(f, WAH_A64_CLZ, sf, d, a, 0); break;
         case WAH_JI_POPCNT:
             wah_a64_fmov_from_gp(f, sf, WAH_JR_VT1, a);
             wah_a64(f, 0x0E205800u | (uint32_t)WAH_JR_VT1 << 5 | WAH_JR_VT1); // CNT v31.8b
             wah_a64(f, 0x0E31B800u | (uint32_t)WAH_JR_VT1 << 5 | WAH_JR_VT1); // ADDV b31, v31.8b
-            wah_a64_fmov_to_gp(f, false, a, WAH_JR_VT1);
+            wah_a64_fmov_to_gp(f, false, d, WAH_JR_VT1);
             break;
     }
-    wah_jit_push_gpr(f, a);
+    wah_jit_finish_gpr(f, d, a, -1);
 }
 
 static void wah_jit_shift(wah_jit_fn_t *f, bool sf, int kind) {
@@ -2036,39 +2177,37 @@ static void wah_jit_shift(wah_jit_fn_t *f, bool sf, int kind) {
     if (top->kind == WAH_JV_CONST) {
         uint32_t s = (uint32_t)top->imm & (bits - 1);
         f->h--;
-        int a = wah_jit_pop_gpr(f);
-        if (s != 0) {
-            switch (kind) {
-                case WAH_JS_SHL: wah_a64_bfm(f, false, sf, a, a, (bits - s) & (bits - 1), bits - 1 - s); break;
-                case WAH_JS_SHR_S: wah_a64_bfm(f, true, sf, a, a, s, bits - 1); break;
-                case WAH_JS_SHR_U: wah_a64_bfm(f, false, sf, a, a, s, bits - 1); break;
-                case WAH_JS_ROTL: wah_a64_extr(f, sf, a, a, a, bits - s); break;
-                case WAH_JS_ROTR: wah_a64_extr(f, sf, a, a, a, s); break;
-            }
+        int a = wah_jit_pop_gpr_ro(f), d = wah_jit_dest(f, false, a, -1);
+        switch (s == 0 ? -1 : kind) {
+            case -1: if (d != a) wah_jit_mov64(f, d, a); break;
+            case WAH_JS_SHL: wah_a64_bfm(f, false, sf, d, a, (bits - s) & (bits - 1), bits - 1 - s); break;
+            case WAH_JS_SHR_S: wah_a64_bfm(f, true, sf, d, a, s, bits - 1); break;
+            case WAH_JS_SHR_U: wah_a64_bfm(f, false, sf, d, a, s, bits - 1); break;
+            case WAH_JS_ROTL: wah_a64_extr(f, sf, d, a, a, bits - s); break;
+            case WAH_JS_ROTR: wah_a64_extr(f, sf, d, a, a, s); break;
         }
-        wah_jit_push_gpr(f, a);
+        wah_jit_finish_gpr(f, d, a, -1);
         return;
     }
-    int b = wah_jit_pop_gpr(f), a = wah_jit_pop_gpr(f);
+    int b = wah_jit_pop_gpr_ro(f), a = wah_jit_pop_gpr_ro(f), d = wah_jit_dest(f, false, a, b);
     switch (kind) {
-        case WAH_JS_SHL: wah_a64_rrr(f, WAH_A64_LSLV, sf, a, a, b); break;
-        case WAH_JS_SHR_S: wah_a64_rrr(f, WAH_A64_ASRV, sf, a, a, b); break;
-        case WAH_JS_SHR_U: wah_a64_rrr(f, WAH_A64_LSRV, sf, a, a, b); break;
+        case WAH_JS_SHL: wah_a64_rrr(f, WAH_A64_LSLV, sf, d, a, b); break;
+        case WAH_JS_SHR_S: wah_a64_rrr(f, WAH_A64_ASRV, sf, d, a, b); break;
+        case WAH_JS_SHR_U: wah_a64_rrr(f, WAH_A64_LSRV, sf, d, a, b); break;
         case WAH_JS_ROTL:
             wah_a64_rrr(f, WAH_A64_SUB, false, WAH_JR_T0, WAH_A64_ZR, b);
-            wah_a64_rrr(f, WAH_A64_RORV, sf, a, a, WAH_JR_T0);
+            wah_a64_rrr(f, WAH_A64_RORV, sf, d, a, WAH_JR_T0);
             break;
-        case WAH_JS_ROTR: wah_a64_rrr(f, WAH_A64_RORV, sf, a, a, b); break;
+        case WAH_JS_ROTR: wah_a64_rrr(f, WAH_A64_RORV, sf, d, a, b); break;
     }
-    wah_jit_free_gpr(f, b);
-    wah_jit_push_gpr(f, a);
+    wah_jit_finish_gpr(f, d, a, b);
 }
 
 static void wah_jit_divrem(wah_jit_fn_t *f, bool sf, int kind) {
     const wah_jit_val_t *top = &f->vals[f->h - 1];
     bool safe = top->kind == WAH_JV_CONST && (sf ? top->imm : (int32_t)top->imm) != 0 &&
                 ((sf ? top->imm : (int32_t)top->imm) != -1 || kind != WAH_JD_DIV_S);
-    int b = wah_jit_pop_gpr(f), a = wah_jit_pop_gpr(f);
+    int b = wah_jit_pop_gpr_ro(f), a = wah_jit_pop_gpr_ro(f);
     bool is_signed = kind == WAH_JD_DIV_S || kind == WAH_JD_REM_S;
     if (!safe) {
         wah_jit_cbz(f, false, sf, b, f->l_trap);
@@ -2082,35 +2221,34 @@ static void wah_jit_divrem(wah_jit_fn_t *f, bool sf, int kind) {
         }
     }
     uint32_t div = is_signed ? WAH_A64_SDIV : WAH_A64_UDIV;
+    int d = wah_jit_dest(f, false, a, b);
     if (kind == WAH_JD_DIV_S || kind == WAH_JD_DIV_U) {
-        wah_a64_rrr(f, div, sf, a, a, b);
+        wah_a64_rrr(f, div, sf, d, a, b);
     } else { // INT_MIN % -1 is 0 as sdiv gives INT_MIN
         wah_a64_rrr(f, div, sf, WAH_JR_T0, a, b);
-        wah_a64_msub(f, sf, a, WAH_JR_T0, b, a);
+        wah_a64_msub(f, sf, d, WAH_JR_T0, b, a);
     }
-    wah_jit_free_gpr(f, b);
-    wah_jit_push_gpr(f, a);
+    wah_jit_finish_gpr(f, d, a, b);
 }
 
 static void wah_jit_fbinop(wah_jit_fn_t *f, int type, int kind) {
     static const uint32_t ops[] = { WAH_A64_FADD, WAH_A64_FSUB, WAH_A64_FMUL, WAH_A64_FDIV, WAH_A64_FMIN, WAH_A64_FMAX };
-    int b = wah_jit_pop_fpr(f), a = wah_jit_pop_fpr(f);
-    wah_a64_fp2(f, ops[kind], type, a, a, b);
-    wah_jit_free_fpr(f, b);
-    wah_jit_push_fpr(f, a);
+    int b = wah_jit_pop_fpr_ro(f), a = wah_jit_pop_fpr_ro(f), d = wah_jit_dest(f, true, a, b);
+    wah_a64_fp2(f, ops[kind], type, d, a, b);
+    wah_jit_finish_fpr(f, d, a, b);
 }
 
 static void wah_jit_funop(wah_jit_fn_t *f, int type, int kind) {
     static const uint32_t ops[] = {
         WAH_A64_FABS, WAH_A64_FNEG, WAH_A64_FRINTP, WAH_A64_FRINTM, WAH_A64_FRINTZ, WAH_A64_FRINTN, WAH_A64_FSQRT,
     };
-    int a = wah_jit_pop_fpr(f);
-    wah_a64_fp2(f, ops[kind], type, a, a, 0);
-    wah_jit_push_fpr(f, a);
+    int a = wah_jit_pop_fpr_ro(f), d = wah_jit_dest(f, true, a, -1);
+    wah_a64_fp2(f, ops[kind], type, d, a, 0);
+    wah_jit_finish_fpr(f, d, a, -1);
 }
 
 static void wah_jit_copysign(wah_jit_fn_t *f, int type) {
-    int b = wah_jit_pop_fpr(f), a = wah_jit_pop_fpr(f);
+    int b = wah_jit_pop_fpr_ro(f), a = wah_jit_pop_fpr(f);
     if (type) wah_a64_movw(f, WAH_A64_MOVZ, true, WAH_JR_T0, 0x8000, 3);
     else wah_a64_movw(f, WAH_A64_MOVZ, false, WAH_JR_T0, 0x8000, 1);
     wah_a64_fmov_from_gp(f, true, WAH_JR_VT1, WAH_JR_T0);
@@ -2127,15 +2265,15 @@ static void wah_jit_fcvt(wah_jit_fn_t *f, bool to_double) {
 }
 
 static void wah_jit_extend(wah_jit_fn_t *f, bool sf, int bits, bool is_signed) {
-    int a = wah_jit_pop_gpr(f);
-    if (is_signed) wah_a64_bfm(f, true, sf, a, a, 0, (uint32_t)bits - 1);
-    else wah_a64_mov(f, false, a, a);
-    wah_jit_push_gpr(f, a);
+    int a = wah_jit_pop_gpr_ro(f), d = wah_jit_dest(f, false, a, -1);
+    if (is_signed) wah_a64_bfm(f, true, sf, d, a, 0, (uint32_t)bits - 1);
+    else wah_a64_mov(f, false, d, a);
+    wah_jit_finish_gpr(f, d, a, -1);
 }
 
 // Trapping float to integer conversion: lo/hi are exclusive or inclusive bounds as described by lo_ge.
 static void wah_jit_trunc(wah_jit_fn_t *f, int type, bool sf, bool is_signed, double lo, bool lo_ge, double hi) {
-    int a = wah_jit_pop_fpr(f);
+    int a = wah_jit_pop_fpr_ro(f);
     union { double d; uint64_t u; } ud;
     union { float s; uint32_t u; } us;
     for (int k = 0; k < 2; k++) {
@@ -2154,14 +2292,14 @@ static void wah_jit_trunc(wah_jit_fn_t *f, int type, bool sf, bool is_signed, do
 }
 
 static void wah_jit_trunc_sat(wah_jit_fn_t *f, int type, bool sf, bool is_signed) {
-    int a = wah_jit_pop_fpr(f), d = wah_jit_alloc(f, false);
+    int a = wah_jit_pop_fpr_ro(f), d = wah_jit_alloc(f, false);
     wah_a64_fcvt_gp(f, is_signed ? WAH_A64_FCVTZS : WAH_A64_FCVTZU, sf, type, d, a);
     wah_jit_free_fpr(f, a);
     wah_jit_push_gpr(f, d);
 }
 
 static void wah_jit_convert(wah_jit_fn_t *f, int type, bool sf, bool is_signed) {
-    int a = wah_jit_pop_gpr(f), d = wah_jit_alloc(f, true);
+    int a = wah_jit_pop_gpr_ro(f), d = wah_jit_alloc(f, true);
     wah_a64_fcvt_gp(f, is_signed ? WAH_A64_SCVTF : WAH_A64_UCVTF, sf, type, d, a);
     wah_jit_free_gpr(f, a);
     wah_jit_push_fpr(f, d);
@@ -2169,7 +2307,7 @@ static void wah_jit_convert(wah_jit_fn_t *f, int type, bool sf, bool is_signed) 
 
 // Bounds-checks the address on the stack and leaves base + x16 as the effective address.
 static int wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size, int *size_reg) {
-    int a = wah_jit_pop_gpr(f);
+    int a = wah_jit_pop_gpr_ro(f);
     int base = WAH_JR_MEM, limit = WAH_JR_MEMSZ;
     *size_reg = -1;
     if (m->memidx != 0) {
@@ -2216,14 +2354,14 @@ static void wah_jit_store(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size_
     static const uint32_t ops[] = { WAH_A64_STRB, WAH_A64_STRH, WAH_A64_STRW, WAH_A64_STRX };
     wah_jit_val_t *v = &f->vals[f->h - 1];
     int r, fp = 0;
-    if (v->kind == WAH_JV_FPR && fp_ok) {
-        r = wah_jit_pop_fpr(f);
+    if ((v->kind == WAH_JV_FPR || v->kind == WAH_JV_LFPR) && fp_ok) {
+        r = wah_jit_pop_fpr_ro(f);
         fp = 1;
     } else if (v->kind == WAH_JV_CONST && v->imm == 0) {
         f->h--;
         r = WAH_A64_ZR;
     } else {
-        r = wah_jit_pop_gpr(f);
+        r = wah_jit_pop_gpr_ro(f);
     }
     int size_reg;
     int base = wah_jit_address(f, m, 1u << size_log2, &size_reg);
@@ -2236,10 +2374,10 @@ static void wah_jit_store(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size_
 
 static void wah_jit_select(wah_jit_fn_t *f) {
     wah_jit_cond_t c = wah_jit_pop_cond(f);
-    bool fp = f->vals[f->h - 1].kind == WAH_JV_FPR || f->vals[f->h - 2].kind == WAH_JV_FPR;
+    bool fp = wah_jit_is_fpr(f->vals[f->h - 1].kind) || wah_jit_is_fpr(f->vals[f->h - 2].kind);
     int b, a;
-    if (fp) { b = wah_jit_pop_fpr(f); a = wah_jit_pop_fpr(f); }
-    else { b = wah_jit_pop_gpr(f); a = wah_jit_pop_gpr(f); }
+    if (fp) { b = wah_jit_pop_fpr_ro(f); a = wah_jit_pop_fpr(f); }
+    else { b = wah_jit_pop_gpr_ro(f); a = wah_jit_pop_gpr(f); }
     int cond = c.cond;
     if (!c.flags) {
         wah_a64_addsub_imm(f, WAH_A64_SUBSI, false, WAH_A64_ZR, c.reg, 0, false);
@@ -2259,15 +2397,27 @@ static void wah_jit_select(wah_jit_fn_t *f) {
 
 static void wah_jit_emit_stub(wah_jit_fn_t *f, const wah_jit_stub_t *s) {
     wah_jit_bind(f, s->stub);
-    if (s->poll) {
+    uint32_t resume = s->resume;
+    if (s->poll) { // Pinned locals are kept in slots while suspended, and restored when resumed or continued
+        uint32_t suspend = wah_jit_new_label(f);
+        wah_jit_sync_pins(f, true);
         wah_jit_call_helper(f, (uintptr_t)wah_jit_poll, (const wah_jit_arg_t[]){ { WAH_JA_CTX, 0 } }, 1, false);
-        wah_jit_cbz(f, false, false, WAH_JR_RET, s->cont);
+        wah_jit_cbz(f, true, false, WAH_JR_RET, suspend);
+        wah_jit_sync_pins(f, false);
+        wah_jit_b(f, s->cont);
+        if (f->npins > 0) {
+            resume = wah_jit_new_label(f);
+            wah_jit_bind(f, resume);
+            wah_jit_sync_pins(f, false);
+            wah_jit_b(f, s->resume);
+        }
+        wah_jit_bind(f, suspend);
     }
     // w0 is a status to suspend with, or an error
     wah_a64_addsub_imm(f, WAH_A64_SUBSI, false, WAH_A64_ZR, WAH_JR_RET, 0, false);
     wah_jit_bcond(f, WAH_A64_LT, f->l_err);
     wah_a64_ldst(f, WAH_A64_LDRX, WAH_JR_T0, WAH_JR_CTX, WAH_JIT_CTX_OFF(jit));
-    wah_jit_adr(f, WAH_JR_T1, s->resume);
+    wah_jit_adr(f, WAH_JR_T1, resume);
     wah_a64_ldst(f, WAH_A64_STRX, WAH_JR_T1, WAH_JR_T0, offsetof(wah_jit_ctx_t, resume_pc));
     wah_a64_ldst(f, WAH_A64_STRX, WAH_JR_FP, WAH_JR_T0, offsetof(wah_jit_ctx_t, resume_fp));
     wah_jit_exit(f);
@@ -2517,6 +2667,7 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             uint32_t idx = in->imm.u32;
             const wah_func_type_t *ft = wah_resolve_func_type(f->module, idx);
             wah_jit_flush(f);
+            wah_jit_sync_pins(f, true);
             uint32_t args = f->h - ft->param_count;
             if (idx < f->module->import_function_count) {
                 const wah_jit_arg_t a[] = { { WAH_JA_CTX, 0 }, { WAH_JA_IMM, idx }, { WAH_JA_SLOT, args } };
@@ -2526,12 +2677,14 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
                 wah_jit_call_wasm(f, wah_jit_slot_off(f, args), idx - f->module->import_function_count);
             }
             wah_jit_reload_memory(f);
+            wah_jit_sync_pins(f, false);
             wah_jit_reset(f, args + ft->result_count);
             break;
         }
         case WAH_OP_CALL_INDIRECT: {
             const wah_func_type_t *ft = &f->module->types[in->imm.u32_u32.a];
             wah_jit_flush(f);
+            wah_jit_sync_pins(f, true);
             f->h--;
             uint32_t args = f->h - ft->param_count, done = wah_jit_new_label(f);
             const wah_jit_arg_t a[] = {
@@ -2543,6 +2696,7 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             wah_jit_call_code(f, wah_jit_slot_off(f, args), done);
             wah_jit_bind(f, done);
             wah_jit_reload_memory(f);
+            wah_jit_sync_pins(f, false);
             wah_jit_reset(f, args + ft->result_count);
             break;
         }
@@ -2552,6 +2706,12 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
 
         case WAH_OP_LOCAL_GET: {
             uint32_t idx = in->imm.u32;
+            if (f->pin_of && f->pin_of[idx] >= 0) {
+                int8_t p = f->pin_of[idx];
+                wah_jit_push(f, (wah_jit_val_t){ .kind = p & WAH_JIT_PIN_FP ? WAH_JV_LFPR : WAH_JV_LGPR,
+                                                 .reg = (uint8_t)(p & (WAH_JIT_PIN_FP - 1)), .imm = idx });
+                break;
+            }
             bool fp = wah_jit_is_fp_type(wah_jit_local_type(f, body, idx));
             int r = wah_jit_alloc(f, fp);
             wah_jit_ldst(f, false, fp, true, r, WAH_JR_FP, idx * (uint32_t)sizeof(wah_value_t));
@@ -2560,7 +2720,17 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             break;
         }
         case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE: {
-            uint32_t off = in->imm.u32 * (uint32_t)sizeof(wah_value_t);
+            uint32_t idx = in->imm.u32, off = idx * (uint32_t)sizeof(wah_value_t);
+            if (f->pin_of && f->pin_of[idx] >= 0) {
+                wah_jit_set_pinned(f, idx);
+                wah_jit_drop(f);
+                if (op == WAH_OP_LOCAL_TEE) {
+                    int8_t p = f->pin_of[idx];
+                    wah_jit_push(f, (wah_jit_val_t){ .kind = p & WAH_JIT_PIN_FP ? WAH_JV_LFPR : WAH_JV_LGPR,
+                                                     .reg = (uint8_t)(p & (WAH_JIT_PIN_FP - 1)), .imm = idx });
+                }
+                break;
+            }
             if (op == WAH_OP_LOCAL_TEE && f->vals[f->h - 1].kind == WAH_JV_SLOT) {
                 if (wah_jit_is_fp_type(wah_jit_local_type(f, body, in->imm.u32))) wah_jit_to_fpr(f, f->h - 1);
                 else wah_jit_to_gpr(f, f->h - 1);
@@ -2576,19 +2746,19 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             wah_type_t t = idx < m->import_global_count ? m->global_imports[idx].type
                                                         : m->globals[idx - m->import_global_count].type;
             bool fp = wah_jit_is_fp_type(t), wide = t == WAH_TYPE_I64 || t == WAH_TYPE_F64;
-            int base = WAH_JR_GLOBALS;
+            bool get = op == WAH_OP_GLOBAL_GET;
+            int r = get ? wah_jit_alloc(f, fp) : fp ? wah_jit_pop_fpr_ro(f) : wah_jit_pop_gpr_ro(f);
+            int base = wah_jit_globals(f);
             if (indirect) {
-                wah_jit_ldst(f, false, false, true, WAH_JR_T1, WAH_JR_GLOBALS, off);
+                wah_jit_ldst(f, false, false, true, WAH_JR_T1, base, off);
                 base = WAH_JR_T1;
                 off = 0;
             }
-            if (op == WAH_OP_GLOBAL_GET) {
-                int r = wah_jit_alloc(f, fp);
+            if (get) {
                 wah_jit_ldst(f, false, fp, wide, r, base, off);
                 if (fp) wah_jit_push_fpr(f, r);
                 else wah_jit_push_gpr(f, r);
             } else {
-                int r = fp ? wah_jit_pop_fpr(f) : wah_jit_pop_gpr(f);
                 wah_jit_ldst(f, true, fp, wide, r, base, off);
                 if (fp) wah_jit_free_fpr(f, r);
                 else wah_jit_free_gpr(f, r);
@@ -2627,9 +2797,11 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
         case WAH_OP_MEMORY_SIZE: wah_jit_memory_size(f, in->imm.u32); break;
         case WAH_OP_MEMORY_GROW: {
             wah_jit_flush(f);
+            wah_jit_sync_pins(f, true);
             const wah_jit_arg_t a[] = { { WAH_JA_CTX, 0 }, { WAH_JA_IMM, in->imm.u32 }, { WAH_JA_SLOT_U32, f->h - 1 } };
             wah_jit_call_helper(f, (uintptr_t)wah_jit_memory_grow, a, 3, false);
             wah_jit_reload_memory(f);
+            wah_jit_sync_pins(f, false); // Doesn't change the return register
             wah_jit_reset(f, f->h - 1);
             f->gpr[WAH_JR_RET] = WAH_JO_TEMP;
             wah_jit_push_gpr(f, WAH_JR_RET);
@@ -2637,8 +2809,9 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
         }
         case WAH_OP_MEMORY_FILL: case WAH_OP_MEMORY_COPY: case WAH_OP_MEMORY_INIT: {
             wah_jit_flush(f);
+            wah_jit_sync_pins(f, true);
             uint32_t start = wah_jit_new_label(f);
-            wah_jit_bind(f, start); // Resumes here with operands in slots
+            wah_jit_bind(f, start); // Resumes here with operands and pinned locals in slots
             wah_jit_arg_t a[4] = { { WAH_JA_CTX, 0 } };
             uintptr_t fn;
             uint32_t nargs = 3;
@@ -2655,13 +2828,16 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             wah_jit_call_helper(f, fn, a, nargs, false);
             wah_jit_check_status(f, start);
             wah_jit_reload_memory(f);
+            wah_jit_sync_pins(f, false);
             wah_jit_reset(f, f->h - 3);
             break;
         }
         case WAH_OP_DATA_DROP: {
             wah_jit_flush(f);
+            wah_jit_sync_pins(f, true);
             const wah_jit_arg_t a[] = { { WAH_JA_CTX, 0 }, { WAH_JA_IMM, in->imm.u32 } };
             wah_jit_call_helper(f, (uintptr_t)wah_jit_data_drop, a, 2, false);
+            wah_jit_sync_pins(f, false);
             wah_jit_reset(f, f->h);
             break;
         }
@@ -2781,10 +2957,11 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
         case WAH_OP_F64_PROMOTE_F32: wah_jit_fcvt(f, true); break;
         // Values are kept as raw bits, so reinterpretation only moves them between register files if needed
         case WAH_OP_I32_REINTERPRET_F32: case WAH_OP_I64_REINTERPRET_F64:
-            if (f->vals[f->h - 1].kind == WAH_JV_FPR) wah_jit_to_gpr(f, f->h - 1);
+            if (wah_jit_is_fpr(f->vals[f->h - 1].kind)) wah_jit_to_gpr(f, f->h - 1);
             break;
         case WAH_OP_F32_REINTERPRET_I32: case WAH_OP_F64_REINTERPRET_I64:
-            if (f->vals[f->h - 1].kind == WAH_JV_GPR || f->vals[f->h - 1].kind == WAH_JV_FLAGS) wah_jit_to_fpr(f, f->h - 1);
+            if (f->vals[f->h - 1].kind == WAH_JV_GPR || f->vals[f->h - 1].kind == WAH_JV_LGPR ||
+                f->vals[f->h - 1].kind == WAH_JV_FLAGS) wah_jit_to_fpr(f, f->h - 1);
             break;
 
         default: WAH_JIT_FAIL(f, "unhandled opcode"); break;
@@ -2855,11 +3032,62 @@ fail:
 }
 
 static void wah_jit_free_fn(wah_jit_fn_t *f) {
+    wah_free(f->alloc, f->pin_of);
     wah_free(f->alloc, f->vals);
     wah_free(f->alloc, f->ctl);
     wah_free(f->alloc, f->labels);
     wah_free(f->alloc, f->patches);
     wah_free(f->alloc, f->stubs);
+}
+
+// Pins the most used locals to registers, weighting uses by loop depth.
+static void wah_jit_choose_pins(wah_jit_fn_t *f, const wah_code_body_t *body, const wah_analyzed_code_t *ac) {
+    if (WAH_JIT_PIN_GPR_COUNT + WAH_JIT_PIN_FPR_COUNT == 0 || f->nlocals == 0) return;
+    void *p = NULL;
+    if (wah_malloc(f->alloc, f->nlocals, sizeof(uint64_t), &p) != WAH_OK) return; // Not pinned then
+    uint64_t *score = (uint64_t *)p;
+    memset(score, 0, sizeof(uint64_t) * f->nlocals);
+    uint32_t depth = 0, loops[WAH_MAX_CONTROL_DEPTH + 1] = {0}, nblocks = 0;
+    for (uint32_t i = 0; i < ac->instr_count; i++) {
+        const wah_decoded_instr_t *in = &ac->instrs[i];
+        switch (in->opcode) {
+            case WAH_OP_BLOCK: case WAH_OP_IF: case WAH_OP_LOOP:
+                if (nblocks <= WAH_MAX_CONTROL_DEPTH) loops[nblocks] = in->opcode == WAH_OP_LOOP;
+                depth += in->opcode == WAH_OP_LOOP;
+                nblocks++;
+                break;
+            case WAH_OP_END:
+                if (nblocks > 0 && --nblocks <= WAH_MAX_CONTROL_DEPTH) depth -= loops[nblocks];
+                break;
+            case WAH_OP_LOCAL_GET: case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE:
+                score[in->imm.u32] += (uint64_t)1 << (3 * (depth < 8 ? depth : 8));
+                break;
+            default: break;
+        }
+    }
+    for (int fp = 0; fp < 2; fp++) {
+        const uint8_t *regs = fp ? wah_jit_pin_fprs : wah_jit_pin_gprs;
+        uint32_t n = fp ? WAH_JIT_PIN_FPR_COUNT : WAH_JIT_PIN_GPR_COUNT;
+        for (uint32_t k = 0; k < n; k++) {
+            uint32_t best = UINT32_MAX;
+            for (uint32_t i = 0; i < f->nlocals; i++) {
+                if (score[i] > 0 && wah_jit_is_fp_type(wah_jit_local_type(f, body, i)) == fp &&
+                    (best == UINT32_MAX || score[i] > score[best])) best = i;
+            }
+            if (best == UINT32_MAX) break;
+            score[best] = 0;
+            if (!f->pin_of) {
+                if (wah_malloc(f->alloc, f->nlocals, sizeof(int8_t), &p) != WAH_OK) break;
+                f->pin_of = (int8_t *)p;
+                memset(f->pin_of, -1, f->nlocals);
+            }
+            f->pin_of[best] = (int8_t)(regs[k] | (fp ? WAH_JIT_PIN_FP : 0));
+            f->pins[f->npins++] = (wah_jit_pin_t){ .idx = best, .reg = regs[k], .fp = fp != 0 };
+            if (fp) f->fpr_pins |= 1u << regs[k];
+            else f->gpr_pins |= 1u << regs[k];
+        }
+    }
+    wah_free(f->alloc, score);
 }
 
 static void wah_jit_compile_body(wah_jit_fn_t *f, uint32_t local_idx, const wah_code_body_t *body,
@@ -2877,6 +3105,7 @@ static void wah_jit_compile_body(wah_jit_fn_t *f, uint32_t local_idx, const wah_
         }
         f->vals = (wah_jit_val_t *)p;
     }
+    wah_jit_choose_pins(f, body, ac);
     wah_jit_reset(f, 0);
     f->l_trap = wah_jit_new_label(f);
     f->l_oob = wah_jit_new_label(f);
@@ -2894,6 +3123,7 @@ static void wah_jit_compile_body(wah_jit_fn_t *f, uint32_t local_idx, const wah_
     } else {
         wah_jit_zero_loop(f, first * (uint32_t)sizeof(wah_value_t), nzero);
     }
+    wah_jit_sync_pins(f, false);
     wah_jit_poll_check(f);
 
     for (uint32_t i = 0; i < ac->instr_count && !f->fail; i++) {
@@ -2998,8 +3228,6 @@ static void wah_jit_trampoline(wah_jit_fn_t *f) {
     wah_x64_mov(f, true, WAH_JR_FP, a_fp);
     wah_jit_ldst(f, false, false, true, WAH_JR_MEM, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_base));
     wah_jit_ldst(f, false, false, true, WAH_JR_MEMSZ, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_size));
-    wah_jit_ldst(f, false, false, true, WAH_JR_LIMIT, WAH_JR_CTX, WAH_JIT_CTX_OFF(frame_ptr));
-    wah_jit_ldst(f, false, false, true, WAH_JR_GLOBALS, WAH_JR_CTX, WAH_JIT_CTX_OFF(globals));
     wah_x64_rr(f, WAH_X64_TEST, WAH_X64_W, a_resume, a_resume);
     uint32_t resume = wah_x64_jcc8(f, WAH_X64_NE);
     wah_x64_rr(f, WAH_X64_GRP5, 0, 2, a_code); // CALL, returning here
@@ -3025,10 +3253,13 @@ static void wah_jit_trampoline(wah_jit_fn_t *f) {
 
 // Generates the trampoline: wah_error_t entry(ctx, code, resume_pc, fp) calls code or jumps to resume_pc.
 static void wah_jit_trampoline(wah_jit_fn_t *f) {
-    wah_a64(f, 0xA9800000u | (uint32_t)(-12 & 0x7f) << 15 | 30u << 10 | WAH_A64_SP << 5 | 29u); // STP x29, x30, [sp, #-96]!
+    wah_a64(f, 0xA9800000u | (uint32_t)(-20 & 0x7f) << 15 | 30u << 10 | WAH_A64_SP << 5 | 29u); // STP x29, x30, [sp, #-160]!
     wah_a64_addsub_imm(f, WAH_A64_ADDI, true, 29, WAH_A64_SP, 0, false);
     for (int i = 0; i < 5; i++) { // STP x19+2i, x20+2i, [sp, #16+16i]
         wah_a64(f, 0xA9000000u | (uint32_t)(2 + 2 * i) << 15 | (uint32_t)(20 + 2 * i) << 10 | WAH_A64_SP << 5 | (uint32_t)(19 + 2 * i));
+    }
+    for (int i = 0; i < 4; i++) { // STP d8+2i, d9+2i, [sp, #96+16i]
+        wah_a64(f, 0x6D000000u | (uint32_t)(12 + 2 * i) << 15 | (uint32_t)(9 + 2 * i) << 10 | WAH_A64_SP << 5 | (uint32_t)(8 + 2 * i));
     }
     wah_a64_mov(f, true, WAH_JR_CTX, 0);
     wah_a64_mov(f, true, WAH_JR_FP, 3);
@@ -3047,10 +3278,13 @@ static void wah_jit_trampoline(wah_jit_fn_t *f) {
     wah_a64(f, 0xD61F0000u | 2u << 5);      // BR x2
     f->jm->exit_pos = wah_jit_pos(f);
     wah_a64(f, 0xD51B4400u | WAH_JR_FPCR_HOST);
-    for (int i = 4; i >= 0; i--) { // LDP
+    for (int i = 3; i >= 0; i--) { // LDP
+        wah_a64(f, 0x6D400000u | (uint32_t)(12 + 2 * i) << 15 | (uint32_t)(9 + 2 * i) << 10 | WAH_A64_SP << 5 | (uint32_t)(8 + 2 * i));
+    }
+    for (int i = 4; i >= 0; i--) {
         wah_a64(f, 0xA9400000u | (uint32_t)(2 + 2 * i) << 15 | (uint32_t)(20 + 2 * i) << 10 | WAH_A64_SP << 5 | (uint32_t)(19 + 2 * i));
     }
-    wah_a64(f, 0xA8C00000u | 12u << 15 | 30u << 10 | WAH_A64_SP << 5 | 29u); // LDP x29, x30, [sp], #96
+    wah_a64(f, 0xA8C00000u | 20u << 15 | 30u << 10 | WAH_A64_SP << 5 | 29u); // LDP x29, x30, [sp], #160
     wah_a64(f, 0xD65F03C0u);
 }
 
