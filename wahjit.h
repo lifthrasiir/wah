@@ -3184,6 +3184,11 @@ static void wah_jit_instantiate(wah_exec_context_t *ctx) {
     *ctx->jit = (wah_jit_ctx_t){0};
 }
 
+// -fsanitize=function (in -fsanitize=undefined since Clang 17) reads a type signature just before the callee,
+// which is unmapped for the trampoline at the start of the code.
+#if defined(__clang__) && WAH_HAS_ATTRIBUTE(no_sanitize)
+__attribute__((no_sanitize("function")))
+#endif
 static bool wah_jit_run(wah_exec_context_t *ctx, wah_error_t *out) {
     const wah_module_t *m = ctx->module;
     wah_jit_module_t *jm = m->jit;
