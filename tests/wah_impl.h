@@ -74,9 +74,6 @@ const wah_module_t *wah_debug_linked_module(const wah_exec_context_t *ctx, uint3
 const wah_exec_context_t *wah_debug_linked_ctx(const wah_exec_context_t *ctx, uint32_t i);
 
 // --- Linked module patching (for spectest realloc fixups) ---
-void wah_debug_set_linked_module(wah_exec_context_t *ctx, uint32_t i, const wah_module_t *mod);
-void wah_debug_set_linked_ctx(wah_exec_context_t *ctx, uint32_t i, wah_exec_context_t *lctx);
-void wah_debug_relocate_exec_refs(wah_exec_context_t *ctx, void *old_base, size_t byte_size, ptrdiff_t delta);
 
 typedef struct {
     uint32_t offset;

@@ -35,7 +35,9 @@ static void test_repeated_imports(void) {
     assert_ok(wah_link_context(&c, "p", &p));
     assert_ok(wah_instantiate(&c));
     assert_eq_u32(p.dependent_count, 1);
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     assert_eq_u32(p.gc->gc_dependent_count, 1);
+#endif
 
     // All imports still follow the grow
     wah_value_t r;
@@ -45,7 +47,9 @@ static void test_repeated_imports(void) {
 
     wah_free_exec_context(&c);
     assert_eq_u32(p.dependent_count, 0);
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     assert_eq_u32(p.gc->gc_dependent_count, 0);
+#endif
     wah_free_exec_context(&p);
     wah_free_module(&cmod);
     wah_free_module(&pmod);

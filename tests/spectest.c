@@ -53,11 +53,12 @@ typedef struct {
     const char *path;
     tally_t tally;
 
-    spectest_module_def_t *defs;
+    // Allocated individually, as modules and contexts are immovable once in use
+    spectest_module_def_t **defs;
     size_t def_count;
     size_t def_capacity;
 
-    spectest_instance_t *instances;
+    spectest_instance_t **instances;
     size_t instance_count;
     size_t instance_capacity;
 
@@ -156,8 +157,8 @@ static void free_instance_exec(spectest_env_t *env, wah_exec_context_t *ctx) {
 static spectest_module_def_t *find_def_by_name(spectest_env_t *env, const char *name) {
     size_t i;
     for (i = 0; i < env->def_count; ++i) {
-        if (env->defs[i].name && strcmp(env->defs[i].name, name) == 0) {
-            return &env->defs[i];
+        if (env->defs[i]->name && strcmp(env->defs[i]->name, name) == 0) {
+            return env->defs[i];
         }
     }
     return NULL;
@@ -166,9 +167,9 @@ static spectest_module_def_t *find_def_by_name(spectest_env_t *env, const char *
 static spectest_instance_t *find_instance_by_name(spectest_env_t *env, const char *name) {
     size_t i;
     for (i = 0; i < env->instance_count; ++i) {
-        if (env->instances[i].live && env->instances[i].name &&
-            strcmp(env->instances[i].name, name) == 0) {
-            return &env->instances[i];
+        if (env->instances[i]->live && env->instances[i]->name &&
+            strcmp(env->instances[i]->name, name) == 0) {
+            return env->instances[i];
         }
     }
     return NULL;
@@ -585,36 +586,14 @@ static int setup_spectest_host(spectest_env_t *env) {
 
 static spectest_module_def_t *add_module_def(spectest_env_t *env, const char *name) {
     spectest_module_def_t *def;
-    spectest_module_def_t *old_base = env->defs;
     if (!ensure_capacity((void **)&env->defs, &env->def_capacity, sizeof(*env->defs), env->def_count + 1)) {
         return NULL;
     }
-    if (env->defs != old_base && old_base != NULL) {
-        ptrdiff_t delta = (char *)env->defs - (char *)old_base;
-        for (size_t i = 0; i < env->instance_count; i++) {
-            if (env->instances[i].def)
-                env->instances[i].def = (spectest_module_def_t *)((char *)env->instances[i].def + delta);
-            if (env->instances[i].live) {
-                wah_exec_context_t *ec = &env->instances[i].exec;
-                wah_debug_relocate_exec_refs(ec, old_base, env->def_count * sizeof(*env->defs), delta);
-                for (uint32_t j = 0; j < wah_debug_linked_module_count(ec); j++) {
-                    const char *p = (const char *)wah_debug_linked_module(ec, j);
-                    if (p >= (const char *)old_base &&
-                        p < (const char *)old_base + env->def_count * sizeof(*env->defs)) {
-                        wah_debug_set_linked_module(ec, j, (const wah_module_t *)(p + delta));
-                    }
-                }
-            }
-        }
-        for (size_t i = 0; i < env->registered_count; i++) {
-            if (env->registered[i].def)
-                env->registered[i].def = (spectest_module_def_t *)((char *)env->registered[i].def + delta);
-        }
-        if (env->current_def)
-            env->current_def = (spectest_module_def_t *)((char *)env->current_def + delta);
+    def = (spectest_module_def_t *)calloc(1, sizeof(*def));
+    if (!def) {
+        return NULL;
     }
-    def = &env->defs[env->def_count++];
-    memset(def, 0, sizeof(*def));
+    env->defs[env->def_count++] = def;
     if (name) {
         def->name = strdup(name);
         if (!def->name) {
@@ -626,34 +605,15 @@ static spectest_module_def_t *add_module_def(spectest_env_t *env, const char *na
 
 static spectest_instance_t *add_instance(spectest_env_t *env, const char *name, spectest_module_def_t *def) {
     spectest_instance_t *instance;
-    spectest_instance_t *old_base = env->instances;
     if (!ensure_capacity((void **)&env->instances, &env->instance_capacity,
                          sizeof(*env->instances), env->instance_count + 1)) {
         return NULL;
     }
-    if (env->instances != old_base && old_base != NULL) {
-        ptrdiff_t delta = (char *)env->instances - (char *)old_base;
-        size_t old_byte_size = env->instance_count * sizeof(*env->instances);
-        if (env->current_instance)
-            env->current_instance = (spectest_instance_t *)((char *)env->current_instance + delta);
-        for (size_t ri = 0; ri < env->registered_count; ri++) {
-            if (env->registered[ri].instance)
-                env->registered[ri].instance = (spectest_instance_t *)((char *)env->registered[ri].instance + delta);
-        }
-        for (size_t ii = 0; ii < env->instance_count; ii++) {
-            if (env->instances[ii].live) {
-                wah_debug_relocate_exec_refs(&env->instances[ii].exec, old_base, old_byte_size, delta);
-            }
-        }
-        for (size_t hi = 0; hi < env->host_ref_count; hi++) {
-            const char *p = (const char *)env->host_refs[hi].ctx;
-            if (p >= (const char *)old_base && p < (const char *)old_base + old_byte_size) {
-                env->host_refs[hi].ctx = (const wah_exec_context_t *)(p + delta);
-            }
-        }
+    instance = (spectest_instance_t *)calloc(1, sizeof(*instance));
+    if (!instance) {
+        return NULL;
     }
-    instance = &env->instances[env->instance_count++];
-    memset(instance, 0, sizeof(*instance));
+    env->instances[env->instance_count++] = instance;
     instance->def = def;
     instance->live = 1;
     if (name) {
@@ -667,12 +627,12 @@ static spectest_instance_t *add_instance(spectest_env_t *env, const char *name, 
 
 static void discard_last_instance(spectest_env_t *env, spectest_instance_t *instance) {
     if (!env || !instance || env->instance_count == 0 ||
-        instance != &env->instances[env->instance_count - 1]) {
+        instance != env->instances[env->instance_count - 1]) {
         return;
     }
     free_instance_exec(env, &instance->exec);
     free(instance->name);
-    memset(instance, 0, sizeof(*instance));
+    free(instance);
     env->instance_count--;
 }
 
@@ -1064,14 +1024,16 @@ static int execute_command(const wast_node_t *node, spectest_env_t *env) {
 static void free_env(spectest_env_t *env) {
     size_t i;
     for (i = 0; i < env->instance_count; ++i) {
-        if (env->instances[i].live) {
-            free_instance_exec(env, &env->instances[i].exec);
+        if (env->instances[i]->live) {
+            free_instance_exec(env, &env->instances[i]->exec);
         }
-        free(env->instances[i].name);
+        free(env->instances[i]->name);
+        free(env->instances[i]);
     }
     for (i = 0; i < env->def_count; ++i) {
-        wah_free_module(&env->defs[i].module);
-        free(env->defs[i].name);
+        wah_free_module(&env->defs[i]->module);
+        free(env->defs[i]->name);
+        free(env->defs[i]);
     }
     for (i = 0; i < env->registered_count; ++i) {
         free(env->registered[i].name);
