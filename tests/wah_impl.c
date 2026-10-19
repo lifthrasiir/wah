@@ -1,5 +1,9 @@
 #define WAH_IMPLEMENTATION
+#ifdef WAH_TEST_JIT
+#include "../wahjit.h"
+#else
 #include "../wah.h"
+#endif
 #include "wah_impl.h"
 #include <stdio.h>
 #include <string.h>

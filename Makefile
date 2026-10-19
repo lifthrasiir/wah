@@ -24,7 +24,12 @@ ifneq ($(findstring undefined,$(SANITIZERS)),)
 endif
 endif
 
-TEST_CFLAGS := $(CFLAGS) $(SANITIZER_FLAGS)
+# JIT=1 builds wah_impl.o with wahjit.h, so that API-only tests (including spec tests) run natively where possible.
+ifdef JIT
+    TEST_CFLAGS_JIT := -DWAH_TEST_JIT
+endif
+
+TEST_CFLAGS := $(CFLAGS) $(SANITIZER_FLAGS) $(TEST_CFLAGS_JIT)
 TEST_CXXFLAGS := $(CXXFLAGS) $(SANITIZER_FLAGS)
 TEST_LDFLAGS := $(LDFLAGS) $(SANITIZER_FLAGS)
 
@@ -47,7 +52,14 @@ API_SRCS := $(filter-out $(IMPL_SRCS), $(ALL_TEST_SRCS))
 
 # --- Precompiled objects ---
 
-tests/wah_impl.o: tests/wah_impl.c tests/wah_impl.h wah.h
+# Records whether JIT was given, so that switching it rebuilds wah_impl.o and relinks tests
+tests/.build_mode: FORCE
+	@echo "$(if $(JIT),jit,interp)" | cmp -s - $@ || echo "$(if $(JIT),jit,interp)" > $@
+
+.PHONY: FORCE
+FORCE:
+
+tests/wah_impl.o: tests/wah_impl.c tests/wah_impl.h wah.h wahjit.h tests/.build_mode
 	@echo "## Compiling wah_impl.o..."
 	@$(CC) $(TEST_CFLAGS) -c $< -o $@
 
@@ -58,7 +70,7 @@ tests/common.o: tests/common.c tests/common.h wah.h
 # --- Test binaries ---
 
 # Standalone tests (have WAH_IMPLEMENTATION): link with common.o
-$(patsubst %.c, %, $(IMPL_SRCS)): tests/test_%: tests/test_%.c tests/common.o wah.h tests/common.h
+$(patsubst %.c, %, $(IMPL_SRCS)): tests/test_%: tests/test_%.c tests/common.o wah.h wahjit.h tests/common.h
 	@echo "## Compiling test_$*.c..."
 	@$(CC) $(TEST_CFLAGS) -c $< -o tests/test_$*.o
 	@$(CC) tests/test_$*.o tests/common.o -o $@ $(TEST_LDFLAGS)
@@ -225,7 +237,7 @@ clean:
 	@echo "## Cleaning up..."
 	@rm -f $(patsubst %.c, %, $(ALL_TEST_SRCS)) $(patsubst %.c, %_cov, $(ALL_TEST_SRCS))
 	@rm -f tests/test_cpp
-	@rm -f tests/*.o tests/*.o.tmp
+	@rm -f tests/*.o tests/*.o.tmp tests/.build_mode
 	@rm -f $(FUZZ_HARNESS_BIN)
 	@rm -f $(LIBFUZZER_HARNESS_BIN)
 	@rm -f bench/bench_coremark

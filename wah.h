@@ -722,7 +722,11 @@ private:
     bool x86_64_features_known; // CPUID is slow under virtualization, so it is done once per module
     uint32_t x86_64_features; // wah_x86_64_features_t (private)
 
+#ifdef WAH_JIT
+    struct wah_jit_module_s *jit; // Native code from wahjit.h, NULL if not compiled
+#else
     void *reserved; // Ensure that at least one pimpl pointer can be added
+#endif
 #endif
 } wah_module_t;
 
@@ -858,7 +862,11 @@ private:
     uint32_t dependent_count;
     uint32_t dependents_cap;
 
+#ifdef WAH_JIT
+    struct wah_jit_ctx_s *jit; // State of native execution from wahjit.h, NULL if always interpreted
+#else
     void *reserved; // Ensure that at least one pimpl pointer can be added
+#endif
 #endif
 } wah_exec_context_t;
 
@@ -889,6 +897,9 @@ typedef struct {
     //   Custom allocator to be used for parsing and eventually by the returned module.
     //   The standard allocator is used if NULL is given.
     const wah_alloc_t *alloc;
+    // Field: disable_jit [default = false]
+    //   Whether to always interpret the module even when the implementation is compiled with wahjit.h.
+    bool disable_jit;
 } wah_parse_options_t;
 
 // Function: wah_parse_module
@@ -3080,6 +3091,17 @@ typedef struct {
 
     uint32_t max_stack_depth;
 } wah_analyzed_code_t;
+
+#ifdef WAH_JIT // Hooks implemented by wahjit.h
+static void wah_jit_new_module(wah_module_t *module);
+static void wah_jit_compile_function(wah_module_t *module, uint32_t local_idx, const wah_analyzed_code_t *ac);
+static void wah_jit_finish_module(wah_module_t *module);
+static void wah_jit_free_module(wah_module_t *module);
+static void wah_jit_instantiate(wah_exec_context_t *ctx);
+static bool wah_jit_run(wah_exec_context_t *ctx, wah_error_t *err); // False if the activation should be interpreted
+static void wah_jit_cancel(wah_exec_context_t *ctx);
+static void wah_jit_free_context(wah_exec_context_t *ctx);
+#endif
 
 typedef struct wah_type_check_cache_entry_s {
     const struct wah_module_s *sub_module;
@@ -9557,6 +9579,9 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         ac.ref_nodes = NULL;
         module->code_bodies[i].max_stack_depth = ac.max_stack_depth;
         module->code_bodies[i].max_frame_slots = module->code_bodies[i].local_count + ac.max_stack_depth;
+#ifdef WAH_JIT
+        if (module->jit) wah_jit_compile_function(module, i, &ac);
+#endif
 
         WAH_CHECK_GOTO(wah_lower_analyzed_code(module, &ac, &module->code_bodies[i].parsed_code), cleanup);
         wah_free_analyzed_code(&ac, alloc);
@@ -10341,6 +10366,9 @@ wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t
     module->enabled_features = wah_feature_closure(requested) & (WAH_COMPILED_FEATURES);
     module->required_features = 0;
     module->fuel_metering = options && options->enable_fuel_metering;
+#ifdef WAH_JIT
+    if (!(options && options->disable_jit) && !module->fuel_metering) wah_jit_new_module(module);
+#endif
 
     const uint8_t *ptr = binary;
     const uint8_t *end = binary + binary_size;
@@ -10429,6 +10457,9 @@ wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t
         module->functions_cap = module->wasm_function_count;
     }
     module->local_function_count = module->wasm_function_count;
+#ifdef WAH_JIT
+    if (module->jit) wah_jit_finish_module(module);
+#endif
 
     return WAH_OK;
 
@@ -11741,6 +11772,9 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
         wah_poison_link_domain(exec_ctx);
     }
     wah_free_timer(exec_ctx);
+#ifdef WAH_JIT
+    wah_jit_free_context(exec_ctx);
+#endif
     exec_ctx->lifecycle = (struct wah_exec_lifecycle_s){0};
     wah_free(alloc, exec_ctx->stack_buffer);
     wah_free(alloc, exec_ctx->exception_handlers);
@@ -16237,6 +16271,9 @@ static void wah_gc_sweep_unreachable_exceptions(wah_exec_context_t *ctx) {
 
 static void wah_cancel_internal(wah_exec_context_t *ctx) {
     wah_timer_set_armed(ctx, false);
+#ifdef WAH_JIT
+    wah_jit_cancel(ctx);
+#endif
     WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0);
     wah_recompute_poll_flag(ctx);
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
@@ -16442,6 +16479,9 @@ static wah_error_t wah_resume_internal(wah_exec_context_t *ctx) {
             ctx->sp = results + ctx->lifecycle.entry_result_count;
         }
     } else {
+#ifdef WAH_JIT
+        if (!wah_jit_run(ctx, &err))
+#endif
         err = wah_run_interpreter(ctx);
     }
     wah_timer_set_armed(ctx, false);
@@ -16682,6 +16722,9 @@ void wah_free_module(wah_module_t *module) {
     if (!module) return;
     wah_alloc_t alloc_storage = wah_resolve_alloc(&module->alloc);
     const wah_alloc_t *alloc = &alloc_storage;
+#ifdef WAH_JIT
+    wah_jit_free_module(module);
+#endif
 
     if (module->types) {
         for (uint32_t i = 0; i < module->type_count; ++i) {
@@ -18441,6 +18484,9 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     WAH_CHECK_GOTO(wah_init_table_init_exprs(ctx, ctx), cleanup);
     WAH_CHECK_GOTO(wah_init_active_elem_segments(ctx, ctx), cleanup);
     WAH_CHECK_GOTO(wah_init_active_data_segments(ctx, ctx), cleanup);
+#ifdef WAH_JIT
+    wah_jit_instantiate(ctx);
+#endif
 
     if (module->has_start_function) {
         WAH_CHECK_GOTO(wah_call_module(ctx, module->start_function_idx, NULL, 0, NULL, false), cleanup);

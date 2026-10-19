@@ -23,3 +23,4 @@ cov
 coverage.info
 coverage_report
 .claude
+tests/.build_mode
