@@ -408,7 +408,11 @@ cleanup:
 }
 
 void wah_debug_gc_step(wah_exec_context_t *ctx) {
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     wah_gc_step(ctx);
+#else
+    (void)ctx;
+#endif
 }
 
 bool wah_debug_is_interrupted_from_host(const wah_call_context_t *ctx) {

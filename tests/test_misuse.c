@@ -49,7 +49,11 @@ static void test_gc_misuse(void) {
     printf("Testing GC misuse handling...\n");
 
     wah_gc_heap_stats_t stats = { .object_count = 42, .allocated_bytes = 99 };
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     assert_err(wah_gc_start(NULL), WAH_ERROR_MISUSE);
+#else
+    assert_err(wah_gc_start(NULL), WAH_ERROR_DISABLED_FEATURE);
+#endif
     wah_gc_heap_stats(NULL, &stats);
     assert_eq_u32(stats.object_count, 0);
     assert_eq_u64(stats.allocated_bytes, 0);
