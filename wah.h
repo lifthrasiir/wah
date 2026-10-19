@@ -136,6 +136,7 @@ typedef enum {
     WAH_ERROR_EXCEPTION = -15,             // Uncaught exception
     WAH_ERROR_DISABLED_FEATURE = -16,      // Used a feature not in WAH_COMPILED_FEATURES
     WAH_ERROR_MULTI_RETURN = -17,          // Would return multiple values if not disallowed
+    WAH_ERROR_UNSUPPORTED = -18,           // Not supported in the current environment (e.g. OS or CPU)
     WAH_STATUS_FUEL_EXHAUSTED = 2,         // Execution fuel exhausted, can be resumed
     WAH_STATUS_YIELDED = 3,                // Execution yielded by interrupt, can be resumed
 } wah_error_t;
@@ -886,6 +887,44 @@ typedef char wah_exec_context_align_check_[WAH_ALIGNOF(wah_exec_context_t) == 16
 //   Converts an error code to a human-readable string.
 //   Unlike API functions, the returned error string is not guaranteed to be stable.
 const char *wah_strerror(wah_error_t err);
+
+// Enum: wah_fault_handling_t
+//   Who handles memory access faults once guard pages are enabled.
+//   Values deliberately avoid 0 and 1, so that a boolean can't be passed by mistake.
+typedef enum {
+    WAH_HOST_HANDLES_FAULT = 2, // The host forwards faults to `wah_handle_fault` from its own handler
+    WAH_HANDLES_FAULT = 3,      // WAH installs its own handler, which chains to the previous one
+} wah_fault_handling_t;
+
+// Function: wah_enable_guard_pages
+//   Lets natively compiled code catch out-of-bounds accesses to 32-bit memories with guard pages, instead of
+//   explicitly checking bounds. This is process-wide and can't be undone; it only affects modules parsed and
+//   memories created afterwards (others keep working as before), so it should be called early.
+//   Every such memory reserves 6 GiB of address space, and its pages are only committed as it grows.
+//   Memories can't use the custom allocator then. An activation using any memory that couldn't be reserved
+//   (e.g. one created before) is interpreted.
+//
+//   With WAH_HANDLES_FAULT, handlers for SIGSEGV and SIGBUS (POSIX) or a vectored exception handler (Windows) are
+//   installed, falling back to the previous handler for other faults. If another handler is installed later and
+//   doesn't do the same, out-of-bounds accesses will crash the process; use WAH_HOST_HANDLES_FAULT then.
+//   With WAH_HOST_HANDLES_FAULT, the host promises to call `wah_handle_fault` in every such handler.
+//   It can be called again, but WAH_HOST_HANDLES_FAULT after WAH_HANDLES_FAULT does nothing.
+//   Returns WAH_ERROR_UNSUPPORTED (without any effect) without the JIT, i.e. if `wahjit.h` is not included or
+//   doesn't support the platform, or if the handler couldn't be installed.
+//
+//   - mode [in]: WAH_HANDLES_FAULT or WAH_HOST_HANDLES_FAULT.
+wah_error_t wah_enable_guard_pages(wah_fault_handling_t mode);
+
+// Function: wah_handle_fault
+//   Handles a fault raised by an out-of-bounds access of natively compiled code, where guard pages are enabled
+//   with WAH_HOST_HANDLES_FAULT. The host should call this first in its handler (it is async-signal-safe);
+//   if it returns true, the handler should return immediately to resume the execution, which will return
+//   WAH_ERROR_MEMORY_OUT_OF_BOUNDS. Returns false without any effect for any other fault.
+//
+//   - signo [in]: Signal number (POSIX), or 0 (Windows).
+//   - info [in]: `siginfo_t *` (POSIX), or `EXCEPTION_POINTERS *` (Windows).
+//   - uctx [in, out]: `ucontext_t *` given as the third argument of a `SA_SIGINFO` handler (POSIX), or NULL (Windows).
+bool wah_handle_fault(int signo, void *info, void *uctx);
 
 // Struct: wah_parse_options_t
 //   Options for parsing a WebAssembly module.
@@ -2620,6 +2659,7 @@ typedef struct wah_memory_inst_s {
     uint64_t size;
     uint64_t max_pages;
     bool is_imported;
+    bool guarded; // Reserved with guard pages by wahjit.h; only set for the owner, not for imports
     struct wah_exec_context_s *import_ctx;
     uint32_t import_idx;
 } wah_memory_inst_t;
@@ -3104,6 +3144,9 @@ static void wah_jit_instantiate(wah_exec_context_t *ctx);
 static bool wah_jit_run(wah_exec_context_t *ctx, wah_error_t *err); // False if the activation should be interpreted
 static void wah_jit_cancel(wah_exec_context_t *ctx);
 static void wah_jit_free_context(wah_exec_context_t *ctx);
+static uint8_t *wah_jit_reserve_memory(uint64_t size); // NULL if guard pages are disabled or reservation failed
+static bool wah_jit_commit_memory(uint8_t *data, uint64_t old_size, uint64_t new_size);
+static void wah_jit_release_memory(uint8_t *data);
 #endif
 
 typedef struct wah_type_check_cache_entry_s {
@@ -3473,11 +3516,24 @@ const char *wah_strerror(wah_error_t err) {
         case WAH_ERROR_EXCEPTION: return "Uncaught exception";
         case WAH_ERROR_DISABLED_FEATURE: return "Feature not enabled";
         case WAH_ERROR_MULTI_RETURN: return "Function would return multiple values (use wah_call_multi)";
+        case WAH_ERROR_UNSUPPORTED: return "Not supported in the current environment";
         case WAH_STATUS_FUEL_EXHAUSTED: return "Fuel exhausted";
         case WAH_STATUS_YIELDED: return "Execution yielded";
         default: return "Unknown error";
     }
 }
+
+#ifndef WAH_JIT // Otherwise implemented by wahjit.h
+wah_error_t wah_enable_guard_pages(wah_fault_handling_t mode) {
+    WAH_ENSURE(mode == WAH_HOST_HANDLES_FAULT || mode == WAH_HANDLES_FAULT, WAH_ERROR_MISUSE);
+    return WAH_ERROR_UNSUPPORTED;
+}
+
+bool wah_handle_fault(int signo, void *info, void *uctx) {
+    (void)signo; (void)info; (void)uctx;
+    return false;
+}
+#endif
 
 ////////////////////////////////////////////////////////////////////////////////
 // Primitives and fallbacks ////////////////////////////////////////////////////
@@ -4826,6 +4882,30 @@ static bool wah_budget_check(const wah_exec_context_t *ctx, uint64_t additional)
     if (ctx->max_memory_bytes == UINT64_MAX) return true;
     if (ctx->memory_bytes_committed > ctx->max_memory_bytes) return false;
     return additional <= ctx->max_memory_bytes - ctx->memory_bytes_committed;
+}
+
+// Allocates zeroed data of a defined memory, reserved with guard pages if enabled.
+static wah_error_t wah_memory_alloc_data(const wah_alloc_t *alloc, wah_memory_inst_t *mem, wah_type_t addr_type,
+                                         uint64_t size) {
+#ifdef WAH_JIT
+    if (addr_type == WAH_TYPE_I32 && (mem->data = wah_jit_reserve_memory(size)) != NULL) {
+        mem->guarded = true;
+        return WAH_OK;
+    }
+#else
+    (void)addr_type;
+#endif
+    if (size == 0) return WAH_OK;
+    WAH_MALLOC_ARRAY(mem->data, size);
+    memset(mem->data, 0, (size_t)size);
+    return WAH_OK;
+}
+
+static void wah_memory_free_data(const wah_alloc_t *alloc, wah_memory_inst_t *mem) {
+#ifdef WAH_JIT
+    if (mem->guarded) { wah_jit_release_memory(mem->data); return; }
+#endif
+    wah_free(alloc, mem->data);
 }
 
 static inline wah_error_t wah_table_byte_size(uint64_t elements, uint64_t *out_bytes) {
@@ -11598,10 +11678,8 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
             uint64_t byte_size = module->memories[i].min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
             WAH_ENSURE_GOTO(wah_budget_check(exec_ctx, byte_size), WAH_ERROR_TOO_LARGE, cleanup);
             exec_ctx->memories[slot].size = byte_size;
-            if (byte_size > 0) {
-                WAH_MALLOC_ARRAY_GOTO(exec_ctx->memories[slot].data, byte_size, cleanup);
-                memset(exec_ctx->memories[slot].data, 0, byte_size);
-            }
+            WAH_CHECK_GOTO(wah_memory_alloc_data(alloc, &exec_ctx->memories[slot], module->memories[i].addr_type,
+                                                 byte_size), cleanup);
             wah_budget_charge(exec_ctx, byte_size);
         }
         if (exec_ctx->memory_count > 0) {
@@ -11806,9 +11884,7 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
 
     if (exec_ctx->memories) {
         for (uint32_t i = 0; i < exec_ctx->memory_count; ++i) {
-            if (!exec_ctx->memories[i].is_imported) {
-                wah_free(alloc, exec_ctx->memories[i].data);
-            }
+            if (!exec_ctx->memories[i].is_imported) wah_memory_free_data(alloc, &exec_ctx->memories[i]);
         }
         wah_free(alloc, exec_ctx->memories);
     }
@@ -11872,8 +11948,7 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
                 wah_exec_context_t *ictx = exec_ctx->linked_modules[i].ctx;
                 if (ictx->memories) {
                     for (uint32_t m = 0; m < ictx->memory_count; ++m) {
-                        if (!ictx->memories[m].is_imported)
-                            wah_free(alloc, ictx->memories[m].data);
+                        if (!ictx->memories[m].is_imported) wah_memory_free_data(alloc, &ictx->memories[m]);
                     }
                     wah_free(alloc, ictx->memories);
                 }
@@ -12614,13 +12689,19 @@ static bool wah_memory_grow_internal(
         return false;
     }
 
-    void *memory_data = fctx->memories[mem_idx].data;
-    if (wah_realloc(&owner->alloc, new_memory_size, sizeof(*fctx->memories[mem_idx].data), &memory_data) != WAH_OK) {
-        return false;
-    }
-    fctx->memories[mem_idx].data = (uint8_t *)memory_data;
-
-    if (new_memory_size > fctx->memories[mem_idx].size) {
+#ifdef WAH_JIT
+    const wah_memory_inst_t *owner_mem = (fctx->memories[mem_idx].is_imported && fctx->memories[mem_idx].import_ctx)
+        ? &owner->memories[fctx->memories[mem_idx].import_idx] : &fctx->memories[mem_idx];
+    if (owner_mem->guarded) { // Never moves, and newly committed pages are already zeroed
+        if (!wah_jit_commit_memory(owner_mem->data, fctx->memories[mem_idx].size, new_memory_size)) return false;
+    } else
+#endif
+    {
+        void *memory_data = fctx->memories[mem_idx].data;
+        if (wah_realloc(&owner->alloc, new_memory_size, sizeof(*fctx->memories[mem_idx].data), &memory_data) != WAH_OK) {
+            return false;
+        }
+        fctx->memories[mem_idx].data = (uint8_t *)memory_data;
         memset(fctx->memories[mem_idx].data + fctx->memories[mem_idx].size, 0, new_memory_size - fctx->memories[mem_idx].size);
     }
     wah_bulk_fuel_charge(ctx, delta_bytes);
@@ -18264,10 +18345,7 @@ static wah_error_t wah_create_owned_linked_contexts(wah_exec_context_t *ctx) {
                     wah_budget_charge(ctx, byte_size);
                     ictx->memories[slot].max_pages = wah_memory_max_pages(&lmod->memories[mi]);
                     ictx->memories[slot].size = byte_size;
-                    if (byte_size > 0) {
-                        WAH_MALLOC_ARRAY(ictx->memories[slot].data, byte_size);
-                        memset(ictx->memories[slot].data, 0, (size_t)byte_size);
-                    }
+                    WAH_CHECK(wah_memory_alloc_data(alloc, &ictx->memories[slot], lmod->memories[mi].addr_type, byte_size));
                 }
             } else {
                 ictx->memories = NULL;

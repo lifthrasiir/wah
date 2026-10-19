@@ -18,6 +18,9 @@
 // The user can opt out of JIT compilation by setting `wah_parse_options_t::disable_jit` to true.
 // Native execution only differs from the interpreter by resource usage and polling behavior;
 // otherwise they are identical.
+// `wah_enable_guard_pages` lets native code skip explicit bounds checks for most memory accesses.
+// Out-of-bounds stores straddling the end of memory are assumed to write nothing before faulting,
+// which holds on x86-64 and was confirmed on Apple CPUs but not on other AArch64 implementations.
 //
 // Only a subset of modules are compiled: those without fuel metering, using only numeric and vector types (i32, i64,
 // f32, f64 and v128) and WASM 2.0 instructions plus relaxed SIMD, except reference types and table instructions other
@@ -57,6 +60,7 @@
 #include <windows.h>
 #else
 #include <sys/mman.h>
+#include <signal.h>
 #endif
 #if defined(WAH_JIT_X86_64)
 #ifdef _MSC_VER
@@ -83,6 +87,11 @@ typedef wah_error_t (*wah_jit_entry_t)(wah_exec_context_t *ctx, const void *code
 
 typedef struct { uint32_t pos, func; } wah_jit_call_fixup_t;
 
+// A guarded memory reserves 4 GiB for any 32-bit address, followed by guard pages for offsets up to WAH_JIT_GUARD_SIZE.
+// Accesses with larger offsets are still checked.
+#define WAH_JIT_GUARD_SIZE ((uint64_t)1 << 31)
+#define WAH_JIT_GUARD_RESERVE (((uint64_t)1 << 32) + WAH_JIT_GUARD_SIZE)
+
 typedef struct wah_jit_module_s {
     uint8_t *buf;               // Code being generated; freed when finished
     uint32_t len, cap;          // In bytes, like all code offsets
@@ -90,8 +99,10 @@ typedef struct wah_jit_module_s {
     wah_jit_call_fixup_t *calls; // Direct calls to be patched when all functions are compiled
     uint32_t call_count, call_cap;
     uint32_t exit_pos;          // Offset of the trampoline exit, where the return register holds the result
+    uint32_t oob_pos;           // Offset of the exit with WAH_ERROR_MEMORY_OUT_OF_BOUNDS, for faults on guard pages
     uint32_t extra_slots;       // Slots above the operand stack for host call results
     bool failed;                // Some function couldn't be compiled, so the module is interpreted
+    bool guarded;               // Relies on guard pages, so every memory of the activation should be guarded
 #ifdef WAH_JIT_X86_64
     bool lzcnt, tzcnt, sse42;   // Optional instructions supported by the CPU
 #endif
@@ -1995,17 +2006,20 @@ static int wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size
                            int32_t *disp) {
     int a = wah_jit_pop_gpr_ro(f); // Zero-extended
     int base = WAH_JR_MEM, limit = WAH_JR_MEMSZ;
+    uint64_t end = (uint64_t)m->offset + size; // Fits in 33 bits, so no overflow
+    bool check = !f->jm->guarded || end > WAH_JIT_GUARD_SIZE;
     *size_reg = -1;
     if (m->memidx != 0) {
         base = wah_jit_alloc(f, false);
-        limit = wah_jit_alloc(f, false);
-        *size_reg = limit;
         uint64_t off = (uint64_t)m->memidx * sizeof(wah_memory_inst_t);
         wah_jit_ldst(f, false, false, true, base, WAH_JR_CTX, WAH_JIT_CTX_OFF(memories));
-        wah_jit_ldst(f, false, false, true, limit, base, off + offsetof(wah_memory_inst_t, size));
+        if (check) {
+            limit = wah_jit_alloc(f, false);
+            *size_reg = limit;
+            wah_jit_ldst(f, false, false, true, limit, base, off + offsetof(wah_memory_inst_t, size));
+        }
         wah_jit_ldst(f, false, false, true, base, base, off + offsetof(wah_memory_inst_t, data));
     }
-    uint64_t end = (uint64_t)m->offset + size; // Fits in 33 bits, so no overflow
     *index = a;
     if (end <= INT32_MAX) {
         *disp = (int32_t)m->offset;
@@ -2017,9 +2031,11 @@ static int wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size
         end = size;
     }
     wah_jit_free_gpr(f, a);
-    wah_x64_mem(f, WAH_X64_LEA, WAH_X64_W, WAH_JR_T1, *index, -1, 0, (int32_t)end);
-    wah_x64_rr(f, WAH_X64_CMP, WAH_X64_W, WAH_JR_T1, limit);
-    wah_jit_bcond(f, WAH_X64_A, f->l_oob);
+    if (check) {
+        wah_x64_mem(f, WAH_X64_LEA, WAH_X64_W, WAH_JR_T1, *index, -1, 0, (int32_t)end);
+        wah_x64_rr(f, WAH_X64_CMP, WAH_X64_W, WAH_JR_T1, limit);
+        wah_jit_bcond(f, WAH_X64_A, f->l_oob);
+    }
     return base;
 }
 
@@ -3480,22 +3496,27 @@ static void wah_jit_convert(wah_jit_fn_t *f, int type, bool sf, bool is_signed) 
 static int wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size, int *size_reg) {
     int a = wah_jit_pop_gpr_ro(f);
     int base = WAH_JR_MEM, limit = WAH_JR_MEMSZ;
+    bool check = !f->jm->guarded || (uint64_t)m->offset + size > WAH_JIT_GUARD_SIZE;
     *size_reg = -1;
     if (m->memidx != 0) {
         base = wah_jit_alloc(f, false);
-        limit = wah_jit_alloc(f, false);
-        *size_reg = limit;
         uint64_t off = (uint64_t)m->memidx * sizeof(wah_memory_inst_t);
         wah_a64_ldst(f, WAH_A64_LDRX, base, WAH_JR_CTX, WAH_JIT_CTX_OFF(memories));
-        wah_a64_ldst(f, WAH_A64_LDRX, limit, base, off + offsetof(wah_memory_inst_t, size));
+        if (check) {
+            limit = wah_jit_alloc(f, false);
+            *size_reg = limit;
+            wah_a64_ldst(f, WAH_A64_LDRX, limit, base, off + offsetof(wah_memory_inst_t, size));
+        }
         wah_a64_ldst(f, WAH_A64_LDRX, base, base, off + offsetof(wah_memory_inst_t, data));
     }
     wah_a64_mov(f, false, WAH_JR_T0, a); // Zero-extended
     wah_jit_free_gpr(f, a);
     wah_a64_add_imm(f, WAH_JR_T0, WAH_JR_T0, m->offset); // Fits in 33 bits, so no overflow
-    wah_a64_addsub_imm(f, WAH_A64_ADDI, true, WAH_JR_T1, WAH_JR_T0, size, false);
-    wah_a64_rrr(f, WAH_A64_SUBS, true, WAH_A64_ZR, WAH_JR_T1, limit);
-    wah_jit_bcond(f, WAH_A64_HI, f->l_oob);
+    if (check) {
+        wah_a64_addsub_imm(f, WAH_A64_ADDI, true, WAH_JR_T1, WAH_JR_T0, size, false);
+        wah_a64_rrr(f, WAH_A64_SUBS, true, WAH_A64_ZR, WAH_JR_T1, limit);
+        wah_jit_bcond(f, WAH_A64_HI, f->l_oob);
+    }
     return base;
 }
 
@@ -5064,6 +5085,177 @@ static void wah_jit_compile_body(wah_jit_fn_t *f, uint32_t local_idx, const wah_
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// Guard pages /////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+// Guarded modules and memories are only made once this is WAH_HOST_HANDLES_FAULT or WAH_HANDLES_FAULT.
+// It is 1 while installing handlers, which only one thread can do.
+#ifdef _MSC_VER
+static volatile long wah_jit_guard_mode;
+static int wah_jit_guard_load(void) { return (int)_InterlockedCompareExchange(&wah_jit_guard_mode, 0, 0); }
+static void wah_jit_guard_store(int v) { _InterlockedExchange(&wah_jit_guard_mode, v); }
+static bool wah_jit_guard_cas(int old, int v) { return _InterlockedCompareExchange(&wah_jit_guard_mode, v, old) == old; }
+#define WAH_JIT_THREAD_LOCAL __declspec(thread)
+#else
+static int wah_jit_guard_mode;
+static int wah_jit_guard_load(void) { return __atomic_load_n(&wah_jit_guard_mode, __ATOMIC_ACQUIRE); }
+static void wah_jit_guard_store(int v) { __atomic_store_n(&wah_jit_guard_mode, v, __ATOMIC_RELEASE); }
+static bool wah_jit_guard_cas(int old, int v) {
+    return __atomic_compare_exchange_n(&wah_jit_guard_mode, &old, v, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
+}
+#define WAH_JIT_THREAD_LOCAL __thread
+#endif
+
+static bool wah_jit_guard_enabled(void) { return wah_jit_guard_load() >= WAH_HOST_HANDLES_FAULT; }
+
+// Innermost native activation of a guarded module in this thread, read by the fault handler
+typedef struct wah_jit_activation_s {
+    const wah_jit_module_t *jm;
+    const wah_exec_context_t *ctx;
+    struct wah_jit_activation_s *prev;
+} wah_jit_activation_t;
+static WAH_JIT_THREAD_LOCAL wah_jit_activation_t *wah_jit_activation;
+
+static uint8_t *wah_jit_reserve_memory(uint64_t size) {
+    if (!wah_jit_guard_enabled()) return NULL;
+#ifdef _WIN32
+    void *p = VirtualAlloc(NULL, WAH_JIT_GUARD_RESERVE, MEM_RESERVE, PAGE_NOACCESS);
+    if (!p) return NULL;
+    if (size > 0 && !VirtualAlloc(p, (size_t)size, MEM_COMMIT, PAGE_READWRITE)) {
+        VirtualFree(p, 0, MEM_RELEASE);
+        return NULL;
+    }
+#else
+    int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#ifdef MAP_NORESERVE
+    flags |= MAP_NORESERVE;
+#endif
+    void *p = mmap(NULL, WAH_JIT_GUARD_RESERVE, PROT_NONE, flags, -1, 0);
+    if (p == MAP_FAILED) return NULL;
+    if (size > 0 && mprotect(p, (size_t)size, PROT_READ | PROT_WRITE) != 0) {
+        munmap(p, WAH_JIT_GUARD_RESERVE);
+        return NULL;
+    }
+#endif
+    return (uint8_t *)p;
+}
+
+static bool wah_jit_commit_memory(uint8_t *data, uint64_t old_size, uint64_t new_size) {
+#ifdef _WIN32
+    return VirtualAlloc(data + old_size, (size_t)(new_size - old_size), MEM_COMMIT, PAGE_READWRITE) != NULL;
+#else
+    return mprotect(data + old_size, (size_t)(new_size - old_size), PROT_READ | PROT_WRITE) == 0;
+#endif
+}
+
+static void wah_jit_release_memory(uint8_t *data) {
+#ifdef _WIN32
+    VirtualFree(data, 0, MEM_RELEASE);
+#else
+    munmap(data, WAH_JIT_GUARD_RESERVE);
+#endif
+}
+
+// Whether a fault at pc accessing addr is an out-of-bounds access of the current activation, and where to resume.
+static bool wah_jit_fault(uintptr_t pc, uintptr_t addr, uintptr_t *resume) {
+    const wah_jit_activation_t *a = wah_jit_activation;
+    if (!a || pc - (uintptr_t)a->jm->code >= a->jm->code_size) return false;
+    for (uint32_t i = 0; i < a->ctx->memory_count; i++) {
+        // Imported memories share the data and size of their owners, which are all guarded
+        const wah_memory_inst_t *m = &a->ctx->memories[i];
+        if (addr - (uintptr_t)m->data - m->size < WAH_JIT_GUARD_RESERVE - m->size) {
+            *resume = (uintptr_t)a->jm->code + a->jm->oob_pos;
+            return true;
+        }
+    }
+    return false;
+}
+
+#ifdef _WIN32
+
+bool wah_handle_fault(int signo, void *info, void *uctx) {
+    (void)signo; (void)uctx;
+    EXCEPTION_POINTERS *ep = (EXCEPTION_POINTERS *)info;
+    if (!ep) return false;
+    const EXCEPTION_RECORD *er = ep->ExceptionRecord;
+    if (er->ExceptionCode != EXCEPTION_ACCESS_VIOLATION || er->NumberParameters < 2) return false;
+    uintptr_t resume;
+    if (!wah_jit_fault((uintptr_t)ep->ContextRecord->Rip, (uintptr_t)er->ExceptionInformation[1], &resume)) return false;
+    ep->ContextRecord->Rip = resume;
+    return true;
+}
+
+static LONG CALLBACK wah_jit_exception_handler(EXCEPTION_POINTERS *ep) {
+    return wah_handle_fault(0, ep, NULL) ? EXCEPTION_CONTINUE_EXECUTION : EXCEPTION_CONTINUE_SEARCH;
+}
+
+static wah_error_t wah_jit_install_fault_handler(void) {
+    return AddVectoredExceptionHandler(1, wah_jit_exception_handler) ? WAH_OK : WAH_ERROR_UNSUPPORTED;
+}
+
+#else
+
+#if defined(__APPLE__) && defined(WAH_JIT_X86_64)
+#define WAH_JIT_UCTX_PC(uc) ((ucontext_t *)(uc))->uc_mcontext->__ss.__rip
+#elif defined(__APPLE__)
+#define WAH_JIT_UCTX_PC(uc) ((ucontext_t *)(uc))->uc_mcontext->__ss.__pc
+#elif defined(WAH_JIT_X86_64)
+#define WAH_JIT_UCTX_PC(uc) ((ucontext_t *)(uc))->uc_mcontext.gregs[16] // REG_RIP, only named with _GNU_SOURCE
+#else
+#define WAH_JIT_UCTX_PC(uc) ((ucontext_t *)(uc))->uc_mcontext.pc
+#endif
+
+bool wah_handle_fault(int signo, void *info, void *uctx) {
+    if ((signo != SIGSEGV && signo != SIGBUS) || !info || !uctx) return false;
+    uintptr_t resume;
+    if (!wah_jit_fault((uintptr_t)WAH_JIT_UCTX_PC(uctx), (uintptr_t)((siginfo_t *)info)->si_addr, &resume)) return false;
+    WAH_JIT_UCTX_PC(uctx) = resume;
+    return true;
+}
+
+static struct sigaction wah_jit_prev_segv, wah_jit_prev_bus;
+
+static void wah_jit_signal_handler(int signo, siginfo_t *info, void *uctx) {
+    if (wah_handle_fault(signo, info, uctx)) return;
+    const struct sigaction *prev = signo == SIGBUS ? &wah_jit_prev_bus : &wah_jit_prev_segv;
+    if (prev->sa_flags & SA_SIGINFO) {
+        prev->sa_sigaction(signo, info, uctx);
+    } else if (prev->sa_handler == SIG_DFL || prev->sa_handler == SIG_IGN) {
+        sigaction(signo, prev, NULL); // The faulting instruction will be retried and handled by it
+    } else {
+        prev->sa_handler(signo);
+    }
+}
+
+static wah_error_t wah_jit_install_fault_handler(void) {
+    struct sigaction sa = {0};
+    sa.sa_sigaction = wah_jit_signal_handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK | SA_NODEFER;
+    sigemptyset(&sa.sa_mask);
+    if (sigaction(SIGSEGV, &sa, &wah_jit_prev_segv) != 0) return WAH_ERROR_UNSUPPORTED;
+    if (sigaction(SIGBUS, &sa, &wah_jit_prev_bus) != 0) {
+        sigaction(SIGSEGV, &wah_jit_prev_segv, NULL);
+        return WAH_ERROR_UNSUPPORTED;
+    }
+    return WAH_OK;
+}
+
+#endif
+
+wah_error_t wah_enable_guard_pages(wah_fault_handling_t mode) {
+    WAH_ENSURE(mode == WAH_HOST_HANDLES_FAULT || mode == WAH_HANDLES_FAULT, WAH_ERROR_MISUSE);
+    int cur;
+    do { // Spins only while another thread is installing handlers
+        cur = wah_jit_guard_load();
+        if (cur == WAH_HANDLES_FAULT || (cur == WAH_HOST_HANDLES_FAULT && mode == WAH_HOST_HANDLES_FAULT)) return WAH_OK;
+    } while (cur == 1 || !wah_jit_guard_cas(cur, mode == WAH_HANDLES_FAULT ? 1 : (int)mode));
+    if (mode == WAH_HOST_HANDLES_FAULT) return WAH_OK;
+    wah_error_t err = wah_jit_install_fault_handler();
+    wah_jit_guard_store(err == WAH_OK ? WAH_HANDLES_FAULT : cur);
+    return err;
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // Modules and activations /////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -5237,8 +5429,11 @@ static void wah_jit_new_module(wah_module_t *module) {
     }
 #endif
     module->jit = jm;
+    jm->guarded = wah_jit_guard_enabled();
     wah_jit_fn_t f = { .jm = jm, .alloc = &module->alloc };
     wah_jit_trampoline(&f);
+    jm->oob_pos = wah_jit_pos(&f);
+    wah_jit_exit_with(&f, WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
     if (f.fail) jm->failed = true;
 }
 
@@ -5328,6 +5523,7 @@ fail:
 
 // Native code can run an activation only when it never leaves the module except for host functions.
 // So functions of other modules shouldn't get into tables, by exporting them or importing references.
+// Code relying on guard pages also needs every memory to be guarded.
 static bool wah_jit_ctx_usable(const wah_exec_context_t *ctx) {
     const wah_module_t *m = ctx->module;
     if (m->import_table_count > 0) return false;
@@ -5339,6 +5535,11 @@ static bool wah_jit_ctx_usable(const wah_exec_context_t *ctx) {
     }
     for (uint32_t i = 0; i < m->import_function_count; i++) {
         if (!ctx->function_table[i].func.is_host) return false;
+    }
+    for (uint32_t i = 0; m->jit->guarded && i < ctx->memory_count; i++) {
+        const wah_memory_inst_t *mem = &ctx->memories[i];
+        if (mem->is_imported) mem = mem->import_ctx ? &mem->import_ctx->memories[mem->import_idx] : NULL;
+        if (!mem || !mem->guarded) return false;
     }
     return true;
 }
@@ -5381,7 +5582,10 @@ static bool wah_jit_run(wah_exec_context_t *ctx, wah_error_t *out) {
             }
         }
     }
+    wah_jit_activation_t act = { .jm = jm, .ctx = ctx, .prev = wah_jit_activation };
+    if (jm->guarded) wah_jit_activation = &act;
     wah_error_t err = ((wah_jit_entry_t)(uintptr_t)jm->code)(ctx, code, resume, fp);
+    wah_jit_activation = act.prev;
     if (err == WAH_OK) { // Pop the frame like the interpreter, leaving results at its locals
         ctx->sp = frame->locals + frame->result_count;
         ctx->call_depth--;
