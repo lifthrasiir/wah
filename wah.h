@@ -23,7 +23,7 @@ extern "C" {
 // Macro: WAH_VERSION
 //   The version of the WAH API. Incremented on any change to the API, including bug fixes.
 //   Based on (fractional Gregorian year - 2000) * (dev version ? -100 : 100), with a liberal rounding.
-#define WAH_VERSION 2675
+#define WAH_VERSION -2675
 
 // Macro: WAH_FORCE_PORTABLE [user-definable]
 //   If defined, forces the interpreter to use portable C implementations
@@ -1635,6 +1635,11 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 #define WAH_IF_GC(...) __VA_ARGS__
 #else
 #define WAH_IF_GC(...)
+#endif
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
+#define WAH_IF_EXCEPTION(...) __VA_ARGS__
+#else
+#define WAH_IF_EXCEPTION(...)
 #endif
 
 static inline wah_features_t wah_feature_closure(wah_features_t f) {
@@ -5628,10 +5633,10 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
         }
     }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     WAH_MALLOC_ARRAY_GOTO(module->typeidx_to_repr, module->types_cap, cleanup);
     for (uint32_t i = 0; i < module->type_count; ++i) module->typeidx_to_repr[i] = WAH_REPR_NONE;
 
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     for (uint32_t i = 0; i < module->type_count; ++i) {
         wah_type_def_t *td = &module->type_defs[i];
         if (td->kind == WAH_COMP_STRUCT) {
@@ -5699,8 +5704,10 @@ static wah_error_t wah_module_add_latest_type_metadata(wah_module_t *module) {
     idx = module->type_count - 1;
 
     // Kept as large as types by wah_type_section_ensure_capacity once allocated
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     if (!module->typeidx_to_repr) WAH_MALLOC_ARRAY(module->typeidx_to_repr, module->types_cap);
     module->typeidx_to_repr[idx] = WAH_REPR_NONE;
+#endif
     if (!module->canonical_map) WAH_MALLOC_ARRAY(module->canonical_map, module->types_cap);
     module->canonical_map[idx] = idx;
 
@@ -7443,53 +7450,6 @@ cleanup_block:
             EMIT_SIMPLE();
             break;
         }
-        case WAH_OP_REF_AS_NON_NULL: {
-            wah_type_t ref_type; POP_INTO(&ref_type);
-            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
-            PUSH(_(ref_type == WAH_TYPE_BOT ? WAH_TYPE_BOT : WAH_TYPE_AS_NON_NULL(ref_type)));
-            EMIT_SIMPLE();
-            break;
-        }
-        case WAH_OP_BR_ON_NULL: case WAH_OP_BR_ON_NON_NULL: {
-            uint32_t label_idx;
-            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
-            WAH_ENSURE(label_idx <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
-            wah_type_t ref_type; POP_INTO(&ref_type);
-            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
-
-            uint32_t br_result_count;
-            const wah_type_t *br_result_types;
-            uint32_t br_stack_height;
-            wah_validation_resolve_br_target(vctx, label_idx,
-                &br_result_count, &br_result_types, &br_stack_height);
-
-            uint32_t prefix_result_count = br_result_count;
-            if (opcode_val == WAH_OP_BR_ON_NON_NULL) {
-                WAH_ENSURE(br_result_count >= 1, WAH_ERROR_VALIDATION_FAILED);
-                wah_type_t non_null_ref_type = (ref_type == WAH_TYPE_BOT) ? WAH_TYPE_BOT : WAH_TYPE_AS_NON_NULL(ref_type);
-                WAH_ENSURE(wah_type_is_subtype(non_null_ref_type, br_result_types[br_result_count - 1], vctx->module),
-                           WAH_ERROR_VALIDATION_FAILED);
-                prefix_result_count--;
-            }
-
-            uint32_t adj_keep = 0, adj_drop = 0;
-            if (!vctx->is_unreachable) {
-                WAH_ENSURE(vctx->current_stack_depth >= br_stack_height + prefix_result_count, WAH_ERROR_VALIDATION_FAILED);
-                adj_keep = br_result_count;
-                adj_drop = vctx->current_stack_depth - br_stack_height - prefix_result_count;
-            }
-
-            for (int32_t i = (int32_t)prefix_result_count - 1; i >= 0; --i) POP(_(br_result_types[i]));
-            for (uint32_t i = 0; i < prefix_result_count; ++i) PUSH(_(br_result_types[i]));
-            if (opcode_val == WAH_OP_BR_ON_NULL) {
-                PUSH(_(ref_type == WAH_TYPE_BOT ? WAH_TYPE_BOT : WAH_TYPE_AS_NON_NULL(ref_type)));
-            }
-            EMIT_INSTR_EX(opcode_val,
-                _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0;
-                _di->imm.branch.keep = adj_keep; _di->imm.branch.drop = adj_drop);
-            break;
-        }
-
         case WAH_OP_REF_TEST_NULL: case WAH_OP_REF_TEST:
         case WAH_OP_REF_CAST_NULL: case WAH_OP_REF_CAST: {
             wah_type_t heap_type; WAH_CHECK(wah_decode_heap_type(code_ptr, code_end, &heap_type));
@@ -7606,6 +7566,54 @@ cleanup_block:
             break;
         }
 #endif // WAH_FEATURE_GC (validation)
+
+        // Typed funcrefs, which don't depend on GC
+        case WAH_OP_REF_AS_NON_NULL: {
+            wah_type_t ref_type; POP_INTO(&ref_type);
+            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
+            PUSH(_(ref_type == WAH_TYPE_BOT ? WAH_TYPE_BOT : WAH_TYPE_AS_NON_NULL(ref_type)));
+            EMIT_SIMPLE();
+            break;
+        }
+        case WAH_OP_BR_ON_NULL: case WAH_OP_BR_ON_NON_NULL: {
+            uint32_t label_idx;
+            WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
+            WAH_ENSURE(label_idx <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
+            wah_type_t ref_type; POP_INTO(&ref_type);
+            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
+
+            uint32_t br_result_count;
+            const wah_type_t *br_result_types;
+            uint32_t br_stack_height;
+            wah_validation_resolve_br_target(vctx, label_idx,
+                &br_result_count, &br_result_types, &br_stack_height);
+
+            uint32_t prefix_result_count = br_result_count;
+            if (opcode_val == WAH_OP_BR_ON_NON_NULL) {
+                WAH_ENSURE(br_result_count >= 1, WAH_ERROR_VALIDATION_FAILED);
+                wah_type_t non_null_ref_type = (ref_type == WAH_TYPE_BOT) ? WAH_TYPE_BOT : WAH_TYPE_AS_NON_NULL(ref_type);
+                WAH_ENSURE(wah_type_is_subtype(non_null_ref_type, br_result_types[br_result_count - 1], vctx->module),
+                           WAH_ERROR_VALIDATION_FAILED);
+                prefix_result_count--;
+            }
+
+            uint32_t adj_keep = 0, adj_drop = 0;
+            if (!vctx->is_unreachable) {
+                WAH_ENSURE(vctx->current_stack_depth >= br_stack_height + prefix_result_count, WAH_ERROR_VALIDATION_FAILED);
+                adj_keep = br_result_count;
+                adj_drop = vctx->current_stack_depth - br_stack_height - prefix_result_count;
+            }
+
+            for (int32_t i = (int32_t)prefix_result_count - 1; i >= 0; --i) POP(_(br_result_types[i]));
+            for (uint32_t i = 0; i < prefix_result_count; ++i) PUSH(_(br_result_types[i]));
+            if (opcode_val == WAH_OP_BR_ON_NULL) {
+                PUSH(_(ref_type == WAH_TYPE_BOT ? WAH_TYPE_BOT : WAH_TYPE_AS_NON_NULL(ref_type)));
+            }
+            EMIT_INSTR_EX(opcode_val,
+                _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0;
+                _di->imm.branch.keep = adj_keep; _di->imm.branch.drop = adj_drop);
+            break;
+        }
 
         case WAH_OP_THROW: {
             uint32_t tag_idx;
@@ -7836,6 +7844,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
     buf_cap = 256;
     WAH_MALLOC_ARRAY_GOTO(buf, buf_cap, cleanup);
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
     // Find loops containing try_tables, whose headers need to drop handlers left by branches
     for (uint32_t ti = 0; ti < ac->instr_count; ti++) {
         if (ac->instrs[ti].opcode != WAH_OP_TRY_TABLE) continue;
@@ -7867,6 +7876,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
         }
         break;
     }
+#endif
 
     #define WAH_LOWER_ENSURE(n) do { \
         WAH_ENSURE_CAP_GOTO(buf, buf_size + (n), cleanup); \
@@ -8549,10 +8559,13 @@ static wah_error_t wah_analyze_stream(
     wah_error_t err = WAH_OK;
     const wah_alloc_t *alloc = &vctx->module->alloc;
     uint32_t *poll_ref_tops = NULL;
-    uint32_t poll_count = 0, poll_ref_tops_cap = 0;
+    uint32_t poll_count = 0;
     wah_ref_node_t *ref_nodes = NULL;
-    uint32_t ref_node_count = 0, ref_nodes_cap = 0;
+    uint32_t ref_node_count = 0;
     bool is_func_body = (code_body != NULL);
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+    uint32_t poll_ref_tops_cap = 0, ref_nodes_cap = 0;
 
     // The operand stack at the previous POLL point, so that its reference slots can be reused
     wah_type_t captured_types[WAH_MAX_TYPE_STACK_SIZE];
@@ -8587,6 +8600,10 @@ static wah_error_t wah_analyze_stream(
         WAH_ENSURE_CAP_GOTO(poll_ref_tops, poll_count + 1, cleanup); \
         poll_ref_tops[poll_count++] = _top; \
     } while (0)
+#else
+    // Ref maps are only used to find GC roots, so every map index is left UINT32_MAX
+    #define WAH_CAPTURE_REF_MAP() ((void)0)
+#endif
 
     // Slow-path islands of fuel metering can suspend before any instruction, so each one needs a ref map
     bool capture_all = is_func_body && vctx->module->fuel_metering;
@@ -11413,8 +11430,10 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
     }
     exec_ctx->memory_bytes_committed = 0;
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
     WAH_MALLOC_ARRAY_GOTO(exec_ctx->exception_handlers, WAH_INITIAL_EXCEPTION_HANDLER_CAP, cleanup);
     exec_ctx->exception_handlers_cap = WAH_INITIAL_EXCEPTION_HANDLER_CAP;
+#endif
     WAH_MALLOC_ARRAY_GOTO(exec_ctx->type_check_cache, WAH_TYPE_CHECK_CACHE_SIZE, cleanup);
     memset(exec_ctx->type_check_cache, 0, sizeof(wah_type_check_cache_entry_t) * WAH_TYPE_CHECK_CACHE_SIZE);
 
@@ -12619,11 +12638,15 @@ WAH_NEVER_RUN(LOOP) // Converted to bytecode offsets
 WAH_NEVER_RUN(SELECT_T) // Identical to WAH_RUN(SELECT) in run time
 
 WAH_RUN(POLL) {
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     // TODO: this unconditional store could be deferred to the poll_flag branch
     // (read via bytecode_ip - sizeof(uint32_t) after advancing), but
     // host functions currently call wah_gc_enumerate_roots which relies on
     // poll_idx being up-to-date outside of poll_handler. See test_gc.c.
     frame->poll_idx = wah_decode_u32_le(&bytecode_ip);
+#else
+    bytecode_ip += sizeof(uint32_t); // Ref maps are only used to find GC roots
+#endif
 
     if (WAH_POLL_FLAG_LOAD(ctx->poll_flag)) {
         frame->bytecode_ip = bytecode_ip;
@@ -13631,7 +13654,8 @@ WAH_RUN(ELEM_DROP) {
     WAH_ENSURE_GOTO(func_table_idx < fctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
     void *_fn_ref = fctx->tables[table_idx].entries[func_table_idx].ref; \
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup); \
-    WAH_ENSURE_GOTO(!wah_ref_is_i31(_fn_ref) && wah_gc_header(_fn_ref)->repr_id == WAH_TYPE_FUNC, WAH_ERROR_TRAP, cleanup); \
+    /* Without GC, every non-null reference in a funcref table is a function */ \
+    WAH_IF_GC(WAH_ENSURE_GOTO(!wah_ref_is_i31(_fn_ref) && wah_gc_header(_fn_ref)->repr_id == WAH_TYPE_FUNC, WAH_ERROR_TRAP, cleanup);) \
     const wah_function_t *actual_fn = wah_ref_to_func(_fn_ref); \
     WAH_REF_BODY(actual_fn, CALL_HOST, CALL_WASM)
 
@@ -13706,7 +13730,8 @@ WAH_RUN(CALL_REF) {
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     void *_fn_ref = (*--sp).ref;
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup);
-    WAH_ENSURE_GOTO(!wah_ref_is_i31(_fn_ref) && wah_gc_header(_fn_ref)->repr_id == WAH_TYPE_FUNC, WAH_ERROR_TRAP, cleanup);
+    // Without GC, every non-null reference of a function type is a function
+    WAH_IF_GC(WAH_ENSURE_GOTO(!wah_ref_is_i31(_fn_ref) && wah_gc_header(_fn_ref)->repr_id == WAH_TYPE_FUNC, WAH_ERROR_TRAP, cleanup);)
     const wah_function_t *actual_fn = wah_ref_to_func(_fn_ref);
     WAH_REF_BODY(actual_fn,
         WAH_CALL_HOST_INLINE(actual_fn),
@@ -13717,10 +13742,10 @@ WAH_RUN(CALL_REF) {
 
 // Pops the current frame, moving its results to the caller.
 #define WAH_POP_CURRENT_FRAME() do { \
-    while (ctx->exception_handler_depth > 0 && \
+    WAH_IF_EXCEPTION(while (ctx->exception_handler_depth > 0 && \
            ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) { \
         ctx->exception_handler_depth--; \
-    } \
+    }) \
     uint32_t results_to_keep_ = frame->result_count; \
     wah_value_t *results_src_ = sp - results_to_keep_; \
     sp = frame->locals; \
@@ -13777,10 +13802,10 @@ WAH_RUN(CALL_REF) {
 WAH_RUN(RETURN_CALL) {
     uint32_t called_func_idx = wah_decode_u32_le(&bytecode_ip);
 
-    while (ctx->exception_handler_depth > 0 &&
+    WAH_IF_EXCEPTION(while (ctx->exception_handler_depth > 0 &&
            ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) {
         ctx->exception_handler_depth--;
-    }
+    })
 
     WAH_ASSERT(called_func_idx < frame->frame_function_table_count && "validation didn't catch out-of-bound function index");
     const wah_function_t *called_fn = &frame->frame_function_table[called_func_idx].func;
@@ -13805,10 +13830,10 @@ WAH_RUN(RETURN_CALL_INDIRECT) {
     uint32_t func_table_idx = (uint32_t)(*--sp).i32;
     WAH_ASSERT(type_idx < fctx->module->type_count);
     WAH_ASSERT(table_idx < fctx->table_count);
-    while (ctx->exception_handler_depth > 0 &&
+    WAH_IF_EXCEPTION(while (ctx->exception_handler_depth > 0 &&
            ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) {
         ctx->exception_handler_depth--;
-    }
+    })
     WAH_INDIRECT_BODY(func_table_idx,
         WAH_TAIL_CALL_HOST(actual_fn),
         WAH_TAIL_CALL_WASM(fn_module, local_idx, actual_func_type->param_count, actual_func_type->result_count, fn_ctx))
@@ -13823,10 +13848,10 @@ WAH_RUN(RETURN_CALL_INDIRECT_i64) {
     uint64_t func_table_idx = (uint64_t)(*--sp).i64;
     WAH_ASSERT(type_idx < fctx->module->type_count);
     WAH_ASSERT(table_idx < fctx->table_count);
-    while (ctx->exception_handler_depth > 0 &&
+    WAH_IF_EXCEPTION(while (ctx->exception_handler_depth > 0 &&
            ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) {
         ctx->exception_handler_depth--;
-    }
+    })
     WAH_INDIRECT_BODY(func_table_idx,
         WAH_TAIL_CALL_HOST(actual_fn),
         WAH_TAIL_CALL_WASM(fn_module, local_idx, actual_func_type->param_count, actual_func_type->result_count, fn_ctx))
@@ -13839,12 +13864,13 @@ WAH_RUN(RETURN_CALL_REF) {
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     void *_fn_ref = (*--sp).ref;
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup);
-    WAH_ENSURE_GOTO(!wah_ref_is_i31(_fn_ref) && wah_gc_header(_fn_ref)->repr_id == WAH_TYPE_FUNC, WAH_ERROR_TRAP, cleanup);
+    // Without GC, every non-null reference of a function type is a function
+    WAH_IF_GC(WAH_ENSURE_GOTO(!wah_ref_is_i31(_fn_ref) && wah_gc_header(_fn_ref)->repr_id == WAH_TYPE_FUNC, WAH_ERROR_TRAP, cleanup);)
     const wah_function_t *actual_fn = wah_ref_to_func(_fn_ref);
-    while (ctx->exception_handler_depth > 0 &&
+    WAH_IF_EXCEPTION(while (ctx->exception_handler_depth > 0 &&
            ctx->exception_handlers[ctx->exception_handler_depth - 1].call_depth >= ctx->call_depth) {
         ctx->exception_handler_depth--;
-    }
+    })
     WAH_REF_BODY(actual_fn,
         WAH_TAIL_CALL_HOST(actual_fn),
         WAH_TAIL_CALL_WASM(fn_module, local_idx, actual_func_type->param_count, actual_func_type->result_count, fn_ctx))
@@ -16221,7 +16247,11 @@ static wah_error_t wah_load_host_params(const wah_exec_context_t *ctx, wah_value
                 WAH_ENSURE(s && wah_pin_accepts(ctx, s, module, types[i]), WAH_ERROR_MISUSE);
                 value = s->value;
             } else {
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
                 WAH_ENSURE(wah_host_object_accepts(types[i]), WAH_ERROR_MISUSE);
+#else
+                return WAH_ERROR_MISUSE; // There are no host objects without GC
+#endif
             }
         }
         dst[i] = value;
@@ -16333,10 +16363,14 @@ static wah_error_t wah_resume_internal(wah_exec_context_t *ctx) {
 }
 
 static void *wah_sanitize_host_ref(void *ref) {
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     if (ref != NULL && (wah_ref_is_i31(ref) || wah_gc_header(ref)->repr_id != WAH_REPR_HOST)) {
         return (void *)(~(uintptr_t)0);
     }
     return ref;
+#else
+    return ref ? (void *)(~(uintptr_t)0) : NULL; // There are no host objects without GC
+#endif
 }
 
 // Results are pinned if `pin` is true, or sanitized otherwise.
@@ -16395,6 +16429,10 @@ static wah_error_t wah_finish_internal(
 static wah_error_t wah_instantiate_on_entry(wah_exec_context_t *ctx, uint64_t func_idx,
                                             const wah_value_t *params, uint32_t param_count) {
     if (ctx->is_instantiated) return WAH_OK;
+#if !((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+    (void)func_idx; (void)params; (void)param_count;
+    return wah_instantiate(ctx); // There are no host objects without GC
+#else
     wah_func_desc_t fd = {0};
     uint32_t ref_count = 0;
     bool known = params && func_idx <= UINT32_MAX && wah_module_function(ctx->module, (uint32_t)func_idx, &fd) == WAH_OK &&
@@ -16422,6 +16460,7 @@ cleanup:
     while (pinned_count > 0) wah_unpin(ctx, pinned[--pinned_count]);
     wah_free(alloc, pinned);
     return err;
+#endif
 }
 
 wah_error_t wah_start(wah_exec_context_t *ctx, uint64_t func_idx, const wah_value_t *params, uint32_t param_count) {
@@ -17102,8 +17141,12 @@ wah_error_t wah_pin_ref(wah_exec_context_t *ctx, void *host_ref, void **pinned_r
     WAH_ENSURE(pinned_ref, WAH_ERROR_MISUSE);
     *pinned_ref = NULL;
     if (!host_ref) return WAH_OK;
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
     WAH_ENSURE(((uintptr_t)host_ref & 3) == 0 && wah_gc_header(host_ref)->repr_id == WAH_REPR_HOST, WAH_ERROR_MISUSE);
     return wah_pin(ctx, (wah_value_t){ .ref = host_ref }, NULL, WAH_TYPE_ANY, pinned_ref);
+#else
+    return WAH_ERROR_MISUSE; // There are no host objects without GC
+#endif
 }
 
 wah_error_t wah_unpin_ref(wah_exec_context_t *ctx, void *pinned_ref) {
@@ -17152,8 +17195,12 @@ void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value) {
         }
         value = s->value.ref;
     } else if (value) {
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
         WAH_ASSERT(wah_gc_header(value)->repr_id == WAH_REPR_HOST && "Reference result must be a host object");
         if (!wah_host_object_accepts(ctx->result_types[index])) {
+#else
+        { // There are no host objects without GC
+#endif
             wah_call_misuse(ctx);
             return;
         }

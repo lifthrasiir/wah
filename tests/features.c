@@ -182,6 +182,25 @@ static int run_feature_tests(void) {
         wah_free_module(&mod);
     }
 
+    // Test 4c: typed funcref branches don't depend on GC
+    if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF) {
+        printf("Testing br_on_null, br_on_non_null and ref.as_non_null...\n");
+        wah_exec_context_t ctx;
+        wah_value_t result;
+        assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+            types {[fn [] [i32]]} funcs {[0]} \
+            elements {[elem.declarative elem.funcref [0]]} \
+            code {[{[] \
+                block void ref.null funcref br_on_null 0 drop i32.const 1 return end \
+                block funcref ref.func 0 br_on_non_null 0 ref.null funcref end \
+                ref.as_non_null drop i32.const 7 end}]}"));
+        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 7);
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod);
+    }
+
     // Test 5: feature closure
     printf("Testing feature closure: RELAXED_SIMD implies SIMD...\n");
     assert_true(wah_feature_closure(WAH_FEATURE_RELAXED_SIMD) & WAH_FEATURE_SIMD);
