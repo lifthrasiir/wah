@@ -7009,7 +7009,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             if (resolved != WAH_TYPE_BOT) {
                 WAH_ENSURE(resolved >= WAH_TYPE_V128 && resolved <= WAH_TYPE_I32, WAH_ERROR_VALIDATION_FAILED);
             }
-            EMIT_SIMPLE();
+            EMIT_INSTR_EX(opcode_val, _di->imm.i32 = resolved); // The operand type, for the JIT
             return wah_validation_push_type(vctx, resolved);
         }
         case WAH_OP_SELECT_T: {
@@ -7021,7 +7021,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             WAH_ENSURE(sel_type < 0 || WAH_TYIDX(sel_type) < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
             WAH_CHECK(wah_require_type_features(vctx->module, sel_type));
             POP(I32); POP(_(sel_type)); POP(_(sel_type));
-            EMIT_SIMPLE();
+            EMIT_INSTR_EX(opcode_val, _di->imm.i32 = sel_type);
             return wah_validation_push_type(vctx, sel_type);
         }
 

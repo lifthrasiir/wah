@@ -38,37 +38,54 @@ static bool ran_natively(const jit_inst_t *inst) {
 #endif
 }
 
-// Calls func_idx with params in both modes and compares errors and results bit by bit.
-static void check_call(const char *spec, wah_module_t *env, uint32_t func_idx, const wah_value_t *params,
-                       uint32_t nparams, uint32_t nresults) {
+static void print_value(const char *label, const wah_value_t *v) {
+    printf(" %s ", label);
+    for (int i = 15; i >= 0; i--) printf("%02x%s", v->v128.u8[i], i == 8 ? "_" : "");
+}
+
+// Calls func_idx with each of nsets sets of params in both modes and compares errors and results bit by bit.
+// Unused bytes of results are zeroes, so whole values are compared.
+static void check_calls(const char *spec, wah_module_t *env, uint32_t func_idx, const wah_value_t *params,
+                        uint32_t nsets, uint32_t nparams, uint32_t nresults) {
     jit_inst_t a, b;
     inst_new(&a, spec, false, env);
     inst_new(&b, spec, true, env);
-    wah_value_t ra[8], rb[8];
-    memset(ra, 0, sizeof(ra));
-    memset(rb, 0, sizeof(rb));
-    uint32_t na = 0, nb = 0;
-    wah_error_t ea = wah_call_multi(&a.ctx, func_idx, params, nparams, ra, 8, &na);
-    wah_error_t eb = wah_call_multi(&b.ctx, func_idx, params, nparams, rb, 8, &nb);
-    if (ea != eb) {
-        printf("  func %u: native %s vs interpreted %s\n", func_idx, wah_strerror(ea), wah_strerror(eb));
-        exit(1);
-    }
-    assert_true(ran_natively(&a) == EXPECT_NATIVE);
-    assert_true(!ran_natively(&b));
-    if (ea == WAH_OK) {
+    for (uint32_t s = 0; s < nsets; s++) {
+        const wah_value_t *p = params + (size_t)s * nparams;
+        wah_value_t ra[8], rb[8];
+        memset(ra, 0, sizeof(ra));
+        memset(rb, 0, sizeof(rb));
+        uint32_t na = 0, nb = 0;
+        wah_error_t ea = wah_call_multi(&a.ctx, func_idx, p, nparams, ra, 8, &na);
+        wah_error_t eb = wah_call_multi(&b.ctx, func_idx, p, nparams, rb, 8, &nb);
+        if (ea != eb) {
+            printf("  func %u: native %s vs interpreted %s\n  spec: %s\n", func_idx, wah_strerror(ea), wah_strerror(eb), spec);
+            exit(1);
+        }
+        assert_true(ran_natively(&a) == EXPECT_NATIVE);
+        assert_true(!ran_natively(&b));
+        if (ea != WAH_OK) continue;
         assert_eq_u64(na, nresults);
         assert_eq_u64(nb, nresults);
         for (uint32_t i = 0; i < nresults; i++) {
-            if (ra[i].i64 != rb[i].i64) {
-                printf("  func %u result %u: native 0x%llx vs interpreted 0x%llx\n", func_idx, i,
-                       (unsigned long long)ra[i].i64, (unsigned long long)rb[i].i64);
+            if (memcmp(&ra[i], &rb[i], sizeof(wah_value_t)) != 0) {
+                printf("  func %u result %u:", func_idx, i);
+                print_value("native", &ra[i]);
+                print_value("vs interpreted", &rb[i]);
+                printf("\n  params:");
+                for (uint32_t j = 0; j < nparams; j++) print_value("", &p[j]);
+                printf("\n  spec: %s\n", spec);
                 exit(1);
             }
         }
     }
     inst_free(&a);
     inst_free(&b);
+}
+
+static void check_call(const char *spec, wah_module_t *env, uint32_t func_idx, const wah_value_t *params,
+                       uint32_t nparams, uint32_t nresults) {
+    check_calls(spec, env, func_idx, params, 1, nparams, nresults);
 }
 
 static void check_i32(const char *spec, uint32_t func_idx, int32_t arg) {
@@ -510,6 +527,487 @@ static void test_i32_upper_bits(void) {
     }
 }
 
+// Vectors with lane boundaries, special floats and edge cases of conversions
+static const wah_v128_t V_SAMPLES[] = {
+    { .u64 = { 0, 0 } },
+    { .u64 = { UINT64_MAX, UINT64_MAX } },
+    { .u8 = { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 } },
+    { .u8 = { 0x80, 0x7f, 0x01, 0xfe, 0x00, 0xff, 0x40, 0xc0, 0x10, 0x20, 0x30, 0x0f, 0xf0, 0x55, 0xaa, 0x81 } },
+    { .u32 = { 0x3fc00000, 0xc0200000, 0x7fc00000, 0x80000000 } },  // 1.5, -2.5, NaN, -0
+    { .u32 = { 0x7f800000, 0xff800000, 0x7fa00001, 0xffc00123 } },  // inf, -inf, sNaN, negative NaN with payload
+    { .u32 = { 0x4f000000, 0xcf000001, 0x4f800000, 0x3efffffd } },  // 2^31, -2^31 - 256, 2^32, 0.4999999
+    { .u32 = { 0x00000001, 0x80000001, 0x4f32d05e, 0xbf800000 } },  // Subnormals, 3e9, -1
+    { .u32 = { 0x40200000, 0x40600000, 0xbf000000, 0x4b000001 } },  // 2.5, 3.5, -0.5, 8388609
+    { .u64 = { 0x3ff8000000000000ull, 0x7ff8000000000000ull } },   // 1.5, NaN
+    { .u64 = { 0x8000000000000000ull, 0xfff8000000000123ull } },   // -0, negative NaN with payload
+    { .u64 = { 0x41effffffff00000ull, 0xc1e0000000180000ull } },   // 4294967295.5, -2147483648.75
+    { .u64 = { 0x7ff0000000000000ull, 0x7e37e43c8800759cull } },   // inf, 1e300
+    { .u64 = { 0xc1e0000000200000ull, 0x41dfffffffd00000ull } },   // -2147483649, 2147483647.25
+    { .u16 = { 0x8000, 0x7fff, 1, 0xffff, 0x4000, 0xc000, 12345, 0x8001 } },
+    { .u32 = { 0x80000000u, 0x7fffffffu, 0x8000, 0xffffffffu } },
+};
+#define NV COUNT(V_SAMPLES)
+
+// Hex digits of a vector for `v128.const %'...'` in specs
+static const char *v128_hex(const wah_v128_t *v, char *buf) {
+    for (int i = 0; i < 16; i++) snprintf(buf + 2 * i, 3, "%02x", v->u8[i]);
+    return buf;
+}
+
+static void test_simd_binary(void) {
+    printf("Testing binary SIMD operations...\n");
+    static const char *ops[] = {
+        "v128.and", "v128.andnot", "v128.or", "v128.xor", "i8x16.swizzle",
+        "i8x16.eq", "i8x16.ne", "i8x16.lt_s", "i8x16.lt_u", "i8x16.gt_s", "i8x16.gt_u", "i8x16.le_s", "i8x16.le_u", "i8x16.ge_s", "i8x16.ge_u",
+        "i16x8.eq", "i16x8.ne", "i16x8.lt_s", "i16x8.lt_u", "i16x8.gt_s", "i16x8.gt_u", "i16x8.le_s", "i16x8.le_u", "i16x8.ge_s", "i16x8.ge_u",
+        "i32x4.eq", "i32x4.ne", "i32x4.lt_s", "i32x4.lt_u", "i32x4.gt_s", "i32x4.gt_u", "i32x4.le_s", "i32x4.le_u", "i32x4.ge_s", "i32x4.ge_u",
+        "i64x2.eq", "i64x2.ne", "i64x2.lt_s", "i64x2.gt_s", "i64x2.le_s", "i64x2.ge_s",
+        "f32x4.eq", "f32x4.ne", "f32x4.lt", "f32x4.gt", "f32x4.le", "f32x4.ge",
+        "f64x2.eq", "f64x2.ne", "f64x2.lt", "f64x2.gt", "f64x2.le", "f64x2.ge",
+        "i8x16.narrow_i16x8_s", "i8x16.narrow_i16x8_u", "i16x8.narrow_i32x4_s", "i16x8.narrow_i32x4_u",
+        "i8x16.add", "i8x16.add_sat_s", "i8x16.add_sat_u", "i8x16.sub", "i8x16.sub_sat_s", "i8x16.sub_sat_u",
+        "i8x16.min_s", "i8x16.min_u", "i8x16.max_s", "i8x16.max_u", "i8x16.avgr_u",
+        "i16x8.add", "i16x8.add_sat_s", "i16x8.add_sat_u", "i16x8.sub", "i16x8.sub_sat_s", "i16x8.sub_sat_u", "i16x8.mul",
+        "i16x8.min_s", "i16x8.min_u", "i16x8.max_s", "i16x8.max_u", "i16x8.avgr_u", "i16x8.q15mulr_sat_s",
+        "i16x8.extmul_low_i8x16_s", "i16x8.extmul_high_i8x16_s", "i16x8.extmul_low_i8x16_u", "i16x8.extmul_high_i8x16_u",
+        "i32x4.add", "i32x4.sub", "i32x4.mul", "i32x4.min_s", "i32x4.min_u", "i32x4.max_s", "i32x4.max_u", "i32x4.dot_i16x8_s",
+        "i32x4.extmul_low_i16x8_s", "i32x4.extmul_high_i16x8_s", "i32x4.extmul_low_i16x8_u", "i32x4.extmul_high_i16x8_u",
+        "i64x2.add", "i64x2.sub", "i64x2.mul",
+        "i64x2.extmul_low_i32x4_s", "i64x2.extmul_high_i32x4_s", "i64x2.extmul_low_i32x4_u", "i64x2.extmul_high_i32x4_u",
+        "f32x4.add", "f32x4.sub", "f32x4.mul", "f32x4.div", "f32x4.min", "f32x4.max", "f32x4.pmin", "f32x4.pmax",
+        "f64x2.add", "f64x2.sub", "f64x2.mul", "f64x2.div", "f64x2.min", "f64x2.max", "f64x2.pmin", "f64x2.pmax",
+        "i8x16.relaxed_swizzle", "f32x4.relaxed_min", "f32x4.relaxed_max", "f64x2.relaxed_min", "f64x2.relaxed_max",
+        "i16x8.relaxed_q15mulr_s", "i16x8.relaxed_dot_i8x16_i7x16_s",
+    };
+    static wah_value_t params[NV * NV * 2];
+    for (size_t i = 0; i < NV; i++) {
+        for (size_t j = 0; j < NV; j++) {
+            params[2 * (i * NV + j)].v128 = V_SAMPLES[i];
+            params[2 * (i * NV + j) + 1].v128 = V_SAMPLES[j];
+        }
+    }
+    char spec[2048], c[33];
+    v128_hex(&V_SAMPLES[3], c);
+    for (size_t k = 0; k < COUNT(ops); k++) {
+        const char *op = ops[k];
+        // Operands are pinned locals, temporaries, slots, the same register or constants
+        snprintf(spec, sizeof(spec), "wasm types {[ fn [v128, v128] [v128, v128, v128] ]} funcs {[ 0, 0, 0, 0, 0, 0 ]} code {[ "
+                 "{[] local.get 0 local.get 1 %s local.get 0 local.get 1 end}, "
+                 "{[] local.get 0 v128.not v128.not local.get 1 v128.not v128.not %s local.get 0 local.get 1 end}, "
+                 "{[] local.get 0 local.get 1 v128.not v128.not %s local.get 0 local.get 1 end}, "
+                 "{[] local.get 0 local.get 1 i32.const 0 if void end %s local.get 0 local.get 1 end}, "
+                 "{[] local.get 0 local.get 0 %s local.get 0 v128.const %%'%s' %s local.get 1 local.get 1 %s end}, "
+                 "{[] v128.const %%'%s' local.get 1 %s local.get 0 v128.not local.get 1 end} ]}",
+                 op, op, op, op, op, c, op, op, c, op);
+        for (uint32_t fn = 0; fn < 6; fn++) check_calls(spec, NULL, fn, params, NV * NV, 2, 3);
+    }
+}
+
+static void test_simd_unary(void) {
+    printf("Testing unary and ternary SIMD operations...\n");
+    static const char *ops[] = {
+        "v128.not", "i8x16.abs", "i8x16.neg", "i8x16.popcnt",
+        "i16x8.extadd_pairwise_i8x16_s", "i16x8.extadd_pairwise_i8x16_u", "i16x8.abs", "i16x8.neg",
+        "i16x8.extend_low_i8x16_s", "i16x8.extend_high_i8x16_s", "i16x8.extend_low_i8x16_u", "i16x8.extend_high_i8x16_u",
+        "i32x4.extadd_pairwise_i16x8_s", "i32x4.extadd_pairwise_i16x8_u", "i32x4.abs", "i32x4.neg",
+        "i32x4.extend_low_i16x8_s", "i32x4.extend_high_i16x8_s", "i32x4.extend_low_i16x8_u", "i32x4.extend_high_i16x8_u",
+        "i64x2.abs", "i64x2.neg",
+        "i64x2.extend_low_i32x4_s", "i64x2.extend_high_i32x4_s", "i64x2.extend_low_i32x4_u", "i64x2.extend_high_i32x4_u",
+        "f32x4.ceil", "f32x4.floor", "f32x4.trunc", "f32x4.nearest", "f32x4.abs", "f32x4.neg", "f32x4.sqrt",
+        "f64x2.ceil", "f64x2.floor", "f64x2.trunc", "f64x2.nearest", "f64x2.abs", "f64x2.neg", "f64x2.sqrt",
+        "i32x4.trunc_sat_f32x4_s", "i32x4.trunc_sat_f32x4_u", "f32x4.convert_i32x4_s", "f32x4.convert_i32x4_u",
+        "i32x4.trunc_sat_f64x2_s_zero", "i32x4.trunc_sat_f64x2_u_zero", "f64x2.convert_low_i32x4_s", "f64x2.convert_low_i32x4_u",
+        "f32x4.demote_f64x2_zero", "f64x2.promote_low_f32x4",
+        "i32x4.relaxed_trunc_f32x4_s", "i32x4.relaxed_trunc_f32x4_u", "i32x4.relaxed_trunc_f64x2_s", "i32x4.relaxed_trunc_f64x2_u",
+    };
+    static wah_value_t params[NV];
+    for (size_t i = 0; i < NV; i++) params[i].v128 = V_SAMPLES[i];
+    char spec[2048], c[33];
+    for (size_t k = 0; k < COUNT(ops); k++) {
+        const char *op = ops[k];
+        snprintf(spec, sizeof(spec), "wasm types {[ fn [v128] [v128, v128] ]} funcs {[ 0, 0, 0, 0 ]} code {[ "
+                 "{[] local.get 0 %s local.get 0 end}, {[] local.get 0 v128.not v128.not %s local.get 0 end}, "
+                 "{[] local.get 0 i32.const 0 if void end %s local.get 0 end}, {[] v128.const %%'%s' %s local.get 0 end} ]}",
+                 op, op, op, v128_hex(&V_SAMPLES[6], c), op);
+        for (uint32_t fn = 0; fn < 4; fn++) check_calls(spec, NULL, fn, params, NV, 1, 2);
+    }
+
+    static const char *ternary[] = {
+        "v128.bitselect", "f32x4.relaxed_madd", "f32x4.relaxed_nmadd", "f64x2.relaxed_madd", "f64x2.relaxed_nmadd",
+        "i8x16.relaxed_laneselect", "i16x8.relaxed_laneselect", "i32x4.relaxed_laneselect", "i64x2.relaxed_laneselect",
+        "i32x4.relaxed_dot_i8x16_i7x16_add_s",
+    };
+    static const size_t thirds[] = { 0, 1, 3, 4, 12 };
+    static wah_value_t params3[NV * NV * COUNT(thirds) * 3];
+    size_t n = 0;
+    for (size_t i = 0; i < NV; i++) {
+        for (size_t j = 0; j < NV; j++) {
+            for (size_t l = 0; l < COUNT(thirds); l++) {
+                params3[n++].v128 = V_SAMPLES[i];
+                params3[n++].v128 = V_SAMPLES[j];
+                params3[n++].v128 = V_SAMPLES[thirds[l]];
+            }
+        }
+    }
+    for (size_t k = 0; k < COUNT(ternary); k++) {
+        const char *op = ternary[k];
+        snprintf(spec, sizeof(spec), "wasm types {[ fn [v128, v128, v128] [v128, v128, v128, v128] ]} funcs {[ 0, 0, 0, 0, 0, 0 ]} code {[ "
+                 "{[] local.get 0 local.get 1 local.get 2 %s local.get 0 local.get 1 local.get 2 end}, "
+                 "{[] local.get 0 v128.not v128.not local.get 1 v128.not v128.not local.get 2 v128.not v128.not %s "
+                 "local.get 0 local.get 1 local.get 2 end}, "
+                 "{[] local.get 0 local.get 1 local.get 2 v128.not v128.not %s local.get 0 local.get 1 local.get 2 end}, "
+                 "{[] local.get 0 v128.not v128.not local.get 1 local.get 2 %s local.get 0 local.get 1 local.get 2 end}, "
+                 "{[] local.get 0 local.get 1 v128.not v128.not local.get 2 %s local.get 0 local.get 1 local.get 2 end}, "
+                 "{[] local.get 0 local.get 1 local.get 2 i32.const 0 if void end %s local.get 0 local.get 1 local.get 2 end} ]}",
+                 op, op, op, op, op, op);
+        for (uint32_t fn = 0; fn < 6; fn++) check_calls(spec, NULL, fn, params3, (uint32_t)(n / 3), 3, 4);
+    }
+}
+
+static void test_simd_tests_and_shifts(void) {
+    printf("Testing SIMD tests, bitmasks and shifts...\n");
+    // Samples plus vectors with a single zero byte or a single negative byte
+    static wah_value_t params[NV + 32];
+    for (size_t i = 0; i < NV; i++) params[i].v128 = V_SAMPLES[i];
+    for (int i = 0; i < 16; i++) {
+        memset(&params[NV + i], 1, 16);
+        params[NV + i].v128.u8[i] = 0;
+        memset(&params[NV + 16 + i], 0, sizeof(wah_value_t));
+        params[NV + 16 + i].v128.u8[i] = 0x80;
+    }
+    static const char *tests[] = {
+        "v128.any_true", "i8x16.all_true", "i16x8.all_true", "i32x4.all_true", "i64x2.all_true",
+        "i8x16.bitmask", "i16x8.bitmask", "i32x4.bitmask", "i64x2.bitmask",
+    };
+    char spec[2048];
+    for (size_t k = 0; k < COUNT(tests); k++) {
+        const char *op = tests[k];
+        // Results as values and fused with branches
+        snprintf(spec, sizeof(spec), "wasm types {[ fn [v128] [i32, v128] ]} funcs {[ 0, 0, 0, 0, 0 ]} code {[ "
+                 "{[] local.get 0 %s local.get 0 end}, {[] local.get 0 v128.not v128.not %s local.get 0 end}, "
+                 "{[] block i32 i32.const 1 local.get 0 %s br_if 0 drop i32.const 2 end local.get 0 end}, "
+                 "{[] local.get 0 %s if i32 i32.const 3 else i32.const 4 end local.get 0 end}, "
+                 "{[] i32.const 5 i32.const 6 local.get 0 %s select local.get 0 end} ]}",
+                 op, op, op, op, op);
+        for (uint32_t fn = 0; fn < 5; fn++) check_calls(spec, NULL, fn, params, (uint32_t)COUNT(params), 1, 2);
+    }
+
+    static const char *shifts[] = {
+        "i8x16.shl", "i8x16.shr_s", "i8x16.shr_u", "i16x8.shl", "i16x8.shr_s", "i16x8.shr_u",
+        "i32x4.shl", "i32x4.shr_s", "i32x4.shr_u", "i64x2.shl", "i64x2.shr_s", "i64x2.shr_u",
+    };
+    static const int32_t counts[] = { 0, 1, 2, 7, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65, -1, -8, 0x7fffffff };
+    static wah_value_t sparams[NV * COUNT(counts) * 2];
+    size_t n = 0;
+    for (size_t i = 0; i < NV; i++) {
+        for (size_t j = 0; j < COUNT(counts); j++) {
+            sparams[n++].v128 = V_SAMPLES[i];
+            memset(&sparams[n], 0, sizeof(wah_value_t));
+            sparams[n++].i32 = counts[j];
+        }
+    }
+    for (size_t k = 0; k < COUNT(shifts); k++) {
+        const char *op = shifts[k];
+        int len = snprintf(spec, sizeof(spec), "wasm types {[ fn [v128, i32] [v128, v128] ]} funcs {[ 0, 0, 0");
+        for (size_t j = 0; j < COUNT(counts); j++) len += snprintf(spec + len, sizeof(spec) - (size_t)len, ", 0");
+        len += snprintf(spec + len, sizeof(spec) - (size_t)len, " ]} code {[ {[] local.get 0 local.get 1 %s local.get 0 end}, "
+                        "{[] local.get 0 v128.not v128.not local.get 1 i32.const 1 i32.add %s local.get 0 end}, "
+                        "{[] local.get 0 local.get 1 i32.const 0 if void end %s local.get 0 end}", op, op, op);
+        for (size_t j = 0; j < COUNT(counts); j++) {
+            len += snprintf(spec + len, sizeof(spec) - (size_t)len, ", {[] local.get 0 i32.const %d %s local.get 0 end}", counts[j], op);
+        }
+        snprintf(spec + len, sizeof(spec) - (size_t)len, " ]}");
+        for (uint32_t fn = 0; fn < 3 + COUNT(counts); fn++) check_calls(spec, NULL, fn, sparams, (uint32_t)(n / 2), 2, 2);
+    }
+}
+
+static void test_simd_lanes(void) {
+    printf("Testing SIMD lane operations...\n");
+    static const struct { const char *op, *type; int lanes; } extracts[] = {
+        { "i8x16.extract_lane_s", "i32", 16 }, { "i8x16.extract_lane_u", "i32", 16 },
+        { "i16x8.extract_lane_s", "i32", 8 }, { "i16x8.extract_lane_u", "i32", 8 }, { "i32x4.extract_lane", "i32", 4 },
+        { "i64x2.extract_lane", "i64", 2 }, { "f32x4.extract_lane", "f32", 4 }, { "f64x2.extract_lane", "f64", 2 },
+    };
+    static wah_value_t params[NV];
+    for (size_t i = 0; i < NV; i++) params[i].v128 = V_SAMPLES[i];
+    static char spec[16384];
+    for (size_t k = 0; k < COUNT(extracts); k++) {
+        // The result is used as a scalar again, and returned
+        const char *t = extracts[k].type;
+        const char *use = t[0] == 'f' ? (t[1] == '3' ? "f32.neg" : "f64.neg") : t[1] == '3' ? "i32.const 1 i32.add" : "i64.const 1 i64.add";
+        int len = snprintf(spec, sizeof(spec), "wasm types {[ fn [v128] [%s, %s, v128] ]} funcs {[ 0", t, t);
+        for (int l = 1; l < 2 * extracts[k].lanes; l++) len += snprintf(spec + len, sizeof(spec) - (size_t)len, ", 0");
+        len += snprintf(spec + len, sizeof(spec) - (size_t)len, " ]} code {[ ");
+        for (int l = 0; l < extracts[k].lanes; l++) {
+            len += snprintf(spec + len, sizeof(spec) - (size_t)len, "%s{[] local.get 0 %s %d local.get 0 %s %d %s local.get 0 end}, "
+                            "{[] local.get 0 v128.not v128.not %s %d local.get 0 v128.not %s %d local.get 0 end}",
+                            l ? ", " : "", extracts[k].op, l, extracts[k].op, l, use, extracts[k].op, l, extracts[k].op, l);
+        }
+        snprintf(spec + len, sizeof(spec) - (size_t)len, " ]}");
+        for (uint32_t fn = 0; fn < 2u * (uint32_t)extracts[k].lanes; fn++) check_calls(spec, NULL, fn, params, NV, 1, 3);
+    }
+
+    // Lanes replaced with scalars from locals, temporaries and constants
+    static const struct { const char *op, *type, *c1, *c2; int lanes; uint64_t vals[4]; } replaces[] = {
+        { "i8x16.replace_lane", "i32", "i32.const 0", "i32.const -129", 16, { 0, 0xffffffffu, 0x12345680u, 0x7f } },
+        { "i16x8.replace_lane", "i32", "i32.const 0", "i32.const 0x18001", 8, { 0, 0xffffffffu, 0x12345680u, 0x7fff } },
+        { "i32x4.replace_lane", "i32", "i32.const 0", "i32.const -5", 4, { 0, 0xffffffffu, 0x12345680u, 0x7fffffff } },
+        { "i64x2.replace_lane", "i64", "i64.const 0", "i64.const -5", 2, { 0, UINT64_MAX, 0x123456789abcdefull, 1 } },
+        { "f32x4.replace_lane", "f32", "f32.const 0.0f32", "f32.const -2.5f32", 4, { 0, 0x7fa00001u, 0xbf800000u, 0x80000000u } },
+        { "f64x2.replace_lane", "f64", "f64.const 0.0f64", "f64.const -2.5f64", 2, { 0, 0x7ff4000000000001ull, 0xbff0000000000000ull, 1 } },
+    };
+    static wah_value_t rparams[NV * 4 * 2];
+    for (size_t k = 0; k < COUNT(replaces); k++) {
+        size_t n = 0;
+        for (size_t i = 0; i < NV; i++) {
+            for (size_t j = 0; j < 4; j++) {
+                rparams[n++].v128 = V_SAMPLES[i];
+                memset(&rparams[n], 0, sizeof(wah_value_t));
+                rparams[n++].i64 = (int64_t)replaces[k].vals[j];
+            }
+        }
+        const char *t = replaces[k].type;
+        const char *tmp = t[0] == 'f' ? (t[1] == '3' ? "f32.neg" : "f64.neg") : t[1] == '3' ? "i32.const 3 i32.mul" : "i64.const 3 i64.mul";
+        int len = snprintf(spec, sizeof(spec), "wasm types {[ fn [v128, %s] [v128, v128, %s] ]} funcs {[ 0", t, t);
+        for (int l = 1; l < 4 * replaces[k].lanes; l++) len += snprintf(spec + len, sizeof(spec) - (size_t)len, ", 0");
+        len += snprintf(spec + len, sizeof(spec) - (size_t)len, " ]} code {[ ");
+        for (int l = 0; l < replaces[k].lanes; l++) {
+            const char *op = replaces[k].op;
+            len += snprintf(spec + len, sizeof(spec) - (size_t)len, "%s"
+                            "{[] local.get 0 local.get 1 %s %d local.get 0 local.get 1 end}, "
+                            "{[] local.get 0 v128.not v128.not local.get 1 %s %s %d local.get 0 local.get 1 end}, "
+                            "{[] local.get 0 %s %s %d local.get 0 local.get 1 end}, "
+                            "{[] local.get 0 %s %s %d local.get 0 local.get 1 end}",
+                            l ? ", " : "", op, l, tmp, op, l, replaces[k].c1, op, l, replaces[k].c2, op, l);
+        }
+        snprintf(spec + len, sizeof(spec) - (size_t)len, " ]}");
+        for (uint32_t fn = 0; fn < 4u * (uint32_t)replaces[k].lanes; fn++) check_calls(spec, NULL, fn, rparams, (uint32_t)(n / 2), 2, 3);
+    }
+
+    // Splats from locals, temporaries and constants
+    static const struct { const char *op, *type, *tmp, *c1, *c2; uint64_t vals[4]; } splats[] = {
+        { "i8x16.splat", "i32", "i32.const 3 i32.mul", "i32.const 0", "i32.const 0x1ff", { 0, 0xffffffffu, 0x12345680u, 0x7f } },
+        { "i16x8.splat", "i32", "i32.const 3 i32.mul", "i32.const -1", "i32.const 0x18001", { 0, 0xffffffffu, 0x12345680u, 0x7fff } },
+        { "i32x4.splat", "i32", "i32.const 3 i32.mul", "i32.const 0", "i32.const -5", { 0, 0xffffffffu, 0x12345680u, 0x7fffffff } },
+        { "i64x2.splat", "i64", "i64.const 3 i64.mul", "i64.const 0", "i64.const 0x123456789", { 0, UINT64_MAX, 0x123456789abcdefull, 1 } },
+        { "f32x4.splat", "f32", "f32.neg", "f32.const 0.0f32", "f32.const -2.5f32", { 0, 0x7fa00001u, 0xbf800000u, 0x80000000u } },
+        { "f64x2.splat", "f64", "f64.neg", "f64.const 0.0f64", "f64.const -2.5f64", { 0, 0x7ff4000000000001ull, 0xbff0000000000000ull, 1 } },
+    };
+    for (size_t k = 0; k < COUNT(splats); k++) {
+        wah_value_t sp[4];
+        memset(sp, 0, sizeof(sp));
+        for (int j = 0; j < 4; j++) sp[j].i64 = (int64_t)splats[k].vals[j];
+        const char *op = splats[k].op;
+        snprintf(spec, sizeof(spec), "wasm types {[ fn [%s] [v128, %s] ]} funcs {[ 0, 0, 0, 0 ]} code {[ "
+                 "{[] local.get 0 %s local.get 0 end}, {[] local.get 0 %s %s local.get 0 end}, "
+                 "{[] %s %s local.get 0 end}, {[] %s %s local.get 0 end} ]}",
+                 splats[k].type, splats[k].type, op, splats[k].tmp, op, splats[k].c1, op, splats[k].c2, op);
+        for (uint32_t fn = 0; fn < 4; fn++) check_calls(spec, NULL, fn, sp, 4, 1, 2);
+    }
+
+    // Shuffles from both operands, one of them, or with repeated lanes
+    static const uint8_t masks[][16] = {
+        { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 },
+        { 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31 },
+        { 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 },
+        { 0, 16, 1, 17, 2, 18, 3, 19, 4, 20, 5, 21, 6, 22, 7, 23 },
+        { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+        { 3, 31, 7, 18, 30, 0, 12, 12, 25, 1, 15, 16, 8, 9, 27, 4 },
+        { 31, 31, 31, 31, 31, 31, 31, 31, 31, 31, 31, 31, 31, 31, 31, 31 },
+        { 4, 5, 6, 7, 20, 21, 22, 23, 8, 9, 10, 11, 28, 29, 30, 31 },
+    };
+    static wah_value_t params2[NV * NV * 2];
+    for (size_t i = 0; i < NV; i++) {
+        for (size_t j = 0; j < NV; j++) {
+            params2[2 * (i * NV + j)].v128 = V_SAMPLES[i];
+            params2[2 * (i * NV + j) + 1].v128 = V_SAMPLES[j];
+        }
+    }
+    for (size_t k = 0; k < COUNT(masks); k++) {
+        char op[128];
+        int len = snprintf(op, sizeof(op), "i8x16.shuffle");
+        for (int i = 0; i < 16; i++) len += snprintf(op + len, sizeof(op) - (size_t)len, " %d", masks[k][i]);
+        snprintf(spec, sizeof(spec), "wasm types {[ fn [v128, v128] [v128, v128, v128] ]} funcs {[ 0, 0, 0, 0 ]} code {[ "
+                 "{[] local.get 0 local.get 1 %s local.get 0 local.get 1 end}, "
+                 "{[] local.get 0 v128.not v128.not local.get 1 v128.not v128.not %s local.get 0 local.get 1 end}, "
+                 "{[] local.get 0 local.get 1 i32.const 0 if void end %s local.get 0 local.get 1 end}, "
+                 "{[] local.get 1 local.get 1 %s local.get 0 local.get 1 end} ]}", op, op, op, op);
+        for (uint32_t fn = 0; fn < 4; fn++) check_calls(spec, NULL, fn, params2, NV * NV, 2, 3);
+    }
+}
+
+static void test_simd_memory(void) {
+    printf("Testing SIMD memory operations...\n");
+    // The vector is stored at both ends of the memory, then loaded from the address
+    static const struct { const char *op; int lanes; } loads[] = {
+        { "v128.load 0", 0 }, { "v128.load8x8_s 0", 0 }, { "v128.load8x8_u 0", 0 }, { "v128.load16x4_s 0", 0 },
+        { "v128.load16x4_u 0", 0 }, { "v128.load32x2_s 0", 0 }, { "v128.load32x2_u 0", 0 }, { "v128.load8_splat 0", 0 },
+        { "v128.load16_splat 0", 0 }, { "v128.load32_splat 0", 0 }, { "v128.load64_splat 0", 0 },
+        { "v128.load32_zero 0", 0 }, { "v128.load64_zero 0", 0 },
+        { "v128.load8_lane 0", 16 }, { "v128.load16_lane 0", 8 }, { "v128.load32_lane 0", 4 }, { "v128.load64_lane 0", 2 },
+        { "v128.store8_lane 0", 16 }, { "v128.store16_lane 0", 8 }, { "v128.store32_lane 0", 4 }, { "v128.store64_lane 0", 2 },
+        { "v128.store 0", 0 },
+    };
+    static const int32_t addrs[] = { 0, 1, 3, 8, 15, 16, 17, 65504, 65512, 65519, 65520, 65521, 65528, 65532, 65535, 65536, -1, -16 };
+    static wah_value_t params[COUNT(addrs) * 4 * 2];
+    size_t n = 0;
+    for (size_t i = 0; i < COUNT(addrs); i++) {
+        for (size_t j = 2; j < 6; j++) {
+            memset(&params[n], 0, sizeof(wah_value_t));
+            params[n++].i32 = addrs[i];
+            params[n++].v128 = V_SAMPLES[j];
+        }
+    }
+    char spec[8192];
+    for (size_t k = 0; k < COUNT(loads); k++) {
+        bool store = strncmp(loads[k].op, "v128.store", 10) == 0;
+        int nlanes = loads[k].lanes ? loads[k].lanes : 1;
+        int len = snprintf(spec, sizeof(spec), "wasm types {[ fn [i32, v128] [v128, v128, v128] ]} funcs {[ 0, 0");
+        for (int l = 1; l < nlanes; l++) len += snprintf(spec + len, sizeof(spec) - (size_t)len, ", 0, 0");
+        len += snprintf(spec + len, sizeof(spec) - (size_t)len, " ]} memories {[ limits.i32/1 1 ]} code {[ ");
+        for (int l = 0; l < nlanes; l++) {
+            char lane[16] = "";
+            if (loads[k].lanes) snprintf(lane, sizeof(lane), " %d", l);
+            // With the access in the middle of other operations, and with an offset
+            const char *prep = "i32.const 0 local.get 1 v128.store 0 0 i32.const 65520 local.get 1 i8x16.abs v128.store 0 0";
+            const char *post = "i32.const 0 v128.load 0 0 i32.const 65520 v128.load 0 0";
+            if (store) {
+                len += snprintf(spec + len, sizeof(spec) - (size_t)len, "%s{[] %s local.get 0 local.get 1 v128.not %s 0%s local.get 1 %s end}, "
+                                "{[] %s local.get 0 local.get 1 %s 7%s local.get 1 %s end}",
+                                l ? ", " : "", prep, loads[k].op, lane, post, prep, loads[k].op, lane, post);
+            } else {
+                const char *vec = loads[k].lanes ? "local.get 1 v128.not" : "";
+                len += snprintf(spec + len, sizeof(spec) - (size_t)len, "%s{[] %s local.get 0 %s %s 0%s local.get 1 local.get 1 end}, "
+                                "{[] %s local.get 0 %s %s 7%s %s end}",
+                                l ? ", " : "", prep, vec, loads[k].op, lane, prep, vec, loads[k].op, lane, post);
+            }
+        }
+        snprintf(spec + len, sizeof(spec) - (size_t)len, " ]}");
+        for (uint32_t fn = 0; fn < 2u * (uint32_t)nlanes; fn++) check_calls(spec, NULL, fn, params, (uint32_t)(n / 2), 2, 3);
+    }
+
+    // A second memory, where the alignment field has bit 6 set for the memory index
+    const char *mem2 = "wasm types {[ fn [i32, v128] [v128, v128, v128] ]} funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1, limits.i32/1 1 ]} code {[ {[] \
+        local.get 0 local.get 1 v128.store 68 1 0 local.get 0 local.get 1 v128.store32_lane 66 1 16 3 \
+        local.get 0 v128.load 68 1 0 local.get 0 v128.load16_splat 65 1 16 \
+        local.get 0 local.get 1 v128.load64_lane 67 1 4 1 end} ]}";
+    check_calls(mem2, NULL, 0, params, (uint32_t)(n / 2), 2, 3);
+}
+
+static void host_v128(wah_call_context_t *call, void *userdata) {
+    (void)userdata;
+    wah_v128_t v = wah_param_v128(call, 0);
+    for (int i = 0; i < 4; i++) v.u32[i] = v.u32[i] * 3 + (uint32_t)wah_param_i32(call, 1);
+    wah_result_v128(call, 0, &v);
+    wah_result_i32(call, 1, wah_param_i32(call, 1) ^ 0x55);
+}
+
+static void test_simd_values(void) {
+    printf("Testing v128 values in locals, globals, calls and branches...\n");
+    static wah_value_t params[NV * 3 * 3];
+    static const int32_t conds[] = { 0, 1, 7 };
+    size_t n = 0;
+    for (size_t i = 0; i < NV; i++) {
+        for (size_t j = 0; j < 3; j++) {
+            params[n++].v128 = V_SAMPLES[i];
+            params[n++].v128 = V_SAMPLES[(i + 5) % NV];
+            memset(&params[n], 0, sizeof(wah_value_t));
+            params[n++].i32 = conds[j];
+        }
+    }
+    // Selects, untyped and typed, with conditions as flags, registers and slots, and v128 results of blocks and ifs
+    const char *sel = "wasm types {[ fn [v128, v128, i32] [v128, v128] ]} funcs {[ 0, 0, 0, 0, 0 ]} code {[ \
+        {[] local.get 0 local.get 1 local.get 2 select local.get 1 local.get 0 local.get 2 select.typed [v128] end}, \
+        {[] local.get 0 v128.not local.get 1 v128.not local.get 2 i32.const 3 i32.lt_s select local.get 0 end}, \
+        {[] local.get 0 local.get 1 local.get 2 i32.const 0 if void end select local.get 0 local.get 1 i32.const 0 if void end \
+            local.get 2 select.typed [v128] end}, \
+        {[] block v128 local.get 0 local.get 2 br_if 0 drop local.get 1 end \
+            local.get 2 if v128 local.get 0 i8x16.abs else local.get 1 i8x16.neg end end}, \
+        {[] block v128 block v128 local.get 1 local.get 0 local.get 2 br_table [0, 1] 0 end i64x2.neg end local.get 0 end} ]}";
+    for (uint32_t fn = 0; fn < 5; fn++) check_calls(sel, NULL, fn, params, (uint32_t)(n / 3), 3, 2);
+
+    // Globals, including an imported mutable one, a host function and an indirect call with v128 parameters
+    wah_module_t env;
+    assert_ok(wah_new_module(&env, NULL));
+    wah_v128_t g0 = { .u32 = { 1, 2, 3, 4 } };
+    assert_ok(wah_export_global_v128(&env, "g", true, &g0));
+    assert_ok(wah_export_func(&env, "h", "(v128, i32) -> (v128, i32)", host_v128, NULL, NULL));
+    char c[33], c2[33];
+    char spec[4096];
+    snprintf(spec, sizeof(spec), "wasm types {[ fn [v128, v128, i32] [v128, v128], fn [v128, i32] [v128, i32] ]} \
+        imports {[ {'env'} {'g'} export.global v128 mut, {'env'} {'h'} fn# 1 ]} funcs {[ 0, 1, 0 ]} \
+        tables {[ funcref limits.i32/1 2 ]} globals {[ v128 mut v128.const %%'%s' end, v128 immut v128.const %%'%s' end ]} \
+        elements {[ elem.active.table#0 i32.const 0 end [0, 2] ]} code {[ \
+        {[] global.get 0 local.get 0 i32x4.add global.set 0 global.get 1 global.get 2 i32x4.sub global.set 1 \
+            local.get 1 local.get 2 call 0 drop global.get 0 global.get 1 i8x16.add \
+            local.get 2 local.get 2 i32.const 1 i32.and call_indirect 1 0 i32.const 9 i32.add i8x16.splat i8x16.add end}, \
+        {[] local.get 0 local.get 1 i64.extend_i32_s i64x2.splat i64x2.mul local.get 1 end}, \
+        {[] local.get 0 local.get 1 i8x16.add local.get 2 i32x4.splat end} ]}",
+        v128_hex(&V_SAMPLES[2], c), v128_hex(&V_SAMPLES[3], c2));
+    check_calls(spec, &env, 1, params, (uint32_t)(n / 3), 3, 2);
+    check_calls(spec, &env, 3, params, (uint32_t)(n / 3), 3, 2); // Function 2 is only called indirectly
+    wah_free_module(&env);
+
+    // More live vectors than registers, and v128 locals pinned in a loop along with f64 locals and spilled by calls
+    int len = snprintf(spec, sizeof(spec), "wasm types {[ fn [v128, v128, i32] [v128, v128], fn [] [] ]} \
+        imports {[ {'env'} {'interrupt'} fn# 1 ]} funcs {[ 0 ]} code {[ {[12 v128, 2 f64] \
+        block void loop void");
+    for (int k = 3; k <= 14; k++) {
+        len += snprintf(spec + len, sizeof(spec) - (size_t)len, " local.get %d local.get %d i32x4.add local.get 2 i8x16.splat v128.xor local.set %d",
+                        k, k % 2, k);
+    }
+    len += snprintf(spec + len, sizeof(spec) - (size_t)len, " local.get 15 local.get 3 f64x2.extract_lane 0 f64.add local.set 15 \
+        local.get 2 i32.const 7 i32.and i32.eqz if void call 0 end \
+        local.get 2 i32.const 1 i32.sub local.tee 2 i32.const 0 i32.gt_s br_if 0 end end");
+    for (int k = 3; k <= 14; k++) len += snprintf(spec + len, sizeof(spec) - (size_t)len, " local.get %d", k);
+    for (int k = 0; k < 20; k++) len += snprintf(spec + len, sizeof(spec) - (size_t)len, " local.get %d local.get 1 i16x8.mul", k % 2);
+    for (int k = 0; k < 20 + 11; k++) len += snprintf(spec + len, sizeof(spec) - (size_t)len, " i8x16.add");
+    snprintf(spec + len, sizeof(spec) - (size_t)len, " local.get 15 f64x2.splat end} ]}");
+    wah_module_t ienv;
+    assert_ok(wah_new_module(&ienv, NULL));
+    assert_ok(wah_export_func(&ienv, "interrupt", "() -> ()", host_interrupt, NULL, NULL));
+    for (size_t i = 0; i < NV; i++) {
+        wah_value_t p[3] = { { .v128 = V_SAMPLES[i] }, { .v128 = V_SAMPLES[(i + 3) % NV] }, { .i32 = 30 } };
+        wah_value_t r[2][2];
+        int yields[2];
+        for (int native = 0; native < 2; native++) {
+            jit_inst_t a;
+            inst_new(&a, spec, !native, &ienv);
+            assert_ok(wah_start(&a.ctx, 1, p, 3));
+            wah_error_t err;
+            yields[native] = 0;
+            while ((err = wah_resume(&a.ctx)) == WAH_STATUS_YIELDED) yields[native]++;
+            assert_ok(err);
+            uint32_t nr;
+            memset(r[native], 0, sizeof(r[native]));
+            assert_ok(wah_finish(&a.ctx, r[native], 2, &nr));
+            assert_true(ran_natively(&a) == (native && EXPECT_NATIVE));
+            inst_free(&a);
+        }
+        assert_true(memcmp(r[0], r[1], sizeof(r[0])) == 0);
+        assert_eq_i32(yields[1], yields[0]);
+        assert_eq_i32(yields[0], 3);
+    }
+    wah_free_module(&ienv);
+}
+
+// Functions over 1MB, where AArch64 places constants inline as literal loads can't reach the end of the function
+static void test_simd_long_function(void) {
+    printf("Testing a long function with SIMD constants...\n");
+    size_t cap = 2 << 20;
+    char *spec = (char *)malloc(cap);
+    assert_true(spec != NULL);
+    char c[33];
+    size_t len = (size_t)snprintf(spec, cap, "wasm types {[ fn [v128, v128] [v128] ]} funcs {[ 0 ]} code {[ {[] \
+        local.get 0 v128.const %%'%s' i8x16.add local.set 0", v128_hex(&V_SAMPLES[3], c));
+    for (int k = 0; k < 30000; k++) len += (size_t)snprintf(spec + len, cap - len, " local.get 1 local.get 0 i64x2.mul local.set 1");
+    snprintf(spec + len, cap - len, " local.get 1 v128.const %%'%s' i8x16.swizzle end} ]}", v128_hex(&V_SAMPLES[14], c));
+    wah_value_t p[2] = { { .v128 = V_SAMPLES[2] }, { .v128 = V_SAMPLES[13] } };
+    check_call(spec, NULL, 0, p, 2, 1);
+    free(spec);
+}
+
 static void test_fallback(void) {
     printf("Testing interpreter fallback...\n");
     // Modules using reference types are interpreted
@@ -535,6 +1033,13 @@ int main(void) {
     test_pinned_locals();
     test_local_cache();
     test_i32_upper_bits();
+    test_simd_binary();
+    test_simd_unary();
+    test_simd_tests_and_shifts();
+    test_simd_lanes();
+    test_simd_memory();
+    test_simd_values();
+    test_simd_long_function();
     test_fallback();
     printf("All JIT tests passed.\n");
     return 0;
