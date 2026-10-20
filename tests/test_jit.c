@@ -1024,7 +1024,8 @@ static void test_fallback(void) {
 }
 
 int main(void) {
-    if (getenv("WAH_TEST_GUARD_PAGES")) { // Natively compiled code relies on guard pages then
+    const char *guard = getenv("WAH_TEST_GUARD_PAGES");
+    if (guard && *guard) { // Natively compiled code relies on guard pages then
         printf("Guard pages: %s\n", wah_strerror(wah_enable_guard_pages(WAH_HANDLES_FAULT)));
     }
     test_integer_ops();

@@ -272,7 +272,8 @@ int main(int argc, char **argv) {
     size_t i;
     tally_t tally = {0};
     wah_debug_print_platform_features();
-    if (getenv("WAH_TEST_GUARD_PAGES")) { // Runs natively compiled code with guard pages if possible
+    const char *guard = getenv("WAH_TEST_GUARD_PAGES");
+    if (guard && *guard) { // Runs natively compiled code with guard pages if possible
         printf("Guard pages: %s\n", wah_strerror(wah_enable_guard_pages(WAH_HANDLES_FAULT)));
     }
     if (!run_parser_sanity()) {
