@@ -189,6 +189,8 @@ typedef struct {
     uint32_t h;
     int32_t gpr[32], fpr[32];
     int32_t gpr_local[32], fpr_local[32]; // Unpinned local whose value a free register still holds, -1 if none
+    int hint;                // Pinned register for the result of the instruction, which then sets it; -1 if none
+    uint32_t hint_idx;       // Local of the hint
 
     wah_jit_ctl_t *ctl;
     uint32_t nctl, ctl_cap;
@@ -507,6 +509,21 @@ static const uint8_t wah_jit_pin_fprs[] = { 13, 12, 11, 10, 9, 8 };
 
 // Weight of uses of locals at a loop depth for pinning. The few registers go to innermost loops.
 #define WAH_JIT_USE_WEIGHT(depth) ((uint64_t)1 << (3 * ((depth) < 8 ? (depth) : 8)))
+
+// Operands of instructions whose result can be computed right into a pinned register, 0 if not supported
+static uint32_t wah_jit_hint_arity(uint16_t op) {
+    switch (op) {
+        case WAH_OP_I32_ADD: case WAH_OP_I32_SUB: case WAH_OP_I32_MUL: case WAH_OP_I32_AND: case WAH_OP_I32_OR:
+        case WAH_OP_I32_XOR: case WAH_OP_I64_ADD: case WAH_OP_I64_SUB: case WAH_OP_I64_MUL: case WAH_OP_I64_AND:
+        case WAH_OP_I64_OR: case WAH_OP_I64_XOR:
+            return 2;
+        case WAH_OP_I32_LOAD: case WAH_OP_I64_LOAD: case WAH_OP_I32_LOAD8_S: case WAH_OP_I32_LOAD8_U:
+        case WAH_OP_I32_LOAD16_S: case WAH_OP_I32_LOAD16_U: case WAH_OP_I64_LOAD8_S: case WAH_OP_I64_LOAD8_U:
+        case WAH_OP_I64_LOAD16_S: case WAH_OP_I64_LOAD16_U: case WAH_OP_I64_LOAD32_S: case WAH_OP_I64_LOAD32_U:
+            return 1;
+        default: return 0;
+    }
+}
 
 // i32 values are kept zero-extended in registers and slots, so that addresses need no extension.
 // Values from outside (params of the activation and results of helpers) are zero-extended as they come in.
@@ -872,6 +889,24 @@ static const uint8_t wah_jit_pin_fprs[] = { 15, 14, 13, 12, 11, 10, 9, 8 };
 // so exponential weights would give them all registers at the expense of their enclosing loops.
 #define WAH_JIT_USE_WEIGHT(depth) ((uint64_t)(4 * (uint64_t)(depth) + 1))
 
+// Operands of instructions whose result can be computed right into a pinned register, 0 if not supported.
+// They write the result only after reading operands, which may be in the same register.
+static uint32_t wah_jit_hint_arity(uint16_t op) {
+    switch (op) {
+        case WAH_OP_I32_ADD: case WAH_OP_I32_SUB: case WAH_OP_I32_MUL: case WAH_OP_I32_AND: case WAH_OP_I32_OR:
+        case WAH_OP_I32_XOR: case WAH_OP_I32_SHL: case WAH_OP_I32_SHR_S: case WAH_OP_I32_SHR_U: case WAH_OP_I32_ROTL:
+        case WAH_OP_I32_ROTR: case WAH_OP_I64_ADD: case WAH_OP_I64_SUB: case WAH_OP_I64_MUL: case WAH_OP_I64_AND:
+        case WAH_OP_I64_OR: case WAH_OP_I64_XOR: case WAH_OP_I64_SHL: case WAH_OP_I64_SHR_S: case WAH_OP_I64_SHR_U:
+        case WAH_OP_I64_ROTL: case WAH_OP_I64_ROTR:
+            return 2;
+        case WAH_OP_I32_LOAD: case WAH_OP_I64_LOAD: case WAH_OP_I32_LOAD8_S: case WAH_OP_I32_LOAD8_U:
+        case WAH_OP_I32_LOAD16_S: case WAH_OP_I32_LOAD16_U: case WAH_OP_I64_LOAD8_S: case WAH_OP_I64_LOAD8_U:
+        case WAH_OP_I64_LOAD16_S: case WAH_OP_I64_LOAD16_U: case WAH_OP_I64_LOAD32_S: case WAH_OP_I64_LOAD32_U:
+            return 1;
+        default: return 0;
+    }
+}
+
 // The upper half of i32 values is undefined, and 32-bit operations ignore it. Addresses are zero-extended when used.
 #define WAH_JIT_ZEXT_I32 0
 
@@ -1202,6 +1237,7 @@ static int wah_jit_pop_vec_ro(wah_jit_fn_t *f) {
 // Operands other than the destination should be freed afterwards.
 static int wah_jit_dest(wah_jit_fn_t *f, bool fp, int a, int b) {
     const int32_t *owner = fp ? f->fpr : f->gpr;
+    if (!fp && f->hint >= 0) return f->hint;
     if (owner[a] == WAH_JO_TEMP) return a;
     if (b >= 0 && owner[b] == WAH_JO_TEMP) return b;
     return wah_jit_alloc(f, fp);
@@ -1217,7 +1253,11 @@ static void wah_jit_push(wah_jit_fn_t *f, wah_jit_val_t v) {
     if (wah_jit_owns_fpr(v.kind)) f->fpr[v.reg] = (int32_t)f->h;
     f->vals[f->h++] = v;
 }
-static void wah_jit_push_gpr(wah_jit_fn_t *f, int r) { wah_jit_push(f, (wah_jit_val_t){ .kind = WAH_JV_GPR, .reg = (uint8_t)r }); }
+// The hinted register is pushed as the value of its local, which is about to be set
+static void wah_jit_push_gpr(wah_jit_fn_t *f, int r) {
+    bool pinned = r == f->hint;
+    wah_jit_push(f, (wah_jit_val_t){ .kind = pinned ? WAH_JV_LGPR : WAH_JV_GPR, .reg = (uint8_t)r, .imm = pinned ? f->hint_idx : 0 });
+}
 static void wah_jit_push_fpr(wah_jit_fn_t *f, int r) { wah_jit_push(f, (wah_jit_val_t){ .kind = WAH_JV_FPR, .reg = (uint8_t)r }); }
 static void wah_jit_push_vec(wah_jit_fn_t *f, int r) { wah_jit_push(f, (wah_jit_val_t){ .kind = WAH_JV_VEC, .reg = (uint8_t)r }); }
 
@@ -1686,6 +1726,29 @@ static void wah_jit_ibinop(wah_jit_fn_t *f, bool sf, int kind) {
     static const int digits[] = { 0, 5, -1, 4, 1, 6 };
     uint32_t w = sf ? WAH_X64_W : 0;
     int32_t imm;
+    int d = f->hint;
+    if (d >= 0) { // d = a op b, where a or b may be d
+        bool is_imm = wah_x64_top_imm32(f, sf, &imm);
+        if (is_imm) f->h--;
+        int b = is_imm ? -1 : wah_jit_pop_gpr_ro(f), a = wah_jit_pop_gpr_ro(f), r = d;
+        if (b == d && a != d) {
+            if (kind == WAH_JI_SUB) r = WAH_JR_T0;
+            else b = a, a = d;
+        }
+        if (is_imm && kind == WAH_JI_MUL) {
+            wah_x64_rr(f, 0x69, w, r, a); // IMUL r, r/m, imm32
+            wah_x64_imm32(f, (uint32_t)imm);
+        } else {
+            if (a != r) wah_jit_mov64(f, r, a);
+            if (is_imm) wah_x64_alu_imm(f, digits[kind], w, r, imm);
+            else wah_x64_rr(f, ops[kind], w, r, b);
+        }
+        if (r != d) wah_jit_mov64(f, d, r);
+        wah_jit_free_gpr(f, a);
+        if (b >= 0) wah_jit_free_gpr(f, b);
+        wah_jit_push_gpr(f, d);
+        return;
+    }
     if (wah_x64_top_imm32(f, sf, &imm)) {
         f->h--;
         int a = wah_jit_pop_gpr(f);
@@ -2053,7 +2116,7 @@ static void wah_jit_load(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size_l
     int base = wah_jit_address(f, m, 1u << size_log2, &size_reg, &index, &disp);
     if (size_reg >= 0) wah_jit_free_gpr(f, size_reg);
     if (base != WAH_JR_MEM) wah_jit_free_gpr(f, base);
-    int d = wah_jit_alloc(f, fp); // May be the index, which the load reads first
+    int d = !fp && f->hint >= 0 ? f->hint : wah_jit_alloc(f, fp); // May be the index, which the load reads first
     uint32_t op, flags = 0;
     if (fp) {
         op = WAH_X64_FP(size_log2 == 3) | WAH_X64_MOVS_LOAD;
@@ -3551,7 +3614,7 @@ static void wah_jit_load(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size_l
     int base = wah_jit_address(f, m, 1u << size_log2, &size_reg);
     if (size_reg >= 0) wah_jit_free_gpr(f, size_reg);
     if (base != WAH_JR_MEM) wah_jit_free_gpr(f, base);
-    int d = wah_jit_alloc(f, fp);
+    int d = !fp && f->hint >= 0 ? f->hint : wah_jit_alloc(f, fp);
     wah_a64_ldst_reg(f, op, d, base, WAH_JR_T0);
     if (fp) wah_jit_push_fpr(f, d);
     else wah_jit_push_gpr(f, d);
@@ -4500,6 +4563,19 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
         }
     }
 
+    // A result set to a pinned local right away goes into its register, unless its old value is still needed
+    f->hint = -1;
+    uint32_t arity = wah_jit_hint_arity(op);
+    if (arity > 0 && next && (next->opcode == WAH_OP_LOCAL_SET || next->opcode == WAH_OP_LOCAL_TEE) && f->pin_of &&
+        f->pin_of[next->imm.u32] >= 0 && !(f->pin_of[next->imm.u32] & WAH_JIT_PIN_FP) && f->h >= arity) {
+        uint32_t idx = next->imm.u32, i = 0;
+        while (i < f->h - arity && !(f->vals[i].kind == WAH_JV_LGPR && f->vals[i].imm == (int64_t)idx)) i++;
+        if (i == f->h - arity) {
+            f->hint = f->pin_of[idx];
+            f->hint_idx = idx;
+        }
+    }
+
     switch (op) {
         case WAH_OP_UNREACHABLE: wah_jit_b(f, f->l_trap); f->dead = true; break;
 
@@ -4957,7 +5033,8 @@ static void wah_jit_compile_function(wah_module_t *module, uint32_t local_idx, c
 
     uint32_t start = jm->len, call_start = jm->call_count;
     for (int attempt = 0; attempt < 2; attempt++) {
-        *f = (wah_jit_fn_t){ .jm = jm, .alloc = &module->alloc, .module = module, .ft = f->ft, .long_branches = attempt > 0 };
+        *f = (wah_jit_fn_t){ .jm = jm, .alloc = &module->alloc, .module = module, .ft = f->ft, .long_branches = attempt > 0,
+                             .hint = -1 };
         jm->len = start;
         jm->call_count = call_start;
         wah_jit_compile_body(f, local_idx, body, ac);

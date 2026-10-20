@@ -303,6 +303,49 @@ static void test_memory(void) {
     check_i32(mem2, 0, 131069);
 }
 
+// Results computed right into pinned registers of the locals they set, where operands may be the same registers
+static void test_result_hints(void) {
+    printf("Testing results set to pinned locals...\n");
+    static const char *ops[] = { "add", "sub", "mul", "and", "or", "xor", "shl", "shr_s", "shr_u", "rotl", "rotr" };
+    char spec[2048];
+    for (int is64 = 0; is64 < 2; is64++) {
+        const char *t = is64 ? "i64" : "i32";
+        for (size_t k = 0; k < COUNT(ops); k++) {
+            const char *o = ops[k];
+            snprintf(spec, sizeof(spec), "wasm types {[ fn [%s, %s] [%s, %s] ]} funcs {[ 0 ]} code {[ {[] "
+                "local.get 0 local.get 1 %s.%s local.set 0 "                                      // x = x op y
+                "local.get 1 local.get 0 %s.%s local.set 0 "                                      // x = y op x
+                "local.get 0 local.get 0 %s.%s local.set 1 "                                      // y = x op x
+                "local.get 1 local.get 1 %s.%s local.set 1 "                                      // y = y op y
+                "local.get 0 %s.const 7 %s.%s local.set 0 "                                       // x = x op 7
+                "%s.const 7 local.get 0 %s.%s local.set 0 "                                       // x = 7 op x
+                "local.get 1 local.get 0 %s.%s local.tee 0 local.get 0 %s.%s local.set 1 "        // tee
+                "local.get 0 local.get 1 local.get 0 %s.%s local.set 0 local.get 0 %s.%s local.set 1 " // old x on the stack
+                "local.get 0 local.get 1 end} ]}",
+                t, t, t, t, t, o, t, o, t, o, t, o, t, t, o, t, t, o, t, o, t, o, t, o, t, o);
+            static const int64_t samples[][2] = { { 0, 0 }, { 1, 2 }, { -1, 3 }, { 0x7fffffff, -2 }, { 0x123456789LL, 37 } };
+            for (size_t i = 0; i < COUNT(samples); i++) {
+                wah_value_t p[2];
+                if (is64) p[0].i64 = samples[i][0], p[1].i64 = samples[i][1];
+                else p[0].i32 = (int32_t)samples[i][0], p[1].i32 = (int32_t)samples[i][1];
+                check_call(spec, NULL, 0, p, 2, 2);
+            }
+        }
+    }
+    // Loads, also from the address in the local being set
+    const char *loads = "wasm types {[ fn [i32, i32] [i32, i32] ]} funcs {[ 0 ]} memories {[ limits.i32/1 1 ]} code {[ {[1 i64] \
+        local.get 0 i32.const 0xfff0 i32.and local.tee 0 local.get 1 i32.store 2 0 \
+        local.get 0 i32.const 4 i32.add local.get 0 i32.store 2 0 \
+        local.get 0 i32.load 2 0 local.set 1 local.get 0 i32.load 2 4 local.set 0 local.get 0 i32.load16_s 1 1 local.set 0 \
+        local.get 0 i32.const 0xfff0 i32.and local.tee 0 i64.load8_s 0 3 local.set 2 \
+        local.get 0 local.get 0 i32.load8_u 0 0 local.set 0 local.get 0 i32.sub local.set 1 \
+        local.get 0 local.get 1 local.get 2 i32.wrap_i64 i32.add end} ]}";
+    for (size_t i = 0; i < COUNT(I32_SAMPLES); i++) {
+        wah_value_t p[2] = { { .i32 = I32_SAMPLES[i] }, { .i32 = I32_SAMPLES[COUNT(I32_SAMPLES) - 1 - i] } };
+        check_call(loads, NULL, 0, p, 2, 2);
+    }
+}
+
 static void host_twice(wah_call_context_t *call, void *userdata) {
     (void)userdata;
     wah_result_i64(call, 0, wah_param_i64(call, 0) * 2);
@@ -1036,6 +1079,7 @@ int main(void) {
     test_suspend();
     test_pinned_locals();
     test_local_cache();
+    test_result_hints();
     test_i32_upper_bits();
     test_simd_binary();
     test_simd_unary();
