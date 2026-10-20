@@ -499,9 +499,10 @@ static void wah_x64_call_abs(wah_jit_fn_t *f, uintptr_t fn);
 
 // Registers for pinned locals, in the order of preference. The operand stack cache keeps at least rax, rcx, rdx, rsi
 // and rdi, as division and shifts need rax, rdx and rcx.
-static const uint8_t wah_jit_pin_gprs[] = { WAH_X64_R15, WAH_X64_R14, WAH_X64_R9, WAH_X64_R8 };
+// The last one is the memory size register, only available when guard pages make it unnecessary.
+static const uint8_t wah_jit_pin_gprs[] = { WAH_X64_R15, WAH_X64_R14, WAH_X64_R9, WAH_X64_R8, WAH_JR_MEMSZ };
 static const uint8_t wah_jit_pin_fprs[] = { 13, 12, 11, 10, 9, 8 };
-#define WAH_JIT_PIN_GPR_COUNT 4
+#define WAH_JIT_PIN_GPR_COUNT 5
 #define WAH_JIT_PIN_FPR_COUNT 6
 
 // Weight of uses of locals at a loop depth for pinning. The few registers go to innermost loops.
@@ -861,9 +862,10 @@ static void wah_a64_set_fpcr(wah_jit_fn_t *f) {
 // Primitives used by the shared code ///////////////////////////////////////////
 
 // Registers for pinned locals, in the order of preference. The operand stack cache keeps at least x0-x5.
-static const uint8_t wah_jit_pin_gprs[] = { 28, 27, 26, 25, 24, 23, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6 };
+// The last one is the memory size register, only available when guard pages make it unnecessary.
+static const uint8_t wah_jit_pin_gprs[] = { 28, 27, 26, 25, 24, 23, 15, 14, 13, 12, 11, 10, 9, 8, 7, 6, WAH_JR_MEMSZ };
 static const uint8_t wah_jit_pin_fprs[] = { 15, 14, 13, 12, 11, 10, 9, 8 };
-#define WAH_JIT_PIN_GPR_COUNT 16
+#define WAH_JIT_PIN_GPR_COUNT 17
 #define WAH_JIT_PIN_FPR_COUNT 8
 
 // Weight of uses of locals at a loop depth for pinning. Small inner loops often run only a few iterations,
@@ -1609,6 +1611,8 @@ static void wah_jit_memory_size(wah_jit_fn_t *f, uint32_t mem_idx) {
         wah_jit_ldst(f, false, false, true, d, WAH_JR_CTX, WAH_JIT_CTX_OFF(memories));
         wah_jit_ldst(f, false, false, true, d, d, (uint64_t)mem_idx * sizeof(wah_memory_inst_t) +
                                                   offsetof(wah_memory_inst_t, size));
+    } else if (f->jm->guarded) {
+        wah_jit_ldst(f, false, false, true, d, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_size));
     } else {
         wah_x64_mov(f, true, d, WAH_JR_MEMSZ);
     }
@@ -2019,6 +2023,10 @@ static int wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size
             wah_jit_ldst(f, false, false, true, limit, base, off + offsetof(wah_memory_inst_t, size));
         }
         wah_jit_ldst(f, false, false, true, base, base, off + offsetof(wah_memory_inst_t, data));
+    } else if (check && f->jm->guarded) { // The size register may be pinned
+        limit = wah_jit_alloc(f, false);
+        *size_reg = limit;
+        wah_jit_ldst(f, false, false, true, limit, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_size));
     }
     *index = a;
     if (end <= INT32_MAX) {
@@ -3267,6 +3275,9 @@ static void wah_jit_memory_size(wah_jit_fn_t *f, uint32_t mem_idx) {
         wah_a64_ldst(f, WAH_A64_LDRX, d, d, (uint64_t)mem_idx * sizeof(wah_memory_inst_t) +
                                             offsetof(wah_memory_inst_t, size));
         src = d;
+    } else if (f->jm->guarded) {
+        wah_a64_ldst(f, WAH_A64_LDRX, d, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_size));
+        src = d;
     }
     wah_a64_bfm(f, false, true, d, src, 16, 63); // LSR #16
     wah_jit_push_gpr(f, d);
@@ -3508,6 +3519,10 @@ static int wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size
             wah_a64_ldst(f, WAH_A64_LDRX, limit, base, off + offsetof(wah_memory_inst_t, size));
         }
         wah_a64_ldst(f, WAH_A64_LDRX, base, base, off + offsetof(wah_memory_inst_t, data));
+    } else if (check && f->jm->guarded) { // The size register may be pinned
+        limit = wah_jit_alloc(f, false);
+        *size_reg = limit;
+        wah_a64_ldst(f, WAH_A64_LDRX, limit, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_size));
     }
     wah_a64_mov(f, false, WAH_JR_T0, a); // Zero-extended
     wah_jit_free_gpr(f, a);
@@ -4310,7 +4325,7 @@ static void wah_jit_exit_with(wah_jit_fn_t *f, wah_error_t err) {
 static void wah_jit_reload_memory(wah_jit_fn_t *f) {
     if (wah_memory_index_limit(f->module) == 0) return;
     wah_jit_ldst(f, false, false, true, WAH_JR_MEM, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_base));
-    wah_jit_ldst(f, false, false, true, WAH_JR_MEMSZ, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_size));
+    if (!f->jm->guarded) wah_jit_ldst(f, false, false, true, WAH_JR_MEMSZ, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_size));
 }
 
 // Checks the poll flag, and calls the poll handler if set, which may suspend here.
@@ -4992,7 +5007,7 @@ static void wah_jit_choose_pins(wah_jit_fn_t *f, const wah_code_body_t *body, co
     }
     for (int fp = 0; fp < 2; fp++) {
         const uint8_t *regs = fp ? wah_jit_pin_fprs : wah_jit_pin_gprs;
-        uint32_t n = fp ? WAH_JIT_PIN_FPR_COUNT : WAH_JIT_PIN_GPR_COUNT;
+        uint32_t n = fp ? WAH_JIT_PIN_FPR_COUNT : WAH_JIT_PIN_GPR_COUNT - !f->jm->guarded;
         for (uint32_t k = 0; k < n; k++) {
             uint32_t best = UINT32_MAX;
             for (uint32_t i = 0; i < f->nlocals; i++) {
@@ -5349,7 +5364,7 @@ static void wah_jit_trampoline(wah_jit_fn_t *f) {
     wah_x64_mov(f, true, WAH_JR_CTX, a_ctx);
     wah_x64_mov(f, true, WAH_JR_FP, a_fp);
     wah_jit_ldst(f, false, false, true, WAH_JR_MEM, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_base));
-    wah_jit_ldst(f, false, false, true, WAH_JR_MEMSZ, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_size));
+    if (!f->jm->guarded) wah_jit_ldst(f, false, false, true, WAH_JR_MEMSZ, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_size));
     wah_x64_rr(f, WAH_X64_TEST, WAH_X64_W, a_resume, a_resume);
     uint32_t resume = wah_x64_jcc8(f, WAH_X64_NE);
     wah_x64_rr(f, WAH_X64_GRP5, 0, 2, a_code); // CALL, returning here
@@ -5392,7 +5407,7 @@ static void wah_jit_trampoline(wah_jit_fn_t *f) {
     wah_a64_ldst(f, WAH_A64_STRX, WAH_JR_T0, WAH_A64_SP, WAH_A64_FRAME_OFF(fpcr_host));
     wah_a64_set_fpcr(f);
     wah_a64_ldst(f, WAH_A64_LDRX, WAH_JR_MEM, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_base));
-    wah_a64_ldst(f, WAH_A64_LDRX, WAH_JR_MEMSZ, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_size));
+    if (!f->jm->guarded) wah_a64_ldst(f, WAH_A64_LDRX, WAH_JR_MEMSZ, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_size));
     wah_a64(f, 0xB5000000u | 4u << 5 | 2u); // CBNZ x2, BR x2 below
     wah_a64(f, 0xD63F0000u | 1u << 5);      // BLR x1, returning here
     wah_a64_movw(f, WAH_A64_MOVZ, false, 0, 0, 0);
