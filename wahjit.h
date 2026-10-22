@@ -25,8 +25,8 @@
 // Only a subset of modules are compiled: those without fuel metering, using only numeric and vector types (i32, i64,
 // f32, f64 and v128) and WASM 2.0 instructions plus relaxed SIMD, except reference types and table instructions other
 // than `call_indirect`.
-// Any number of 32-bit memories can be used. Any other feature (e.g. GC, exceptions, tail calls or memory64) leaves
-// the whole module interpreted. Its activation runs natively when all of its function imports are host functions,
+// Any number of memories can be used, but memory64 accesses are always bounds-checked even with guard pages.
+// Any other feature (e.g. GC, exceptions or tail calls) leaves the whole module interpreted. Its activation runs natively when all of its function imports are host functions,
 // it neither imports nor exports a table, and it imports no global of a reference type; otherwise it is interpreted.
 
 #ifndef WAHJIT_H
@@ -1256,6 +1256,16 @@ static int wah_jit_cached_base(wah_jit_fn_t *f, uint32_t memidx) {
     }
     return -1;
 }
+// memory64 is never guarded, as addresses can be anything, so its accesses are always checked.
+static bool wah_jit_mem64(const wah_jit_fn_t *f, uint32_t memidx) {
+    return wah_memory_type(f->module, memidx)->addr_type == WAH_TYPE_I64;
+}
+
+// End of an access relative to the address, saturated as it is out of bounds anyway if overflown
+static uint64_t wah_jit_access_end(const wah_memarg_t *m, uint32_t size) {
+    return m->offset + size < m->offset ? UINT64_MAX : m->offset + size;
+}
+
 static void wah_jit_free_fpr(wah_jit_fn_t *f, int r) { if (f->fpr[r] == WAH_JO_TEMP) f->fpr[r] = WAH_JO_FREE; }
 
 static bool wah_jit_is_fpr(uint8_t kind) { return kind == WAH_JV_FPR || kind == WAH_JV_LFPR; }
@@ -1449,28 +1459,44 @@ fail:
     return 0;
 }
 
-static int32_t wah_jit_memory_grow(wah_exec_context_t *ctx, uint32_t mem_idx, int32_t pages) {
+// Addresses and sizes of memory operations, which are i64 for memory64 and zero-extended i32 otherwise
+static bool wah_jit_ctx_mem64(const wah_exec_context_t *ctx, uint32_t mem_idx) {
+    return wah_memory_type(ctx->module, mem_idx)->addr_type == WAH_TYPE_I64;
+}
+static uint64_t wah_jit_get_addr(const wah_value_t *v, bool mem64) { return mem64 ? (uint64_t)v->i64 : (uint32_t)v->i32; }
+static void wah_jit_set_addr(wah_value_t *v, bool mem64, uint64_t a) {
+    if (mem64) v->i64 = (int64_t)a;
+    else v->i32 = (int32_t)a;
+}
+
+// Returns the old size of the memory in pages or -1 (truncated to i32 if not memory64), growing by *pages.
+static uint64_t wah_jit_memory_grow(wah_exec_context_t *ctx, uint32_t mem_idx, const wah_value_t *pages) {
+    bool mem64 = wah_jit_ctx_mem64(ctx, mem_idx);
+    int64_t delta = mem64 ? pages->i64 : pages->i32;
     uint64_t old_pages;
-    if (pages < 0 || !wah_memory_grow_internal(ctx, ctx, mem_idx, (uint64_t)pages, &old_pages)) return -1;
-    return (int32_t)old_pages;
+    if (delta < 0 || !wah_memory_grow_internal(ctx, ctx, mem_idx, (uint64_t)delta, &old_pages)) old_pages = UINT64_MAX;
+    return mem64 ? old_pages : (uint32_t)old_pages;
 }
 
 // Bulk operations take operands in the value stack, which are updated before yielding in the middle.
 static wah_error_t wah_jit_memory_fill(wah_exec_context_t *ctx, uint32_t mem_idx, wah_value_t *ops) {
     if (wah_bulk_should_interrupt(ctx)) return wah_jit_bulk_yield(ctx);
-    uint64_t dst = (uint32_t)ops[0].i32, size = (uint32_t)ops[2].i32;
+    bool mem64 = wah_jit_ctx_mem64(ctx, mem_idx);
+    uint64_t dst = wah_jit_get_addr(&ops[0], mem64), size = wah_jit_get_addr(&ops[2], mem64);
     uint8_t val = (uint8_t)ops[1].i32;
     WAH_ENSURE(wah_u64_range_in_bounds(dst, size, ctx->memories[mem_idx].size), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
     uint64_t done = wah_memory_fill_internal(ctx, ctx->memories[mem_idx].data, dst, val, size);
     if (done == size) return WAH_OK;
-    ops[0].i32 = (int32_t)(dst + done);
-    ops[2].i32 = (int32_t)(size - done);
+    wah_jit_set_addr(&ops[0], mem64, dst + done);
+    wah_jit_set_addr(&ops[2], mem64, size - done);
     return wah_jit_bulk_yield(ctx);
 }
 
 static wah_error_t wah_jit_memory_copy(wah_exec_context_t *ctx, uint32_t dst_idx, uint32_t src_idx, wah_value_t *ops) {
     if (wah_bulk_should_interrupt(ctx)) return wah_jit_bulk_yield(ctx);
-    uint64_t dst = (uint32_t)ops[0].i32, src = (uint32_t)ops[1].i32, size = (uint32_t)ops[2].i32;
+    bool dst64 = wah_jit_ctx_mem64(ctx, dst_idx), src64 = wah_jit_ctx_mem64(ctx, src_idx);
+    uint64_t dst = wah_jit_get_addr(&ops[0], dst64), src = wah_jit_get_addr(&ops[1], src64);
+    uint64_t size = wah_jit_get_addr(&ops[2], dst64 && src64);
     const wah_memory_inst_t *dmem = &ctx->memories[dst_idx], *smem = &ctx->memories[src_idx];
     WAH_ENSURE(wah_u64_range_in_bounds(dst, size, dmem->size), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
     WAH_ENSURE(wah_u64_range_in_bounds(src, size, smem->size), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
@@ -1478,16 +1504,17 @@ static wah_error_t wah_jit_memory_copy(wah_exec_context_t *ctx, uint32_t dst_idx
     uint64_t done = wah_memory_copy_internal(ctx, dmem->data, dst, smem->data, src, size, backward);
     if (done == size) return WAH_OK;
     if (!backward) {
-        ops[0].i32 = (int32_t)(dst + done);
-        ops[1].i32 = (int32_t)(src + done);
+        wah_jit_set_addr(&ops[0], dst64, dst + done);
+        wah_jit_set_addr(&ops[1], src64, src + done);
     }
-    ops[2].i32 = (int32_t)(size - done);
+    wah_jit_set_addr(&ops[2], dst64 && src64, size - done);
     return wah_jit_bulk_yield(ctx);
 }
 
 static wah_error_t wah_jit_memory_init(wah_exec_context_t *ctx, uint32_t data_idx, uint32_t mem_idx, wah_value_t *ops) {
     if (wah_bulk_should_interrupt(ctx)) return wah_jit_bulk_yield(ctx);
-    uint64_t dst = (uint32_t)ops[0].i32;
+    bool mem64 = wah_jit_ctx_mem64(ctx, mem_idx);
+    uint64_t dst = wah_jit_get_addr(&ops[0], mem64);
     uint32_t src = (uint32_t)ops[1].i32, size = (uint32_t)ops[2].i32;
     uint32_t seg_len = wah_data_seg_data_len(ctx, data_idx);
     WAH_ENSURE(wah_u64_range_in_bounds(dst, size, ctx->memories[mem_idx].size), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
@@ -1495,7 +1522,7 @@ static wah_error_t wah_jit_memory_init(wah_exec_context_t *ctx, uint32_t data_id
     uint32_t done = (uint32_t)wah_memory_init_internal(ctx, ctx->memories[mem_idx].data, dst,
                                                        ctx->module->data_segments[data_idx].data, src, size);
     if (done == size) return WAH_OK;
-    ops[0].i32 = (int32_t)(dst + done);
+    wah_jit_set_addr(&ops[0], mem64, dst + done);
     ops[1].i32 = (int32_t)(src + done);
     ops[2].i32 = (int32_t)(size - done);
     return wah_jit_bulk_yield(ctx);
@@ -2083,10 +2110,11 @@ static void wah_jit_convert(wah_jit_fn_t *f, int type, bool sf, bool is_signed) 
 // The index register is already freed, so it may be the destination of the access as long as it is read first.
 static int wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size, int *size_reg, int *index,
                            int32_t *disp) {
-    int a = wah_jit_pop_gpr_ro(f); // Zero-extended
+    int a = wah_jit_pop_gpr_ro(f); // Zero-extended unless 64-bit
     int base = WAH_JR_MEM, limit = WAH_JR_MEMSZ;
-    uint64_t end = (uint64_t)m->offset + size; // Fits in 33 bits, so no overflow
-    bool check = !f->jm->guarded || end > WAH_JIT_GUARD_SIZE;
+    bool mem64 = wah_jit_mem64(f, m->memidx);
+    uint64_t end = wah_jit_access_end(m, size); // Fits in 33 bits unless 64-bit, so a + end doesn't overflow then
+    bool check = mem64 || !f->jm->guarded || end > WAH_JIT_GUARD_SIZE;
     *size_reg = -1;
     if (m->memidx != 0 && (base = wah_jit_cached_base(f, m->memidx)) >= 0) {
         if (check) {
@@ -2106,11 +2134,24 @@ static int wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size
             wah_jit_ldst(f, false, false, true, limit, base, off + offsetof(wah_memory_inst_t, size));
         }
         wah_jit_ldst(f, false, false, true, base, base, off + offsetof(wah_memory_inst_t, data));
-        if (f->jm->guarded) f->gpr_local[base] = (int32_t)(f->nlocals + m->memidx);
+        if (f->jm->guarded && !mem64) f->gpr_local[base] = (int32_t)(f->nlocals + m->memidx);
     } else if (check && f->jm->guarded) { // The size register may be pinned
         limit = wah_jit_alloc(f, false);
         *size_reg = limit;
         wah_jit_ldst(f, false, false, true, limit, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_size));
+    }
+    if (mem64) { // a + end may wrap around, which sets the carry
+        if (end <= INT32_MAX) {
+            wah_x64_mov(f, true, WAH_JR_T1, a);
+            wah_x64_alu_imm(f, 0, WAH_X64_W, WAH_JR_T1, (int32_t)end); // ADD
+        } else {
+            wah_jit_mov_imm(f, WAH_JR_T1, end);
+            wah_x64_rr(f, WAH_X64_ADD, WAH_X64_W, WAH_JR_T1, a);
+        }
+        wah_jit_bcond(f, WAH_X64_B, f->l_oob);
+        wah_x64_rr(f, WAH_X64_CMP, WAH_X64_W, WAH_JR_T1, limit);
+        wah_jit_bcond(f, WAH_X64_A, f->l_oob);
+        check = false;
     }
     *index = a;
     if (end <= INT32_MAX) {
@@ -3607,7 +3648,9 @@ static void wah_a64_access(wah_jit_fn_t *f, uint32_t op, int rt, const wah_a64_a
 static wah_a64_addr_t wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size, int *size_reg, bool fold) {
     int a = wah_jit_pop_gpr_ro(f);
     int base = WAH_JR_MEM, limit = WAH_JR_MEMSZ;
-    bool check = !f->jm->guarded || (uint64_t)m->offset + size > WAH_JIT_GUARD_SIZE;
+    bool mem64 = wah_jit_mem64(f, m->memidx);
+    uint64_t end = wah_jit_access_end(m, size);
+    bool check = mem64 || !f->jm->guarded || end > WAH_JIT_GUARD_SIZE;
     *size_reg = -1;
     if (m->memidx != 0 && (base = wah_jit_cached_base(f, m->memidx)) >= 0) {
         if (check) {
@@ -3627,13 +3670,32 @@ static wah_a64_addr_t wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, ui
             wah_a64_ldst(f, WAH_A64_LDRX, limit, base, off + offsetof(wah_memory_inst_t, size));
         }
         wah_a64_ldst(f, WAH_A64_LDRX, base, base, off + offsetof(wah_memory_inst_t, data));
-        if (f->jm->guarded) f->gpr_local[base] = (int32_t)(f->nlocals + m->memidx);
+        if (f->jm->guarded && !mem64) f->gpr_local[base] = (int32_t)(f->nlocals + m->memidx);
     } else if (check && f->jm->guarded) { // The size register may be pinned
         limit = wah_jit_alloc(f, false);
         *size_reg = limit;
         wah_a64_ldst(f, WAH_A64_LDRX, limit, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_size));
     }
     wah_a64_addr_t ad = { .base = base, .index = -1 };
+    if (mem64) { // a + end may wrap around, which sets the carry
+        if (end < 4096) {
+            wah_a64_addsub_imm(f, WAH_A64_ADDSI, true, WAH_JR_T1, a, (uint32_t)end, false);
+        } else {
+            wah_a64_mov_imm(f, true, WAH_JR_T1, end);
+            wah_a64_rrr(f, WAH_A64_ADDS, true, WAH_JR_T1, WAH_JR_T1, a);
+        }
+        wah_jit_bcond(f, WAH_A64_HS, f->l_oob);
+        wah_a64_rrr(f, WAH_A64_SUBS, true, WAH_A64_ZR, WAH_JR_T1, limit);
+        wah_jit_bcond(f, WAH_A64_HI, f->l_oob);
+        if (m->offset < 4096) {
+            wah_a64_addsub_imm(f, WAH_A64_ADDI, true, WAH_JR_T0, a, (uint32_t)m->offset, false);
+        } else {
+            wah_a64_mov_imm(f, true, WAH_JR_T0, m->offset);
+            wah_a64_rrr(f, WAH_A64_ADD, true, WAH_JR_T0, WAH_JR_T0, a);
+        }
+        wah_jit_free_gpr(f, a);
+        return ad;
+    }
     if (fold && !check && m->offset == 0) {
         ad.index = a;
         wah_jit_free_gpr(f, a);
@@ -3646,9 +3708,14 @@ static wah_a64_addr_t wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, ui
         ad.imm = m->offset;
         return ad;
     }
-    wah_a64_mov(f, false, WAH_JR_T0, a); // Zero-extended
+    if (m->offset < ((uint64_t)1 << 24)) {
+        wah_a64_mov(f, false, WAH_JR_T0, a); // Zero-extended
+        wah_a64_add_imm(f, WAH_JR_T0, WAH_JR_T0, m->offset); // Fits in 33 bits, so no overflow
+    } else { // wah_a64_add_imm would use x16 as a scratch
+        wah_a64_mov_imm(f, true, WAH_JR_T0, m->offset);
+        wah_a64(f, 0x8B204000u | (uint32_t)a << 16 | (uint32_t)WAH_JR_T0 << 5 | WAH_JR_T0); // ADD x16, x16, wA, UXTW
+    }
     wah_jit_free_gpr(f, a);
-    wah_a64_add_imm(f, WAH_JR_T0, WAH_JR_T0, m->offset); // Fits in 33 bits, so no overflow
     if (check) {
         wah_a64_addsub_imm(f, WAH_A64_ADDI, true, WAH_JR_T1, WAH_JR_T0, size, false);
         wah_a64_rrr(f, WAH_A64_SUBS, true, WAH_A64_ZR, WAH_JR_T1, limit);
@@ -4862,14 +4929,13 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
         case WAH_OP_MEMORY_GROW: {
             wah_jit_flush(f);
             wah_jit_sync_pins(f, true);
-            const wah_jit_arg_t a[] = { { WAH_JA_CTX, 0 }, { WAH_JA_IMM, in->imm.u32 }, { WAH_JA_SLOT_U32, f->h - 1 } };
+            const wah_jit_arg_t a[] = { { WAH_JA_CTX, 0 }, { WAH_JA_IMM, in->imm.u32 }, { WAH_JA_SLOT, f->h - 1 } };
             wah_jit_call_helper(f, (uintptr_t)wah_jit_memory_grow, a, 3, false);
             wah_jit_reload_memory(f);
             wah_jit_sync_pins(f, false); // Doesn't change the return register
             wah_jit_reset(f, f->h - 1);
             f->gpr[WAH_JR_RET] = WAH_JO_TEMP;
-            wah_jit_push_gpr(f, WAH_JR_RET);
-            wah_jit_zext_top(f); // From int32_t
+            wah_jit_push_gpr(f, WAH_JR_RET); // Already zero-extended if i32
             break;
         }
         case WAH_OP_MEMORY_FILL: case WAH_OP_MEMORY_COPY: case WAH_OP_MEMORY_INIT: {
@@ -5086,9 +5152,6 @@ static void wah_jit_compile_function(wah_module_t *module, uint32_t local_idx, c
             WAH_LOG("JIT: function %u has unsupported opcode %u", local_idx, ac->instrs[i].opcode);
             goto fail;
         }
-    }
-    for (uint32_t i = 0; i < wah_memory_index_limit(module); i++) {
-        if (wah_memory_type(module, i)->addr_type != WAH_TYPE_I32) { WAH_LOG("JIT: %s", "memory64 is not supported"); goto fail; }
     }
 
     uint32_t start = jm->len, call_start = jm->call_count;
@@ -5313,7 +5376,8 @@ static bool wah_jit_fault(uintptr_t pc, uintptr_t addr, uintptr_t *resume) {
     const wah_jit_activation_t *a = wah_jit_activation;
     if (!a || pc - (uintptr_t)a->jm->code >= a->jm->code_size) return false;
     for (uint32_t i = 0; i < a->ctx->memory_count; i++) {
-        // Imported memories share the data and size of their owners, which are all guarded
+        // Imported memories share the data and size of their owners, which are all guarded except for memory64
+        if (wah_memory_type(a->ctx->module, i)->addr_type == WAH_TYPE_I64) continue;
         const wah_memory_inst_t *m = &a->ctx->memories[i];
         if (addr - (uintptr_t)m->data - m->size < WAH_JIT_GUARD_RESERVE - m->size) {
             *resume = (uintptr_t)a->jm->code + a->jm->oob_pos;
@@ -5689,6 +5753,7 @@ static bool wah_jit_ctx_usable(const wah_exec_context_t *ctx) {
         if (!ctx->function_table[i].func.is_host) return false;
     }
     for (uint32_t i = 0; m->jit->guarded && i < ctx->memory_count; i++) {
+        if (wah_memory_type(m, i)->addr_type == WAH_TYPE_I64) continue; // Always checked
         const wah_memory_inst_t *mem = &ctx->memories[i];
         if (mem->is_imported) mem = mem->import_ctx ? &mem->import_ctx->memories[mem->import_idx] : NULL;
         if (!mem || !mem->guarded) return false;

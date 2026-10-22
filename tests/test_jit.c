@@ -301,6 +301,72 @@ static void test_memory(void) {
     check_i32(mem2, 0, 100);
     check_i32(mem2, 0, 131068);
     check_i32(mem2, 0, 131069);
+
+    // Offsets of 16 MiB or more, which need more than an immediate add on AArch64
+    const char *big = "wasm types {[ fn [i32] [i32] ]} funcs {[ 0 ]} memories {[ limits.i32/1 257 ]} code {[ \
+        {[] local.get 0 local.get 0 i32.store 2 0x1000000 local.get 0 i32.load 2 0x1000000 \
+            i32.const 0 i32.load 2 0x1000000 i32.add end} ]}";
+    static const int32_t big_addrs[] = { 0, 4, 65532, 65533, 65536, -1 };
+    for (size_t i = 0; i < COUNT(big_addrs); i++) check_i32(big, 0, big_addrs[i]);
+}
+
+// memory64 is always bounds-checked, also with guard pages, along with 32-bit memories in the same module
+static void test_memory64(void) {
+    printf("Testing memory64...\n");
+    static const int64_t addrs[] = {
+        0, 1, 8, 100, 528, 535, 536, 65520, 65527, 65528, 65535, 65536, -1, -8, -16, 16, 0x100000000LL,
+        -0x7ffffff0LL, -0x80000000LL, -0x100000000LL, INT64_MAX, INT64_MIN,
+    };
+    static wah_value_t params[COUNT(addrs)];
+    for (size_t i = 0; i < COUNT(addrs); i++) params[i].i64 = addrs[i];
+
+    // Accesses at an offset to memories 0 and 2 (both 64-bit), the last one being u64 LEB128 of 0xfffffffffffffff0
+    static const char *offsets[] = { "0", "7", "65000", "0x7ffffff0", "0x80000000", "0x100000000", "%'f0ffffffffffffffff01'" };
+    char spec[4096];
+    for (size_t k = 0; k < COUNT(offsets); k++) {
+        const char *o = offsets[k];
+        snprintf(spec, sizeof(spec), "wasm types {[ fn [i64] [i64] ]} funcs {[ 0, 0, 0, 0 ]} \
+            memories {[ limits.i64/1 1, limits.i32/1 1, limits.i64/1 1 ]} code {[ \
+            {[] local.get 0 local.get 0 i64.store 3 %s local.get 0 i64.load 3 %s \
+                local.get 0 i32.load8_u 0 %s i64.extend_i32_u i64.add end}, \
+            {[] local.get 0 local.get 0 i64.const 3 i64.mul i64.store 67 2 %s local.get 0 i64.load32_s 66 2 %s \
+                local.get 0 i32.const 0x1234 i32.store16 65 2 %s local.get 0 i64.load16_u 65 2 %s i64.add end}, \
+            {[] local.get 0 i64.const 0 i64x2.splat v128.store 4 %s local.get 0 local.get 0 v128.load 4 %s \
+                local.get 0 v128.load16_splat 1 %s i16x8.add v128.load32_lane 2 %s 1 i64x2.extract_lane 1 end}, \
+            {[] local.get 0 local.get 0 i64x2.splat i32x4.abs v128.store32_lane 2 %s 3 local.get 0 i64.load 3 %s end} ]}",
+            o, o, o, o, o, o, o, o, o, o, o, o, o);
+        for (uint32_t fn = 0; fn < 4; fn++) check_calls(spec, NULL, fn, params, COUNT(addrs), 1, 1);
+    }
+
+    // memory.size and memory.grow
+    const char *grow = "wasm types {[ fn [i64] [i64] ]} funcs {[ 0, 0 ]} \
+        memories {[ limits.i64/2 1 3, limits.i32/1 1, limits.i64/2 0 2 ]} code {[ \
+        {[] local.get 0 memory.grow 0 memory.size 0 i64.const 16 i64.shl i64.add \
+            local.get 0 i64.const 65536 i64.mul i64.const 8 i64.sub i64.load 3 0 i64.add end}, \
+        {[] local.get 0 memory.grow 2 memory.size 2 i64.add memory.size 1 i64.extend_i32_u i64.add \
+            i64.const 65528 i64.load 67 2 0 i64.add end} ]}";
+    static const int64_t pages[] = { -1, 0, 1, 2, 3, 0x100000000LL, INT64_MIN };
+    for (size_t i = 0; i < COUNT(pages); i++) {
+        wah_value_t p = { .i64 = pages[i] };
+        check_call(grow, NULL, 0, &p, 1, 1);
+        check_call(grow, NULL, 1, &p, 1, 1);
+    }
+
+    // Bulk operations, including copies between 32-bit and 64-bit memories
+    const char *bulk = "wasm types {[ fn [i64] [i64] ]} funcs {[ 0, 0, 0, 0, 0 ]} \
+        memories {[ limits.i64/1 1, limits.i32/1 1, limits.i64/1 1 ]} datacount {1} code {[ \
+        {[] local.get 0 i32.const 0x55 i64.const 100 memory.fill 0 i64.const 0 local.get 0 i64.const 50 memory.copy 0 0 \
+            i64.const 30 i64.load 3 0 end}, \
+        {[] i64.const 0 i32.const 0x66 i64.const 64 memory.fill 0 \
+            i32.const 1000 local.get 0 i32.const 40 memory.copy 1 0 i32.const 1008 i64.load 67 1 0 end}, \
+        {[] i32.const 0 i32.const 0x77 i32.const 64 memory.fill 1 \
+            local.get 0 i32.const 4 i32.const 20 memory.copy 0 1 local.get 0 i64.load 3 0 end}, \
+        {[] local.get 0 i32.const 1 i32.const 3 memory.init 0 2 local.get 0 i64.load32_u 66 2 0 \
+            local.get 0 i32.const 0x11 i64.const 9 memory.fill 2 i64.const 0 local.get 0 i64.const 9 memory.copy 0 2 \
+            i64.const 0 i64.load 3 0 i64.add end}, \
+        {[] local.get 0 i32.const 0 i32.const 4 memory.init 0 0 local.get 0 i64.load32_u 2 0 end} ]} \
+        data {[ data.passive {%'aabbccdd'} ]}";
+    for (uint32_t fn = 0; fn < 5; fn++) check_calls(bulk, NULL, fn, params, COUNT(addrs), 1, 1);
 }
 
 // Results computed right into pinned registers of the locals they set, where operands may be the same registers
@@ -431,6 +497,40 @@ static void test_suspend(void) {
 }
 
 // Locals pinned to registers, with more locals than registers, across suspensions and calls
+// Bulk operations on memory64 yielding in the middle by a deadline, with their 64-bit operands updated
+static void test_memory64_bulk_yield(void) {
+    printf("Testing memory64 bulk operations yielding in the middle...\n");
+    const char *spec = "wasm types {[ fn [] [i64] ]} funcs {[ 0 ]} \
+        memories {[ limits.i64/1 512, limits.i32/1 512 ]} code {[ {[] \
+        i64.const 1 i32.const 0x5a i64.const 0x1fffffe memory.fill 0 \
+        i64.const 3 i64.const 0 i64.const 0x1fffff0 memory.copy 0 0 \
+        i64.const 0 i64.const 5 i64.const 0x1fffff0 memory.copy 0 0 \
+        i32.const 7 i64.const 0 i32.const 0x1fffff0 memory.copy 1 0 \
+        i64.const 0x1fffff8 i64.load 3 0 i64.const 0x1000000 i64.load 3 0 i64.add \
+        i32.const 0x1fffff0 i64.load 67 1 0 i64.add i32.const 0 i64.load 67 1 0 i64.add end} ]}";
+    wah_value_t r[2];
+    for (int native = 0; native < 2; native++) {
+        jit_inst_t a;
+        inst_new(&a, spec, !native, NULL);
+        wah_limits_t lim = { .deadline_us = 50 };
+        assert_ok(wah_set_limits(&a.ctx, &lim));
+        assert_ok(wah_start(&a.ctx, 0, NULL, 0));
+        int yields = 0;
+        wah_error_t err;
+        while ((err = wah_resume(&a.ctx)) == WAH_STATUS_YIELDED) {
+            yields++;
+            assert_ok(wah_set_limits(&a.ctx, &lim));
+        }
+        assert_ok(err);
+        uint32_t n;
+        assert_ok(wah_finish(&a.ctx, &r[native], 1, &n));
+        assert_true(yields > 0);
+        assert_true(ran_natively(&a) == (native && EXPECT_NATIVE));
+        inst_free(&a);
+    }
+    assert_eq_i64(r[0].i64, r[1].i64);
+}
+
 static void test_pinned_locals(void) {
     printf("Testing pinned locals...\n");
     // Old values on the stack survive setting the local, and sets from constants, slots and other locals
@@ -1075,8 +1175,10 @@ int main(void) {
     test_float_ops();
     test_control();
     test_memory();
+    test_memory64();
     test_calls();
     test_suspend();
+    test_memory64_bulk_yield();
     test_pinned_locals();
     test_local_cache();
     test_result_hints();
