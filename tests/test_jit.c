@@ -497,38 +497,44 @@ static void test_suspend(void) {
 }
 
 // Locals pinned to registers, with more locals than registers, across suspensions and calls
-// Bulk operations on memory64 yielding in the middle by a deadline, with their 64-bit operands updated
+// Bulk operations on memory64 resumed after yielding at their starts, where their 64-bit operands are in slots
 static void test_memory64_bulk_yield(void) {
-    printf("Testing memory64 bulk operations yielding in the middle...\n");
-    const char *spec = "wasm types {[ fn [] [i64] ]} funcs {[ 0 ]} \
-        memories {[ limits.i64/1 512, limits.i32/1 512 ]} code {[ {[] \
-        i64.const 1 i32.const 0x5a i64.const 0x1fffffe memory.fill 0 \
-        i64.const 3 i64.const 0 i64.const 0x1fffff0 memory.copy 0 0 \
-        i64.const 0 i64.const 5 i64.const 0x1fffff0 memory.copy 0 0 \
-        i32.const 7 i64.const 0 i32.const 0x1fffff0 memory.copy 1 0 \
-        i64.const 0x1fffff8 i64.load 3 0 i64.const 0x1000000 i64.load 3 0 i64.add \
-        i32.const 0x1fffff0 i64.load 67 1 0 i64.add i32.const 0 i64.load 67 1 0 i64.add end} ]}";
-    wah_value_t r[2];
-    for (int native = 0; native < 2; native++) {
-        jit_inst_t a;
-        inst_new(&a, spec, !native, NULL);
-        wah_limits_t lim = { .deadline_us = 50 };
-        assert_ok(wah_set_limits(&a.ctx, &lim));
-        assert_ok(wah_start(&a.ctx, 0, NULL, 0));
-        int yields = 0;
-        wah_error_t err;
-        while ((err = wah_resume(&a.ctx)) == WAH_STATUS_YIELDED) {
-            yields++;
-            assert_ok(wah_set_limits(&a.ctx, &lim));
+    printf("Testing memory64 bulk operations resumed after yields...\n");
+    wah_module_t env;
+    assert_ok(wah_new_module(&env, NULL));
+    assert_ok(wah_export_func(&env, "interrupt", "() -> ()", host_interrupt, NULL, NULL));
+    const char *spec = "wasm types {[ fn [] [], fn [i64] [i64] ]} imports {[ {'env'} {'interrupt'} fn# 0 ]} \
+        funcs {[ 1 ]} memories {[ limits.i64/1 1, limits.i32/1 1 ]} code {[ {[] \
+        local.get 0 i32.const 0x5a i64.const 1000 call 0 memory.fill 0 \
+        local.get 0 i64.const 3 i64.add local.get 0 i64.const 900 call 0 memory.copy 0 0 \
+        i32.const 7 local.get 0 i32.const 800 call 0 memory.copy 1 0 \
+        local.get 0 i32.const 100 i32.const 700 call 0 memory.copy 0 1 \
+        local.get 0 i64.const 900 i64.add i64.load 3 0 local.get 0 i64.load 3 0 i64.add \
+        i32.const 800 i64.load 67 1 0 i64.add end} ]}";
+    static const int64_t addrs[] = { 0, 8, 1000, 64535, 64536, 0x100000000LL };
+    for (size_t i = 0; i < COUNT(addrs); i++) {
+        wah_value_t r[2];
+        wah_error_t errs[2];
+        for (int native = 0; native < 2; native++) {
+            jit_inst_t a;
+            inst_new(&a, spec, !native, &env);
+            wah_value_t p = { .i64 = addrs[i] };
+            assert_ok(wah_start(&a.ctx, 1, &p, 1));
+            int yields = 0;
+            while ((errs[native] = wah_resume(&a.ctx)) == WAH_STATUS_YIELDED) yields++;
+            uint32_t n;
+            r[native].i64 = 0;
+            if (errs[native] == WAH_OK) {
+                assert_ok(wah_finish(&a.ctx, &r[native], 1, &n));
+                assert_eq_i32(yields, 4);
+            }
+            assert_true(ran_natively(&a) == (native && EXPECT_NATIVE));
+            inst_free(&a);
         }
-        assert_ok(err);
-        uint32_t n;
-        assert_ok(wah_finish(&a.ctx, &r[native], 1, &n));
-        assert_true(yields > 0);
-        assert_true(ran_natively(&a) == (native && EXPECT_NATIVE));
-        inst_free(&a);
+        assert_eq_i32(errs[0], errs[1]);
+        assert_eq_i64(r[0].i64, r[1].i64);
     }
-    assert_eq_i64(r[0].i64, r[1].i64);
+    wah_free_module(&env);
 }
 
 static void test_pinned_locals(void) {
