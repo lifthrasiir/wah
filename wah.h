@@ -8641,10 +8641,8 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                 }
 #endif
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
-                case WAH_OP_SELECT_T: {
-                    // Rewrite SELECT_T to SELECT: overwrite the opcode we just emitted
-                    buf_size -= sizeof(uint16_t);
-                    WAH_LOWER_U16(WAH_OP_SELECT);
+                case WAH_OP_SELECT_T: { // The type is only for wah_check_lowered_code
+                    WAH_LOWER_U32((uint32_t)instr->imm.i32);
                     break;
                 }
                 case WAH_OP_REF_FUNC: {
@@ -8972,7 +8970,7 @@ static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t
 #endif
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
         case WAH_OP_REF_IS_NULL: break;
-        case WAH_OP_REF_NULL: case WAH_OP_REF_FUNC: n32 = 1; break; // Heap type or function
+        case WAH_OP_SELECT_T: case WAH_OP_REF_NULL: case WAH_OP_REF_FUNC: n32 = 1; break; // Value type, heap type or function
         case WAH_OP_TABLE_GET: case WAH_OP_TABLE_SET: case WAH_OP_TABLE_SIZE: case WAH_OP_TABLE_GROW:
         WAH_IF_MEMORY64(case WAH_OP_TABLE_GET_i64: case WAH_OP_TABLE_SET_i64: case WAH_OP_TABLE_SIZE_i64: case WAH_OP_TABLE_GROW_i64:)
             n32 = 1; break; // Table
@@ -9007,7 +9005,7 @@ static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t
 #undef WAH_CHECK_MEM_I64_CASE
 #undef WAH_CHECK_MEM_I64_MEM0_CASE
         // Never emitted, and not even runnable
-        case WAH_OP_NOP: case WAH_OP_BLOCK: case WAH_OP_LOOP: WAH_IF_REF_TYPES(case WAH_OP_SELECT_T:)
+        case WAH_OP_NOP: case WAH_OP_BLOCK: case WAH_OP_LOOP:
 #if !((WAH_COMPILED_FEATURES) & WAH_FEATURE_TAIL_CALL)
         WAH_IF_TYPED_FUNCREF(case WAH_OP_RETURN_CALL_REF:)
 #endif
@@ -9194,6 +9192,15 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                     CK_ENSURE(h >= 2 && stk[h - 1] == stk[h - 2]);
                     h--;
                     break;
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
+                case WAH_OP_SELECT_T: {
+                    wah_type_t t = (wah_type_t)(int32_t)in.a;
+                    CK_ENSURE(t == WAH_TYPE_I32 || t == WAH_TYPE_I64 || t == WAH_TYPE_F32 || t == WAH_TYPE_F64 ||
+                              t == WAH_TYPE_V128 || (WAH_TYPE_IS_REF(t) && (t < 0 || WAH_TYIDX(t) < module->type_count)));
+                    CK_POP(WAH_TYPE_I32); CK_POP(t); CK_POP(t); CK_PUSH(t);
+                    break;
+                }
+#endif
                 case WAH_OP_I32_CONST: CK_PUSH(WAH_TYPE_I32); break;
                 case WAH_OP_I64_CONST: CK_PUSH(WAH_TYPE_I64); break;
                 case WAH_OP_F32_CONST: CK_PUSH(WAH_TYPE_F32); break;
@@ -13704,7 +13711,6 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 WAH_NEVER_RUN(NOP) // Removed by preparser
 WAH_NEVER_RUN(BLOCK) // Converted to bytecode offsets
 WAH_NEVER_RUN(LOOP) // Converted to bytecode offsets
-WAH_IF_REF_TYPES(WAH_NEVER_RUN(SELECT_T)) // Identical to WAH_RUN(SELECT) in run time
 
 WAH_RUN(POLL) {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
@@ -15433,6 +15439,17 @@ WAH_RUN(SELECT) {
     *sp++ = c.i32 ? a : b;
     WAH_NEXT();
 }
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
+WAH_RUN(SELECT_T) {
+    bytecode_ip += sizeof(uint32_t); // The type, which is only for wah_check_lowered_code
+    wah_value_t c = *--sp;
+    wah_value_t b = *--sp;
+    wah_value_t a = *--sp;
+    *sp++ = c.i32 ? a : b;
+    WAH_NEXT();
+}
+#endif
 
 WAH_RUN(UNREACHABLE) {
     (void)fctx;
