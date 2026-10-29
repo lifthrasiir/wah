@@ -63,7 +63,7 @@ void harness_nearest_f64(void) {
         fty f = nondet(); \
         fty t = round(f, ROUND_TO_ZERO); \
         ASSUME_CHECKABLE(fty, t, lo); \
-        bool ok = isfinite(f) && t >= (lo) && t < (hi); \
+        bool ok = t >= (lo) && t < (hi); /* NaNs and infinities fail either */ \
         ity got = 0; \
         wah_error_t err = wah_trunc_f##N##_to_##T(f, &got); \
         __CPROVER_assert(err == (ok ? WAH_OK : WAH_ERROR_TRAP), "traps exactly out of range"); \
