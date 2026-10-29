@@ -4629,7 +4629,7 @@ static bool wah_jit_supported(const wah_module_t *module, const wah_decoded_inst
                                                              : module->globals[idx - module->import_global_count].type;
             return wah_jit_numeric_type(t);
         }
-        case WAH_OP_SELECT_T: return true; // Operands are numeric if their sources are
+        WAH_IF_REF_TYPES(case WAH_OP_SELECT_T: return true;) // Operands are numeric if their sources are
         case WAH_OP_UNREACHABLE: case WAH_OP_BLOCK: case WAH_OP_LOOP: case WAH_OP_IF: case WAH_OP_ELSE:
         case WAH_OP_END: case WAH_OP_BR: case WAH_OP_BR_IF: case WAH_OP_BR_TABLE: case WAH_OP_RETURN:
         case WAH_OP_DROP: case WAH_OP_SELECT: case WAH_OP_LOCAL_GET: case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE:
@@ -4692,7 +4692,7 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
                           const wah_decoded_instr_t *next) {
     uint16_t op = in->opcode;
     bool fuse = next && (next->opcode == WAH_OP_BR_IF || next->opcode == WAH_OP_IF ||
-                         next->opcode == WAH_OP_SELECT || next->opcode == WAH_OP_SELECT_T);
+                         next->opcode == WAH_OP_SELECT WAH_IF_REF_TYPES(|| next->opcode == WAH_OP_SELECT_T));
 
     if (f->dead) {
         switch (op) {
@@ -4818,7 +4818,7 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
         }
 
         case WAH_OP_DROP: wah_jit_drop(f); break;
-        case WAH_OP_SELECT: case WAH_OP_SELECT_T:
+        case WAH_OP_SELECT: WAH_IF_REF_TYPES(case WAH_OP_SELECT_T:)
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
             if (in->imm.i32 == WAH_TYPE_V128) { wah_jit_vselect(f); break; }
 #endif

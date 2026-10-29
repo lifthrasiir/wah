@@ -1726,23 +1726,30 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 #else
 #define WAH_IF_NONTRAPPING_F2I(...)
 #endif
+
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TAIL_CALL)
 #define WAH_IF_TAIL_CALL(...) __VA_ARGS__
 #else
 #define WAH_IF_TAIL_CALL(...)
 #endif
+
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF)
 #define WAH_IF_TYPED_FUNCREF(...) __VA_ARGS__
 #else
 #define WAH_IF_TYPED_FUNCREF(...)
 #endif
+
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 #define WAH_IF_BULK_MEMORY(...) __VA_ARGS__
 #else
 #define WAH_IF_BULK_MEMORY(...)
 #endif
-// Not compiled out yet
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
 #define WAH_IF_REF_TYPES(...) __VA_ARGS__
+#else
+#define WAH_IF_REF_TYPES(...)
+#endif
 
 // WAH_IF_##feat for an empty `feat` (MVP)
 #define WAH_IF_(...) __VA_ARGS__
@@ -2129,8 +2136,7 @@ typedef enum {
         X(MEMORY_SIZE,i64) X(MEMORY_GROW,i64) \
         WAH_IF_BULK_MEMORY(X(MEMORY_FILL,i64) X(MEMORY_INIT,i64) X(MEMORY_COPY,i32_to_i64) X(MEMORY_COPY,i64_to_i32) X(MEMORY_COPY,i64_to_i64)) \
         /* i64-indexed table opcodes */ \
-        X(TABLE_GET,i64) X(TABLE_SET,i64) X(TABLE_SIZE,i64) \
-        X(TABLE_GROW,i64) X(TABLE_FILL,i64) \
+        WAH_IF_REF_TYPES(X(TABLE_GET,i64) X(TABLE_SET,i64) X(TABLE_SIZE,i64) X(TABLE_GROW,i64) X(TABLE_FILL,i64)) \
         WAH_IF_BULK_MEMORY(X(TABLE_COPY,i32_to_i64) X(TABLE_COPY,i64_to_i32) X(TABLE_COPY,i64_to_i64) X(TABLE_INIT,i64)) \
         X(CALL_INDIRECT,i64) WAH_IF_TAIL_CALL(X(RETURN_CALL_INDIRECT,i64)) \
     )
@@ -6596,7 +6602,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 break;
             case WAH_OP_I32_CONST: case WAH_OP_I64_CONST: case WAH_OP_F32_CONST:
             case WAH_OP_F64_CONST: WAH_IF_SIMD(case WAH_OP_V128_CONST:)
-            case WAH_OP_REF_NULL: case WAH_OP_REF_FUNC:
+            WAH_IF_REF_TYPES(case WAH_OP_REF_NULL: case WAH_OP_REF_FUNC:)
             case WAH_OP_GLOBAL_GET:
             WAH_IF_GC(
                 case WAH_OP_REF_I31:
@@ -6986,6 +6992,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = global_idx);
             break;
         }
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
         case WAH_OP_TABLE_GET: {
             uint32_t table_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &table_idx));
@@ -7030,6 +7037,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = table_idx);
             break;
         }
+#endif
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
         case WAH_OP_TABLE_COPY: {
             uint32_t dst_table_idx, src_table_idx;
@@ -7126,6 +7134,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_INSTR_EX(opcode_val, _di->imm.i32 = resolved); // The operand type, for the JIT
             return wah_validation_push_type(vctx, resolved);
         }
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
         case WAH_OP_SELECT_T: {
             uint32_t vec_len;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &vec_len));
@@ -7138,6 +7147,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_INSTR_EX(opcode_val, _di->imm.i32 = sel_type);
             return wah_validation_push_type(vctx, sel_type);
         }
+#endif
 
         // Control flow operations
         case WAH_OP_NOP: break; // No opcode emitted
@@ -7399,6 +7409,7 @@ cleanup_block:
             return WAH_OK;
         }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
         case WAH_OP_REF_NULL: {
             wah_type_t ref_type;
             WAH_CHECK(wah_decode_heap_type(code_ptr, code_end, &ref_type));
@@ -7435,6 +7446,7 @@ cleanup_block:
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = func_idx);
             break;
         }
+#endif
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
         case WAH_OP_STRUCT_NEW:
@@ -7969,7 +7981,7 @@ static bool wah_opcode_is_call(uint16_t opcode) {
 static bool wah_opcode_is_resumable_bulk(uint16_t opcode) {
     switch (opcode) {
         WAH_IF_BULK_MEMORY(case WAH_OP_MEMORY_FILL: case WAH_OP_MEMORY_COPY: case WAH_OP_MEMORY_INIT:)
-        case WAH_OP_TABLE_FILL: WAH_IF_BULK_MEMORY(case WAH_OP_TABLE_COPY: case WAH_OP_TABLE_INIT:)
+        WAH_IF_REF_TYPES(case WAH_OP_TABLE_FILL:) WAH_IF_BULK_MEMORY(case WAH_OP_TABLE_COPY: case WAH_OP_TABLE_INIT:)
         case WAH_OP_ARRAY_FILL: case WAH_OP_ARRAY_COPY: case WAH_OP_ARRAY_INIT_DATA: case WAH_OP_ARRAY_INIT_ELEM:
             return true;
         default:
@@ -8373,6 +8385,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                     WAH_IF_BULK_MEMORY(else if (opcode == WAH_OP_MEMORY_FILL) new_opcode = WAH_OP_MEMORY_FILL_i64;)
                     wah_write_u16_le(buf + buf_size - sizeof(uint16_t), new_opcode);
                 }
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
                 // Redirect table ops to i64 variants for table64
                 if ((opcode == WAH_OP_TABLE_GET || opcode == WAH_OP_TABLE_SET ||
                      opcode == WAH_OP_TABLE_SIZE || opcode == WAH_OP_TABLE_GROW || opcode == WAH_OP_TABLE_FILL)
@@ -8385,6 +8398,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                     else new_opcode = WAH_OP_TABLE_FILL_i64;
                     wah_write_u16_le(buf + buf_size - sizeof(uint16_t), new_opcode);
                 }
+#endif
                 #endif // WAH_FEATURE_MEMORY64
                 WAH_LOWER_U32(a);
                 break;
@@ -8548,6 +8562,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                     break;
                 }
 #endif
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
                 case WAH_OP_SELECT_T: {
                     // Rewrite SELECT_T to SELECT: overwrite the opcode we just emitted
                     buf_size -= sizeof(uint16_t);
@@ -8558,6 +8573,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                     WAH_LOWER_U32(instr->imm.u32);
                     break;
                 }
+#endif
                 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
                 case WAH_OP_REF_TEST_NULL: case WAH_OP_REF_TEST:
                 case WAH_OP_REF_CAST_NULL: case WAH_OP_REF_CAST: {
@@ -12361,6 +12377,7 @@ static wah_error_t wah_call_host_function_internal(
 // --- Chunked bulk-op helpers for bounded interruption ---
 // Each returns the number of elements processed. If < size, interrupted.
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
 static uint64_t wah_bulk_table_fill(wah_exec_context_t *ctx, wah_exec_context_t *fctx, uint32_t table_idx,
                                     uint64_t offset, wah_value_t val, uint64_t size) {
     for (uint64_t done = 0; done < size; ) {
@@ -12374,6 +12391,7 @@ static uint64_t wah_bulk_table_fill(wah_exec_context_t *ctx, wah_exec_context_t 
     }
     return size;
 }
+#endif
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 static uint64_t wah_bulk_table_copy(wah_exec_context_t *ctx, wah_exec_context_t *fctx,
@@ -12554,6 +12572,7 @@ static wah_error_t wah_init_local_tables(wah_table_inst_t *tables, const wah_mod
     return WAH_OK;
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES) // For table.grow
 static void wah_update_table_import_aliases(wah_exec_context_t *target, uint32_t exclude_idx,
                                             wah_exec_context_t *owner_ctx, uint32_t owner_idx,
                                             wah_value_t *entries, uint64_t size) {
@@ -12567,6 +12586,7 @@ static void wah_update_table_import_aliases(wah_exec_context_t *target, uint32_t
         }
     }
 }
+#endif
 
 static void wah_update_memory_import_aliases(wah_exec_context_t *target, uint32_t exclude_idx,
                                              wah_exec_context_t *owner_ctx, uint32_t owner_idx,
@@ -12586,6 +12606,7 @@ static void wah_update_memory_import_aliases(wah_exec_context_t *target, uint32_
     }
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
 static void wah_propagate_table_import_aliases(wah_exec_context_t *ctx, wah_exec_context_t *fctx,
                                                wah_exec_context_t *owner_ctx, uint32_t owner_idx,
                                                wah_value_t *entries, uint64_t size) {
@@ -12616,6 +12637,7 @@ static void wah_propagate_table_import_aliases(wah_exec_context_t *ctx, wah_exec
         }
     }
 }
+#endif
 
 static void wah_propagate_memory_import_aliases(wah_exec_context_t *ctx, wah_exec_context_t *fctx,
                                                 wah_exec_context_t *owner_ctx, uint32_t owner_idx,
@@ -12648,6 +12670,7 @@ static void wah_propagate_memory_import_aliases(wah_exec_context_t *ctx, wah_exe
     }
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
 static wah_error_t wah_table_grow_internal(
     wah_exec_context_t *ctx, wah_exec_context_t *fctx, uint32_t table_idx, uint64_t delta, wah_value_t init_val,
     uint64_t *old_size, bool *grew
@@ -12715,6 +12738,7 @@ static wah_error_t wah_table_grow_internal(
     *grew = true;
     return WAH_OK;
 }
+#endif
 
 static bool wah_memory_grow_internal(
     wah_exec_context_t *ctx, wah_exec_context_t *fctx, uint32_t mem_idx,
@@ -12933,7 +12957,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 WAH_NEVER_RUN(NOP) // Removed by preparser
 WAH_NEVER_RUN(BLOCK) // Converted to bytecode offsets
 WAH_NEVER_RUN(LOOP) // Converted to bytecode offsets
-WAH_NEVER_RUN(SELECT_T) // Identical to WAH_RUN(SELECT) in run time
+WAH_IF_REF_TYPES(WAH_NEVER_RUN(SELECT_T)) // Identical to WAH_RUN(SELECT) in run time
 
 WAH_RUN(POLL) {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
@@ -13153,6 +13177,7 @@ WAH_RUN(V128_CONST) {
 }
 #endif
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
 WAH_RUN(REF_NULL) {
     (*sp++).ref = NULL;
     WAH_NEXT();
@@ -13176,6 +13201,7 @@ WAH_RUN(REF_FUNC) {
     (*sp++).ref = wah_func_to_ref(&frame->frame_function_table[func_idx].func);
     WAH_NEXT();
 }
+#endif
 
 WAH_RUN(GLOBAL_GET_INDIRECT) {
     uint32_t global_idx = wah_decode_u32_le(&bytecode_ip);
@@ -13872,22 +13898,26 @@ WAH_RUN(GLOBAL_SET) {
     WAH_CLEANUP(); \
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
 WAH_RUN(TABLE_GET) WAH_TABLE_GET_IMPL(32)
 WAH_RUN(TABLE_SET) WAH_TABLE_SET_IMPL(32)
 WAH_RUN(TABLE_SIZE) WAH_TABLE_SIZE_IMPL(32)
 WAH_RUN(TABLE_GROW) WAH_TABLE_GROW_IMPL(32)
 WAH_RUN(TABLE_FILL) WAH_TABLE_FILL_IMPL(32)
+#endif
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 WAH_RUN(TABLE_COPY) WAH_TABLE_COPY_IMPL(32,32,32)
 WAH_RUN(TABLE_INIT) WAH_TABLE_INIT_IMPL(32)
 #endif
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
 WAH_RUN(TABLE_GET_i64) WAH_TABLE_GET_IMPL(64)
 WAH_RUN(TABLE_SET_i64) WAH_TABLE_SET_IMPL(64)
 WAH_RUN(TABLE_SIZE_i64) WAH_TABLE_SIZE_IMPL(64)
 WAH_RUN(TABLE_GROW_i64) WAH_TABLE_GROW_IMPL(64)
 WAH_RUN(TABLE_FILL_i64) WAH_TABLE_FILL_IMPL(64)
+#endif
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 WAH_RUN(TABLE_COPY_i32_to_i64) WAH_TABLE_COPY_IMPL(32,64,32)
 WAH_RUN(TABLE_COPY_i64_to_i32) WAH_TABLE_COPY_IMPL(64,32,32)
