@@ -9095,12 +9095,12 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
         uint32_t _t = (target), _n = (n); \
         const wah_type_t *_s = (s), *_ann = NULL; \
         uint32_t _k = 0; \
-        if (maps[_t] != UINT32_MAX) { \
-            _ann = pc->stack_map_types + pc->stack_maps[maps[_t]].start; \
-            _k = pc->stack_maps[maps[_t]].count; \
-        } else if (is_func && wah_read_u16_le(code + _t) == WAH_OP_END) { \
+        if (is_func && wah_read_u16_le(code + _t) == WAH_OP_END) { /* The outermost label, even if blocks end here */ \
             _ann = ft->result_types; \
             _k = ft->result_count; \
+        } else if (maps[_t] != UINT32_MAX) { \
+            _ann = pc->stack_map_types + pc->stack_maps[maps[_t]].start; \
+            _k = pc->stack_maps[maps[_t]].count; \
         } \
         if (_ann) { \
             CK_ENSURE(_n >= _k); \

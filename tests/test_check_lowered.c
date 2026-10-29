@@ -303,6 +303,18 @@ static void test_stack_maps(void) {
     #undef EXPECT_REJECTED
     expect_rejected(&mod, IMM_AT(SELECT_T, 0, 0), 4, (uint32_t)WAH_TYPE_I32, "typed select of a wrong type");
     wah_free_module(&mod);
+
+    printf("  block ending at the end of the function\n");
+    // Both labels are at the END, and the branch to the function label doesn't fit the stack map of the block
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32], fn [i32] [funcref]]} funcs {[1, 0]} \
+        elements {[elem.declarative elem.funcref [1]]} \
+        code {[ \
+            {[] block type.ref.null 0 ref.func 1 ref.null funcref local.get 0 br_if 1 drop end end}, \
+            {[] i32.const 7 end} \
+        ]}"));
+    assert_ok(check_func(&mod, 0));
+    wah_free_module(&mod);
 }
 
 static void test_ref_maps(void) {
