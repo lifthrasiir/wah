@@ -2772,6 +2772,11 @@ typedef struct wah_memory_type_s {
 
 // A reference slot in the operand stack at POLL points. Since consecutive POLL points share
 // most of their operand stacks, slots form a tree and each POLL point only refers to its topmost slot.
+// Types on top of the operand stack at a label (`count` of them from stack_map_types[start]), only for wah_check_lowered_code.
+typedef struct wah_stack_map_s {
+    uint32_t offset, count, start;
+} wah_stack_map_t;
+
 typedef struct wah_ref_node_s {
     uint32_t parent; // Index + 1 of the next reference slot below, 0 if none
     uint32_t pos;    // Position in the operand stack
@@ -2784,6 +2789,10 @@ typedef struct {
     uint32_t poll_count;
     wah_ref_node_t *ref_nodes;
     uint32_t ref_node_count;
+    // Types on top of the stack at labels with reference types, which differ by paths only there (and only by subtyping)
+    struct wah_stack_map_s *stack_maps;
+    uint32_t stack_map_count;
+    wah_type_t *stack_map_types;
 } wah_parsed_code_t;
 
 // --- WebAssembly Table Structures ---
@@ -3047,6 +3056,7 @@ typedef struct {
     uint32_t type_stack_sp; // Type stack pointer at the start of the block
     wah_block_type_t block_type; // For if/block/loop/try_table
     wah_type_t single_result; // Result type of the short block type form
+    uint32_t block_type_idx; // Type index of the block type, or UINT32_MAX for the short forms
     bool else_found; // For if blocks
     bool is_unreachable; // True if this control frame is currently unreachable
     uint32_t stack_height; // Stack height at the beginning of the block
@@ -3136,6 +3146,12 @@ typedef struct {
     uint64_t offset;
 } wah_memarg_t;
 
+// Block type of analyzed code: a type index, or UINT32_MAX with the single result (WAH_TYPE_BOT if none)
+typedef struct {
+    uint32_t type_idx;
+    wah_type_t single;
+} wah_block_type_imm_t;
+
 typedef struct {
     uint16_t opcode;
     uint16_t flags;
@@ -3162,8 +3178,10 @@ typedef struct {
             uint32_t drop;
         } br_on_cast;
         struct { uint32_t type_idx; uint32_t field_idx; } type_field;
+        wah_block_type_imm_t block; // block, loop and if
         struct { uint32_t type_idx; uint32_t length; } type_length;
         struct {
+            wah_block_type_imm_t block;
             uint32_t catch_count;
             struct { uint8_t kind; uint32_t tag_idx; uint32_t target_symbol; uint32_t drop; } *catches;
         } try_table;
@@ -6501,6 +6519,8 @@ static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, co
                                                      wah_validation_control_frame_t *frame) {
     wah_block_type_t *bt = &frame->block_type;
     *bt = (wah_block_type_t){0};
+    frame->block_type_idx = UINT32_MAX;
+    frame->single_result = WAH_TYPE_BOT;
     WAH_ENSURE(*code_ptr < code_end, WAH_ERROR_UNEXPECTED_EOF);
     uint8_t block_type_peek = **code_ptr;
 
@@ -6523,6 +6543,7 @@ static wah_error_t wah_validation_decode_block_type(const uint8_t **code_ptr, co
         WAH_ENSURE(type_idx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
         WAH_ENSURE(vctx->module->type_defs[type_idx].kind == WAH_COMP_FUNC, WAH_ERROR_VALIDATION_FAILED);
         const wah_func_type_t *referenced_type = &vctx->module->types[type_idx];
+        frame->block_type_idx = type_idx;
         *bt = (wah_block_type_t){
             .param_types = referenced_type->param_types, .result_types = referenced_type->result_types,
             .param_count = referenced_type->param_count, .result_count = referenced_type->result_count,
@@ -7209,6 +7230,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 WAH_ENSURE_CAP_GOTO(ac->instrs, ac->instr_count + 1, cleanup_block);
                 wah_decoded_instr_t *_di = &ac->instrs[ac->instr_count++];
                 *_di = (wah_decoded_instr_t){ .opcode = opcode_val, .flags = 0 };
+                _di->imm.block = (wah_block_type_imm_t){ frame->block_type_idx, frame->single_result };
             }
             return WAH_OK;
 
@@ -7944,6 +7966,7 @@ cleanup_block:
 
             WAH_ENSURE_CAP_GOTO(ac->instrs, ac->instr_count + 1, cleanup_try_table); // So that catch_entries is not leaked
             EMIT_INSTR_EX(opcode_val, {
+                _di->imm.try_table.block = (wah_block_type_imm_t){ frame->block_type_idx, frame->single_result };
                 _di->imm.try_table.catch_count = catch_count;
                 _di->imm.try_table.catches = NULL;
                 if (catch_count > 0) {
@@ -8003,6 +8026,19 @@ static bool wah_opcode_is_resumable_bulk(uint16_t opcode) {
 #endif
 
 // Lowering function that consumes analyzed IR instead of raw Wasm bytes
+// Types of the label of a block: its params if a loop, and its results otherwise.
+static void wah_block_label_types(const wah_module_t *module, const wah_block_type_imm_t *bt, bool loop,
+                                  const wah_type_t **types, uint32_t *count) {
+    if (bt->type_idx != UINT32_MAX) {
+        const wah_func_type_t *ft = &module->types[bt->type_idx];
+        *types = loop ? ft->param_types : ft->result_types;
+        *count = loop ? ft->param_count : ft->result_count;
+    } else {
+        *types = &bt->single;
+        *count = loop || bt->single == WAH_TYPE_BOT ? 0 : 1;
+    }
+}
+
 static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analyzed_code_t *ac, wah_parsed_code_t *parsed_code) {
     const wah_alloc_t *alloc = &module->alloc;
     bool emit_poll = (ac->mode == WAH_ANALYZE_FUNC_BODY);
@@ -8022,12 +8058,19 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
         uint32_t patch_offsets_cap;
         uint32_t try_depth;           // number of enclosing try_tables at this frame's label
         bool needs_trim;              // some branch to this frame's end leaves a try_table
+        wah_block_type_imm_t block_type;
     } wah_lower_cf_t;
 
     // --- Growable buffer ---
     uint8_t *buf = NULL;
     uint32_t buf_size = 0;
     uint32_t buf_cap = 0;
+
+    // --- Stack maps of labels with reference types ---
+    wah_stack_map_t *stack_maps = NULL;
+    uint32_t stack_map_count = 0, stack_maps_cap = 0;
+    wah_type_t *stack_map_types = NULL;
+    uint32_t stack_map_type_count = 0, stack_map_types_cap = 0;
 
     // --- Function-end patches (for branches targeting function scope) ---
     uint32_t *func_end_patches = NULL;
@@ -8169,10 +8212,31 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
         } \
     } while (0)
 
-    #define WAH_LOWER_PUSH_FRAME(op) do { \
+    #define WAH_LOWER_PUSH_FRAME(op, bt) do { \
         WAH_ASSERT(control_sp < WAH_MAX_CONTROL_DEPTH && "validation should have verified control stack size"); \
         control_stack[control_sp++] = (wah_lower_cf_t){ \
-            .opcode = (op), .continuation_offset = buf_size, .try_depth = cur_try_depth }; \
+            .opcode = (op), .continuation_offset = buf_size, .try_depth = cur_try_depth, .block_type = (bt) }; \
+    } while (0)
+
+    // Records label types at `pos` if any of them is a reference. Another label may be already there, like a block ending
+    // right before a loop, in which case the later one (which is the outer or following one) overrides the types it has.
+    #define WAH_LOWER_STACK_MAP(pos, bt, loop) do { \
+        const wah_type_t *_lt; \
+        uint32_t _ln, _keep = 0, _pos = (pos); \
+        bool _has_ref = false; \
+        wah_block_label_types(module, (bt), (loop), &_lt, &_ln); \
+        for (uint32_t _i = 0; _i < _ln; _i++) _has_ref = _has_ref || WAH_TYPE_IS_REF(_lt[_i]); \
+        if (!_has_ref) break; \
+        if (stack_map_count > 0 && stack_maps[stack_map_count - 1].offset == _pos) { \
+            const wah_stack_map_t *_prev = &stack_maps[--stack_map_count]; \
+            _keep = _prev->count > _ln ? _prev->count - _ln : 0; \
+            stack_map_type_count = _prev->start + _keep; \
+        } \
+        WAH_ENSURE_CAP_GOTO(stack_maps, stack_map_count + 1, cleanup); \
+        WAH_ENSURE_CAP_GOTO(stack_map_types, (size_t)stack_map_type_count + _ln, cleanup); \
+        stack_maps[stack_map_count++] = (wah_stack_map_t){ _pos, _keep + _ln, stack_map_type_count - _keep }; \
+        if (_ln > 0) memcpy(stack_map_types + stack_map_type_count, _lt, _ln * sizeof(wah_type_t)); \
+        stack_map_type_count += _ln; \
     } while (0)
 
     #define WAH_LOWER_FINISH_FRAME(end_pos) do { \
@@ -8267,9 +8331,10 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
             }
             WAH_METER_START_CHUNK();
             WAH_METER_RECORD_INSTR_START();
-            WAH_LOWER_PUSH_FRAME((wah_opcode_t)opcode);
+            WAH_LOWER_PUSH_FRAME((wah_opcode_t)opcode, instr->imm.block);
             if (opcode == WAH_OP_LOOP) {
                 control_stack[control_sp - 1].continuation_offset = continuation_offset;
+                WAH_LOWER_STACK_MAP(continuation_offset, &instr->imm.block, true);
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
                 if (loop_has_try && loop_has_try[ii]) {
                     // Branches back from inside try_tables land here
@@ -8302,7 +8367,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                 WAH_LOWER_U32(instr->imm.try_table.catches[ci].drop);
             }
 
-            WAH_LOWER_PUSH_FRAME(WAH_OP_TRY_TABLE);
+            WAH_LOWER_PUSH_FRAME(WAH_OP_TRY_TABLE, instr->imm.try_table.block);
             cur_try_depth++;
             WAH_METER_RECORD_INSTR_END();
             continue;
@@ -8335,6 +8400,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                     WAH_METER_START_CHUNK();
                     end_pos = meter_chunks[meter_chunk_count].meter_offset;
                 }
+                if (cf->opcode != WAH_OP_LOOP) WAH_LOWER_STACK_MAP(end_pos, &cf->block_type, false);
                 WAH_LOWER_FINISH_FRAME(end_pos);
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
                 if (trim) {
@@ -8499,7 +8565,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                 case WAH_OP_IF: {
                     uint32_t false_patch_pos = buf_size;
                     WAH_LOWER_U32(0);
-                    WAH_LOWER_PUSH_FRAME(WAH_OP_IF);
+                    WAH_LOWER_PUSH_FRAME(WAH_OP_IF, instr->imm.block);
                     control_stack[control_sp - 1].if_false_patch = false_patch_pos;
                     break;
                 }
@@ -8750,6 +8816,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
     #undef WAH_METER_SIZE
     #undef WAH_EMIT_POLL
     #undef WAH_LOWER_FINISH_FRAME
+    #undef WAH_LOWER_STACK_MAP
     #undef WAH_LOWER_PUSH_FRAME
     #undef WAH_LOWER_RESOLVE_BRANCH
     #undef WAH_LOWER_APPLY_PATCHES
@@ -8768,10 +8835,17 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
     parsed_code->bytecode = buf;
     parsed_code->bytecode_size = buf_size;
     buf = NULL;
+    parsed_code->stack_maps = stack_maps;
+    parsed_code->stack_map_count = stack_map_count;
+    parsed_code->stack_map_types = stack_map_types;
+    stack_maps = NULL;
+    stack_map_types = NULL;
 
 cleanup:
     wah_free(alloc, buf);
     wah_free(alloc, loop_has_try);
+    wah_free(alloc, stack_maps);
+    wah_free(alloc, stack_map_types);
     wah_free(alloc, func_end_patches);
     wah_free(alloc, meter_chunks);
     wah_free(alloc, meter_instr_records);
@@ -9681,6 +9755,11 @@ static void wah_free_parsed_code(wah_parsed_code_t *parsed_code, const wah_alloc
     parsed_code->poll_count = 0;
     parsed_code->ref_nodes = NULL;
     parsed_code->ref_node_count = 0;
+    wah_free(alloc, parsed_code->stack_maps);
+    wah_free(alloc, parsed_code->stack_map_types);
+    parsed_code->stack_maps = NULL;
+    parsed_code->stack_map_count = 0;
+    parsed_code->stack_map_types = NULL;
 }
 
 static void wah_free_code_bodies(wah_module_t *module) {
