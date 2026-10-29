@@ -165,9 +165,10 @@ AFL_CC ?= afl-clang
 LIBFUZZER_CC ?= clang
 FUZZ_OPT ?= -O0
 
-FUZZ_CFLAGS := $(filter-out -O%,$(CFLAGS)) $(FUZZ_OPT) $(SANITIZER_FLAGS)
+# Lowered code is checked as in tests, so that any validator or lowering bug the fuzzer reaches aborts
+FUZZ_CFLAGS := $(filter-out -O%,$(CFLAGS)) $(FUZZ_OPT) -DWAH_CHECK_LOWERED $(SANITIZER_FLAGS)
 FUZZ_LDFLAGS := $(LDFLAGS) $(SANITIZER_FLAGS)
-LIBFUZZER_CFLAGS := $(filter-out -O%,$(CFLAGS)) $(FUZZ_OPT) -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer -DWAH_SANITIZE_UNDEFINED
+LIBFUZZER_CFLAGS := $(filter-out -O%,$(CFLAGS)) $(FUZZ_OPT) -DWAH_CHECK_LOWERED -fsanitize=fuzzer,address,undefined -fno-omit-frame-pointer -DWAH_SANITIZE_UNDEFINED
 LIBFUZZER_LDFLAGS := $(LDFLAGS) -fsanitize=fuzzer,address,undefined
 
 .PHONY: fuzz-afl
