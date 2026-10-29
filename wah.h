@@ -9283,7 +9283,8 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
         } else { \
             uint32_t _j = joins[_t]; \
             CK_ENSURE(join_heights[_j] == _n && (_n == 0 || memcmp(pool + join_starts[_j], _s, _n * sizeof(wah_type_t)) == 0)); \
-            CK_ENSURE(join_hcounts[_j] == _hc WAH_IF_EXCEPTION(&& wah_check_same_handlers(code, hpool + join_hstarts[_j], hs, _hc))); \
+            CK_ENSURE(join_hcounts[_j] == _hc WAH_IF_EXCEPTION(&& (_hc == 0 || \
+                      wah_check_same_handlers(code, hpool + join_hstarts[_j], hs, _hc)))); \
         } \
     } while (0)
     // Branches to `target` after moving the top `keep` values below `drop` ones, as WAH_DROP_KEEP does
