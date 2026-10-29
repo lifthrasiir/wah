@@ -881,7 +881,9 @@ private:
 typedef char wah_module_size_check_[sizeof(wah_module_t) <= 384 ? 1 : -1];
 typedef char wah_module_align_check_[WAH_ALIGNOF(wah_module_t) == 16 ? 1 : -1];
 typedef char wah_exec_context_size_check_[sizeof(wah_exec_context_t) <= 384 ? 1 : -1];
+#ifndef __CPROVER__ // CBMC ignores the alignment of the first member of the implementation
 typedef char wah_exec_context_align_check_[WAH_ALIGNOF(wah_exec_context_t) == 16 ? 1 : -1];
+#endif
 
 // Function: wah_strerror
 //   Converts an error code to a human-readable string.
