@@ -8900,6 +8900,22 @@ static bool wah_check_val_type(const wah_module_t *module, wah_type_t t) {
            (WAH_TYPE_IS_REF(t) && (t < 0 || WAH_TYIDX(t) < module->type_count));
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+// Whether ref map `idx` lists exactly the reference slots of the operand stack `stk`, which are GC roots when suspended.
+// Indices out of range mean no references, as in wah_gc_enumerate_roots.
+static bool wah_check_ref_map(const wah_parsed_code_t *pc, uint32_t idx, const wah_type_t *stk, uint32_t h) {
+    uint32_t refs = 0, listed = 0, below = h;
+    for (uint32_t i = 0; i < h; i++) refs += WAH_TYPE_IS_REF(stk[i]);
+    for (uint32_t n = idx < pc->poll_count ? pc->poll_ref_tops[idx] : 0; n; n = pc->ref_nodes[n - 1].parent, listed++) {
+        if (n > pc->ref_node_count) return false;
+        const wah_ref_node_t *node = &pc->ref_nodes[n - 1];
+        if (node->parent >= n || node->pos >= below || !WAH_TYPE_IS_REF(stk[node->pos])) return false; // Topmost first
+        below = node->pos;
+    }
+    return listed == refs;
+}
+#endif
+
 static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t off, wah_check_instr_t *in) {
     WAH_ENSURE(size - off >= sizeof(uint16_t), WAH_ERROR_VALIDATION_FAILED);
     uint16_t op = wah_read_u16_le(code + off);
@@ -9173,6 +9189,7 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
         uint32_t start = work[--work_count], j = joins[start];
         h = join_heights[j];
         if (h > 0) memcpy(stk, pool + join_starts[j], h * sizeof(wah_type_t));
+        WAH_IF_GC(uint32_t polled = UINT32_MAX;) // Where the last POLL ends, so that calls are known to be preceded by one
         for (off = start; ; off += in.len) {
             CK_ENSURE(off < size); // Falling off the end
             if (off != start && (flags[off] & TARGET)) {
@@ -9193,7 +9210,14 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
             }
             switch (in.op) {
                 case WAH_OP_UNREACHABLE: ends = true; break;
-                case WAH_OP_POLL: case WAH_OP_TICK: break; // Ref map indices are checked when used
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+                case WAH_OP_POLL: case WAH_OP_TICK: // Suspension points
+                    CK_ENSURE(wah_check_ref_map(pc, in.a, stk, h));
+                    if (in.op == WAH_OP_POLL) polled = off + in.len;
+                    break;
+#else
+                case WAH_OP_POLL: case WAH_OP_TICK: break;
+#endif
                 case WAH_OP_METER: CK_MERGE(in.b, stk, h); break;
                 case WAH_OP_IF: CK_POP(WAH_TYPE_I32); CK_MERGE(in.a, stk, h); break;
                 case WAH_OP_ELSE: CK_MERGE(in.a, stk, h); ends = true; break;
@@ -9303,6 +9327,8 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                         }
                         callee = &module->types[in.a];
                     }
+                    // Frames inside calls are scanned with the ref map of the POLL right before them
+                    WAH_IF_GC(if (!tail) CK_ENSURE(off == polled);)
                     for (uint32_t i = callee->param_count; i > 0; i--) CK_POP(callee->param_types[i - 1]);
                     if (tail) { // The callee returns to the caller in place of this function
                         CK_ENSURE(callee->result_count == ft->result_count);
@@ -9344,7 +9370,10 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                         case WAH_OP_TABLE_SIZE: WAH_IF_MEMORY64(case WAH_OP_TABLE_SIZE_i64:) CK_PUSH(at); break;
                         case WAH_OP_TABLE_GROW: WAH_IF_MEMORY64(case WAH_OP_TABLE_GROW_i64:)
                             CK_POP(at); CK_POP(tt->elem_type); CK_PUSH(at); break;
-                        default: CK_POP(at); CK_POP(tt->elem_type); CK_POP(at); break; // table.fill
+                        default: // table.fill, which can be suspended midway
+                            WAH_IF_GC(CK_ENSURE(wah_check_ref_map(pc, in.b, stk, h));)
+                            CK_POP(at); CK_POP(tt->elem_type); CK_POP(at);
+                            break;
                     }
                     break;
                 }
@@ -9379,6 +9408,7 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                 case WAH_OP_DATA_DROP: CK_ENSURE(in.a < module->data_segment_count); break;
                 case WAH_OP_ELEM_DROP: CK_ENSURE(in.a < module->element_segment_count); break;
                 case WAH_OP_MEMORY_FILL: WAH_IF_MEMORY64(case WAH_OP_MEMORY_FILL_i64:) {
+                    WAH_IF_GC(CK_ENSURE(wah_check_ref_map(pc, in.b, stk, h));) // Can be suspended midway
                     wah_type_t at = in.op == WAH_OP_MEMORY_FILL ? WAH_TYPE_I32 : WAH_TYPE_I64;
                     CK_ENSURE(in.a < wah_memory_index_limit(module) && wah_memory_type(module, in.a)->addr_type == at);
                     CK_POP(at); CK_POP(WAH_TYPE_I32); CK_POP(at);
@@ -9386,6 +9416,7 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                 }
                 case WAH_OP_MEMORY_INIT: case WAH_OP_TABLE_INIT:
                 WAH_IF_MEMORY64(case WAH_OP_MEMORY_INIT_i64: case WAH_OP_TABLE_INIT_i64:) {
+                    WAH_IF_GC(CK_ENSURE(wah_check_ref_map(pc, in.c, stk, h));) // Can be suspended midway
                     wah_type_t at = in.op == WAH_OP_MEMORY_INIT || in.op == WAH_OP_TABLE_INIT ? WAH_TYPE_I32 : WAH_TYPE_I64;
                     if (in.op == WAH_OP_MEMORY_INIT WAH_IF_MEMORY64(|| in.op == WAH_OP_MEMORY_INIT_i64)) {
                         CK_ENSURE(in.a < module->data_segment_count);
@@ -9402,6 +9433,7 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                 case WAH_OP_MEMORY_COPY: case WAH_OP_TABLE_COPY:
                 WAH_IF_MEMORY64(case WAH_OP_MEMORY_COPY_i32_to_i64: case WAH_OP_MEMORY_COPY_i64_to_i32: case WAH_OP_MEMORY_COPY_i64_to_i64:
                                 case WAH_OP_TABLE_COPY_i32_to_i64: case WAH_OP_TABLE_COPY_i64_to_i32: case WAH_OP_TABLE_COPY_i64_to_i64:) {
+                    WAH_IF_GC(CK_ENSURE(wah_check_ref_map(pc, in.c, stk, h));) // Can be suspended midway
                     wah_type_t dst_at = WAH_TYPE_I32, src_at = WAH_TYPE_I32; // Variants are named as source_to_destination
                     bool table = in.op == WAH_OP_TABLE_COPY;
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)

@@ -305,6 +305,42 @@ static void test_stack_maps(void) {
     wah_free_module(&mod);
 }
 
+static void test_ref_maps(void) {
+    printf("Testing ref maps of lowered code...\n");
+    // A reference stays on the stack across the call, so that it is a GC root inside the callee
+    static const char ref_spec[] = "wasm \
+        types {[fn [] [i32], fn [] []]} funcs {[1, 0]} \
+        elements {[elem.declarative elem.funcref [1]]} \
+        code {[{[] ref.func 1 call 1 drop drop end}, {[] i32.const 7 end}]}";
+    wah_module_t mod;
+    assert_ok(wah_parse_module_from_spec(&mod, ref_spec));
+    assert_ok(check_func(&mod, 0));
+    wah_parsed_code_t *pc = &mod.code_bodies[0].parsed_code;
+    uint32_t entry_map = wah_read_u32_le(pc->bytecode + IMM_AT(POLL, 0, 0));
+    expect_rejected(&mod, IMM_AT(POLL, 1, 0), 4, entry_map, "ref map missing a reference");
+    expect_rejected(&mod, OP_AT(POLL, 1), 2, WAH_OP_TICK, "call not preceded by a POLL");
+    printf("  ref map listing a slot above the stack\n");
+    uint32_t node = pc->poll_ref_tops[wah_read_u32_le(pc->bytecode + IMM_AT(POLL, 1, 0))] - 1;
+    pc->ref_nodes[node].pos++;
+    assert_err(check_func(&mod, 0), WAH_ERROR_VALIDATION_FAILED);
+    pc->ref_nodes[node].pos--;
+    assert_ok(check_func(&mod, 0));
+    wah_free_module(&mod);
+
+    wah_parse_options_t opts = { .enable_fuel_metering = true };
+    assert_ok(wah_parse_module_from_spec_ex(&mod, &opts, ref_spec));
+    assert_ok(check_func(&mod, 0));
+    pc = &mod.code_bodies[0].parsed_code;
+    for (uint32_t i = 0; ; i++) { // The TICK in the slow island, which may suspend with the reference
+        uint32_t tick = OP_AT(TICK, i);
+        if (wah_read_u16_le(pc->bytecode + tick + sizeof(uint16_t) + sizeof(uint32_t)) != WAH_OP_POLL) continue;
+        if (wah_read_u32_le(pc->bytecode + tick + sizeof(uint16_t)) == entry_map) continue;
+        expect_rejected(&mod, tick + sizeof(uint16_t), 4, entry_map, "ref map of a slow island missing a reference");
+        break;
+    }
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_accepted();
     test_rejected();
@@ -313,6 +349,7 @@ int main(void) {
     test_references();
     test_simd();
     test_stack_maps();
+    test_ref_maps();
     printf("All lowered code checker tests passed!\n");
     return 0;
 }
