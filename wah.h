@@ -1715,8 +1715,13 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 #define WAH_IF_RELAXED_SIMD(...)
 #endif
 
-// Not compiled out yet
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIGN_EXT)
 #define WAH_IF_SIGN_EXT(...) __VA_ARGS__
+#else
+#define WAH_IF_SIGN_EXT(...)
+#endif
+
+// Not compiled out yet
 #define WAH_IF_NONTRAPPING_F2I(...) __VA_ARGS__
 #define WAH_IF_BULK_MEMORY(...) __VA_ARGS__
 #define WAH_IF_REF_TYPES(...) __VA_ARGS__
@@ -14404,11 +14409,13 @@ WAH_RUN(I64_REINTERPRET_F64) REINTERPRET(f64, double, i64, int64_t)
 WAH_RUN(F32_REINTERPRET_I32) REINTERPRET(i32, int32_t, f32, float)
 WAH_RUN(F64_REINTERPRET_I64) REINTERPRET(i64, int64_t, f64, double)
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIGN_EXT)
 WAH_RUN(I32_EXTEND8_S)  { sp[-1].i32 = (int32_t) (int8_t)sp[-1].i32; WAH_NEXT(); }
 WAH_RUN(I32_EXTEND16_S) { sp[-1].i32 = (int32_t)(int16_t)sp[-1].i32; WAH_NEXT(); }
 WAH_RUN(I64_EXTEND8_S)  { sp[-1].i64 = (int64_t) (int8_t)sp[-1].i64; WAH_NEXT(); }
 WAH_RUN(I64_EXTEND16_S) { sp[-1].i64 = (int64_t)(int16_t)sp[-1].i64; WAH_NEXT(); }
 WAH_RUN(I64_EXTEND32_S) { sp[-1].i64 = (int64_t)(int32_t)sp[-1].i64; WAH_NEXT(); }
+#endif
 
 WAH_RUN(I32_TRUNC_SAT_F32_S) { sp[-1].i32 =          wah_trunc_sat_f32_to_i32(sp[-1].f32); WAH_NEXT(); }
 WAH_RUN(I32_TRUNC_SAT_F32_U) { sp[-1].i32 = (int32_t)wah_trunc_sat_f32_to_u32(sp[-1].f32); WAH_NEXT(); }

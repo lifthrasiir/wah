@@ -4627,7 +4627,8 @@ static bool wah_jit_supported(const wah_module_t *module, const wah_decoded_inst
             return true;
         default:
             if (in->opcode >= WAH_OP_I32_LOAD && in->opcode <= WAH_OP_I64_STORE32) return true;
-            if (in->opcode >= WAH_OP_I32_EQZ && in->opcode <= WAH_OP_I64_EXTEND32_S) return true;
+            if (in->opcode >= WAH_OP_I32_EQZ && in->opcode <= WAH_OP_F64_REINTERPRET_I64) return true;
+            WAH_IF_SIGN_EXT(if (in->opcode >= WAH_OP_I32_EXTEND8_S && in->opcode <= WAH_OP_I64_EXTEND32_S) return true;)
             if (in->opcode >= WAH_OP_I32_TRUNC_SAT_F32_S && in->opcode <= WAH_OP_I64_TRUNC_SAT_F64_U) return true;
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
             if (in->opcode >= WAH_FD && in->opcode < WAH_FE) return wah_jit_simd_supported(module->jit);
@@ -5057,12 +5058,14 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
 #undef WAH_JIT_FNUM
 
         case WAH_OP_I32_WRAP_I64: wah_jit_zext_top(f); break; // i32 operations ignore the upper half otherwise
-        case WAH_OP_I64_EXTEND_I32_S: case WAH_OP_I64_EXTEND32_S: wah_jit_extend(f, true, 32, true); break;
+        case WAH_OP_I64_EXTEND_I32_S: WAH_IF_SIGN_EXT(case WAH_OP_I64_EXTEND32_S:) wah_jit_extend(f, true, 32, true); break;
         case WAH_OP_I64_EXTEND_I32_U: wah_jit_extend(f, true, 32, false); break;
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIGN_EXT)
         case WAH_OP_I32_EXTEND8_S: wah_jit_extend(f, false, 8, true); break;
         case WAH_OP_I32_EXTEND16_S: wah_jit_extend(f, false, 16, true); break;
         case WAH_OP_I64_EXTEND8_S: wah_jit_extend(f, true, 8, true); break;
         case WAH_OP_I64_EXTEND16_S: wah_jit_extend(f, true, 16, true); break;
+#endif
 
         case WAH_OP_I32_TRUNC_F32_S: wah_jit_trunc(f, 0, false, true, -2147483648.0, true, 2147483648.0); break;
         case WAH_OP_I32_TRUNC_F32_U: wah_jit_trunc(f, 0, false, false, -1.0, false, 4294967296.0); break;
