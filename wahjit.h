@@ -1436,7 +1436,7 @@ static wah_error_t wah_jit_call_host(wah_exec_context_t *ctx, uint32_t func_idx,
 static uintptr_t wah_jit_call_indirect(wah_exec_context_t *ctx, uint32_t type_idx, uint32_t table_idx,
                                        uint32_t elem_idx, wah_value_t *args) {
     wah_error_t err = WAH_ERROR_TRAP;
-    const wah_table_inst_t *table = &ctx->tables[table_idx];
+    const wah_table_inst_t *table = &ctx->tables[WAH_TABLEIDX(table_idx)];
     if (elem_idx >= table->size) goto fail;
     void *ref = table->entries[elem_idx].ref;
     if (!ref) goto fail;

@@ -1745,10 +1745,13 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 #define WAH_IF_BULK_MEMORY(...)
 #endif
 
+// WAH_TABLEIDX(idx) is a table index from the bytecode, which is a constant 0 without reference types
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
 #define WAH_IF_REF_TYPES(...) __VA_ARGS__
+#define WAH_TABLEIDX(idx) (idx)
 #else
 #define WAH_IF_REF_TYPES(...)
+#define WAH_TABLEIDX(idx) ((void)(idx), 0u)
 #endif
 
 // WAH_MEMIDX(idx) is a memory index from the bytecode, which is a constant 0 without multi-memory
@@ -13782,7 +13785,7 @@ WAH_RUN(GLOBAL_SET) {
 }
 
 #define WAH_TABLE_GET_IMPL(N) { \
-    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip)); \
     uint64_t elem_idx = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     WAH_ASSERT(table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
     WAH_ENSURE_GOTO(elem_idx < fctx->tables[table_idx].size, WAH_ERROR_TRAP, cleanup); \
@@ -13792,7 +13795,7 @@ WAH_RUN(GLOBAL_SET) {
 }
 
 #define WAH_TABLE_SET_IMPL(N) { \
-    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip)); \
     wah_value_t val = *--sp; \
     uint64_t elem_idx = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     WAH_ASSERT(table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
@@ -13803,14 +13806,14 @@ WAH_RUN(GLOBAL_SET) {
 }
 
 #define WAH_TABLE_SIZE_IMPL(N) { \
-    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip)); \
     WAH_ASSERT(table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
     (*sp++).i##N = (int##N##_t)fctx->tables[table_idx].size; \
     WAH_NEXT(); \
 }
 
 #define WAH_TABLE_GROW_IMPL(N) { \
-    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip)); \
     uint64_t delta = (uint64_t)(uint##N##_t)(*--sp).i##N; \
     wah_value_t init_val = *--sp; \
     WAH_ASSERT(table_idx < fctx->table_count && "validation didn't catch out-of-bound table index"); \
@@ -13825,7 +13828,7 @@ WAH_RUN(GLOBAL_SET) {
 
 #define WAH_TABLE_FILL_IMPL(N) { \
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
-    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip)); \
     WAH_IF_GC(uint32_t ref_map = wah_decode_u32_le(&bytecode_ip);) \
     WAH_BULK_CHECK_START(instr_start, ref_map); \
     uint64_t size = (uint64_t)(uint##N##_t)(*--sp).i##N; \
@@ -13846,8 +13849,8 @@ WAH_RUN(GLOBAL_SET) {
 
 #define WAH_TABLE_COPY_IMPL(N,M,Z) { \
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
-    uint32_t dst_table_idx = wah_decode_u32_le(&bytecode_ip); \
-    uint32_t src_table_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t dst_table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip)); \
+    uint32_t src_table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip)); \
     WAH_IF_GC(uint32_t ref_map = wah_decode_u32_le(&bytecode_ip);) \
     WAH_BULK_CHECK_START(instr_start, ref_map); \
     uint64_t size = (uint64_t)(uint##Z##_t)(*--sp).i##Z; \
@@ -13878,7 +13881,7 @@ WAH_RUN(GLOBAL_SET) {
 #define WAH_TABLE_INIT_IMPL(N) { \
     const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t); \
     uint32_t elem_idx = wah_decode_u32_le(&bytecode_ip); \
-    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip); \
+    uint32_t table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip)); \
     WAH_IF_GC(uint32_t ref_map = wah_decode_u32_le(&bytecode_ip);) \
     WAH_BULK_CHECK_START(instr_start, ref_map); \
     uint32_t size = (*--sp).i32; \
@@ -14033,7 +14036,7 @@ WAH_RUN(CALL) {
 
 WAH_RUN(CALL_INDIRECT) {
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
-    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip));
     uint32_t func_table_idx = (uint32_t)(*--sp).i32;
     WAH_ASSERT(type_idx < fctx->module->type_count);
     WAH_ASSERT(table_idx < fctx->table_count);
@@ -14047,7 +14050,7 @@ WAH_RUN(CALL_INDIRECT) {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
 WAH_RUN(CALL_INDIRECT_i64) {
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
-    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip));
     uint64_t func_table_idx = (uint64_t)(*--sp).i64;
     WAH_ASSERT(type_idx < fctx->module->type_count);
     WAH_ASSERT(table_idx < fctx->table_count);
@@ -14163,7 +14166,7 @@ WAH_RUN(RETURN_CALL) {
 
 WAH_RUN(RETURN_CALL_INDIRECT) {
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
-    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip));
     uint32_t func_table_idx = (uint32_t)(*--sp).i32;
     WAH_ASSERT(type_idx < fctx->module->type_count);
     WAH_ASSERT(table_idx < fctx->table_count);
@@ -14178,7 +14181,7 @@ WAH_RUN(RETURN_CALL_INDIRECT) {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
 WAH_RUN(RETURN_CALL_INDIRECT_i64) {
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
-    uint32_t table_idx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip));
     uint64_t func_table_idx = (uint64_t)(*--sp).i64;
     WAH_ASSERT(type_idx < fctx->module->type_count);
     WAH_ASSERT(table_idx < fctx->table_count);

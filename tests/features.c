@@ -259,6 +259,31 @@ static int run_feature_tests(void) {
         wah_free_module(&mod);
     }
 
+    // Test 4g: call_indirect, which always uses table 0 without reference types
+    printf("Testing call_indirect...\n");
+    {
+        wah_exec_context_t ctx;
+        wah_value_t params[3], result;
+        assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+            types {[fn [i32, i32] [i32], fn [i32, i32, i32] [i32]]} \
+            funcs {[0, 0, 1]} \
+            tables {[funcref limits.i32/1 2]} \
+            elements {[elem.active.table#0 i32.const 0 end [0, 1]]} \
+            code {[ \
+                {[] local.get 0 local.get 1 i32.add end}, \
+                {[] local.get 0 local.get 1 i32.sub end}, \
+                {[] local.get 0 local.get 1 local.get 2 call_indirect 0 0 end} \
+            ]}"));
+        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+        params[0].i32 = 10; params[1].i32 = 3; params[2].i32 = 1;
+        assert_ok(wah_call(&ctx, 2, params, 3, &result));
+        assert_eq_i32(result.i32, 7);
+        params[2].i32 = 2;
+        assert_err(wah_call(&ctx, 2, params, 3, &result), WAH_ERROR_TRAP);
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod);
+    }
+
     // Test 5: feature closure
     printf("Testing feature closure: RELAXED_SIMD implies SIMD...\n");
     assert_true(wah_feature_closure(WAH_FEATURE_RELAXED_SIMD) & WAH_FEATURE_SIMD);
