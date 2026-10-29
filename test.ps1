@@ -137,6 +137,8 @@ if ($compilerKind -eq 'msvc') {
         $cflags += '-DWAH_ASSERT=assert'
     }
 }
+# Lowered code is always checked in tests
+$cflags += if ($compilerKind -eq 'msvc') { '/DWAH_CHECK_LOWERED' } else { '-DWAH_CHECK_LOWERED' }
 # -jit builds wah_impl with wahjit.h, so that API-only tests (including spec tests) run natively where possible.
 if ($jit) {
     $cflags += if ($compilerKind -eq 'msvc') { '/DWAH_TEST_JIT' } else { '-DWAH_TEST_JIT' }
