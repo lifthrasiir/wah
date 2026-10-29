@@ -255,6 +255,56 @@ static void test_simd(void) {
     wah_free_module(&mod);
 }
 
+static void test_stack_maps(void) {
+    printf("Testing stack maps of lowered code...\n");
+    wah_module_t mod;
+    wah_exec_context_t ctx;
+    wah_value_t param = {.i32 = 1}, result;
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32], fn [i32] [i32]]} funcs {[1, 0]} \
+        elements {[elem.declarative elem.funcref [1]]} \
+        code {[ \
+            {[] \
+                block type.ref.null 0 \
+                    ref.func 1 local.get 0 br_if 0 drop ref.null 0 \
+                end \
+                call_ref 0 \
+                ref.func 1 ref.null funcref local.get 0 select.typed [funcref] ref.is_null \
+                i32.add \
+            end}, \
+            {[] i32.const 7 end} \
+        ]}"));
+    assert_ok(check_func(&mod, 0));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_call(&ctx, 0, &param, 1, &result));
+    assert_eq_i32(result.i32, 7);
+    wah_free_exec_context(&ctx);
+
+    // The block joins (ref $0) from br_if and (ref null $0) from ref.null, which is fine only with its stack map
+    wah_parsed_code_t *pc = &mod.code_bodies[0].parsed_code;
+    assert_eq_u32(pc->stack_map_count, 1);
+    wah_stack_map_t saved = pc->stack_maps[0];
+    wah_type_t saved_type = pc->stack_map_types[saved.start];
+    #define EXPECT_REJECTED(what, mutation) do { \
+        printf("  %s\n", what); \
+        mutation; \
+        assert_err(check_func(&mod, 0), WAH_ERROR_VALIDATION_FAILED); \
+        pc->stack_map_count = 1; \
+        pc->stack_maps[0] = saved; \
+        pc->stack_map_types[saved.start] = saved_type; \
+        assert_ok(check_func(&mod, 0)); \
+    } while (0)
+    EXPECT_REJECTED("stack map dropped", pc->stack_map_count = 0);
+    EXPECT_REJECTED("stack map with a supertype not accepted later", pc->stack_map_types[saved.start] = WAH_TYPE_FUNCREF);
+    EXPECT_REJECTED("stack map with a subtype not met by every path",
+                    pc->stack_map_types[saved.start] = WAH_TYPE_FROM_IDX(0, 0));
+    EXPECT_REJECTED("stack map at the middle of an instruction", pc->stack_maps[0].offset++);
+    EXPECT_REJECTED("stack map with types out of range", pc->stack_maps[0].count = 100);
+    #undef EXPECT_REJECTED
+    expect_rejected(&mod, IMM_AT(SELECT_T, 0, 0), 4, (uint32_t)WAH_TYPE_I32, "typed select of a wrong type");
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_accepted();
     test_rejected();
@@ -262,6 +312,7 @@ int main(void) {
     test_bulk_memory();
     test_references();
     test_simd();
+    test_stack_maps();
     printf("All lowered code checker tests passed!\n");
     return 0;
 }

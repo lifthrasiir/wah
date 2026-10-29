@@ -2793,6 +2793,7 @@ typedef struct {
     struct wah_stack_map_s *stack_maps;
     uint32_t stack_map_count;
     wah_type_t *stack_map_types;
+    uint32_t stack_map_type_count;
 } wah_parsed_code_t;
 
 // --- WebAssembly Table Structures ---
@@ -8836,6 +8837,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
     parsed_code->stack_maps = stack_maps;
     parsed_code->stack_map_count = stack_map_count;
     parsed_code->stack_map_types = stack_map_types;
+    parsed_code->stack_map_type_count = stack_map_type_count;
     stack_maps = NULL;
     stack_map_types = NULL;
 
@@ -8878,25 +8880,25 @@ typedef struct {
     uint8_t lane;          // u8 immediate at the end
 } wah_check_instr_t;
 
-// Operand types are tracked exactly for numbers, and only by their kinds for references: functions, exceptions and the
-// rest (as funcref, exnref and anyref). That is enough without GC, where nulls are checked at run time, and so are
-// signatures of functions called by reference. Externs and others share the representation, so conversions between
-// them are not even lowered. Returns 0 for other types.
-static int8_t wah_check_kind(const wah_module_t *module, wah_type_t t) {
-    static const wah_type_t tops[] = { WAH_TYPE_FUNC, WAH_TYPE_EXN, WAH_TYPE_EXTERN, WAH_TYPE_ANY }; // Any is checked last
-    if (t == WAH_TYPE_I32 || t == WAH_TYPE_I64 || t == WAH_TYPE_F32 || t == WAH_TYPE_F64 || t == WAH_TYPE_V128) return (int8_t)t;
-    if (!WAH_TYPE_IS_REF(t) || (t >= 0 && WAH_TYIDX(t) >= module->type_count)) return 0;
-    for (size_t i = 0; i < sizeof(tops) / sizeof(*tops); i++) {
-        if (wah_type_is_subtype(WAH_TYPE_AS_NON_NULL(t), tops[i], module)) return (int8_t)(i < 2 ? WAH_TYPE_AS_NULLABLE(tops[i]) : WAH_TYPE_ANYREF);
+// Externs and others share the representation, so conversions between them are not even lowered.
+static wah_type_t wah_check_norm(wah_type_t t) {
+    switch (t) {
+        case WAH_TYPE_EXTERN: return WAH_TYPE_ANY;
+        case WAH_TYPE_EXTERNREF: return WAH_TYPE_ANYREF;
+        case WAH_TYPE_NOEXTERN: return WAH_TYPE_NONE;
+        case WAH_TYPE_NULLEXTERNREF: return WAH_TYPE_NULLREF;
+        default: return t;
     }
-    return 0;
 }
 
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
-static bool wah_check_is_ref_kind(int8_t k) {
-    return k == WAH_TYPE_FUNCREF || k == WAH_TYPE_EXNREF || k == WAH_TYPE_ANYREF;
+static bool wah_check_sub(const wah_module_t *module, wah_type_t sub, wah_type_t sup) {
+    return wah_type_is_subtype(wah_check_norm(sub), wah_check_norm(sup), module);
 }
-#endif
+
+static bool wah_check_val_type(const wah_module_t *module, wah_type_t t) {
+    return t == WAH_TYPE_I32 || t == WAH_TYPE_I64 || t == WAH_TYPE_F32 || t == WAH_TYPE_F64 || t == WAH_TYPE_V128 ||
+           (WAH_TYPE_IS_REF(t) && (t < 0 || WAH_TYIDX(t) < module->type_count));
+}
 
 static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t off, wah_check_instr_t *in) {
     WAH_ENSURE(size - off >= sizeof(uint16_t), WAH_ERROR_VALIDATION_FAILED);
@@ -9054,10 +9056,11 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
     uint8_t *flags = NULL;
     uint32_t *joins = NULL; // Index of the recorded stack at each branch target
     uint32_t *join_heights = NULL, *join_starts = NULL, join_count = 0, join_heights_cap = 0, join_starts_cap = 0;
-    int8_t *pool = NULL; // Recorded stacks
+    wah_type_t *pool = NULL; // Recorded stacks
     uint32_t pool_count = 0, pool_cap = 0;
     uint32_t *work = NULL, work_count = 0, work_cap = 0;
-    int8_t *stk = NULL, *tmp = NULL;
+    uint32_t *maps = NULL; // Index of the stack map at each offset
+    wah_type_t *stk = NULL, *tmp = NULL, *nrm = NULL;
     uint32_t h = 0;
 
     #define CK_FAIL() do { \
@@ -9065,21 +9068,39 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
         err = WAH_ERROR_VALIDATION_FAILED; goto cleanup; \
     } while (0)
     #define CK_ENSURE(cond) do { if (!(cond)) CK_FAIL(); } while (0)
-    #define CK_KIND(k, t) int8_t k = wah_check_kind(module, (t)); if (!k) { err = WAH_ERROR_UNSUPPORTED; goto cleanup; }
-    #define CK_PUSH(t) do { CK_KIND(_k, t); CK_ENSURE(h < max_depth); stk[h++] = _k; } while (0)
-    #define CK_POP(t) do { CK_KIND(_k, t); CK_ENSURE(h > 0 && stk[h - 1] == _k); h--; } while (0)
-    #define CK_ENSURE_REF() CK_ENSURE(h > 0 && wah_check_is_ref_kind(stk[h - 1]))
+    #define CK_PUSH(t) do { wah_type_t _t = (t); CK_ENSURE(h < max_depth); stk[h++] = wah_check_norm(_t); } while (0)
+    #define CK_POP(t) do { CK_ENSURE(h > 0 && wah_check_sub(module, stk[h - 1], (t))); h--; } while (0)
+    #define CK_ENSURE_REF() CK_ENSURE(h > 0 && WAH_TYPE_IS_REF(stk[h - 1]))
     #define CK_UN(a, r) CK_POP(WAH_TYPE_##a); CK_PUSH(WAH_TYPE_##r); break
     #define CK_BIN(a, r) CK_POP(WAH_TYPE_##a); CK_POP(WAH_TYPE_##a); CK_PUSH(WAH_TYPE_##r); break
-    // Records the stack `s` (of height `n`) at a branch target, or checks it against the recorded one
+    // Records the stack `s` (of height `n`) at a branch target, or checks it against the recorded one. Types on top of
+    // the stack only need to be subtypes of those in the stack map there (or of results at the end of functions).
     #define CK_MERGE(target, s, n) do { \
         uint32_t _t = (target), _n = (n); \
+        const wah_type_t *_s = (s), *_ann = NULL; \
+        uint32_t _k = 0; \
+        if (maps[_t] != UINT32_MAX) { \
+            _ann = pc->stack_map_types + pc->stack_maps[maps[_t]].start; \
+            _k = pc->stack_maps[maps[_t]].count; \
+        } else if (is_func && wah_read_u16_le(code + _t) == WAH_OP_END) { \
+            _ann = ft->result_types; \
+            _k = ft->result_count; \
+        } \
+        if (_ann) { \
+            CK_ENSURE(_n >= _k); \
+            memcpy(nrm, _s, (_n - _k) * sizeof(wah_type_t)); \
+            for (uint32_t _i = 0; _i < _k; _i++) { \
+                CK_ENSURE(wah_check_sub(module, _s[_n - _k + _i], _ann[_i])); \
+                nrm[_n - _k + _i] = wah_check_norm(_ann[_i]); \
+            } \
+            _s = nrm; \
+        } \
         if (joins[_t] == UINT32_MAX) { \
             WAH_ENSURE_CAP_GOTO(join_heights, join_count + 1, cleanup); \
             WAH_ENSURE_CAP_GOTO(join_starts, join_count + 1, cleanup); \
             WAH_ENSURE_CAP_GOTO(pool, (size_t)pool_count + _n, cleanup); \
             WAH_ENSURE_CAP_GOTO(work, work_count + 1, cleanup); \
-            if (_n > 0) memcpy(pool + pool_count, (s), _n); \
+            if (_n > 0) memcpy(pool + pool_count, _s, _n * sizeof(wah_type_t)); \
             join_heights[join_count] = _n; \
             join_starts[join_count] = pool_count; \
             pool_count += _n; \
@@ -9087,7 +9108,7 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
             work[work_count++] = _t; \
         } else { \
             uint32_t _j = joins[_t]; \
-            CK_ENSURE(join_heights[_j] == _n && (_n == 0 || memcmp(pool + join_starts[_j], (s), _n) == 0)); \
+            CK_ENSURE(join_heights[_j] == _n && (_n == 0 || memcmp(pool + join_starts[_j], _s, _n * sizeof(wah_type_t)) == 0)); \
         } \
     } while (0)
     // Branches to `target` after moving the top `keep` values below `drop` ones, as WAH_DROP_KEEP does
@@ -9095,8 +9116,8 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
         uint32_t _keep = (keep), _drop = (drop); \
         CK_ENSURE((uint64_t)_keep + _drop <= h); \
         uint32_t _base = h - _keep - _drop; \
-        memcpy(tmp, stk, _base); \
-        memcpy(tmp + _base, stk + h - _keep, _keep); \
+        memcpy(tmp, stk, _base * sizeof(wah_type_t)); \
+        memcpy(tmp + _base, stk + h - _keep, _keep * sizeof(wah_type_t)); \
         CK_MERGE((target), tmp, _base + _keep); \
     } while (0)
     #define CK_TARGET(t) do { CK_ENSURE((t) < size && (flags[(t)] & START)); flags[(t)] |= TARGET; } while (0)
@@ -9106,8 +9127,10 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
     WAH_MALLOC_ARRAY_GOTO(joins, size, cleanup);
     WAH_MALLOC_ARRAY_GOTO(stk, max_depth + 1, cleanup);
     WAH_MALLOC_ARRAY_GOTO(tmp, max_depth + 1, cleanup);
+    WAH_MALLOC_ARRAY_GOTO(nrm, max_depth + 1, cleanup);
+    WAH_MALLOC_ARRAY_GOTO(maps, size, cleanup);
     memset(flags, 0, size);
-    for (uint32_t i = 0; i < size; i++) joins[i] = UINT32_MAX;
+    for (uint32_t i = 0; i < size; i++) joins[i] = maps[i] = UINT32_MAX;
 
     // Pass 1: instruction boundaries and branch targets
     for (off = 0; off < size; off += in.len) {
@@ -9132,6 +9155,16 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
         }
     }
 
+    // Stack maps, which are as untrusted as the code
+    for (uint32_t i = 0; i < pc->stack_map_count; i++) {
+        const wah_stack_map_t *m = &pc->stack_maps[i];
+        off = m->offset;
+        CK_ENSURE(off < size && (flags[off] & START) && maps[off] == UINT32_MAX);
+        CK_ENSURE(m->start <= pc->stack_map_type_count && m->count <= pc->stack_map_type_count - m->start);
+        for (uint32_t j = 0; j < m->count; j++) CK_ENSURE(wah_check_val_type(module, pc->stack_map_types[m->start + j]));
+        maps[off] = i;
+    }
+
     // Pass 2: operand stacks along every reachable path, starting with an empty one
     off = 0;
     flags[0] |= TARGET;
@@ -9139,7 +9172,7 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
     while (work_count > 0) {
         uint32_t start = work[--work_count], j = joins[start];
         h = join_heights[j];
-        if (h > 0) memcpy(stk, pool + join_starts[j], h);
+        if (h > 0) memcpy(stk, pool + join_starts[j], h * sizeof(wah_type_t));
         for (off = start; ; off += in.len) {
             CK_ENSURE(off < size); // Falling off the end
             if (off != start && (flags[off] & TARGET)) {
@@ -9195,8 +9228,7 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
                 case WAH_OP_SELECT_T: {
                     wah_type_t t = (wah_type_t)(int32_t)in.a;
-                    CK_ENSURE(t == WAH_TYPE_I32 || t == WAH_TYPE_I64 || t == WAH_TYPE_F32 || t == WAH_TYPE_F64 ||
-                              t == WAH_TYPE_V128 || (WAH_TYPE_IS_REF(t) && (t < 0 || WAH_TYIDX(t) < module->type_count)));
+                    CK_ENSURE(wah_check_val_type(module, t));
                     CK_POP(WAH_TYPE_I32); CK_POP(t); CK_POP(t); CK_PUSH(t);
                     break;
                 }
@@ -9261,7 +9293,7 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                     } else {
                         CK_ENSURE(in.a < module->type_count && module->type_defs[in.a].kind == WAH_COMP_FUNC);
                         if (by_ref) {
-                            CK_POP(WAH_TYPE_FUNCREF);
+                            CK_POP(WAH_TYPE_FROM_IDX(in.a, 1));
                         } else { // call_indirect and return_call_indirect
                             wah_type_t at = indirect64 ? WAH_TYPE_I64 : WAH_TYPE_I32;
                             CK_ENSURE(in.b < wah_table_index_limit(module));
@@ -9275,9 +9307,7 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                     if (tail) { // The callee returns to the caller in place of this function
                         CK_ENSURE(callee->result_count == ft->result_count);
                         for (uint32_t i = 0; i < callee->result_count; i++) {
-                            CK_KIND(k1, callee->result_types[i]);
-                            CK_KIND(k2, ft->result_types[i]);
-                            CK_ENSURE(k1 == k2);
+                            CK_ENSURE(wah_check_sub(module, callee->result_types[i], ft->result_types[i]));
                         }
                         ends = true;
                     } else {
@@ -9293,7 +9323,12 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                     break;
                 }
                 case WAH_OP_REF_IS_NULL: CK_ENSURE_REF(); h--; CK_PUSH(WAH_TYPE_I32); break;
-                case WAH_OP_REF_FUNC: CK_ENSURE(in.a < wah_func_index_limit(module)); CK_PUSH(WAH_TYPE_FUNCREF); break;
+                case WAH_OP_REF_FUNC: {
+                    CK_ENSURE(in.a < wah_func_index_limit(module));
+                    uint32_t type_idx = (uint32_t)(wah_resolve_func_type(module, in.a) - module->types);
+                    CK_PUSH(WAH_TYPE_FROM_IDX(type_idx, 0));
+                    break;
+                }
                 case WAH_OP_TABLE_GET: case WAH_OP_TABLE_SET: case WAH_OP_TABLE_SIZE: case WAH_OP_TABLE_GROW: case WAH_OP_TABLE_FILL:
                 WAH_IF_MEMORY64(case WAH_OP_TABLE_GET_i64: case WAH_OP_TABLE_SET_i64: case WAH_OP_TABLE_SIZE_i64:
                                 case WAH_OP_TABLE_GROW_i64: case WAH_OP_TABLE_FILL_i64:) {
@@ -9315,15 +9350,21 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                 }
 #endif
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF)
-                case WAH_OP_REF_AS_NON_NULL: CK_ENSURE_REF(); break;
+                case WAH_OP_REF_AS_NON_NULL: CK_ENSURE_REF(); stk[h - 1] = WAH_TYPE_AS_NON_NULL(stk[h - 1]); break;
                 case WAH_OP_BR_ON_NULL: { // Branches without the null
                     CK_ENSURE_REF();
                     h--;
                     CK_BRANCH(in.a, in.b, in.c);
                     h++;
+                    stk[h - 1] = WAH_TYPE_AS_NON_NULL(stk[h - 1]);
                     break;
                 }
-                case WAH_OP_BR_ON_NON_NULL: CK_ENSURE_REF(); CK_BRANCH(in.a, in.b, in.c); h--; break;
+                case WAH_OP_BR_ON_NON_NULL:
+                    CK_ENSURE_REF();
+                    stk[h - 1] = WAH_TYPE_AS_NON_NULL(stk[h - 1]);
+                    CK_BRANCH(in.a, in.b, in.c);
+                    h--;
+                    break;
 #endif
                 case WAH_OP_MEMORY_SIZE: case WAH_OP_MEMORY_GROW:
                 WAH_IF_MEMORY64(case WAH_OP_MEMORY_SIZE_i64: case WAH_OP_MEMORY_GROW_i64:) {
@@ -9479,7 +9520,6 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
 cleanup:
     #undef CK_FAIL
     #undef CK_ENSURE
-    #undef CK_KIND
     #undef CK_ENSURE_REF
     #undef CK_PUSH
     #undef CK_POP
@@ -9496,6 +9536,8 @@ cleanup:
     wah_free(alloc, work);
     wah_free(alloc, stk);
     wah_free(alloc, tmp);
+    wah_free(alloc, nrm);
+    wah_free(alloc, maps);
     return err;
 }
 
@@ -9767,6 +9809,7 @@ static void wah_free_parsed_code(wah_parsed_code_t *parsed_code, const wah_alloc
     parsed_code->stack_maps = NULL;
     parsed_code->stack_map_count = 0;
     parsed_code->stack_map_types = NULL;
+    parsed_code->stack_map_type_count = 0;
 }
 
 static void wah_free_code_bodies(wah_module_t *module) {
