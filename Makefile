@@ -191,8 +191,11 @@ $(LIBFUZZER_HARNESS_BIN): $(LIBFUZZER_HARNESS_SRC) wah.h
 
 CBMC ?= cbmc
 CBMC_FLAGS := --bounds-check --pointer-check --signed-overflow-check --undefined-shift-check --unwinding-assertions
-CBMC_PROOFS := leb128.uleb128 leb128.uleb128_64 leb128.sleb128_32 leb128.sleb128_64
+CBMC_PROOFS := leb128.uleb128 leb128.uleb128_64 leb128.sleb128_32 leb128.sleb128_64 utf8.valid \
+	bounds.effective_addr bounds.range_in_bounds bounds.count
 CBMC_UNWIND_leb128 := 12
+CBMC_UNWIND_utf8 := 9
+CBMC_UNWIND_bounds := 9
 
 CBMC_TARGETS := $(patsubst %, cbmc_%, $(CBMC_PROOFS))
 

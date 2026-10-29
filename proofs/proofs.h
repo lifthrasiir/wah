@@ -9,6 +9,11 @@
 #define WAH_IMPLEMENTATION
 #include "../wah.h"
 
+#ifndef __CPROVER__ // Built into CBMC, declared for other tools like editors
+void __CPROVER_assume(bool cond);
+void __CPROVER_assert(bool cond, const char *desc);
+#endif
+
 uint8_t nondet_u8(void);
 size_t nondet_size(void);
 
