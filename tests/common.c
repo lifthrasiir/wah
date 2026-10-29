@@ -48,6 +48,13 @@
 #endif
 #endif
 
+#if defined(__SANITIZE_ADDRESS__) && !defined(__clang__) && defined(__aarch64__)
+// GCC (13 at least) on AArch64 never releases fake stack frames, so they are soon exhausted and every call with
+// a local array scans all of them, taking microseconds. Detecting stack-use-after-return didn't work anyway.
+const char *__asan_default_options(void);
+const char *__asan_default_options(void) { return "detect_stack_use_after_return=0"; }
+#endif
+
 uintptr_t wah_test_perturb_ptr(const void *ptr) {
     uintptr_t x = (uintptr_t)ptr;
 #if UINTPTR_MAX > 0xffffffffu
