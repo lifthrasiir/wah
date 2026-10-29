@@ -201,7 +201,31 @@ static int run_feature_tests(void) {
         wah_free_module(&mod);
     }
 
-    // Test 4d: v128 globals can't be exported without SIMD
+    // Test 4d: return_call_ref also requires tail calls
+    if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF) {
+        printf("Testing return_call_ref without tail calls...\n");
+        static const char spec[] = "wasm \
+            types {[fn [] [i32]]} funcs {[0, 0]} \
+            elements {[elem.declarative elem.funcref [1]]} \
+            code {[{[] ref.func 1 return_call_ref 0 end}, {[] i32.const 7 end}]}";
+        wah_parse_options_t opts = { .features = WAH_FEATURE_ALL & ~WAH_FEATURE_TAIL_CALL };
+        assert_err(wah_parse_module_from_spec_ex(&mod, &opts, spec), WAH_ERROR_DISABLED_FEATURE);
+        if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TAIL_CALL) {
+            wah_exec_context_t ctx;
+            wah_value_t result;
+            assert_ok(wah_parse_module_from_spec(&mod, spec));
+            assert_true(mod.required_features & WAH_FEATURE_TAIL_CALL);
+            assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+            assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+            assert_eq_i32(result.i32, 7);
+            wah_free_exec_context(&ctx);
+            wah_free_module(&mod);
+        } else {
+            assert_err(wah_parse_module_from_spec(&mod, spec), WAH_ERROR_DISABLED_FEATURE);
+        }
+    }
+
+    // Test 4e: v128 globals can't be exported without SIMD
     printf("Testing a v128 global export...\n");
     {
         wah_exec_context_t ctx;

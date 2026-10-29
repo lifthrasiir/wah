@@ -6895,6 +6895,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         }
         case WAH_OP_RETURN_CALL_REF: {
             uint32_t type_idx;
+            WAH_CHECK(wah_require_feature(vctx->module, WAH_FEATURE_SHIFT_TAIL_CALL)); // In addition to TYPED_FUNCREF
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &type_idx));
             WAH_ENSURE(type_idx < vctx->module->type_count, WAH_ERROR_VALIDATION_FAILED);
             WAH_ENSURE(vctx->module->type_defs[type_idx].kind == WAH_COMP_FUNC, WAH_ERROR_VALIDATION_FAILED);
