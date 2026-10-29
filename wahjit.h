@@ -1408,11 +1408,13 @@ static void wah_jit_set_pinned(wah_jit_fn_t *f, uint32_t idx) {
 
 static wah_error_t wah_jit_poll(wah_exec_context_t *ctx) { return wah_poll_handler(ctx); }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 static wah_error_t wah_jit_bulk_yield(wah_exec_context_t *ctx) {
     WAH_POLL_FLAG_STORE(ctx->interrupt_flag, 0);
     wah_recompute_poll_flag(ctx);
     return WAH_STATUS_YIELDED;
 }
+#endif
 
 // Calls a host function with args in the value stack, where results replace them like the interpreter.
 static wah_error_t wah_jit_host(wah_exec_context_t *ctx, const wah_function_t *fn, wah_value_t *args) {
@@ -1463,11 +1465,13 @@ fail:
 static bool wah_jit_ctx_mem64(const wah_exec_context_t *ctx, uint32_t mem_idx) {
     return wah_memory_type(ctx->module, mem_idx)->addr_type == WAH_TYPE_I64;
 }
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 static uint64_t wah_jit_get_addr(const wah_value_t *v, bool mem64) { return mem64 ? (uint64_t)v->i64 : (uint32_t)v->i32; }
 static void wah_jit_set_addr(wah_value_t *v, bool mem64, uint64_t a) {
     if (mem64) v->i64 = (int64_t)a;
     else v->i32 = (int32_t)a;
 }
+#endif
 
 // Returns the old size of the memory in pages or -1 (truncated to i32 if not memory64), growing by *pages.
 static uint64_t wah_jit_memory_grow(wah_exec_context_t *ctx, uint32_t mem_idx, const wah_value_t *pages) {
@@ -1478,6 +1482,7 @@ static uint64_t wah_jit_memory_grow(wah_exec_context_t *ctx, uint32_t mem_idx, c
     return mem64 ? old_pages : (uint32_t)old_pages;
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 // Bulk operations take operands in the value stack, which are updated before yielding in the middle.
 static wah_error_t wah_jit_memory_fill(wah_exec_context_t *ctx, uint32_t mem_idx, wah_value_t *ops) {
     if (wah_bulk_should_interrupt(ctx)) return wah_jit_bulk_yield(ctx);
@@ -1529,6 +1534,7 @@ static wah_error_t wah_jit_memory_init(wah_exec_context_t *ctx, uint32_t data_id
 }
 
 static void wah_jit_data_drop(wah_exec_context_t *ctx, uint32_t data_idx) { wah_data_seg_mark_dropped(ctx, data_idx); }
+#endif
 
 #define WAH_JIT_CTX_OFF(field) ((uint32_t)offsetof(wah_exec_context_t, field))
 
@@ -4532,12 +4538,14 @@ static void wah_jit_poll_check(wah_jit_fn_t *f) {
     wah_jit_add_stub(f, stub, check, cont, true);
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 // After a helper call returning a status, which suspends at `resume` if positive.
 static void wah_jit_check_status(wah_jit_fn_t *f, uint32_t resume) {
     uint32_t stub = wah_jit_new_label(f);
     wah_jit_cbz(f, true, false, WAH_JR_RET, stub);
     wah_jit_add_stub(f, stub, resume, 0, false);
 }
+#endif
 
 // Moves `keep` values on top of the stack below `drop` values and stores the rest, as a branch to a label expects.
 // The compile-time state is not changed, so this can be used in a conditional path.
@@ -4625,8 +4633,8 @@ static bool wah_jit_supported(const wah_module_t *module, const wah_decoded_inst
         case WAH_OP_UNREACHABLE: case WAH_OP_BLOCK: case WAH_OP_LOOP: case WAH_OP_IF: case WAH_OP_ELSE:
         case WAH_OP_END: case WAH_OP_BR: case WAH_OP_BR_IF: case WAH_OP_BR_TABLE: case WAH_OP_RETURN:
         case WAH_OP_DROP: case WAH_OP_SELECT: case WAH_OP_LOCAL_GET: case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE:
-        case WAH_OP_MEMORY_SIZE: case WAH_OP_MEMORY_GROW: case WAH_OP_MEMORY_INIT: case WAH_OP_DATA_DROP:
-        case WAH_OP_MEMORY_COPY: case WAH_OP_MEMORY_FILL:
+        case WAH_OP_MEMORY_SIZE: case WAH_OP_MEMORY_GROW:
+        WAH_IF_BULK_MEMORY(case WAH_OP_MEMORY_INIT: case WAH_OP_DATA_DROP: case WAH_OP_MEMORY_COPY: case WAH_OP_MEMORY_FILL:)
         case WAH_OP_I32_CONST: case WAH_OP_I64_CONST: case WAH_OP_F32_CONST: case WAH_OP_F64_CONST:
             return true;
         default:
@@ -4943,6 +4951,7 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             wah_jit_push_gpr(f, WAH_JR_RET); // Already zero-extended if i32
             break;
         }
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
         case WAH_OP_MEMORY_FILL: case WAH_OP_MEMORY_COPY: case WAH_OP_MEMORY_INIT: {
             wah_jit_flush(f);
             wah_jit_sync_pins(f, true);
@@ -4977,6 +4986,7 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             wah_jit_reset(f, f->h);
             break;
         }
+#endif
 
         case WAH_OP_I32_CONST: {
             int64_t v = WAH_JIT_ZEXT_I32 ? (int64_t)(uint32_t)in->imm.i32 : in->imm.i32;

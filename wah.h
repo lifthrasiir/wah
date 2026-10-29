@@ -1736,8 +1736,12 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 #else
 #define WAH_IF_TYPED_FUNCREF(...)
 #endif
-// Not compiled out yet
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 #define WAH_IF_BULK_MEMORY(...) __VA_ARGS__
+#else
+#define WAH_IF_BULK_MEMORY(...)
+#endif
+// Not compiled out yet
 #define WAH_IF_REF_TYPES(...) __VA_ARGS__
 
 // WAH_IF_##feat for an empty `feat` (MVP)
@@ -2123,10 +2127,11 @@ typedef enum {
     WAH_IF_MEMORY64( \
         /* i64-addressed memory.size/grow/fill/init/copy opcodes (non-mem0 and mem0) */ \
         X(MEMORY_SIZE,i64) X(MEMORY_GROW,i64) \
-        X(MEMORY_FILL,i64) X(MEMORY_INIT,i64) X(MEMORY_COPY,i32_to_i64) X(MEMORY_COPY,i64_to_i32) X(MEMORY_COPY,i64_to_i64) \
+        WAH_IF_BULK_MEMORY(X(MEMORY_FILL,i64) X(MEMORY_INIT,i64) X(MEMORY_COPY,i32_to_i64) X(MEMORY_COPY,i64_to_i32) X(MEMORY_COPY,i64_to_i64)) \
         /* i64-indexed table opcodes */ \
         X(TABLE_GET,i64) X(TABLE_SET,i64) X(TABLE_SIZE,i64) \
-        X(TABLE_GROW,i64) X(TABLE_FILL,i64) X(TABLE_COPY,i32_to_i64) X(TABLE_COPY,i64_to_i32) X(TABLE_COPY,i64_to_i64) X(TABLE_INIT,i64) \
+        X(TABLE_GROW,i64) X(TABLE_FILL,i64) \
+        WAH_IF_BULK_MEMORY(X(TABLE_COPY,i32_to_i64) X(TABLE_COPY,i64_to_i32) X(TABLE_COPY,i64_to_i64) X(TABLE_INIT,i64)) \
         X(CALL_INDIRECT,i64) WAH_IF_TAIL_CALL(X(RETURN_CALL_INDIRECT,i64)) \
     )
 
@@ -6791,6 +6796,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = mem_idx);
             break;
         }
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
         case WAH_OP_MEMORY_FILL: {
             uint32_t mem_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &mem_idx));
@@ -6837,6 +6843,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_INSTR_EX(opcode_val, _di->imm.u32_u32.a = dest_mem_idx; _di->imm.u32_u32.b = src_mem_idx);
             break;
         }
+#endif
         case WAH_OP_CALL: {
             uint32_t func_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &func_idx));
@@ -7023,6 +7030,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = table_idx);
             break;
         }
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
         case WAH_OP_TABLE_COPY: {
             uint32_t dst_table_idx, src_table_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &dst_table_idx));
@@ -7061,6 +7069,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = elem_idx);
             break;
         }
+#endif
 
         case WAH_OP_I32_CONST: {
             int32_t val;
@@ -7959,8 +7968,8 @@ static bool wah_opcode_is_call(uint16_t opcode) {
 // Bulk ops that can be suspended midway. They carry the ref map as their last immediate.
 static bool wah_opcode_is_resumable_bulk(uint16_t opcode) {
     switch (opcode) {
-        case WAH_OP_MEMORY_FILL: case WAH_OP_MEMORY_COPY: case WAH_OP_MEMORY_INIT:
-        case WAH_OP_TABLE_FILL: case WAH_OP_TABLE_COPY: case WAH_OP_TABLE_INIT:
+        WAH_IF_BULK_MEMORY(case WAH_OP_MEMORY_FILL: case WAH_OP_MEMORY_COPY: case WAH_OP_MEMORY_INIT:)
+        case WAH_OP_TABLE_FILL: WAH_IF_BULK_MEMORY(case WAH_OP_TABLE_COPY: case WAH_OP_TABLE_INIT:)
         case WAH_OP_ARRAY_FILL: case WAH_OP_ARRAY_COPY: case WAH_OP_ARRAY_INIT_DATA: case WAH_OP_ARRAY_INIT_ELEM:
             return true;
         default:
@@ -8357,12 +8366,11 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                 }
                 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
                 // Redirect memory.size/memory.grow/memory.fill to i64 variants when needed
-                if ((opcode == WAH_OP_MEMORY_SIZE || opcode == WAH_OP_MEMORY_GROW || opcode == WAH_OP_MEMORY_FILL)
+                if ((opcode == WAH_OP_MEMORY_SIZE || opcode == WAH_OP_MEMORY_GROW WAH_IF_BULK_MEMORY(|| opcode == WAH_OP_MEMORY_FILL))
                     && a < wah_memory_index_limit(module) && wah_memory_type(module, a)->addr_type == WAH_TYPE_I64) {
-                    uint16_t new_opcode;
-                    if (opcode == WAH_OP_MEMORY_SIZE) new_opcode = WAH_OP_MEMORY_SIZE_i64;
-                    else if (opcode == WAH_OP_MEMORY_GROW) new_opcode = WAH_OP_MEMORY_GROW_i64;
-                    else new_opcode = WAH_OP_MEMORY_FILL_i64;
+                    uint16_t new_opcode = WAH_OP_MEMORY_SIZE_i64;
+                    if (opcode == WAH_OP_MEMORY_GROW) new_opcode = WAH_OP_MEMORY_GROW_i64;
+                    WAH_IF_BULK_MEMORY(else if (opcode == WAH_OP_MEMORY_FILL) new_opcode = WAH_OP_MEMORY_FILL_i64;)
                     wah_write_u16_le(buf + buf_size - sizeof(uint16_t), new_opcode);
                 }
                 // Redirect table ops to i64 variants for table64
@@ -8389,6 +8397,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                 #define WAH_LOWER_TAB_I64(idx) ((idx) < wah_table_index_limit(module) && wah_table_type(module, (idx))->addr_type == WAH_TYPE_I64)
                 #define WAH_LOWER_REWRITE_IF(cond, new_op) do { if (cond) wah_write_u16_le(buf + buf_size - sizeof(uint16_t), (new_op)); } while (0)
                 switch (opcode) {
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
                     case WAH_OP_MEMORY_INIT:   WAH_LOWER_REWRITE_IF(WAH_LOWER_MEM_I64(b), WAH_OP_MEMORY_INIT_i64); break;
                     case WAH_OP_MEMORY_COPY: {
                         bool da = WAH_LOWER_MEM_I64(a), db = WAH_LOWER_MEM_I64(b);
@@ -8405,6 +8414,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                         break;
                     }
                     case WAH_OP_TABLE_INIT:    WAH_LOWER_REWRITE_IF(WAH_LOWER_TAB_I64(b), WAH_OP_TABLE_INIT_i64); break;
+#endif
                     case WAH_OP_CALL_INDIRECT: WAH_LOWER_REWRITE_IF(WAH_LOWER_TAB_I64(b), WAH_OP_CALL_INDIRECT_i64); break;
                     WAH_IF_TAIL_CALL(case WAH_OP_RETURN_CALL_INDIRECT: WAH_LOWER_REWRITE_IF(WAH_LOWER_TAB_I64(b), WAH_OP_RETURN_CALL_INDIRECT_i64); break;)
                     default: break;
@@ -12365,6 +12375,7 @@ static uint64_t wah_bulk_table_fill(wah_exec_context_t *ctx, wah_exec_context_t 
     return size;
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 static uint64_t wah_bulk_table_copy(wah_exec_context_t *ctx, wah_exec_context_t *fctx,
                                     uint32_t dst_table_idx, uint64_t dst_offset,
                                     uint32_t src_table_idx, uint64_t src_offset, uint64_t size) {
@@ -12391,15 +12402,19 @@ static uint64_t wah_bulk_table_copy(wah_exec_context_t *ctx, wah_exec_context_t 
     }
     return size;
 }
+#endif
 
-// Returns elements processed. Sets *out_err on trap (negative). If WAH_OK and returned < size, stopped.
+#if ((WAH_COMPILED_FEATURES) & (WAH_FEATURE_BULK_MEMORY | WAH_FEATURE_GC)) // For table.init and array.init_elem
 static wah_function_t *wah_materialize_funcref(wah_exec_context_t *fctx, uint32_t func_idx) {
     WAH_ASSERT(func_idx < fctx->function_table_count);
     wah_function_t *fn = &fctx->function_table[func_idx].func;
     if (!fn->is_host && fn->fn_ctx == NULL && fn->fn_module == fctx->module) fn->fn_ctx = fctx;
     return fn;
 }
+#endif
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
+// Returns elements processed. Sets *out_err on trap (negative). If WAH_OK and returned < size, stopped.
 static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, wah_exec_context_t *fctx, uint32_t table_idx, uint64_t dst_offset,
                                     const wah_element_segment_t *segment,
                                     uint32_t src_offset, uint32_t size, wah_error_t *out_err) {
@@ -12425,6 +12440,7 @@ static uint32_t wah_bulk_table_init(wah_exec_context_t *ctx, wah_exec_context_t 
     }
     return size;
 }
+#endif
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 static uint32_t wah_bulk_array_fill(wah_exec_context_t *ctx, wah_type_t et, uint8_t *elems,
@@ -12470,6 +12486,7 @@ static uint32_t wah_bulk_array_init_elem(wah_exec_context_t *ctx, wah_exec_conte
 }
 #endif // WAH_FEATURE_GC (bulk array helpers)
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 static uint64_t wah_memory_fill_internal(wah_exec_context_t *ctx,
                                           uint8_t *mem_data, uint64_t dst, uint8_t val, uint64_t size) {
     for (uint64_t done = 0; done < size; ) {
@@ -12515,6 +12532,7 @@ static uint64_t wah_memory_copy_internal(wah_exec_context_t *ctx,
     }
     return size;
 }
+#endif
 
 // Allocations are charged to `budget_ctx`.
 static wah_error_t wah_init_local_tables(wah_table_inst_t *tables, const wah_module_t *lmod,
@@ -13859,8 +13877,10 @@ WAH_RUN(TABLE_SET) WAH_TABLE_SET_IMPL(32)
 WAH_RUN(TABLE_SIZE) WAH_TABLE_SIZE_IMPL(32)
 WAH_RUN(TABLE_GROW) WAH_TABLE_GROW_IMPL(32)
 WAH_RUN(TABLE_FILL) WAH_TABLE_FILL_IMPL(32)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 WAH_RUN(TABLE_COPY) WAH_TABLE_COPY_IMPL(32,32,32)
 WAH_RUN(TABLE_INIT) WAH_TABLE_INIT_IMPL(32)
+#endif
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
 WAH_RUN(TABLE_GET_i64) WAH_TABLE_GET_IMPL(64)
@@ -13868,12 +13888,15 @@ WAH_RUN(TABLE_SET_i64) WAH_TABLE_SET_IMPL(64)
 WAH_RUN(TABLE_SIZE_i64) WAH_TABLE_SIZE_IMPL(64)
 WAH_RUN(TABLE_GROW_i64) WAH_TABLE_GROW_IMPL(64)
 WAH_RUN(TABLE_FILL_i64) WAH_TABLE_FILL_IMPL(64)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 WAH_RUN(TABLE_COPY_i32_to_i64) WAH_TABLE_COPY_IMPL(32,64,32)
 WAH_RUN(TABLE_COPY_i64_to_i32) WAH_TABLE_COPY_IMPL(64,32,32)
 WAH_RUN(TABLE_COPY_i64_to_i64) WAH_TABLE_COPY_IMPL(64,64,64)
 WAH_RUN(TABLE_INIT_i64) WAH_TABLE_INIT_IMPL(64)
+#endif
 #endif // WAH_FEATURE_MEMORY64 (i64 table ops)
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 WAH_RUN(ELEM_DROP) {
     uint32_t elem_idx = wah_decode_u32_le(&bytecode_ip);
     WAH_ASSERT(elem_idx < fctx->module->element_segment_count && "validation didn't catch out-of-bound element segment index");
@@ -13881,6 +13904,7 @@ WAH_RUN(ELEM_DROP) {
     wah_elem_seg_mark_dropped(fctx, elem_idx);
     WAH_NEXT();
 }
+#endif
 
 // Inline host call: place results above params, call, move results down.
 #define WAH_CALL_HOST_INLINE(the_fn) \
@@ -14594,6 +14618,7 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
 
 WAH_RUN(MEMORY_SIZE) WAH_MEMORY_SIZE_IMPL(32)
 WAH_RUN(MEMORY_GROW) WAH_MEMORY_GROW_IMPL(32)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 WAH_RUN(MEMORY_FILL) WAH_MEMORY_FILL_IMPL(32)
 WAH_RUN(MEMORY_INIT) WAH_MEMORY_INIT_IMPL(32)
 WAH_RUN(MEMORY_COPY) WAH_MEMORY_COPY_IMPL(32,32,32)
@@ -14605,15 +14630,18 @@ WAH_RUN(DATA_DROP) {
     wah_data_seg_mark_dropped(fctx, data_idx);
     WAH_NEXT();
 }
+#endif
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
 WAH_RUN(MEMORY_SIZE_i64) WAH_MEMORY_SIZE_IMPL(64)
 WAH_RUN(MEMORY_GROW_i64) WAH_MEMORY_GROW_IMPL(64)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 WAH_RUN(MEMORY_FILL_i64) WAH_MEMORY_FILL_IMPL(64)
 WAH_RUN(MEMORY_INIT_i64) WAH_MEMORY_INIT_IMPL(64)
 WAH_RUN(MEMORY_COPY_i32_to_i64) WAH_MEMORY_COPY_IMPL(32,64,32)
 WAH_RUN(MEMORY_COPY_i64_to_i32) WAH_MEMORY_COPY_IMPL(64,32,32)
 WAH_RUN(MEMORY_COPY_i64_to_i64) WAH_MEMORY_COPY_IMPL(64,64,64)
+#endif
 #endif
 
 WAH_RUN(DROP) { sp--; WAH_NEXT(); }
