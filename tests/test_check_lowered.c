@@ -353,6 +353,56 @@ static void test_ref_maps(void) {
     wah_free_module(&mod);
 }
 
+static void test_gc(void) {
+    printf("Testing lowered GC operations...\n");
+    wah_module_t mod;
+    wah_exec_context_t ctx;
+    wah_value_t result;
+    // $1 extends $0, and the object of $1 is accessed through both
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[sub [] struct [i32 mut, i8 mut], sub [0] struct [i32 mut, i8 mut, i64 immut], array i32 mut, fn [] [i32]]} \
+        funcs {[3]} \
+        code {[{[1 type.ref.null 0, 1 type.ref.null 2] \
+            i32.const 5 i32.const 6 i64.const 7 struct.new 1 local.set 0 \
+            local.get 0 i32.const 9 struct.set 0 0 \
+            i32.const 1 i32.const 3 array.new 2 local.set 1 \
+            local.get 1 i32.const 2 i32.const 4 array.set 2 \
+            local.get 0 struct.get_s 0 1 \
+            local.get 0 struct.get 0 0 i32.add \
+            local.get 1 i32.const 2 array.get 2 i32.add \
+            local.get 1 array.len i32.add \
+            local.get 0 ref.cast 1 struct.get 1 2 i32.wrap_i64 i32.add \
+        end}]}"));
+    assert_ok(check_func(&mod, 0));
+    assert_true(wah_check_layouts(&mod));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 6 + 9 + 4 + 3 + 7);
+    wah_free_exec_context(&ctx);
+
+    const wah_parsed_code_t *pc = &mod.code_bodies[0].parsed_code;
+    expect_rejected(&mod, IMM_AT(STRUCT_GET_32, 0, 0), 4, wah_read_u32_le(pc->bytecode + IMM_AT(STRUCT_GET_32, 0, 0)) + 1,
+                    "struct field at no offset");
+    expect_rejected(&mod, OP_AT(STRUCT_GET_S8, 0), 2, WAH_OP_STRUCT_GET_32, "struct field of another size");
+    expect_rejected(&mod, OP_AT(ARRAY_GET_32, 0), 2, WAH_OP_ARRAY_GET_64, "array element of another size");
+    expect_rejected(&mod, IMM_AT(REF_CAST, 0, 0), 4, (uint32_t)WAH_TYPE_FROM_IDX(2, 0), "struct access to a cast array");
+
+    printf("  immutable struct field set\n");
+    mod.type_defs[0].field_mutables[0] = false;
+    assert_err(check_func(&mod, 0), WAH_ERROR_VALIDATION_FAILED);
+    mod.type_defs[0].field_mutables[0] = true;
+    assert_ok(check_func(&mod, 0));
+
+    printf("  subtype laid out unlike its supertype\n");
+    wah_repr_info_t *ri = (wah_repr_info_t *)wah_repr_info_get(&mod, wah_module_typeidx_to_repr(&mod, 1));
+    uint32_t saved = ri->fields[1].offset;
+    ri->fields[1].offset = ri->fields[0].offset;
+    assert_true(!wah_check_layouts(&mod));
+    ri->fields[1].offset = saved;
+    assert_true(wah_check_layouts(&mod));
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_accepted();
     test_rejected();
@@ -362,6 +412,7 @@ int main(void) {
     test_simd();
     test_stack_maps();
     test_ref_maps();
+    test_gc();
     printf("All lowered code checker tests passed!\n");
     return 0;
 }
