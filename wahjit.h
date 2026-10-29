@@ -2020,6 +2020,7 @@ static void wah_jit_trunc(wah_jit_fn_t *f, int type, bool sf, bool is_signed, do
     wah_jit_push_gpr(f, d);
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_NONTRAPPING_F2I)
 // CVTTSS2SI returns INT_MIN for NaN and out-of-range values, which are fixed up.
 static void wah_jit_trunc_sat(wah_jit_fn_t *f, int type, bool sf, bool is_signed) {
     int a = wah_jit_pop_fpr(f), d = wah_jit_alloc(f, false);
@@ -2079,6 +2080,7 @@ static void wah_jit_trunc_sat(wah_jit_fn_t *f, int type, bool sf, bool is_signed
     wah_jit_free_fpr(f, a);
     wah_jit_push_gpr(f, d);
 }
+#endif
 
 static void wah_jit_convert(wah_jit_fn_t *f, int type, bool sf, bool is_signed) {
     int a = wah_jit_pop_gpr(f), d = wah_jit_alloc(f, true);
@@ -3614,12 +3616,14 @@ static void wah_jit_trunc(wah_jit_fn_t *f, int type, bool sf, bool is_signed, do
     wah_jit_push_gpr(f, d);
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_NONTRAPPING_F2I)
 static void wah_jit_trunc_sat(wah_jit_fn_t *f, int type, bool sf, bool is_signed) {
     int a = wah_jit_pop_fpr_ro(f), d = wah_jit_alloc(f, false);
     wah_a64_fcvt_gp(f, is_signed ? WAH_A64_FCVTZS : WAH_A64_FCVTZU, sf, type, d, a);
     wah_jit_free_fpr(f, a);
     wah_jit_push_gpr(f, d);
 }
+#endif
 
 static void wah_jit_convert(wah_jit_fn_t *f, int type, bool sf, bool is_signed) {
     int a = wah_jit_pop_gpr_ro(f), d = wah_jit_alloc(f, true);
@@ -4629,7 +4633,7 @@ static bool wah_jit_supported(const wah_module_t *module, const wah_decoded_inst
             if (in->opcode >= WAH_OP_I32_LOAD && in->opcode <= WAH_OP_I64_STORE32) return true;
             if (in->opcode >= WAH_OP_I32_EQZ && in->opcode <= WAH_OP_F64_REINTERPRET_I64) return true;
             WAH_IF_SIGN_EXT(if (in->opcode >= WAH_OP_I32_EXTEND8_S && in->opcode <= WAH_OP_I64_EXTEND32_S) return true;)
-            if (in->opcode >= WAH_OP_I32_TRUNC_SAT_F32_S && in->opcode <= WAH_OP_I64_TRUNC_SAT_F64_U) return true;
+            WAH_IF_NONTRAPPING_F2I(if (in->opcode >= WAH_OP_I32_TRUNC_SAT_F32_S && in->opcode <= WAH_OP_I64_TRUNC_SAT_F64_U) return true;)
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
             if (in->opcode >= WAH_FD && in->opcode < WAH_FE) return wah_jit_simd_supported(module->jit);
 #endif
@@ -5075,6 +5079,7 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
         case WAH_OP_I64_TRUNC_F32_U: wah_jit_trunc(f, 0, true, false, -1.0, false, 18446744073709551616.0); break;
         case WAH_OP_I64_TRUNC_F64_S: wah_jit_trunc(f, 1, true, true, -9223372036854775808.0, true, 9223372036854775808.0); break;
         case WAH_OP_I64_TRUNC_F64_U: wah_jit_trunc(f, 1, true, false, -1.0, false, 18446744073709551616.0); break;
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_NONTRAPPING_F2I)
         case WAH_OP_I32_TRUNC_SAT_F32_S: wah_jit_trunc_sat(f, 0, false, true); break;
         case WAH_OP_I32_TRUNC_SAT_F32_U: wah_jit_trunc_sat(f, 0, false, false); break;
         case WAH_OP_I32_TRUNC_SAT_F64_S: wah_jit_trunc_sat(f, 1, false, true); break;
@@ -5083,6 +5088,7 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
         case WAH_OP_I64_TRUNC_SAT_F32_U: wah_jit_trunc_sat(f, 0, true, false); break;
         case WAH_OP_I64_TRUNC_SAT_F64_S: wah_jit_trunc_sat(f, 1, true, true); break;
         case WAH_OP_I64_TRUNC_SAT_F64_U: wah_jit_trunc_sat(f, 1, true, false); break;
+#endif
         case WAH_OP_F32_CONVERT_I32_S: wah_jit_convert(f, 0, false, true); break;
         case WAH_OP_F32_CONVERT_I32_U: wah_jit_convert(f, 0, false, false); break;
         case WAH_OP_F32_CONVERT_I64_S: wah_jit_convert(f, 0, true, true); break;
