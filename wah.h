@@ -8585,6 +8585,10 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                     WAH_LOWER_U32(instr->imm.u32);
                     break;
                 }
+                case WAH_OP_REF_NULL: { // The heap type is only for wah_check_lowered_code
+                    WAH_LOWER_U32(instr->imm.u32);
+                    break;
+                }
 #endif
                 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
                 case WAH_OP_REF_TEST_NULL: case WAH_OP_REF_TEST:
@@ -13663,6 +13667,7 @@ WAH_RUN(V128_CONST) {
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
 WAH_RUN(REF_NULL) {
+    bytecode_ip += sizeof(uint32_t); // The heap type, which is only for wah_check_lowered_code
     (*sp++).ref = NULL;
     WAH_NEXT();
 }
