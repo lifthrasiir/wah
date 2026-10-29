@@ -8867,7 +8867,7 @@ cleanup:
 
 // Independently checks lowered code against what the interpreter relies on without checking:
 // instruction boundaries, branch targets, operand types and the bound of the operand stack height.
-// Exception handling isn't understood for now, and they are WAH_ERROR_UNSUPPORTED instead of a failure.
+// Opcodes it doesn't know are WAH_ERROR_UNSUPPORTED instead of a failure, so that new ones can be added gradually.
 // Unreachable code is never executed, so it only has to be decodable.
 
 enum { WAH_CHECK_MEM_NONE, WAH_CHECK_MEM_I32, WAH_CHECK_MEM_I32_MEM0, WAH_CHECK_MEM_I64, WAH_CHECK_MEM_I64_MEM0 };
@@ -9060,6 +9060,18 @@ static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t
             n32 = 1; break; // Table
         case WAH_OP_TABLE_FILL: WAH_IF_MEMORY64(case WAH_OP_TABLE_FILL_i64:) n32 = 1 WAH_IF_GC(+ 1); break;
 #endif
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
+        case WAH_OP_END_TRY_TABLE: case WAH_OP_THROW_REF: break;
+        case WAH_OP_TRIM_HANDLERS: case WAH_OP_THROW: n32 = 1; break; // Depth or tag
+        case WAH_OP_TRY_TABLE: { // Catch count, and kind (u8), tag, target and drop per catch
+            WAH_ENSURE(size - off >= sizeof(uint16_t) + sizeof(uint32_t), WAH_ERROR_VALIDATION_FAILED);
+            in->a = wah_read_u32_le(code + off + sizeof(uint16_t));
+            uint64_t len = sizeof(uint16_t) + sizeof(uint32_t) + (uint64_t)in->a * (1 + 3 * sizeof(uint32_t));
+            WAH_ENSURE(size - off >= len, WAH_ERROR_VALIDATION_FAILED);
+            in->len = (uint32_t)len;
+            return WAH_OK;
+        }
+#endif
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
         case WAH_OP_REF_EQ: case WAH_OP_ARRAY_LEN: case WAH_OP_REF_I31: case WAH_OP_I31_GET_S: case WAH_OP_I31_GET_U:
         case WAH_OP_ARRAY_GET_S8: case WAH_OP_ARRAY_GET_S16: case WAH_OP_ARRAY_GET_U8: case WAH_OP_ARRAY_GET_U16:
@@ -9154,6 +9166,38 @@ static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t
     return WAH_OK;
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
+// The depth of TRIM_HANDLERS right at `off`, or after POLL or METER there, which neither throw nor use handlers.
+// Labels left from inside try_tables get one, where active handlers may differ by paths until trimmed.
+static uint32_t wah_check_trim_depth(const uint8_t *code, uint32_t size, uint32_t off) {
+    wah_check_instr_t in;
+    for (; off < size && wah_check_decode(code, size, off, &in) == WAH_OK; off += in.len) {
+        if (in.op == WAH_OP_TRIM_HANDLERS) return in.a;
+        if (in.op != WAH_OP_POLL && in.op != WAH_OP_METER) break;
+    }
+    return UINT32_MAX;
+}
+#endif
+
+// An active exception handler: the offset of its try_table and the stack height there.
+typedef struct {
+    uint32_t off, h;
+} wah_check_handler_t;
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
+// Whether handlers are the same, by their catch clauses rather than offsets, since slow islands run copies of try_tables.
+static bool wah_check_same_handlers(const uint8_t *code, const wah_check_handler_t *a, const wah_check_handler_t *b,
+                                    uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *ca = code + a[i].off + sizeof(uint16_t), *cb = code + b[i].off + sizeof(uint16_t);
+        uint32_t count = wah_read_u32_le(ca);
+        if (a[i].h != b[i].h || count != wah_read_u32_le(cb) ||
+            memcmp(ca, cb, sizeof(uint32_t) + (size_t)count * (1 + 3 * sizeof(uint32_t))) != 0) return false;
+    }
+    return true;
+}
+#endif
+
 // Checks lowered function code (`ft` and `body` given) or const expression code (of `const_type`).
 // The operand stack can't grow beyond `max_depth`, which the interpreter has made room for.
 static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_parsed_code_t *pc,
@@ -9170,6 +9214,11 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
     uint8_t *flags = NULL;
     uint32_t *joins = NULL; // Index of the recorded stack at each branch target
     uint32_t *join_heights = NULL, *join_starts = NULL, join_count = 0, join_heights_cap = 0, join_starts_cap = 0;
+    uint32_t *join_hcounts = NULL, *join_hstarts = NULL, join_hcounts_cap = 0, join_hstarts_cap = 0;
+    wah_check_handler_t *hpool = NULL; // Recorded handlers
+    uint32_t hpool_count = 0, hpool_cap = 0;
+    wah_check_handler_t hs[WAH_MAX_CONTROL_DEPTH] = {{0}}; // Active handlers of the frame, innermost last
+    uint32_t hn = 0;
     wah_type_t *pool = NULL; // Recorded stacks
     uint32_t pool_count = 0, pool_cap = 0;
     uint32_t *work = NULL, work_count = 0, work_cap = 0;
@@ -9187,10 +9236,14 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
     #define CK_ENSURE_REF() CK_ENSURE(h > 0 && WAH_TYPE_IS_REF(stk[h - 1]))
     #define CK_UN(a, r) CK_POP(WAH_TYPE_##a); CK_PUSH(WAH_TYPE_##r); break
     #define CK_BIN(a, r) CK_POP(WAH_TYPE_##a); CK_POP(WAH_TYPE_##a); CK_PUSH(WAH_TYPE_##r); break
-    // Records the stack `s` (of height `n`) at a branch target, or checks it against the recorded one. Types on top of
-    // the stack only need to be subtypes of those in the stack map there (or of results at the end of functions).
-    #define CK_MERGE(target, s, n) do { \
+    // Records the stack `s` (of height `n`) and the first `hc` active handlers at a branch target, or checks them against
+    // the recorded ones. Types on top of the stack only need to be subtypes of those in the stack map there (or of
+    // results at the end of functions).
+    #define CK_MERGE(target, s, n, hc) do { \
+        uint32_t _hc = (hc); \
         uint32_t _t = (target), _n = (n); \
+        WAH_IF_EXCEPTION(uint32_t _d = wah_check_trim_depth(code, size, _t); \
+                         if (_d != UINT32_MAX) { CK_ENSURE(_hc >= _d); _hc = _d; }) \
         const wah_type_t *_s = (s), *_ann = NULL; \
         uint32_t _k = 0; \
         if (is_func && wah_read_u16_le(code + _t) == WAH_OP_END) { /* The outermost label, even if blocks end here */ \
@@ -9212,17 +9265,25 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
         if (joins[_t] == UINT32_MAX) { \
             WAH_ENSURE_CAP_GOTO(join_heights, join_count + 1, cleanup); \
             WAH_ENSURE_CAP_GOTO(join_starts, join_count + 1, cleanup); \
+            WAH_ENSURE_CAP_GOTO(join_hcounts, join_count + 1, cleanup); \
+            WAH_ENSURE_CAP_GOTO(join_hstarts, join_count + 1, cleanup); \
             WAH_ENSURE_CAP_GOTO(pool, (size_t)pool_count + _n, cleanup); \
+            WAH_ENSURE_CAP_GOTO(hpool, (size_t)hpool_count + _hc, cleanup); \
             WAH_ENSURE_CAP_GOTO(work, work_count + 1, cleanup); \
             if (_n > 0) memcpy(pool + pool_count, _s, _n * sizeof(wah_type_t)); \
             join_heights[join_count] = _n; \
             join_starts[join_count] = pool_count; \
             pool_count += _n; \
+            if (_hc > 0) memcpy(hpool + hpool_count, hs, _hc * sizeof(wah_check_handler_t)); \
+            join_hcounts[join_count] = _hc; \
+            join_hstarts[join_count] = hpool_count; \
+            hpool_count += _hc; \
             joins[_t] = join_count++; \
             work[work_count++] = _t; \
         } else { \
             uint32_t _j = joins[_t]; \
             CK_ENSURE(join_heights[_j] == _n && (_n == 0 || memcmp(pool + join_starts[_j], _s, _n * sizeof(wah_type_t)) == 0)); \
+            CK_ENSURE(join_hcounts[_j] == _hc WAH_IF_EXCEPTION(&& wah_check_same_handlers(code, hpool + join_hstarts[_j], hs, _hc))); \
         } \
     } while (0)
     // Branches to `target` after moving the top `keep` values below `drop` ones, as WAH_DROP_KEEP does
@@ -9232,7 +9293,32 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
         uint32_t _base = h - _keep - _drop; \
         memcpy(tmp, stk, _base * sizeof(wah_type_t)); \
         memcpy(tmp + _base, stk + h - _keep, _keep * sizeof(wah_type_t)); \
-        CK_MERGE((target), tmp, _base + _keep); \
+        CK_MERGE((target), tmp, _base + _keep, hn); \
+    } while (0)
+    // Edges to catch clauses of active handlers, as an exception may be thrown here. The stack is rewound to where the
+    // handler expects, which must still be there, and gets the payload, and the handler is popped.
+    #define CK_THROW() do { \
+        for (uint32_t _hi = hn; _hi > 0; _hi--) { \
+            const uint8_t *_c = code + hs[_hi - 1].off + sizeof(uint16_t); \
+            uint32_t _cc = wah_read_u32_le(_c); \
+            _c += sizeof(uint32_t); \
+            for (uint32_t _ci = 0; _ci < _cc; _ci++, _c += 1 + 3 * sizeof(uint32_t)) { \
+                uint32_t _tag = wah_read_u32_le(_c + 1), _tgt = wah_read_u32_le(_c + 1 + sizeof(uint32_t)); \
+                uint32_t _len = hs[_hi - 1].h - wah_read_u32_le(_c + 1 + 2 * sizeof(uint32_t)); \
+                CK_ENSURE(h >= _len); \
+                memcpy(tmp, stk, _len * sizeof(wah_type_t)); \
+                if (_c[0] == WAH_CATCH_KIND_CATCH || _c[0] == WAH_CATCH_KIND_CATCH_REF) { \
+                    const wah_func_type_t *_tt = &module->types[wah_tag_type_index(module, _tag)]; \
+                    CK_ENSURE(_tt->param_count <= max_depth - _len); \
+                    for (uint32_t _i = 0; _i < _tt->param_count; _i++) tmp[_len++] = wah_check_norm(_tt->param_types[_i]); \
+                } \
+                if (_c[0] == WAH_CATCH_KIND_CATCH_REF || _c[0] == WAH_CATCH_KIND_CATCH_ALL_REF) { \
+                    CK_ENSURE(_len < max_depth); \
+                    tmp[_len++] = WAH_TYPE_EXN; \
+                } \
+                CK_MERGE(_tgt, tmp, _len, _hi - 1); \
+            } \
+        } \
     } while (0)
     #define CK_TARGET(t) do { CK_ENSURE((t) < size && (flags[(t)] & START)); flags[(t)] |= TARGET; } while (0)
 
@@ -9260,6 +9346,14 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
             WAH_IF_TYPED_FUNCREF(case WAH_OP_BR_ON_NULL: case WAH_OP_BR_ON_NON_NULL:)
             WAH_IF_GC(case WAH_OP_BR_ON_CAST: case WAH_OP_BR_ON_CAST_FAIL:)
                 CK_TARGET(in.a); break;
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
+            case WAH_OP_TRY_TABLE:
+                for (uint32_t i = 0; i < in.a; i++) {
+                    CK_TARGET(wah_read_u32_le(code + off + sizeof(uint16_t) + sizeof(uint32_t) +
+                                              (size_t)i * (1 + 3 * sizeof(uint32_t)) + 1 + sizeof(uint32_t)));
+                }
+                break;
+#endif
             case WAH_OP_METER: CK_TARGET(in.b); break;
             case WAH_OP_BR_TABLE: {
                 const uint8_t *records = code + off + sizeof(uint16_t) + 2 * sizeof(uint32_t) + ((size_t)in.a + 1) * sizeof(uint16_t);
@@ -9283,16 +9377,18 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
     // Pass 2: operand stacks along every reachable path, starting with an empty one
     off = 0;
     flags[0] |= TARGET;
-    CK_MERGE(0, stk, 0);
+    CK_MERGE(0, stk, 0, 0);
     while (work_count > 0) {
         uint32_t start = work[--work_count], j = joins[start];
         h = join_heights[j];
         if (h > 0) memcpy(stk, pool + join_starts[j], h * sizeof(wah_type_t));
+        hn = join_hcounts[j];
+        if (hn > 0) memcpy(hs, hpool + join_hstarts[j], hn * sizeof(wah_check_handler_t));
         WAH_IF_GC(uint32_t polled = UINT32_MAX;) // Where the last POLL ends, so that calls are known to be preceded by one
         for (off = start; ; off += in.len) {
             CK_ENSURE(off < size); // Falling off the end
             if (off != start && (flags[off] & TARGET)) {
-                CK_MERGE(off, stk, h);
+                CK_MERGE(off, stk, h, hn);
                 break;
             }
             wah_check_decode(code, size, off, &in);
@@ -9319,9 +9415,9 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
 #else
                 case WAH_OP_POLL: case WAH_OP_TICK: break;
 #endif
-                case WAH_OP_METER: CK_MERGE(in.b, stk, h); break;
-                case WAH_OP_IF: CK_POP(WAH_TYPE_I32); CK_MERGE(in.a, stk, h); break;
-                case WAH_OP_ELSE: CK_MERGE(in.a, stk, h); ends = true; break;
+                case WAH_OP_METER: CK_MERGE(in.b, stk, h, hn); break;
+                case WAH_OP_IF: CK_POP(WAH_TYPE_I32); CK_MERGE(in.a, stk, h, hn); break;
+                case WAH_OP_ELSE: CK_MERGE(in.a, stk, h, hn); ends = true; break;
                 case WAH_OP_BR: CK_BRANCH(in.a, in.b, in.c); ends = true; break;
                 case WAH_OP_BR_IF: CK_POP(WAH_TYPE_I32); CK_BRANCH(in.a, in.b, in.c); break;
                 case WAH_OP_BR_TABLE: {
@@ -9431,6 +9527,8 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                     // Frames inside calls are scanned with the ref map of the POLL right before them
                     WAH_IF_GC(if (!tail) CK_ENSURE(off == polled);)
                     for (uint32_t i = callee->param_count; i > 0; i--) CK_POP(callee->param_types[i - 1]);
+                    // The callee may throw, after overwriting arguments as its locals. Tail calls drop handlers beforehand.
+                    WAH_IF_EXCEPTION(if (!tail) CK_THROW();)
                     if (tail) { // The callee returns to the caller in place of this function
                         CK_ENSURE(callee->result_count == ft->result_count);
                         for (uint32_t i = 0; i < callee->result_count; i++) {
@@ -9495,6 +9593,31 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                     CK_BRANCH(in.a, in.b, in.c);
                     h--;
                     break;
+#endif
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
+                case WAH_OP_TRY_TABLE: {
+                    CK_ENSURE(hn < WAH_MAX_CONTROL_DEPTH);
+                    const uint8_t *c = code + off + sizeof(uint16_t) + sizeof(uint32_t);
+                    for (uint32_t i = 0; i < in.a; i++, c += 1 + 3 * sizeof(uint32_t)) {
+                        CK_ENSURE(c[0] <= WAH_CATCH_KIND_CATCH_ALL_REF && wah_read_u32_le(c + 1 + 2 * sizeof(uint32_t)) <= h);
+                        if (c[0] == WAH_CATCH_KIND_CATCH || c[0] == WAH_CATCH_KIND_CATCH_REF) {
+                            CK_ENSURE(wah_read_u32_le(c + 1) < module->import_tag_count + module->tag_count);
+                        }
+                    }
+                    hs[hn++] = (wah_check_handler_t){ off, h };
+                    break;
+                }
+                case WAH_OP_END_TRY_TABLE: CK_ENSURE(hn > 0); hn--; break;
+                case WAH_OP_TRIM_HANDLERS: CK_ENSURE(in.a <= hn); hn = in.a; break;
+                case WAH_OP_THROW: {
+                    CK_ENSURE(in.a < module->import_tag_count + module->tag_count);
+                    const wah_func_type_t *tt = &module->types[wah_tag_type_index(module, in.a)];
+                    for (uint32_t i = tt->param_count; i > 0; i--) CK_POP(tt->param_types[i - 1]);
+                    CK_THROW();
+                    ends = true;
+                    break;
+                }
+                case WAH_OP_THROW_REF: CK_POP(WAH_TYPE_EXNREF); CK_THROW(); ends = true; break;
 #endif
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
                 // The composite type of the reference `depth` slots below the top, or NULL for bottom types. Their references
@@ -9822,11 +9945,15 @@ cleanup:
     #undef CK_BIN
     #undef CK_MERGE
     #undef CK_BRANCH
+    #undef CK_THROW
     #undef CK_TARGET
     wah_free(alloc, flags);
     wah_free(alloc, joins);
     wah_free(alloc, join_heights);
     wah_free(alloc, join_starts);
+    wah_free(alloc, join_hcounts);
+    wah_free(alloc, join_hstarts);
+    wah_free(alloc, hpool);
     wah_free(alloc, pool);
     wah_free(alloc, work);
     wah_free(alloc, stk);

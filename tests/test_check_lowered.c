@@ -403,6 +403,52 @@ static void test_gc(void) {
     wah_free_module(&mod);
 }
 
+static void test_exceptions(void) {
+    printf("Testing lowered exception handling...\n");
+    wah_module_t mod;
+    wah_exec_context_t ctx;
+    wah_value_t result;
+    // The try_table takes 42, which the callee takes and throws, so that the handler expects the stack below it
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [i32] [], fn [] [i32]]} funcs {[1, 0]} tags {[tag.type# 0]} \
+        code {[ \
+            {[] block i32 i32.const 42 try_table 0 [catch 0 0] call 1 end i32.const -1 end end}, \
+            {[] local.get 0 throw 0 end} \
+        ]}"));
+    assert_ok(check_func(&mod, 0));
+    assert_ok(check_func(&mod, 1));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 42);
+    wah_free_exec_context(&ctx);
+
+    const wah_parsed_code_t *pc = &mod.code_bodies[0].parsed_code;
+    uint32_t catch0 = OP_AT(TRY_TABLE, 0) + sizeof(uint16_t) + sizeof(uint32_t); // Kind, tag, target and drop
+    expect_rejected(&mod, catch0 + 1 + 2 * sizeof(uint32_t), 4, 0, "handler expecting arguments the callee may overwrite");
+    expect_rejected(&mod, catch0 + 1, 4, 1, "catch of a tag out of range");
+    expect_rejected(&mod, catch0, 1, WAH_CATCH_KIND_CATCH_REF, "catch with a payload the label doesn't take");
+    expect_rejected(&mod, catch0 + 1 + sizeof(uint32_t), 4, OP_AT(TRY_TABLE, 0) + 1, "catch into the middle of an instruction");
+
+    printf("  throw of a tag out of range\n");
+    uint8_t *code = mod.code_bodies[1].parsed_code.bytecode;
+    pc = &mod.code_bodies[1].parsed_code;
+    uint32_t tag_pos = IMM_AT(THROW, 0, 0);
+    wah_write_u32_le(code + tag_pos, 1);
+    assert_err(check_func(&mod, 1), WAH_ERROR_VALIDATION_FAILED);
+    wah_write_u32_le(code + tag_pos, 0);
+    assert_ok(check_func(&mod, 1));
+    wah_free_module(&mod);
+
+    // The branch leaves the try_table, so that the label trims the handler that the other path has already ended
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [i32] []]} funcs {[0]} \
+        code {[{[] block void try_table void [] local.get 0 br_if 1 end end end}]}"));
+    assert_ok(check_func(&mod, 0));
+    pc = &mod.code_bodies[0].parsed_code;
+    expect_rejected(&mod, IMM_AT(TRIM_HANDLERS, 0, 0), 4, 1, "label keeping a handler ended on another path");
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_accepted();
     test_rejected();
@@ -413,6 +459,7 @@ int main(void) {
     test_stack_maps();
     test_ref_maps();
     test_gc();
+    test_exceptions();
     printf("All lowered code checker tests passed!\n");
     return 0;
 }
