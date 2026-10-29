@@ -106,6 +106,7 @@ static void test_rejected(void) {
     expect_rejected(&mod, IMM_AT(CALL_INDIRECT, 0, 0), 4, 1, "type index out of range");
     expect_rejected(&mod, OP_AT(I32_ADD, 0), 2, WAH_OP_I64_ADD, "operands of a wrong type");
     expect_rejected(&mod, OP_AT(DROP, 0), 2, WAH_OP_NOP, "instruction that is never emitted");
+    expect_rejected(&mod, OP_AT(DROP, 0), 2, WAH_NUM_OPCODES, "unknown opcode");
     expect_rejected(&mod, OP_AT(RETURN, 0), 2, WAH_OP_DROP, "returning without a result");
     expect_rejected(&mod, IMM_AT(BR, 0, 0), 4, OP_AT(BR, 0) + 1, "branch into the middle of an instruction");
     expect_rejected(&mod, IMM_AT(BR, 0, 0), 4, pc->bytecode_size, "branch out of the code");

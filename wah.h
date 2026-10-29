@@ -8867,7 +8867,6 @@ cleanup:
 
 // Independently checks lowered code against what the interpreter relies on without checking:
 // instruction boundaries, branch targets, operand types and the bound of the operand stack height.
-// Opcodes it doesn't know are WAH_ERROR_UNSUPPORTED instead of a failure, so that new ones can be added gradually.
 // Unreachable code is never executed, so it only has to be decodable.
 
 enum { WAH_CHECK_MEM_NONE, WAH_CHECK_MEM_I32, WAH_CHECK_MEM_I32_MEM0, WAH_CHECK_MEM_I64, WAH_CHECK_MEM_I64_MEM0 };
@@ -9139,7 +9138,7 @@ static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t
 #endif
             return WAH_ERROR_VALIDATION_FAILED;
         default:
-            if (op >= WAH_FE) return WAH_ERROR_UNSUPPORTED;
+            if (op >= WAH_FE) return WAH_ERROR_VALIDATION_FAILED;
             switch (wah_opclasses[op]) {
                 case WAH_OPCLASS__I_I: case WAH_OPCLASS__I_L: case WAH_OPCLASS__I_F: case WAH_OPCLASS__I_D:
                 case WAH_OPCLASS__II_I: case WAH_OPCLASS__L_I: case WAH_OPCLASS__L_L: case WAH_OPCLASS__L_F:
@@ -9152,7 +9151,7 @@ static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t
                 case WAH_OPCLASS__VI_V: case WAH_OPCLASS__VV_V: case WAH_OPCLASS__VVV_V:
                     break;
                 case WAH_OPCLASS_B: n8 = 1; break; // Lane
-                default: return WAH_ERROR_UNSUPPORTED;
+                default: return WAH_ERROR_VALIDATION_FAILED;
             }
     }
     if (in->mem != WAH_CHECK_MEM_NONE && wah_opclasses[in->base] == WAH_OPCLASS_MB) n8 = 1; // Lane
@@ -9968,7 +9967,7 @@ cleanup:
     return err;
 }
 
-// Lowered code is only checked as far as the checker understands it, and the check itself may run out of memory.
+// The check itself may run out of memory.
 #define WAH_CHECK_LOWERED_CODE(...) do { \
         wah_error_t _check_err = wah_check_lowered_code(__VA_ARGS__); \
         WAH_ASSERT(_check_err != WAH_ERROR_VALIDATION_FAILED && "lowered code failed the check"); \
