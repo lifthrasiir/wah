@@ -73,6 +73,12 @@ jobs:
         if: matrix.test == 'make'
         run: make -j$(getconf _NPROCESSORS_ONLN) test CC=${{ matrix.cc }}
 
+      - name: Prove with CBMC
+        if: runner.os == 'macOS'
+        run: |
+          HOMEBREW_NO_AUTO_UPDATE=1 HOMEBREW_NO_INSTALL_CLEANUP=1 brew install cbmc
+          make -j$(getconf _NPROCESSORS_ONLN) cbmc
+
       - name: Build and test
         if: matrix.test == 'ps1' && matrix.cc == 'msvc'
         shell: pwsh
