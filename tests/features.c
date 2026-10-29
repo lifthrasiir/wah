@@ -242,6 +242,23 @@ static int run_feature_tests(void) {
         wah_free_module(&mod);
     }
 
+    // Test 4f: memory64 accesses, which are always lowered to mem0 variants without multi-memory
+    if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64) {
+        printf("Testing memory64 loads and stores...\n");
+        wah_exec_context_t ctx;
+        wah_value_t result;
+        assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+            types {[fn [] [i32]]} funcs {[0]} memories {[limits.i64/1 1]} \
+            code {[{[] i64.const 8 i32.const 42 i32.store align=4 offset=4 \
+                i64.const 1 memory.grow 0 drop \
+                i64.const 12 i32.load align=4 offset=0 memory.size 0 i32.wrap_i64 i32.add end}]}"));
+        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+        assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+        assert_eq_i32(result.i32, 44);
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod);
+    }
+
     // Test 5: feature closure
     printf("Testing feature closure: RELAXED_SIMD implies SIMD...\n");
     assert_true(wah_feature_closure(WAH_FEATURE_RELAXED_SIMD) & WAH_FEATURE_SIMD);

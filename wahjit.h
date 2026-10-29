@@ -1692,7 +1692,7 @@ static int wah_jit_globals(wah_jit_fn_t *f) {
 
 static void wah_jit_memory_size(wah_jit_fn_t *f, uint32_t mem_idx) {
     int d = wah_jit_alloc(f, false);
-    if (mem_idx != 0) {
+    if (WAH_MEMIDX(mem_idx) != 0) {
         wah_jit_ldst(f, false, false, true, d, WAH_JR_CTX, WAH_JIT_CTX_OFF(memories));
         wah_jit_ldst(f, false, false, true, d, d, (uint64_t)mem_idx * sizeof(wah_memory_inst_t) +
                                                   offsetof(wah_memory_inst_t, size));
@@ -2124,7 +2124,7 @@ static int wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size
     uint64_t end = wah_jit_access_end(m, size); // Fits in 33 bits unless 64-bit, so a + end doesn't overflow then
     bool check = mem64 || !f->jm->guarded || end > WAH_JIT_GUARD_SIZE;
     *size_reg = -1;
-    if (m->memidx != 0 && (base = wah_jit_cached_base(f, m->memidx)) >= 0) {
+    if (WAH_MEMIDX(m->memidx) != 0 && (base = wah_jit_cached_base(f, m->memidx)) >= 0) {
         if (check) {
             limit = wah_jit_alloc(f, false);
             *size_reg = limit;
@@ -2132,7 +2132,7 @@ static int wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size
             wah_jit_ldst(f, false, false, true, limit, limit, (uint64_t)m->memidx * sizeof(wah_memory_inst_t) +
                                                               offsetof(wah_memory_inst_t, size));
         }
-    } else if (m->memidx != 0) {
+    } else if (WAH_MEMIDX(m->memidx) != 0) {
         base = wah_jit_alloc(f, false);
         uint64_t off = (uint64_t)m->memidx * sizeof(wah_memory_inst_t);
         wah_jit_ldst(f, false, false, true, base, WAH_JR_CTX, WAH_JIT_CTX_OFF(memories));
@@ -3403,7 +3403,7 @@ static int wah_jit_globals(wah_jit_fn_t *f) {
 static void wah_jit_memory_size(wah_jit_fn_t *f, uint32_t mem_idx) {
     int d = wah_jit_alloc(f, false);
     int src = WAH_JR_MEMSZ;
-    if (mem_idx != 0) {
+    if (WAH_MEMIDX(mem_idx) != 0) {
         wah_a64_ldst(f, WAH_A64_LDRX, d, WAH_JR_CTX, WAH_JIT_CTX_OFF(memories));
         wah_a64_ldst(f, WAH_A64_LDRX, d, d, (uint64_t)mem_idx * sizeof(wah_memory_inst_t) +
                                             offsetof(wah_memory_inst_t, size));
@@ -3662,7 +3662,7 @@ static wah_a64_addr_t wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, ui
     uint64_t end = wah_jit_access_end(m, size);
     bool check = mem64 || !f->jm->guarded || end > WAH_JIT_GUARD_SIZE;
     *size_reg = -1;
-    if (m->memidx != 0 && (base = wah_jit_cached_base(f, m->memidx)) >= 0) {
+    if (WAH_MEMIDX(m->memidx) != 0 && (base = wah_jit_cached_base(f, m->memidx)) >= 0) {
         if (check) {
             limit = wah_jit_alloc(f, false);
             *size_reg = limit;
@@ -3670,7 +3670,7 @@ static wah_a64_addr_t wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, ui
             wah_a64_ldst(f, WAH_A64_LDRX, limit, limit, (uint64_t)m->memidx * sizeof(wah_memory_inst_t) +
                                                         offsetof(wah_memory_inst_t, size));
         }
-    } else if (m->memidx != 0) {
+    } else if (WAH_MEMIDX(m->memidx) != 0) {
         base = wah_jit_alloc(f, false);
         uint64_t off = (uint64_t)m->memidx * sizeof(wah_memory_inst_t);
         wah_a64_ldst(f, WAH_A64_LDRX, base, WAH_JR_CTX, WAH_JIT_CTX_OFF(memories));
