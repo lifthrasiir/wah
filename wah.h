@@ -8849,6 +8849,17 @@ static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t
         WAH_IF_MEMORY64(case WAH_OP_MEMORY_SIZE_i64: case WAH_OP_MEMORY_GROW_i64:)
             n32 = 1; break;
         case WAH_OP_CALL_INDIRECT: WAH_IF_MEMORY64(case WAH_OP_CALL_INDIRECT_i64:) n32 = 2; break; // Type, table
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
+        case WAH_OP_DATA_DROP: case WAH_OP_ELEM_DROP: n32 = 1; break; // Segment
+        // Resumable ones are followed by the ref map at their suspension
+        case WAH_OP_MEMORY_FILL: WAH_IF_MEMORY64(case WAH_OP_MEMORY_FILL_i64:) n32 = 1 WAH_IF_GC(+ 1); break; // Memory
+        case WAH_OP_MEMORY_INIT: case WAH_OP_TABLE_INIT: // Segment, memory or table
+        case WAH_OP_MEMORY_COPY: case WAH_OP_TABLE_COPY: // Destination, source
+        WAH_IF_MEMORY64(case WAH_OP_MEMORY_INIT_i64: case WAH_OP_TABLE_INIT_i64:
+                        case WAH_OP_MEMORY_COPY_i32_to_i64: case WAH_OP_MEMORY_COPY_i64_to_i32: case WAH_OP_MEMORY_COPY_i64_to_i64:
+                        case WAH_OP_TABLE_COPY_i32_to_i64: case WAH_OP_TABLE_COPY_i64_to_i32: case WAH_OP_TABLE_COPY_i64_to_i64:)
+            n32 = 2 WAH_IF_GC(+ 1); break;
+#endif
 #define WAH_CHECK_MEM_CASE(name, suffix, mem_, n32_) \
         case WAH_OP_##name##_##suffix: in->base = WAH_OP_##name; in->mem = (mem_); n32 = (n32_); n64 = 1; break;
 #define WAH_CHECK_MEM_I32_CASE(name, suffix) case WAH_OP_##name: in->mem = WAH_CHECK_MEM_I32; n32 = 1; n64 = 1; break;
@@ -9092,6 +9103,59 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                     CK_PUSH(at);
                     break;
                 }
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
+                case WAH_OP_DATA_DROP: CK_ENSURE(in.a < module->data_segment_count); break;
+                case WAH_OP_ELEM_DROP: CK_ENSURE(in.a < module->element_segment_count); break;
+                case WAH_OP_MEMORY_FILL: WAH_IF_MEMORY64(case WAH_OP_MEMORY_FILL_i64:) {
+                    wah_type_t at = in.op == WAH_OP_MEMORY_FILL ? WAH_TYPE_I32 : WAH_TYPE_I64;
+                    CK_ENSURE(in.a < wah_memory_index_limit(module) && wah_memory_type(module, in.a)->addr_type == at);
+                    CK_POP(at); CK_POP(WAH_TYPE_I32); CK_POP(at);
+                    break;
+                }
+                case WAH_OP_MEMORY_INIT: case WAH_OP_TABLE_INIT:
+                WAH_IF_MEMORY64(case WAH_OP_MEMORY_INIT_i64: case WAH_OP_TABLE_INIT_i64:) {
+                    wah_type_t at = in.op == WAH_OP_MEMORY_INIT || in.op == WAH_OP_TABLE_INIT ? WAH_TYPE_I32 : WAH_TYPE_I64;
+                    if (in.op == WAH_OP_MEMORY_INIT WAH_IF_MEMORY64(|| in.op == WAH_OP_MEMORY_INIT_i64)) {
+                        CK_ENSURE(in.a < module->data_segment_count);
+                        CK_ENSURE(in.b < wah_memory_index_limit(module) && wah_memory_type(module, in.b)->addr_type == at);
+                    } else {
+                        CK_ENSURE(in.a < module->element_segment_count && in.b < wah_table_index_limit(module));
+                        const wah_table_type_t *tt = wah_table_type(module, in.b);
+                        CK_ENSURE(tt->addr_type == at);
+                        CK_ENSURE(wah_type_is_subtype(module->element_segments[in.a].elem_type, tt->elem_type, module));
+                    }
+                    CK_POP(WAH_TYPE_I32); CK_POP(WAH_TYPE_I32); CK_POP(at);
+                    break;
+                }
+                case WAH_OP_MEMORY_COPY: case WAH_OP_TABLE_COPY:
+                WAH_IF_MEMORY64(case WAH_OP_MEMORY_COPY_i32_to_i64: case WAH_OP_MEMORY_COPY_i64_to_i32: case WAH_OP_MEMORY_COPY_i64_to_i64:
+                                case WAH_OP_TABLE_COPY_i32_to_i64: case WAH_OP_TABLE_COPY_i64_to_i32: case WAH_OP_TABLE_COPY_i64_to_i64:) {
+                    wah_type_t dst_at = WAH_TYPE_I32, src_at = WAH_TYPE_I32; // Variants are named as source_to_destination
+                    bool table = in.op == WAH_OP_TABLE_COPY;
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
+                    table = table || in.op == WAH_OP_TABLE_COPY_i32_to_i64 || in.op == WAH_OP_TABLE_COPY_i64_to_i32 ||
+                            in.op == WAH_OP_TABLE_COPY_i64_to_i64;
+                    switch (in.op) {
+                        case WAH_OP_MEMORY_COPY_i32_to_i64: case WAH_OP_TABLE_COPY_i32_to_i64: dst_at = WAH_TYPE_I64; break;
+                        case WAH_OP_MEMORY_COPY_i64_to_i32: case WAH_OP_TABLE_COPY_i64_to_i32: src_at = WAH_TYPE_I64; break;
+                        case WAH_OP_MEMORY_COPY_i64_to_i64: case WAH_OP_TABLE_COPY_i64_to_i64: dst_at = src_at = WAH_TYPE_I64; break;
+                        default: break;
+                    }
+#endif
+                    if (table) {
+                        CK_ENSURE(in.a < wah_table_index_limit(module) && in.b < wah_table_index_limit(module));
+                        const wah_table_type_t *dst = wah_table_type(module, in.a), *src = wah_table_type(module, in.b);
+                        CK_ENSURE(dst->addr_type == dst_at && src->addr_type == src_at);
+                        CK_ENSURE(wah_type_is_subtype(src->elem_type, dst->elem_type, module));
+                    } else {
+                        CK_ENSURE(in.a < wah_memory_index_limit(module) && wah_memory_type(module, in.a)->addr_type == dst_at);
+                        CK_ENSURE(in.b < wah_memory_index_limit(module) && wah_memory_type(module, in.b)->addr_type == src_at);
+                    }
+                    CK_POP(dst_at == WAH_TYPE_I64 && src_at == WAH_TYPE_I64 ? WAH_TYPE_I64 : WAH_TYPE_I32);
+                    CK_POP(src_at); CK_POP(dst_at);
+                    break;
+                }
+#endif
                 default:
                     if (in.mem != WAH_CHECK_MEM_NONE) {
                         bool mem0 = in.mem == WAH_CHECK_MEM_I32_MEM0 || in.mem == WAH_CHECK_MEM_I64_MEM0;
@@ -10134,8 +10198,6 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
 #endif
 
         WAH_CHECK_GOTO(wah_lower_analyzed_code(module, &ac, &module->code_bodies[i].parsed_code), cleanup);
-        WAH_CHECK_LOWERED_CODE(module, &module->code_bodies[i].parsed_code, func_type, &module->code_bodies[i],
-                               module->code_bodies[i].max_stack_depth, WAH_TYPE_BOT);
         wah_free_analyzed_code(&ac, alloc);
         wah_local_inits_revert(&local_inits, 0); // Locals initialized at the function level
 
@@ -10991,6 +11053,15 @@ wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t
     if (uses_multi_value) WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_MULTI_VALUE), cleanup_parse);
     if (uses_mut_import) WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_MUTABLE_GLOBALS), cleanup_parse);
     if (wah_table_index_limit(module) > 1) WAH_CHECK_GOTO(wah_require_feature(module, WAH_FEATURE_SHIFT_REF_TYPES), cleanup_parse);
+
+#ifdef WAH_CHECK_LOWERED
+    // Functions are checked once data segments are known
+    for (uint32_t i = 0; i < module->code_count; ++i) {
+        const wah_code_body_t *body = &module->code_bodies[i];
+        WAH_CHECK_LOWERED_CODE(module, &body->parsed_code, &module->types[module->function_type_indices[i]], body,
+                               body->max_stack_depth, WAH_TYPE_BOT);
+    }
+#endif
 
     // Build the unified functions[] array for the WASM functions.
     // Host functions may be appended later via wah_export_func().

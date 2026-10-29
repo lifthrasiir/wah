@@ -149,10 +149,45 @@ static void test_fuel_metering(void) {
     wah_free_module(&mod);
 }
 
+static void test_bulk_memory(void) {
+    printf("Testing lowered bulk memory operations...\n");
+    wah_module_t mod;
+    wah_exec_context_t ctx;
+    wah_value_t param = {.i32 = 4};
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [i32] []]} funcs {[0]} \
+        tables {[funcref limits.i32/1 4, externref limits.i32/1 4]} memories {[limits.i32/1 1]} \
+        elements {[elem.passive elem.funcref [0]]} \
+        datacount {1} \
+        code {[{[] \
+            local.get 0 i32.const 1 i32.const 2 memory.fill 0 \
+            i32.const 0 local.get 0 i32.const 2 memory.copy 0 0 \
+            i32.const 8 i32.const 0 i32.const 2 memory.init 0 0 data.drop 0 \
+            i32.const 0 i32.const 0 i32.const 1 table.init 0 0 elem.drop 0 \
+            i32.const 1 i32.const 0 i32.const 1 table.copy 0 0 \
+        end}]} \
+        data {[data.passive {%'4142'}]}"));
+    assert_ok(check_func(&mod, 0));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_call(&ctx, 0, &param, 1, NULL));
+    wah_free_exec_context(&ctx);
+
+    const wah_parsed_code_t *pc = &mod.code_bodies[0].parsed_code;
+    expect_rejected(&mod, IMM_AT(DATA_DROP, 0, 0), 4, 1, "data segment out of range");
+    expect_rejected(&mod, IMM_AT(MEMORY_INIT, 0, 0), 4, 1, "data segment out of range to initialize from");
+    expect_rejected(&mod, IMM_AT(ELEM_DROP, 0, 0), 4, 1, "element segment out of range");
+    expect_rejected(&mod, IMM_AT(TABLE_INIT, 0, 1), 4, 1, "table of a wrong type to initialize");
+    expect_rejected(&mod, IMM_AT(TABLE_COPY, 0, 0), 4, 1, "table of a wrong type to copy into");
+    expect_rejected(&mod, IMM_AT(MEMORY_COPY, 0, 1), 4, 1, "memory out of range");
+    expect_rejected(&mod, IMM_AT(MEMORY_FILL, 0, 0), 4, 1, "memory out of range to fill");
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_accepted();
     test_rejected();
     test_fuel_metering();
+    test_bulk_memory();
     printf("All lowered code checker tests passed!\n");
     return 0;
 }
