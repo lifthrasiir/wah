@@ -185,6 +185,27 @@ fuzz-libfuzzer: $(LIBFUZZER_HARNESS_BIN)
 $(LIBFUZZER_HARNESS_BIN): $(LIBFUZZER_HARNESS_SRC) wah.h
 	$(LIBFUZZER_CC) $(LIBFUZZER_CFLAGS) $< -o $@ $(LIBFUZZER_LDFLAGS)
 
+# --- CBMC proofs ---
+# Each entry is FILE.HARNESS, checking proofs/FILE.c from harness_HARNESS with loops unwound up to CBMC_UNWIND_FILE.
+# Conversions to signed types and unsigned wraparound are intended, so they aren't checked.
+
+CBMC ?= cbmc
+CBMC_FLAGS := --bounds-check --pointer-check --signed-overflow-check --undefined-shift-check --unwinding-assertions
+CBMC_PROOFS := leb128.uleb128 leb128.uleb128_64 leb128.sleb128_32 leb128.sleb128_64
+CBMC_UNWIND_leb128 := 12
+
+CBMC_TARGETS := $(patsubst %, cbmc_%, $(CBMC_PROOFS))
+
+.PHONY: cbmc $(CBMC_TARGETS)
+cbmc: $(CBMC_TARGETS)
+	@echo "## All proofs passed."
+
+$(CBMC_TARGETS): cbmc_%: FORCE
+	@echo "## Proving harness_$(word 2,$(subst ., ,$*)) in proofs/$(word 1,$(subst ., ,$*)).c..."
+	@$(CBMC) proofs/$(word 1,$(subst ., ,$*)).c --function harness_$(word 2,$(subst ., ,$*)) \
+		--unwind $(CBMC_UNWIND_$(word 1,$(subst ., ,$*))) $(CBMC_FLAGS) > proofs/$*.log 2>&1 || \
+		{ grep -E 'FAILURE|ERROR|error' proofs/$*.log; exit 1; }
+
 # --- Coverage ---
 
 GCOV_CFLAGS := -fprofile-arcs -ftest-coverage
@@ -243,5 +264,6 @@ clean:
 	@rm -f $(FUZZ_HARNESS_BIN)
 	@rm -f $(LIBFUZZER_HARNESS_BIN)
 	@rm -f bench/bench_coremark
+	@rm -f proofs/*.log
 	@rm -f *.gcda *.gcno tests/*.gcda tests/*.gcno fuzz/*.gcda fuzz/*.gcno coverage.info
 	@rm -rf cov/ coverage_report/

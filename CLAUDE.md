@@ -164,6 +164,7 @@ OOM and leak hygiene are tested explicitly (`tests/test_oom.c` injects allocatio
 - **Spec tests:** `tests/spectest/foo.bin.wast` was compiled from `foo.wast` in the original test suite. Those original files are available in `https://raw.githubusercontent.com/WebAssembly/spec/c840c58c21304946f009808b9e5e686b1734d8f0/test/core/foo.wast`; some later tests are alternatively in `/core/{exceptions,gc,multi-memory,relaxed-simd,simd}` directories.
 - **Test split:** Tests that `#define WAH_IMPLEMENTATION` compile standalone (link with `common.o` only). Tests without it are API-only and link with the precompiled `wah_impl.o + common.o`. This split is the key build optimization.
 - **Fuzzing:** `fuzz/fuzz_libfuzzer.c` (libFuzzer) and `fuzz/fuzz_afl.c` (AFL) drive `wah_parse_module` + instantiation + execution under fuel and memory caps; corpora live under `fuzz/*.tar.gz`.
+- **CBMC proofs:** `make cbmc` checks `harness_*` functions in `proofs/*.c` for all inputs (`nondet_*`) within loop bounds, listed in `CBMC_PROOFS` of the Makefile. Harnesses include the implementation with `WAH_FORCE_SWITCH` and `WAH_FORCE_PORTABLE` via `proofs/proofs.h`; CBMC defines `__CPROVER__`. Proofs should also be shown to fail when the code under proof is broken.
 - **CI:** 8 configurations: Linux (gcc/clang on x86-64 + aarch64), macOS (clang), Windows (msvc/gcc/clang). Windows GCC/Clang use MSYS2.
 
 ### Build Gotcha
