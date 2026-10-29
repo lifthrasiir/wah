@@ -447,6 +447,18 @@ static void test_exceptions(void) {
     pc = &mod.code_bodies[0].parsed_code;
     expect_rejected(&mod, IMM_AT(TRIM_HANDLERS, 0, 0), 4, 1, "label keeping a handler ended on another path");
     wah_free_module(&mod);
+
+    // Both handlers return from the function, where one of them is still active for the other, which doesn't matter
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [] [i32], fn [i32] []]} funcs {[0]} tags {[tag.type# 1, tag.type# 1]} \
+        code {[{[] try_table void [catch 0 0] try_table void [catch 1 1] i32.const 55 throw 0 end end \
+                   i32.const -1 end}]}"));
+    assert_ok(check_func(&mod, 0));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_call(&ctx, 0, NULL, 0, &result));
+    assert_eq_i32(result.i32, 55);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
 }
 
 int main(void) {

@@ -9252,6 +9252,7 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
         if (is_func && wah_read_u16_le(code + _t) == WAH_OP_END) { /* The outermost label, even if blocks end here */ \
             _ann = ft->result_types; \
             _k = ft->result_count; \
+            _hc = 0; /* Returning drops handlers of the frame */ \
         } else if (maps[_t] != UINT32_MAX) { \
             _ann = pc->stack_map_types + pc->stack_maps[maps[_t]].start; \
             _k = pc->stack_maps[maps[_t]].count; \
