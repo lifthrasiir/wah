@@ -85,7 +85,7 @@ Opclasses (`wah_opclass_t`) classify opcodes by their stack signature (e.g., `_I
 
 ### Feature Flags
 
-`wah_features_t` is a 64-bit bitmask controlling which proposals are enabled. `WAH_FEATURE_MVP` is a non-zero sentinel always implied; passing `0` for features means "use the default", not "disable everything". Features are opt-in via `wah_parse_module()` with a `wah_parse_options_t`. Instructions requiring disabled features return `WAH_ERROR_DISABLED_FEATURE`. Presets: `WAH_FEATURE_WASM_V2`, `WAH_FEATURE_WASM_V3`, `WAH_FEATURE_ALL`. Features can also be selectively disabled at compile time via `WAH_COMPILED_FEATURES` (default = `WAH_FEATURE_ALL`) and the runtime default tuned via `WAH_DEFAULT_FEATURES`.
+`wah_features_t` is a 64-bit bitmask controlling which proposals are enabled. `WAH_FEATURE_MVP` is a non-zero sentinel always implied; passing `0` for features means "use the default", not "disable everything". Features are opt-in via `wah_parse_module()` with a `wah_parse_options_t`. Instructions requiring disabled features return `WAH_ERROR_DISABLED_FEATURE`. Presets: `WAH_FEATURE_WASM_V2`, `WAH_FEATURE_WASM_V3`, `WAH_FEATURE_ALL`. Features can also be selectively disabled at compile time via `WAH_COMPILED_FEATURES` (default = `WAH_FEATURE_ALL`) and the runtime default tuned via `WAH_DEFAULT_FEATURES`. Compiled-out code is removed with `WAH_IF_<FEAT>(...)` or `#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_<FEAT>)`. Opcodes are filtered by the feature column of `WAH_OPCODES` (only `wah_opcode_features[]` keeps them, so that they are rejected as disabled), so any remaining use of a compiled-out opcode is a compile error; build `tests/test_feature_*.c` with every dispatch strategy to find them.
 
 ### GC Implementation
 
