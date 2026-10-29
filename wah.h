@@ -1731,10 +1731,14 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 #else
 #define WAH_IF_TAIL_CALL(...)
 #endif
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF)
+#define WAH_IF_TYPED_FUNCREF(...) __VA_ARGS__
+#else
+#define WAH_IF_TYPED_FUNCREF(...)
+#endif
 // Not compiled out yet
 #define WAH_IF_BULK_MEMORY(...) __VA_ARGS__
 #define WAH_IF_REF_TYPES(...) __VA_ARGS__
-#define WAH_IF_TYPED_FUNCREF(...) __VA_ARGS__
 
 // WAH_IF_##feat for an empty `feat` (MVP)
 #define WAH_IF_(...) __VA_ARGS__
@@ -6417,6 +6421,7 @@ static wah_error_t wah_validation_push_func_results(wah_validation_context_t *vc
     return WAH_OK;
 }
 
+#if ((WAH_COMPILED_FEATURES) & (WAH_FEATURE_TAIL_CALL | WAH_FEATURE_TYPED_FUNCREF)) // For return_call*
 static wah_error_t wah_validation_check_return_types(const wah_validation_context_t *vctx, const wah_func_type_t *ft) {
     WAH_ENSURE(ft->result_count == vctx->func_type->result_count, WAH_ERROR_VALIDATION_FAILED);
     for (uint32_t j = 0; j < ft->result_count; ++j) {
@@ -6424,6 +6429,7 @@ static wah_error_t wah_validation_check_return_types(const wah_validation_contex
     }
     return WAH_OK;
 }
+#endif
 
 static inline void wah_validation_mark_unreachable(wah_validation_context_t *vctx) {
     uint32_t base = wah_validation_block_base_height(vctx);
@@ -6857,6 +6863,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_INSTR_EX(opcode_val, _di->imm.u32_u32.a = type_idx; _di->imm.u32_u32.b = table_idx);
             break;
         }
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF)
         case WAH_OP_CALL_REF: {
             uint32_t type_idx;
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &type_idx));
@@ -6869,6 +6876,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = type_idx);
             break;
         }
+#endif
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TAIL_CALL)
         case WAH_OP_RETURN_CALL: {
             uint32_t func_idx;
@@ -6899,6 +6907,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             return WAH_OK;
         }
 #endif
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF)
         case WAH_OP_RETURN_CALL_REF: {
             uint32_t type_idx;
             WAH_CHECK(wah_require_feature(vctx->module, WAH_FEATURE_SHIFT_TAIL_CALL)); // In addition to TYPED_FUNCREF
@@ -6913,6 +6922,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             EMIT_INSTR_EX(opcode_val, _di->imm.u32 = type_idx);
             return WAH_OK;
         }
+#endif
         case WAH_OP_LOCAL_GET:
         case WAH_OP_LOCAL_SET:
         case WAH_OP_LOCAL_TEE: {
@@ -7735,6 +7745,7 @@ cleanup_block:
         }
 #endif // WAH_FEATURE_GC (validation)
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF)
         // Typed funcrefs, which don't depend on GC
         case WAH_OP_REF_AS_NON_NULL: {
             wah_type_t ref_type; POP_INTO(&ref_type);
@@ -7782,6 +7793,7 @@ cleanup_block:
                 _di->imm.branch.keep = adj_keep; _di->imm.branch.drop = adj_drop);
             break;
         }
+#endif
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
         case WAH_OP_THROW: {
@@ -7935,8 +7947,8 @@ cleanup_try_table:
 
 static bool wah_opcode_is_call(uint16_t opcode) {
     switch (opcode) {
-        case WAH_OP_CALL: case WAH_OP_CALL_INDIRECT: case WAH_OP_CALL_REF:
-        WAH_IF_TAIL_CALL(case WAH_OP_RETURN_CALL: case WAH_OP_RETURN_CALL_INDIRECT:) case WAH_OP_RETURN_CALL_REF:
+        case WAH_OP_CALL: case WAH_OP_CALL_INDIRECT: WAH_IF_TYPED_FUNCREF(case WAH_OP_CALL_REF:)
+        WAH_IF_TAIL_CALL(case WAH_OP_RETURN_CALL: case WAH_OP_RETURN_CALL_INDIRECT:) WAH_IF_TYPED_FUNCREF(case WAH_OP_RETURN_CALL_REF:)
             return true;
         default:
             return false;
@@ -8467,7 +8479,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                     break;
                 }
                 case WAH_OP_BR: case WAH_OP_BR_IF:
-                case WAH_OP_BR_ON_NULL: case WAH_OP_BR_ON_NON_NULL: {
+                WAH_IF_TYPED_FUNCREF(case WAH_OP_BR_ON_NULL: case WAH_OP_BR_ON_NON_NULL:) {
                     uint32_t relative_depth = instr->imm.branch.label_idx;
                     WAH_LOWER_RESOLVE_BRANCH(relative_depth);
                     WAH_LOWER_U32(instr->imm.branch.keep);
@@ -8618,12 +8630,12 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
         if (emit_meter && meter_current_cost > 0) {
             switch (opcode) {
                 case WAH_OP_BR: case WAH_OP_BR_IF:
-                case WAH_OP_BR_ON_NULL: case WAH_OP_BR_ON_NON_NULL:
+                WAH_IF_TYPED_FUNCREF(case WAH_OP_BR_ON_NULL: case WAH_OP_BR_ON_NON_NULL:)
                 WAH_IF_GC(case WAH_OP_BR_ON_CAST: case WAH_OP_BR_ON_CAST_FAIL:)
                 case WAH_OP_BR_TABLE:
-                case WAH_OP_CALL: case WAH_OP_CALL_INDIRECT: case WAH_OP_CALL_REF:
+                case WAH_OP_CALL: case WAH_OP_CALL_INDIRECT: WAH_IF_TYPED_FUNCREF(case WAH_OP_CALL_REF:)
                 WAH_IF_TAIL_CALL(case WAH_OP_RETURN_CALL: case WAH_OP_RETURN_CALL_INDIRECT:)
-                case WAH_OP_RETURN: case WAH_OP_RETURN_CALL_REF:
+                case WAH_OP_RETURN: WAH_IF_TYPED_FUNCREF(case WAH_OP_RETURN_CALL_REF:)
                 case WAH_OP_IF:
                 WAH_IF_EXCEPTION(case WAH_OP_THROW: case WAH_OP_THROW_REF:)
                 WAH_IF_MEMORY64(case WAH_OP_CALL_INDIRECT_i64: WAH_IF_TAIL_CALL(case WAH_OP_RETURN_CALL_INDIRECT_i64:))
@@ -8669,7 +8681,8 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                     uint16_t last_op = wah_read_u16_le(buf + last_rec->fast_offset);
                     switch (last_op) {
                         case WAH_OP_BR: case WAH_OP_RETURN:
-                        WAH_IF_TAIL_CALL(case WAH_OP_RETURN_CALL: case WAH_OP_RETURN_CALL_INDIRECT:) case WAH_OP_RETURN_CALL_REF:
+                        WAH_IF_TAIL_CALL(case WAH_OP_RETURN_CALL: case WAH_OP_RETURN_CALL_INDIRECT:)
+                        WAH_IF_TYPED_FUNCREF(case WAH_OP_RETURN_CALL_REF:)
                         case WAH_OP_BR_TABLE: case WAH_OP_UNREACHABLE:
                         WAH_IF_EXCEPTION(case WAH_OP_THROW: case WAH_OP_THROW_REF:)
                         case WAH_OP_END:
@@ -13158,6 +13171,7 @@ WAH_RUN(GLOBAL_SET_INDIRECT) {
     WAH_NEXT();
 }
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF)
 WAH_RUN(REF_AS_NON_NULL) {
     WAH_ENSURE_GOTO(sp[-1].ref != NULL, WAH_ERROR_TRAP, cleanup);
     WAH_NEXT();
@@ -13188,6 +13202,7 @@ WAH_RUN(BR_ON_NON_NULL) {
     }
     WAH_NEXT();
 }
+#endif
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
 
@@ -13981,6 +13996,7 @@ WAH_RUN(CALL_INDIRECT_i64) {
 }
 #endif // WAH_FEATURE_MEMORY64
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF)
 WAH_RUN(CALL_REF) {
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     void *_fn_ref = (*--sp).ref;
@@ -13994,6 +14010,7 @@ WAH_RUN(CALL_REF) {
     WAH_NEXT();
     WAH_CLEANUP();
 }
+#endif
 
 // Drops exception handlers installed by the current frame.
 #define WAH_DROP_FRAME_HANDLERS() WAH_IF_EXCEPTION(do { \
@@ -14111,6 +14128,7 @@ WAH_RUN(RETURN_CALL_INDIRECT_i64) {
 }
 #endif // WAH_FEATURE_MEMORY64
 
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF)
 WAH_RUN(RETURN_CALL_REF) {
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     void *_fn_ref = (*--sp).ref;
@@ -14125,9 +14143,10 @@ WAH_RUN(RETURN_CALL_REF) {
     WAH_NEXT();
     WAH_CLEANUP();
 }
+#endif
 
 #else // !WAH_FEATURE_TAIL_CALL
-WAH_NEVER_RUN(RETURN_CALL_REF) // Rejected by the validator
+WAH_IF_TYPED_FUNCREF(WAH_NEVER_RUN(RETURN_CALL_REF)) // Rejected by the validator
 #endif // WAH_FEATURE_TAIL_CALL
 
 #define WAH_RETURN_CURRENT_FRAME() do { \
