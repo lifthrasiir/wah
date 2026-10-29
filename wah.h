@@ -9159,8 +9159,11 @@ static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t
     in->len = sizeof(uint16_t) + n32 * sizeof(uint32_t) + n64 * sizeof(uint64_t) + n8;
     WAH_ENSURE(size - off >= in->len, WAH_ERROR_VALIDATION_FAILED);
     const uint8_t *p = code + off + sizeof(uint16_t);
-    uint32_t *imm[3] = { &in->a, &in->b, &in->c };
-    for (uint32_t i = 0; i < n32; i++, p += sizeof(uint32_t)) *imm[i] = wah_read_u32_le(p);
+    // No local arrays, which would need a fake stack frame for each call under ASAN
+    if (n32 > 0) in->a = wah_read_u32_le(p);
+    if (n32 > 1) in->b = wah_read_u32_le(p + sizeof(uint32_t));
+    if (n32 > 2) in->c = wah_read_u32_le(p + 2 * sizeof(uint32_t));
+    p += n32 * sizeof(uint32_t);
     if (n64) in->x = wah_read_u64_le(p);
     if (n8) in->lane = p[n64 * sizeof(uint64_t)];
     return WAH_OK;
