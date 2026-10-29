@@ -144,7 +144,7 @@ int main() {
     {
         wah_module_t mod = {0};
         wah_exec_context_t exec = {0};
-        wah_value_t results[4] = {{0}};
+        wah_value_t results[4] = {0};
         uint32_t actual_results = 0;
 
         assert_ok(wah_new_module(&mod, NULL));
@@ -202,7 +202,7 @@ int main() {
     {
         wah_module_t mod = {0};
         wah_exec_context_t exec = {0};
-        wah_value_t results[2] = {{0}};
+        wah_value_t results[2] = {0};
         uint32_t actual_results = 0;
 
         assert_ok(wah_new_module(&mod, NULL));

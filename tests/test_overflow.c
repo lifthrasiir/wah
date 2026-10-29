@@ -164,7 +164,7 @@ int main(void) {
         assert_ok(wah_new_exec_context(&ctx, &module, &opts));
         assert_ok(wah_instantiate(&ctx));
 
-        wah_value_t params[100] = {{0}};
+        wah_value_t params[100] = {0};
         for (int i = 0; i < 100; i++) params[i].i32 = i;
 
         wah_value_t result;

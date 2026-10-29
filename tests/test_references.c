@@ -259,7 +259,7 @@ static void test_public_externref_return_masks_wasm_gc_refs() {
     assert_ok(wah_call_by_name(&ctx, "single", NULL, 0, &single));
     assert_eq_ptr(single.ref, masked);
 
-    wah_value_t multi[2] = {{0}};
+    wah_value_t multi[2] = {0};
     uint32_t actual = 0;
     wah_export_desc_t desc;
     assert_ok(wah_export_by_name(&module, "multi", &desc));
