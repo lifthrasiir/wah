@@ -1291,7 +1291,7 @@ wah_error_t wah_export_global_i32(wah_module_t *mod, const char *name, bool is_m
 wah_error_t wah_export_global_i64(wah_module_t *mod, const char *name, bool is_mutable, int64_t init_value);  // Exports an i64 global variable
 wah_error_t wah_export_global_f32(wah_module_t *mod, const char *name, bool is_mutable, float init_value);    // Exports an f32 global variable
 wah_error_t wah_export_global_f64(wah_module_t *mod, const char *name, bool is_mutable, double init_value);   // Exports an f64 global variable
-wah_error_t wah_export_global_v128(wah_module_t *mod, const char *name, bool is_mutable, const wah_v128_t *init_value); // Exports a v128 global variable
+wah_error_t wah_export_global_v128(wah_module_t *mod, const char *name, bool is_mutable, const wah_v128_t *init_value); // Exports a v128 global variable (WAH_ERROR_DISABLED_FEATURE if SIMD is compiled out)
 
 // --- Call context for host functions ---
 
@@ -17298,9 +17298,14 @@ wah_error_t wah_export_global_f64(wah_module_t *mod, const char *name, bool is_m
 }
 
 wah_error_t wah_export_global_v128(wah_module_t *mod, const char *name, bool is_mutable, const wah_v128_t *init_value) {
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
     WAH_ENSURE(init_value, WAH_ERROR_MISUSE);
     wah_value_t val = { .v128 = *init_value };
     return wah_export_global_internal(mod, name, WAH_TYPE_V128, is_mutable, &val);
+#else
+    (void)mod; (void)name; (void)is_mutable; (void)init_value;
+    return WAH_ERROR_DISABLED_FEATURE;
+#endif
 }
 
 // --- Call Context Implementation ---

@@ -201,6 +201,23 @@ static int run_feature_tests(void) {
         wah_free_module(&mod);
     }
 
+    // Test 4d: v128 globals can't be exported without SIMD
+    printf("Testing a v128 global export...\n");
+    {
+        wah_exec_context_t ctx;
+        wah_v128_t v = {{0}};
+        assert_ok(wah_new_module(&mod, NULL));
+        if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD) {
+            assert_ok(wah_export_global_v128(&mod, "g", false, &v));
+            assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+            assert_ok(wah_instantiate(&ctx));
+            wah_free_exec_context(&ctx);
+        } else {
+            assert_err(wah_export_global_v128(&mod, "g", false, &v), WAH_ERROR_DISABLED_FEATURE);
+        }
+        wah_free_module(&mod);
+    }
+
     // Test 5: feature closure
     printf("Testing feature closure: RELAXED_SIMD implies SIMD...\n");
     assert_true(wah_feature_closure(WAH_FEATURE_RELAXED_SIMD) & WAH_FEATURE_SIMD);
