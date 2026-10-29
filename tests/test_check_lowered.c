@@ -1,0 +1,158 @@
+// The lowered code checker should accept what the lowering emits, and reject it once any part
+// the interpreter relies on is broken.
+#ifndef WAH_CHECK_LOWERED
+#define WAH_CHECK_LOWERED
+#endif
+#define WAH_IMPLEMENTATION
+#include "common.h"
+
+// func 0 (a: i32, b: i32) -> i32 with an i64 local, which returns 25 for (8, 3); func 1 adds its params.
+static const char spec[] = "wasm \
+    types {[fn [i32, i32] [i32]]} funcs {[0, 0]} \
+    tables {[funcref limits.i32/1 1]} memories {[limits.i32/1 1]} \
+    globals {[i32 mut i32.const 7 end, i64 immut i64.const 1 end]} \
+    elements {[elem.active.table#0 i32.const 0 end [1]]} \
+    code {[ \
+        {[1 i64] \
+            local.get 0 i32.const 9 i32.store align=4 offset=0 \
+            block void \
+                block void \
+                    local.get 1 br_table [0, 1] 1 \
+                end \
+                i32.const 5 global.set 0 \
+            end \
+            loop void \
+                local.get 1 i32.const 1 i32.sub local.tee 1 br_if 0 \
+            end \
+            i64.const 3 local.set 2 \
+            local.get 0 i32.load align=4 offset=0 \
+            global.get 0 \
+            local.get 0 if i32 i32.const 1 else i32.const 2 end \
+            select \
+            block i32 \
+                local.get 0 local.get 1 call 1 \
+                local.get 0 local.get 1 i32.const 0 call_indirect 0 0 \
+                i32.add br 0 \
+            end \
+            i32.add \
+            memory.size 0 drop \
+            local.get 2 i32.wrap_i64 drop \
+            return \
+        end}, \
+        {[] local.get 0 local.get 1 i32.add end} \
+    ]}";
+
+static wah_error_t check_func(const wah_module_t *mod, uint32_t i) {
+    const wah_code_body_t *body = &mod->code_bodies[i];
+    return wah_check_lowered_code(mod, &body->parsed_code, &mod->types[mod->function_type_indices[i]], body,
+                                  body->max_stack_depth, WAH_TYPE_BOT);
+}
+
+// Returns the offset of the n-th instruction with `op`.
+static uint32_t find_instr(const wah_parsed_code_t *pc, uint16_t op, uint32_t n) {
+    wah_check_instr_t in;
+    for (uint32_t off = 0; off < pc->bytecode_size; off += in.len) {
+        assert_ok(wah_check_decode(pc->bytecode, pc->bytecode_size, off, &in));
+        if (in.op == op && n-- == 0) return off;
+    }
+    assert_true(!"instruction not found");
+    return 0;
+}
+
+// Overwrites a u16 or u32 at `pos` of func 0, expects the check to fail, and restores it.
+static void expect_rejected(wah_module_t *mod, uint32_t pos, uint32_t size, uint32_t value, const char *what) {
+    printf("  %s\n", what);
+    uint8_t *code = mod->code_bodies[0].parsed_code.bytecode, saved[4];
+    memcpy(saved, code + pos, size);
+    if (size == 2) wah_write_u16_le(code + pos, (uint16_t)value); else wah_write_u32_le(code + pos, value);
+    assert_err(check_func(mod, 0), WAH_ERROR_VALIDATION_FAILED);
+    memcpy(code + pos, saved, size);
+    assert_ok(check_func(mod, 0));
+}
+
+#define OP_AT(op, n) find_instr(pc, WAH_OP_##op, (n))
+#define IMM_AT(op, n, i) (OP_AT(op, n) + sizeof(uint16_t) + (i) * sizeof(uint32_t))
+
+static void test_accepted(void) {
+    printf("Testing lowered code is accepted...\n");
+    wah_module_t mod;
+    wah_exec_context_t ctx;
+    wah_value_t params[2] = { {.i32 = 8}, {.i32 = 3} }, result;
+    assert_ok(wah_parse_module_from_spec(&mod, spec));
+    assert_ok(check_func(&mod, 0));
+    assert_ok(check_func(&mod, 1));
+    assert_ok(wah_check_lowered_code(&mod, &mod.globals[0].init_expr, NULL, NULL, WAH_MAX_TYPE_STACK_SIZE, WAH_TYPE_I32));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_call(&ctx, 0, params, 2, &result));
+    assert_eq_i32(result.i32, 25);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
+static void test_rejected(void) {
+    printf("Testing broken lowered code is rejected...\n");
+    wah_module_t mod;
+    assert_ok(wah_parse_module_from_spec(&mod, spec));
+    wah_code_body_t *body = &mod.code_bodies[0];
+    const wah_parsed_code_t *pc = &body->parsed_code;
+
+    expect_rejected(&mod, IMM_AT(LOCAL_GET, 0, 0), 4, 3, "local index out of range");
+    expect_rejected(&mod, IMM_AT(LOCAL_SET, 0, 0), 4, 0, "local of a wrong type");
+    expect_rejected(&mod, IMM_AT(GLOBAL_SET, 0, 0), 4, 1, "immutable global set");
+    expect_rejected(&mod, OP_AT(GLOBAL_GET, 0), 2, WAH_OP_GLOBAL_GET_INDIRECT, "indirect access to a direct global");
+    expect_rejected(&mod, IMM_AT(CALL, 0, 0), 4, 2, "function index out of range");
+    expect_rejected(&mod, IMM_AT(CALL_INDIRECT, 0, 0), 4, 1, "type index out of range");
+    expect_rejected(&mod, OP_AT(I32_ADD, 0), 2, WAH_OP_I64_ADD, "operands of a wrong type");
+    expect_rejected(&mod, OP_AT(DROP, 0), 2, WAH_OP_NOP, "instruction that is never emitted");
+    expect_rejected(&mod, OP_AT(RETURN, 0), 2, WAH_OP_DROP, "returning without a result");
+    expect_rejected(&mod, IMM_AT(BR, 0, 0), 4, OP_AT(BR, 0) + 1, "branch into the middle of an instruction");
+    expect_rejected(&mod, IMM_AT(BR, 0, 0), 4, pc->bytecode_size, "branch out of the code");
+    expect_rejected(&mod, IMM_AT(BR, 0, 1), 4, 1000, "branch keeping too many values");
+    expect_rejected(&mod, IMM_AT(BR, 0, 2), 4, 1, "branch dropping a value the target expects");
+    expect_rejected(&mod, IMM_AT(BR_IF, 0, 2), 4, 1, "branch dropping a value missing");
+    expect_rejected(&mod, IMM_AT(IF, 0, 0), 4, 0, "branch to a target with another stack");
+
+    printf("  br_table record dropping a value missing\n");
+    uint32_t br_table = OP_AT(BR_TABLE, 0);
+    uint32_t target_count = wah_read_u32_le(pc->bytecode + br_table + sizeof(uint16_t));
+    uint32_t records = br_table + sizeof(uint16_t) + 2 * sizeof(uint32_t) + (target_count + 1) * sizeof(uint16_t);
+    expect_rejected(&mod, records + sizeof(uint32_t), 4, 1, "  (drop of the first record)");
+    expect_rejected(&mod, records, 4, records, "  (target of the first record)");
+
+    printf("  truncated code\n");
+    body->parsed_code.bytecode_size--;
+    assert_err(check_func(&mod, 0), WAH_ERROR_VALIDATION_FAILED);
+    body->parsed_code.bytecode_size++;
+
+    printf("  operand stack deeper than reserved\n");
+    body->max_stack_depth--;
+    assert_err(check_func(&mod, 0), WAH_ERROR_VALIDATION_FAILED);
+    body->max_stack_depth++;
+
+    printf("  const expression of a wrong type\n");
+    assert_err(wah_check_lowered_code(&mod, &mod.globals[0].init_expr, NULL, NULL, WAH_MAX_TYPE_STACK_SIZE, WAH_TYPE_I64),
+               WAH_ERROR_VALIDATION_FAILED);
+
+    assert_ok(check_func(&mod, 0));
+    wah_free_module(&mod);
+}
+
+static void test_fuel_metering(void) {
+    printf("Testing lowered code with fuel metering...\n");
+    wah_parse_options_t opts = { .enable_fuel_metering = true };
+    wah_module_t mod;
+    assert_ok(wah_parse_module_from_spec_ex(&mod, &opts, spec));
+    assert_ok(check_func(&mod, 0));
+    const wah_parsed_code_t *pc = &mod.code_bodies[0].parsed_code;
+    expect_rejected(&mod, OP_AT(METER, 0) + 2 * sizeof(uint16_t), 4, OP_AT(METER, 0) + 1, "slow island into an instruction");
+    expect_rejected(&mod, IMM_AT(ELSE, 0, 0), 4, 0, "jump to a target with another stack");
+    wah_free_module(&mod);
+}
+
+int main(void) {
+    test_accepted();
+    test_rejected();
+    test_fuel_metering();
+    printf("All lowered code checker tests passed!\n");
+    return 0;
+}
