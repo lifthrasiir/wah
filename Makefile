@@ -186,18 +186,25 @@ $(LIBFUZZER_HARNESS_BIN): $(LIBFUZZER_HARNESS_SRC) wah.h
 	$(LIBFUZZER_CC) $(LIBFUZZER_CFLAGS) $< -o $@ $(LIBFUZZER_LDFLAGS)
 
 # --- CBMC proofs ---
-# Each entry is FILE.HARNESS, checking proofs/FILE.c from harness_HARNESS with loops unwound up to CBMC_UNWIND_FILE.
-# Conversions to signed types and unsigned wraparound are intended, so they aren't checked.
+# Each entry is FILE.HARNESS, checking proofs/FILE.c from harness_HARNESS with loops unwound up to CBMC_UNWIND_FILE
+# and extra flags CBMC_FLAGS_FILE. Conversions to signed types and unsigned wraparound are intended, so they aren't
+# checked by default.
 
 CBMC ?= cbmc
 CBMC_FLAGS := --bounds-check --pointer-check --signed-overflow-check --undefined-shift-check --unwinding-assertions
+CBMC_FLOAT_BOUNDARY_PROOFS := $(foreach t, trunc trunc_sat, $(t)_f32_to_i32 $(t)_f32_to_i64 $(t)_f64_to_i64)
+CBMC_FLOAT_PROOFS := $(foreach n, 32 64, $(patsubst %, float.%_f$(n), min max nearest) \
+	$(foreach t, i32 u32 i64 u64, float.trunc_f$(n)_to_$(t) float.trunc_sat_f$(n)_to_$(t)))
 CBMC_PROOFS := leb128.uleb128 leb128.uleb128_64 leb128.sleb128_32 leb128.sleb128_64 utf8.valid \
 	bounds.effective_addr bounds.range_in_bounds bounds.count decode.opcode decode.memarg decode.val_type \
-	decode.storage_type
+	decode.storage_type $(CBMC_FLOAT_PROOFS) $(patsubst %, float_boundary.%, $(CBMC_FLOAT_BOUNDARY_PROOFS))
 CBMC_UNWIND_leb128 := 12
-CBMC_UNWIND_decode := 22
 CBMC_UNWIND_utf8 := 9
 CBMC_UNWIND_bounds := 9
+CBMC_UNWIND_decode := 22
+CBMC_UNWIND_float := 2
+CBMC_UNWIND_float_boundary := 2
+CBMC_FLAGS_float := --conversion-check
 
 CBMC_TARGETS := $(patsubst %, cbmc_%, $(CBMC_PROOFS))
 
@@ -208,7 +215,8 @@ cbmc: $(CBMC_TARGETS)
 $(CBMC_TARGETS): cbmc_%: FORCE
 	@echo "## Proving harness_$(word 2,$(subst ., ,$*)) in proofs/$(word 1,$(subst ., ,$*)).c..."
 	@$(CBMC) proofs/$(word 1,$(subst ., ,$*)).c --function harness_$(word 2,$(subst ., ,$*)) \
-		--unwind $(CBMC_UNWIND_$(word 1,$(subst ., ,$*))) $(CBMC_FLAGS) > proofs/$*.log 2>&1 || \
+		--unwind $(CBMC_UNWIND_$(word 1,$(subst ., ,$*))) $(CBMC_FLAGS) $(CBMC_FLAGS_$(word 1,$(subst ., ,$*))) \
+		> proofs/$*.log 2>&1 || \
 		{ grep -E 'FAILURE|ERROR|error' proofs/$*.log; exit 1; }
 
 # --- Coverage ---
