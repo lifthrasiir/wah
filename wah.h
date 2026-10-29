@@ -1715,6 +1715,17 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 #define WAH_IF_RELAXED_SIMD(...)
 #endif
 
+// Not compiled out yet
+#define WAH_IF_SIGN_EXT(...) __VA_ARGS__
+#define WAH_IF_NONTRAPPING_F2I(...) __VA_ARGS__
+#define WAH_IF_BULK_MEMORY(...) __VA_ARGS__
+#define WAH_IF_REF_TYPES(...) __VA_ARGS__
+#define WAH_IF_TAIL_CALL(...) __VA_ARGS__
+#define WAH_IF_TYPED_FUNCREF(...) __VA_ARGS__
+
+// WAH_IF_##feat for an empty `feat` (MVP)
+#define WAH_IF_(...) __VA_ARGS__
+
 static inline wah_features_t wah_feature_closure(wah_features_t f) {
     if (f & WAH_FEATURE_RELAXED_SIMD) f |= WAH_FEATURE_SIMD;
     if (f & (WAH_FEATURE_GC | WAH_FEATURE_TYPED_FUNCREF)) f |= WAH_FEATURE_REF_TYPES;
@@ -1775,10 +1786,10 @@ typedef enum {
     /* Control Flow Operators */ \
     X(UNREACHABLE,, 0x00,) X(NOP,, 0x01,) X(BLOCK,, 0x02,) X(LOOP,, 0x03,) X(IF,, 0x04,) X(ELSE,, 0x05,) X(END,, 0x0B,) \
     X(BR,, 0x0C,) X(BR_IF,, 0x0D,) X(BR_TABLE,, 0x0E,) X(RETURN,, 0x0F,) X(CALL,I, 0x10,) X(CALL_INDIRECT,II, 0x11,) \
-    WAH_IF_EXCEPTION(X(THROW,I, 0x08, EXCEPTION) X(THROW_REF,, 0x0A, EXCEPTION)) \
+    X(THROW,I, 0x08, EXCEPTION) X(THROW_REF,, 0x0A, EXCEPTION) \
     X(RETURN_CALL,I, 0x12, TAIL_CALL) X(RETURN_CALL_INDIRECT,II, 0x13, TAIL_CALL) \
     X(CALL_REF,I, 0x14, TYPED_FUNCREF) X(RETURN_CALL_REF,I, 0x15, TYPED_FUNCREF) \
-    WAH_IF_EXCEPTION(X(TRY_TABLE,, 0x1F, EXCEPTION)) \
+    X(TRY_TABLE,, 0x1F, EXCEPTION) \
     \
     /* Parametric Operators */ \
     X(DROP,, 0x1A,) X(SELECT,, 0x1B,) X(SELECT_T,, 0x1C, REF_TYPES) \
@@ -1854,7 +1865,7 @@ typedef enum {
     X(REF_NULL,, 0xD0, REF_TYPES) X(REF_IS_NULL,, 0xD1, REF_TYPES) X(REF_FUNC,, 0xD2, REF_TYPES) \
     X(REF_AS_NON_NULL,, 0xD4, TYPED_FUNCREF) X(BR_ON_NULL,, 0xD5, TYPED_FUNCREF) X(BR_ON_NON_NULL,, 0xD6, TYPED_FUNCREF) \
     \
-    WAH_IF_GC(WAH_GC_OPCODES(X)) WAH_SIMD_OPCODES(X)
+    WAH_GC_OPCODES(X) WAH_SIMD_OPCODES(X)
 
 #define WAH_GC_OPCODES(X) \
     X(REF_EQ,, 0xD3, GC) \
@@ -1980,7 +1991,6 @@ typedef enum {
     X(F32X4_DEMOTE_F64X2_ZERO,_V_V, WAH_FD+0x5E, SIMD) X(F64X2_PROMOTE_LOW_F32X4,_V_V, WAH_FD+0x5F, SIMD) \
     \
     /* Relaxed SIMD */ \
-    WAH_IF_RELAXED_SIMD( \
     X(I8X16_RELAXED_SWIZZLE,_VV_V, WAH_FD+0x100, RELAXED_SIMD) \
     X(I32X4_RELAXED_TRUNC_F32X4_S,_V_V, WAH_FD+0x101, RELAXED_SIMD) X(I32X4_RELAXED_TRUNC_F32X4_U,_V_V, WAH_FD+0x102, RELAXED_SIMD) \
     X(I32X4_RELAXED_TRUNC_F64X2_S,_V_V, WAH_FD+0x103, RELAXED_SIMD) X(I32X4_RELAXED_TRUNC_F64X2_U,_V_V, WAH_FD+0x104, RELAXED_SIMD) \
@@ -1993,7 +2003,6 @@ typedef enum {
     X(I16X8_RELAXED_Q15MULR_S,_VV_V, WAH_FD+0x111, RELAXED_SIMD) \
     X(I16X8_RELAXED_DOT_I8X16_I7X16_S,_VV_V, WAH_FD+0x112, RELAXED_SIMD) \
     X(I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S,_VVV_V, WAH_FD+0x113, RELAXED_SIMD) \
-    ) \
     \
     /* Vector Comparison Operators */ \
     X(I8X16_EQ,_VV_V, WAH_FD+0x23, SIMD) X(I8X16_NE,_VV_V, WAH_FD+0x24, SIMD) \
@@ -2164,7 +2173,7 @@ typedef enum {
     )
 
 typedef enum {
-#define WAH_OPCODE_INIT(name, cls, val, feat) WAH_OP_##name = val,
+#define WAH_OPCODE_INIT(name, cls, val, feat) WAH_IF_##feat(WAH_OP_##name = val,)
 #define WAH_EXTRA_OPCODE_INIT(name, suffix) WAH_OP_##name##_##suffix,
 #define WAH_INTERNAL_OPCODE_INIT(name) WAH_OP_##name,
     WAH_OPCODES(WAH_OPCODE_INIT)
@@ -2178,13 +2187,14 @@ typedef enum {
 } wah_opcode_t;
 
 static const uint8_t wah_opclasses[WAH_FE] = {
-#define WAH_OPCLASS_INIT(name, cls, val, feat) [WAH_OP_##name] = WAH_OPCLASS_##cls,
+#define WAH_OPCLASS_INIT(name, cls, val, feat) WAH_IF_##feat([WAH_OP_##name] = WAH_OPCLASS_##cls,)
     WAH_OPCODES(WAH_OPCLASS_INIT)
 #undef WAH_OPCLASS_INIT
 };
 
+// Also covers compiled-out opcodes, so that they are reported as disabled
 static const uint8_t wah_opcode_features[WAH_FE] = {
-#define WAH_OPCODE_FEATURE_INIT(name, cls, val, feat) [WAH_OP_##name] = WAH_FEATURE_SHIFT_##feat,
+#define WAH_OPCODE_FEATURE_INIT(name, cls, val, feat) [val] = WAH_FEATURE_SHIFT_##feat,
     WAH_OPCODES(WAH_OPCODE_FEATURE_INIT)
 #undef WAH_OPCODE_FEATURE_INIT
 };
@@ -6133,14 +6143,10 @@ static wah_error_t wah_decode_opcode(const uint8_t **ptr, const uint8_t *end, ui
 
     switch (first_byte) {
         case 0xFB:
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
             WAH_CHECK(wah_decode_uleb128(ptr, end, &sub_opcode_val));
             WAH_ENSURE(sub_opcode_val < WAH_FC - WAH_FB, WAH_ERROR_VALIDATION_FAILED);
             *opcode_val = WAH_FB + (uint16_t)sub_opcode_val;
             break;
-#else
-            return WAH_ERROR_DISABLED_FEATURE;
-#endif
         case 0xFC:
             WAH_CHECK(wah_decode_uleb128(ptr, end, &sub_opcode_val));
             WAH_ENSURE(sub_opcode_val < WAH_FD - WAH_FC, WAH_ERROR_VALIDATION_FAILED);
@@ -6148,20 +6154,9 @@ static wah_error_t wah_decode_opcode(const uint8_t **ptr, const uint8_t *end, ui
             break;
         case 0xFD:
             WAH_CHECK(wah_decode_uleb128(ptr, end, &sub_opcode_val));
-#if !((WAH_COMPILED_FEATURES) & WAH_FEATURE_RELAXED_SIMD)
-            WAH_ENSURE(sub_opcode_val < 0x100 || sub_opcode_val > 0x113, WAH_ERROR_DISABLED_FEATURE);
-#endif
             WAH_ENSURE(sub_opcode_val < WAH_FE - WAH_FD, WAH_ERROR_VALIDATION_FAILED);
             *opcode_val = WAH_FD + (uint16_t)sub_opcode_val;
             break;
-#if !((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
-        case 0x08: case 0x0A: case 0x1F: // throw, throw_ref and try_table
-            return WAH_ERROR_DISABLED_FEATURE;
-#endif
-#if !((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
-        case 0xD3: // ref.eq
-            return WAH_ERROR_DISABLED_FEATURE;
-#endif
         default:
             WAH_ENSURE(first_byte < WAH_FB, WAH_ERROR_MALFORMED);
             *opcode_val = (uint16_t)first_byte;
@@ -6576,7 +6571,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
                 WAH_CHECK(wah_require_feature(vctx->module, WAH_FEATURE_SHIFT_EXTENDED_CONST));
                 break;
             case WAH_OP_I32_CONST: case WAH_OP_I64_CONST: case WAH_OP_F32_CONST:
-            case WAH_OP_F64_CONST: case WAH_OP_V128_CONST:
+            case WAH_OP_F64_CONST: WAH_IF_SIMD(case WAH_OP_V128_CONST:)
             case WAH_OP_REF_NULL: case WAH_OP_REF_FUNC:
             case WAH_OP_GLOBAL_GET:
             WAH_IF_GC(
@@ -6705,6 +6700,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_I64_STORE8: STORE_OP(I64, 0)
         case WAH_OP_I64_STORE16: STORE_OP(I64, 1)
         case WAH_OP_I64_STORE32: STORE_OP(I64, 2)
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
         case WAH_OP_V128_LOAD: LOAD_OP(V128, 4)
         case WAH_OP_V128_LOAD8X8_S: case WAH_OP_V128_LOAD8X8_U: LOAD_OP(V128, 3)
         case WAH_OP_V128_LOAD16X4_S: case WAH_OP_V128_LOAD16X4_U: LOAD_OP(V128, 3)
@@ -6751,6 +6747,7 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
         case WAH_OP_F32X4_REPLACE_LANE: REPLACE_LANE_OP(F32, 4)
         case WAH_OP_F64X2_EXTRACT_LANE: EXTRACT_LANE_OP(F64, 2)
         case WAH_OP_F64X2_REPLACE_LANE: REPLACE_LANE_OP(F64, 2)
+#endif // WAH_FEATURE_SIMD
 
 #undef LOAD_OP
 #undef STORE_OP
@@ -7065,12 +7062,14 @@ static wah_error_t wah_validate_opcode(uint16_t opcode_val, const uint8_t **code
             *code_ptr += 8;
             PUSH(F64); break;
         }
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
         case WAH_OP_V128_CONST: {
             WAH_ENSURE(code_end - *code_ptr >= 16, WAH_ERROR_UNEXPECTED_EOF);
             EMIT_INSTR_EX(opcode_val, memcpy(_di->imm.v128, *code_ptr, 16));
             *code_ptr += 16;
             PUSH(V128); break;
         }
+#endif
 
         case WAH_OP_F32_DEMOTE_F64:  POP(F64); PUSH(F32); EMIT_SIMPLE(); break;
         case WAH_OP_F64_PROMOTE_F32: POP(F32); PUSH(F64); EMIT_SIMPLE(); break;
@@ -8505,10 +8504,12 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
                     WAH_LOWER_U64(instr->imm.f64_bits);
                     break;
                 }
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
                 case WAH_OP_V128_CONST: case WAH_OP_I8X16_SHUFFLE: {
                     WAH_LOWER_MEM(instr->imm.v128, 16);
                     break;
                 }
+#endif
                 case WAH_OP_SELECT_T: {
                     // Rewrite SELECT_T to SELECT: overwrite the opcode we just emitted
                     buf_size -= sizeof(uint16_t);
@@ -12772,21 +12773,25 @@ typedef WAH_MUSTTAIL_CC wah_error_t (*wah_run_fn_t)(wah_exec_context_t *ctx, wah
                                                     const uint8_t *bytecode_ip, wah_value_t *sp,
                                                     wah_exec_context_t *fctx);
 
-#define WAH_RUN_DECL(opcode, ...) WAH_RUN(opcode);
+#define WAH_RUN_DECL(opcode) WAH_RUN(opcode);
+#define WAH_OPCODE_RUN_DECL(name, cls, val, feat) WAH_IF_##feat(WAH_RUN_DECL(name))
 #define WAH_EXTRA_RUN_DECL(opcode, suffix) WAH_RUN_DECL(opcode##_##suffix)
-WAH_OPCODES(WAH_RUN_DECL)
+WAH_OPCODES(WAH_OPCODE_RUN_DECL)
 WAH_INTERNAL_OPCODES(WAH_RUN_DECL)
 WAH_EXTRA_OPCODES(WAH_EXTRA_RUN_DECL)
 #undef WAH_RUN_DECL
+#undef WAH_OPCODE_RUN_DECL
 #undef WAH_EXTRA_RUN_DECL
 
 static const wah_run_fn_t wah_run_table[] = {
-#define WAH_RUN_ENTRY(opcode, ...) [WAH_OP_##opcode] = wah_run_##opcode,
+#define WAH_RUN_ENTRY(opcode) [WAH_OP_##opcode] = wah_run_##opcode,
+#define WAH_OPCODE_RUN_ENTRY(name, cls, val, feat) WAH_IF_##feat(WAH_RUN_ENTRY(name))
 #define WAH_EXTRA_RUN_ENTRY(opcode, suffix) WAH_RUN_ENTRY(opcode##_##suffix)
-    WAH_OPCODES(WAH_RUN_ENTRY)
+    WAH_OPCODES(WAH_OPCODE_RUN_ENTRY)
     WAH_INTERNAL_OPCODES(WAH_RUN_ENTRY)
     WAH_EXTRA_OPCODES(WAH_EXTRA_RUN_ENTRY)
 #undef WAH_RUN_ENTRY
+#undef WAH_OPCODE_RUN_ENTRY
 #undef WAH_EXTRA_RUN_ENTRY
 };
 
@@ -12824,7 +12829,7 @@ static wah_error_t wah_run_interpreter(wah_exec_context_t *ctx) {
 
     // Computed goto jump table
     static const void* wah_opcode_labels[] = {
-#define WAH_OPCODE_LABEL(name, cls, val, feat) [WAH_OP_##name] = &&wah_op_##name,
+#define WAH_OPCODE_LABEL(name, cls, val, feat) WAH_IF_##feat([WAH_OP_##name] = &&wah_op_##name,)
 #define WAH_EXTRA_OPCODE_LABEL(name, suffix) [WAH_OP_##name##_##suffix] = &&wah_op_##name##_##suffix,
 #define WAH_INTERNAL_OPCODE_LABEL(name) [WAH_OP_##name] = &&wah_op_##name,
         WAH_OPCODES(WAH_OPCODE_LABEL)
@@ -15994,12 +15999,6 @@ WAH_IF_X86_64(
 #undef N128_FP_TERNARY_OP_F32
 #undef N128_FP_TERNARY_OP_F64
 
-#else // !WAH_FEATURE_SIMD
-
-#define WAH_SIMD_NEVER_RUN(name, ...) WAH_NEVER_RUN(name)
-WAH_SIMD_OPCODES(WAH_SIMD_NEVER_RUN)
-#undef WAH_SIMD_NEVER_RUN
-
 #endif // WAH_FEATURE_SIMD
 
 //------------------------------------------------------------------------------
@@ -17202,7 +17201,7 @@ static wah_error_t wah_new_const_expr(wah_type_t type, const wah_value_t *value,
         case WAH_TYPE_I64:  opcode = WAH_OP_I64_CONST;  payload = &value->i64; payload_size = sizeof(int64_t); break;
         case WAH_TYPE_F32:  opcode = WAH_OP_F32_CONST;  payload = &value->f32; payload_size = sizeof(float); break;
         case WAH_TYPE_F64:  opcode = WAH_OP_F64_CONST;  payload = &value->f64; payload_size = sizeof(double); break;
-        case WAH_TYPE_V128: opcode = WAH_OP_V128_CONST; payload = &value->v128; payload_size = sizeof(wah_v128_t); break;
+        WAH_IF_SIMD(case WAH_TYPE_V128: opcode = WAH_OP_V128_CONST; payload = &value->v128; payload_size = sizeof(wah_v128_t); break;)
         default: return WAH_ERROR_VALIDATION_FAILED;
     }
 
