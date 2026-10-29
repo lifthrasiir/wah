@@ -183,11 +183,50 @@ static void test_bulk_memory(void) {
     wah_free_module(&mod);
 }
 
+static void test_references(void) {
+    printf("Testing lowered reference operations...\n");
+    wah_module_t mod;
+    wah_exec_context_t ctx;
+    wah_value_t param = {.i32 = 1}, result;
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [i32] [i32], fn [] [i32], fn [] []]} funcs {[0, 1, 2]} \
+        tables {[funcref limits.i32/1 2, externref limits.i32/1 2]} \
+        elements {[elem.declarative elem.funcref [1]]} \
+        code {[ \
+            {[] \
+                i32.const 0 ref.func 1 table.set 0 \
+                i32.const 0 table.get 0 ref.is_null drop \
+                i32.const 1 ref.null externref table.set 1 \
+                ref.func 1 call_ref 1 \
+                block void ref.null funcref br_on_null 0 drop end \
+                local.get 0 i32.add \
+                return_call 1 \
+            end}, \
+            {[] i32.const 7 end}, \
+            {[] end} \
+        ]}"));
+    assert_ok(check_func(&mod, 0));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_call(&ctx, 0, &param, 1, &result));
+    assert_eq_i32(result.i32, 7);
+    wah_free_exec_context(&ctx);
+
+    const wah_parsed_code_t *pc = &mod.code_bodies[0].parsed_code;
+    expect_rejected(&mod, IMM_AT(TABLE_SET, 0, 0), 4, 1, "function into a table of externs");
+    expect_rejected(&mod, IMM_AT(REF_NULL, 0, 0), 4, (uint32_t)WAH_TYPE_FUNC, "null function into a table of externs");
+    expect_rejected(&mod, IMM_AT(REF_FUNC, 0, 0), 4, 3, "function out of range to refer to");
+    expect_rejected(&mod, IMM_AT(CALL_REF, 0, 0), 4, 3, "type out of range to call by reference");
+    expect_rejected(&mod, IMM_AT(BR_ON_NULL, 0, 1), 4, 5, "branch on null keeping too many values");
+    expect_rejected(&mod, IMM_AT(RETURN_CALL, 0, 0), 4, 2, "tail call returning other results");
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_accepted();
     test_rejected();
     test_fuel_metering();
     test_bulk_memory();
+    test_references();
     printf("All lowered code checker tests passed!\n");
     return 0;
 }

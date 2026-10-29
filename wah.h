@@ -8793,7 +8793,7 @@ cleanup:
 
 // Independently checks lowered code against what the interpreter relies on without checking:
 // instruction boundaries, branch targets, operand types and the bound of the operand stack height.
-// Only numeric code is understood for now, and anything else is WAH_ERROR_UNSUPPORTED instead of a failure.
+// GC and SIMD aren't understood for now, and they are WAH_ERROR_UNSUPPORTED instead of a failure.
 // Unreachable code is never executed, so it only has to be decodable.
 
 enum { WAH_CHECK_MEM_NONE, WAH_CHECK_MEM_I32, WAH_CHECK_MEM_I32_MEM0, WAH_CHECK_MEM_I64, WAH_CHECK_MEM_I64_MEM0 };
@@ -8805,9 +8805,25 @@ typedef struct {
     uint64_t x;            // u64 immediate after u32 ones
 } wah_check_instr_t;
 
-static bool wah_check_numeric(wah_type_t t) {
-    return t == WAH_TYPE_I32 || t == WAH_TYPE_I64 || t == WAH_TYPE_F32 || t == WAH_TYPE_F64;
+// Operand types are tracked exactly for numbers, and only by their kinds for references: functions, exceptions and the
+// rest (as funcref, exnref and anyref). That is enough without GC, where nulls are checked at run time, and so are
+// signatures of functions called by reference. Externs and others share the representation, so conversions between
+// them are not even lowered. Returns 0 for other types.
+static int8_t wah_check_kind(const wah_module_t *module, wah_type_t t) {
+    static const wah_type_t tops[] = { WAH_TYPE_FUNC, WAH_TYPE_EXN, WAH_TYPE_EXTERN, WAH_TYPE_ANY }; // Any is checked last
+    if (t == WAH_TYPE_I32 || t == WAH_TYPE_I64 || t == WAH_TYPE_F32 || t == WAH_TYPE_F64) return (int8_t)t;
+    if (!WAH_TYPE_IS_REF(t) || (t >= 0 && WAH_TYIDX(t) >= module->type_count)) return 0;
+    for (size_t i = 0; i < sizeof(tops) / sizeof(*tops); i++) {
+        if (wah_type_is_subtype(WAH_TYPE_AS_NON_NULL(t), tops[i], module)) return (int8_t)(i < 2 ? WAH_TYPE_AS_NULLABLE(tops[i]) : WAH_TYPE_ANYREF);
+    }
+    return 0;
 }
+
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
+static bool wah_check_is_ref_kind(int8_t k) {
+    return k == WAH_TYPE_FUNCREF || k == WAH_TYPE_EXNREF || k == WAH_TYPE_ANYREF;
+}
+#endif
 
 static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t off, wah_check_instr_t *in) {
     WAH_ENSURE(size - off >= sizeof(uint16_t), WAH_ERROR_VALIDATION_FAILED);
@@ -8864,6 +8880,23 @@ static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t
                         case WAH_OP_TABLE_COPY_i32_to_i64: case WAH_OP_TABLE_COPY_i64_to_i32: case WAH_OP_TABLE_COPY_i64_to_i64:)
             n32 = 2 WAH_IF_GC(+ 1); break;
 #endif
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
+        case WAH_OP_REF_IS_NULL: break;
+        case WAH_OP_REF_NULL: case WAH_OP_REF_FUNC: n32 = 1; break; // Heap type or function
+        case WAH_OP_TABLE_GET: case WAH_OP_TABLE_SET: case WAH_OP_TABLE_SIZE: case WAH_OP_TABLE_GROW:
+        WAH_IF_MEMORY64(case WAH_OP_TABLE_GET_i64: case WAH_OP_TABLE_SET_i64: case WAH_OP_TABLE_SIZE_i64: case WAH_OP_TABLE_GROW_i64:)
+            n32 = 1; break; // Table
+        case WAH_OP_TABLE_FILL: WAH_IF_MEMORY64(case WAH_OP_TABLE_FILL_i64:) n32 = 1 WAH_IF_GC(+ 1); break;
+#endif
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF)
+        case WAH_OP_REF_AS_NON_NULL: break;
+        case WAH_OP_BR_ON_NULL: case WAH_OP_BR_ON_NON_NULL: n32 = 3; break; // Target, keep and drop
+        case WAH_OP_CALL_REF: n32 = 1; break; // Type
+#endif
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TAIL_CALL)
+        case WAH_OP_RETURN_CALL: WAH_IF_TYPED_FUNCREF(case WAH_OP_RETURN_CALL_REF:) n32 = 1; break; // Function or type
+        case WAH_OP_RETURN_CALL_INDIRECT: WAH_IF_MEMORY64(case WAH_OP_RETURN_CALL_INDIRECT_i64:) n32 = 2; break; // Type, table
+#endif
 #define WAH_CHECK_MEM_CASE(name, suffix, mem_, n32_) \
         case WAH_OP_##name##_##suffix: in->base = WAH_OP_##name; in->mem = (mem_); n32 = (n32_); n64 = 1; break;
 #define WAH_CHECK_MEM_I32_CASE(name, suffix) case WAH_OP_##name: in->mem = WAH_CHECK_MEM_I32; n32 = 1; n64 = 1; break;
@@ -8881,6 +8914,9 @@ static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t
 #undef WAH_CHECK_MEM_I64_MEM0_CASE
         // Never emitted, and not even runnable
         case WAH_OP_NOP: case WAH_OP_BLOCK: case WAH_OP_LOOP: WAH_IF_REF_TYPES(case WAH_OP_SELECT_T:)
+#if !((WAH_COMPILED_FEATURES) & WAH_FEATURE_TAIL_CALL)
+        WAH_IF_TYPED_FUNCREF(case WAH_OP_RETURN_CALL_REF:)
+#endif
             return WAH_ERROR_VALIDATION_FAILED;
         default:
             if (op >= WAH_FE) return WAH_ERROR_UNSUPPORTED;
@@ -8931,9 +8967,10 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
         err = WAH_ERROR_VALIDATION_FAILED; goto cleanup; \
     } while (0)
     #define CK_ENSURE(cond) do { if (!(cond)) CK_FAIL(); } while (0)
-    #define CK_TYPE(t) do { if (!wah_check_numeric(t)) { err = WAH_ERROR_UNSUPPORTED; goto cleanup; } } while (0)
-    #define CK_PUSH(t) do { CK_TYPE(t); CK_ENSURE(h < max_depth); stk[h++] = (int8_t)(t); } while (0)
-    #define CK_POP(t) do { CK_TYPE(t); CK_ENSURE(h > 0 && stk[h - 1] == (int8_t)(t)); h--; } while (0)
+    #define CK_KIND(k, t) int8_t k = wah_check_kind(module, (t)); if (!k) { err = WAH_ERROR_UNSUPPORTED; goto cleanup; }
+    #define CK_PUSH(t) do { CK_KIND(_k, t); CK_ENSURE(h < max_depth); stk[h++] = _k; } while (0)
+    #define CK_POP(t) do { CK_KIND(_k, t); CK_ENSURE(h > 0 && stk[h - 1] == _k); h--; } while (0)
+    #define CK_ENSURE_REF() CK_ENSURE(h > 0 && wah_check_is_ref_kind(stk[h - 1]))
     #define CK_UN(a, r) CK_POP(WAH_TYPE_##a); CK_PUSH(WAH_TYPE_##r); break
     #define CK_BIN(a, r) CK_POP(WAH_TYPE_##a); CK_POP(WAH_TYPE_##a); CK_PUSH(WAH_TYPE_##r); break
     // Records the stack `s` (of height `n`) at a branch target, or checks it against the recorded one
@@ -8984,7 +9021,9 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
     for (off = 0; off < size; off += in.len) {
         wah_check_decode(code, size, off, &in);
         switch (in.op) {
-            case WAH_OP_IF: case WAH_OP_ELSE: case WAH_OP_BR: case WAH_OP_BR_IF: CK_TARGET(in.a); break;
+            case WAH_OP_IF: case WAH_OP_ELSE: case WAH_OP_BR: case WAH_OP_BR_IF:
+            WAH_IF_TYPED_FUNCREF(case WAH_OP_BR_ON_NULL: case WAH_OP_BR_ON_NON_NULL:)
+                CK_TARGET(in.a); break;
             case WAH_OP_METER: CK_TARGET(in.b); break;
             case WAH_OP_BR_TABLE: {
                 const uint8_t *records = code + off + sizeof(uint16_t) + 2 * sizeof(uint32_t) + ((size_t)in.a + 1) * sizeof(uint16_t);
@@ -9014,7 +9053,7 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
             if (!is_func) { // Const expressions run in a makeshift frame without locals and nested frames
                 switch (in.op) {
                     case WAH_OP_I32_CONST: case WAH_OP_I64_CONST: case WAH_OP_F32_CONST: case WAH_OP_F64_CONST:
-                    case WAH_OP_GLOBAL_GET: case WAH_OP_END:
+                    case WAH_OP_GLOBAL_GET: case WAH_OP_END: WAH_IF_REF_TYPES(case WAH_OP_REF_NULL: case WAH_OP_REF_FUNC:)
                         break;
                     default: CK_ENSURE(in.op < WAH_FE && wah_opclasses[in.op] >= WAH_OPCLASS__I_I &&
                                        wah_opclasses[in.op] <= WAH_OPCLASS__VVV_V);
@@ -9080,24 +9119,86 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                     }
                     break;
                 }
-                case WAH_OP_CALL: case WAH_OP_CALL_INDIRECT: WAH_IF_MEMORY64(case WAH_OP_CALL_INDIRECT_i64:) {
+                case WAH_OP_CALL: case WAH_OP_CALL_INDIRECT: WAH_IF_MEMORY64(case WAH_OP_CALL_INDIRECT_i64:)
+                WAH_IF_TYPED_FUNCREF(case WAH_OP_CALL_REF:)
+                WAH_IF_TAIL_CALL(case WAH_OP_RETURN_CALL: case WAH_OP_RETURN_CALL_INDIRECT: WAH_IF_TYPED_FUNCREF(case WAH_OP_RETURN_CALL_REF:)
+                                 WAH_IF_MEMORY64(case WAH_OP_RETURN_CALL_INDIRECT_i64:)) {
+                    bool tail = false, by_ref = false, indirect64 = false;
+                    WAH_IF_TAIL_CALL(tail = in.op == WAH_OP_RETURN_CALL || in.op == WAH_OP_RETURN_CALL_INDIRECT
+                        WAH_IF_TYPED_FUNCREF(|| in.op == WAH_OP_RETURN_CALL_REF) WAH_IF_MEMORY64(|| in.op == WAH_OP_RETURN_CALL_INDIRECT_i64);)
+                    WAH_IF_TYPED_FUNCREF(by_ref = in.op == WAH_OP_CALL_REF WAH_IF_TAIL_CALL(|| in.op == WAH_OP_RETURN_CALL_REF);)
+                    WAH_IF_MEMORY64(indirect64 = in.op == WAH_OP_CALL_INDIRECT_i64 WAH_IF_TAIL_CALL(|| in.op == WAH_OP_RETURN_CALL_INDIRECT_i64);)
                     const wah_func_type_t *callee;
-                    if (in.op == WAH_OP_CALL) {
+                    if (in.op == WAH_OP_CALL WAH_IF_TAIL_CALL(|| in.op == WAH_OP_RETURN_CALL)) {
                         CK_ENSURE(in.a < wah_func_index_limit(module));
                         callee = wah_resolve_func_type(module, in.a);
                     } else {
                         CK_ENSURE(in.a < module->type_count && module->type_defs[in.a].kind == WAH_COMP_FUNC);
-                        CK_ENSURE(in.b < wah_table_index_limit(module));
-                        const wah_table_type_t *tt = wah_table_type(module, in.b);
-                        CK_ENSURE(wah_type_is_subtype(tt->elem_type, WAH_TYPE_FUNCREF, module));
-                        CK_POP(in.op == WAH_OP_CALL_INDIRECT ? WAH_TYPE_I32 : WAH_TYPE_I64);
-                        CK_ENSURE(tt->addr_type == (in.op == WAH_OP_CALL_INDIRECT ? WAH_TYPE_I32 : WAH_TYPE_I64));
+                        if (by_ref) {
+                            CK_POP(WAH_TYPE_FUNCREF);
+                        } else { // call_indirect and return_call_indirect
+                            wah_type_t at = indirect64 ? WAH_TYPE_I64 : WAH_TYPE_I32;
+                            CK_ENSURE(in.b < wah_table_index_limit(module));
+                            const wah_table_type_t *tt = wah_table_type(module, in.b);
+                            CK_ENSURE(wah_type_is_subtype(tt->elem_type, WAH_TYPE_FUNCREF, module) && tt->addr_type == at);
+                            CK_POP(at);
+                        }
                         callee = &module->types[in.a];
                     }
                     for (uint32_t i = callee->param_count; i > 0; i--) CK_POP(callee->param_types[i - 1]);
-                    for (uint32_t i = 0; i < callee->result_count; i++) CK_PUSH(callee->result_types[i]);
+                    if (tail) { // The callee returns to the caller in place of this function
+                        CK_ENSURE(callee->result_count == ft->result_count);
+                        for (uint32_t i = 0; i < callee->result_count; i++) {
+                            CK_KIND(k1, callee->result_types[i]);
+                            CK_KIND(k2, ft->result_types[i]);
+                            CK_ENSURE(k1 == k2);
+                        }
+                        ends = true;
+                    } else {
+                        for (uint32_t i = 0; i < callee->result_count; i++) CK_PUSH(callee->result_types[i]);
+                    }
                     break;
                 }
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_REF_TYPES)
+                case WAH_OP_REF_NULL: {
+                    wah_type_t ht = (wah_type_t)(int32_t)in.a;
+                    CK_ENSURE(WAH_TYPE_IS_REF(ht) && (ht < 0 || WAH_TYIDX(ht) < module->type_count));
+                    CK_PUSH(WAH_TYPE_AS_NULLABLE(ht));
+                    break;
+                }
+                case WAH_OP_REF_IS_NULL: CK_ENSURE_REF(); h--; CK_PUSH(WAH_TYPE_I32); break;
+                case WAH_OP_REF_FUNC: CK_ENSURE(in.a < wah_func_index_limit(module)); CK_PUSH(WAH_TYPE_FUNCREF); break;
+                case WAH_OP_TABLE_GET: case WAH_OP_TABLE_SET: case WAH_OP_TABLE_SIZE: case WAH_OP_TABLE_GROW: case WAH_OP_TABLE_FILL:
+                WAH_IF_MEMORY64(case WAH_OP_TABLE_GET_i64: case WAH_OP_TABLE_SET_i64: case WAH_OP_TABLE_SIZE_i64:
+                                case WAH_OP_TABLE_GROW_i64: case WAH_OP_TABLE_FILL_i64:) {
+                    bool i32 = in.op == WAH_OP_TABLE_GET || in.op == WAH_OP_TABLE_SET || in.op == WAH_OP_TABLE_SIZE ||
+                               in.op == WAH_OP_TABLE_GROW || in.op == WAH_OP_TABLE_FILL;
+                    wah_type_t at = i32 ? WAH_TYPE_I32 : WAH_TYPE_I64;
+                    CK_ENSURE(in.a < wah_table_index_limit(module));
+                    const wah_table_type_t *tt = wah_table_type(module, in.a);
+                    CK_ENSURE(tt->addr_type == at);
+                    switch (in.op) {
+                        case WAH_OP_TABLE_GET: WAH_IF_MEMORY64(case WAH_OP_TABLE_GET_i64:) CK_POP(at); CK_PUSH(tt->elem_type); break;
+                        case WAH_OP_TABLE_SET: WAH_IF_MEMORY64(case WAH_OP_TABLE_SET_i64:) CK_POP(tt->elem_type); CK_POP(at); break;
+                        case WAH_OP_TABLE_SIZE: WAH_IF_MEMORY64(case WAH_OP_TABLE_SIZE_i64:) CK_PUSH(at); break;
+                        case WAH_OP_TABLE_GROW: WAH_IF_MEMORY64(case WAH_OP_TABLE_GROW_i64:)
+                            CK_POP(at); CK_POP(tt->elem_type); CK_PUSH(at); break;
+                        default: CK_POP(at); CK_POP(tt->elem_type); CK_POP(at); break; // table.fill
+                    }
+                    break;
+                }
+#endif
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF)
+                case WAH_OP_REF_AS_NON_NULL: CK_ENSURE_REF(); break;
+                case WAH_OP_BR_ON_NULL: { // Branches without the null
+                    CK_ENSURE_REF();
+                    h--;
+                    CK_BRANCH(in.a, in.b, in.c);
+                    h++;
+                    break;
+                }
+                case WAH_OP_BR_ON_NON_NULL: CK_ENSURE_REF(); CK_BRANCH(in.a, in.b, in.c); h--; break;
+#endif
                 case WAH_OP_MEMORY_SIZE: case WAH_OP_MEMORY_GROW:
                 WAH_IF_MEMORY64(case WAH_OP_MEMORY_SIZE_i64: case WAH_OP_MEMORY_GROW_i64:) {
                     CK_ENSURE(in.a < wah_memory_index_limit(module));
@@ -9219,7 +9320,8 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
 cleanup:
     #undef CK_FAIL
     #undef CK_ENSURE
-    #undef CK_TYPE
+    #undef CK_KIND
+    #undef CK_ENSURE_REF
     #undef CK_PUSH
     #undef CK_POP
     #undef CK_UN
