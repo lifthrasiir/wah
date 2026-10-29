@@ -59,12 +59,14 @@ static uint32_t find_instr(const wah_parsed_code_t *pc, uint16_t op, uint32_t n)
     return 0;
 }
 
-// Overwrites a u16 or u32 at `pos` of func 0, expects the check to fail, and restores it.
+// Overwrites a u8, u16 or u32 at `pos` of func 0, expects the check to fail, and restores it.
 static void expect_rejected(wah_module_t *mod, uint32_t pos, uint32_t size, uint32_t value, const char *what) {
     printf("  %s\n", what);
     uint8_t *code = mod->code_bodies[0].parsed_code.bytecode, saved[4];
     memcpy(saved, code + pos, size);
-    if (size == 2) wah_write_u16_le(code + pos, (uint16_t)value); else wah_write_u32_le(code + pos, value);
+    if (size == 1) code[pos] = (uint8_t)value;
+    else if (size == 2) wah_write_u16_le(code + pos, (uint16_t)value);
+    else wah_write_u32_le(code + pos, value);
     assert_err(check_func(mod, 0), WAH_ERROR_VALIDATION_FAILED);
     memcpy(code + pos, saved, size);
     assert_ok(check_func(mod, 0));
@@ -221,12 +223,45 @@ static void test_references(void) {
     wah_free_module(&mod);
 }
 
+static void test_simd(void) {
+    printf("Testing lowered SIMD operations...\n");
+    wah_module_t mod;
+    wah_exec_context_t ctx;
+    wah_value_t param = {.i32 = 0x01020304}, result;
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[fn [i32] [i32]]} funcs {[0]} memories {[limits.i32/1 1]} \
+        code {[{[] \
+            i32.const 16 local.get 0 i32x4.splat v128.store align=1 offset=0 \
+            i32.const 16 v128.const %'000102030405060708090a0b0c0d0e0f' v128.load8_lane align=1 offset=0 3 \
+            local.get 0 i32x4.splat \
+            i8x16.shuffle %'00100111021203130414051506160717' \
+            i32.const 7 i32x4.replace_lane 2 \
+            i8x16.extract_lane_s 3 \
+        end}]}"));
+    assert_ok(check_func(&mod, 0));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_call(&ctx, 0, &param, 1, &result));
+    assert_eq_i32(result.i32, 3); // Lane 3 of the shuffle is byte 1 of the splat
+    wah_free_exec_context(&ctx);
+
+    const wah_parsed_code_t *pc = &mod.code_bodies[0].parsed_code;
+    expect_rejected(&mod, OP_AT(I8X16_SHUFFLE, 0) + sizeof(uint16_t), 1, 32, "shuffle lane out of range");
+    expect_rejected(&mod, OP_AT(I8X16_EXTRACT_LANE_S, 0) + sizeof(uint16_t), 1, 16, "lane out of range to extract");
+    expect_rejected(&mod, OP_AT(I32X4_REPLACE_LANE, 0) + sizeof(uint16_t), 1, 4, "lane out of range to replace");
+    expect_rejected(&mod, OP_AT(V128_LOAD8_LANE_i32_mem0, 0) + sizeof(uint16_t) + sizeof(uint64_t), 1, 16,
+                    "lane out of range to load into");
+    expect_rejected(&mod, OP_AT(V128_STORE_i32_mem0, 0), 2, WAH_OP_I32_STORE_i32_mem0, "vector stored as a scalar");
+    expect_rejected(&mod, OP_AT(I32X4_SPLAT, 0), 2, WAH_OP_I32_EQZ, "scalar operation producing a vector");
+    wah_free_module(&mod);
+}
+
 int main(void) {
     test_accepted();
     test_rejected();
     test_fuel_metering();
     test_bulk_memory();
     test_references();
+    test_simd();
     printf("All lowered code checker tests passed!\n");
     return 0;
 }

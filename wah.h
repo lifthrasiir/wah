@@ -8793,7 +8793,7 @@ cleanup:
 
 // Independently checks lowered code against what the interpreter relies on without checking:
 // instruction boundaries, branch targets, operand types and the bound of the operand stack height.
-// GC and SIMD aren't understood for now, and they are WAH_ERROR_UNSUPPORTED instead of a failure.
+// GC and exception handling aren't understood for now, and they are WAH_ERROR_UNSUPPORTED instead of a failure.
 // Unreachable code is never executed, so it only has to be decodable.
 
 enum { WAH_CHECK_MEM_NONE, WAH_CHECK_MEM_I32, WAH_CHECK_MEM_I32_MEM0, WAH_CHECK_MEM_I64, WAH_CHECK_MEM_I64_MEM0 };
@@ -8803,6 +8803,7 @@ typedef struct {
     uint8_t mem;       // WAH_CHECK_MEM_*
     uint32_t len, a, b, c; // Instruction length and u32 immediates in order
     uint64_t x;            // u64 immediate after u32 ones
+    uint8_t lane;          // u8 immediate at the end
 } wah_check_instr_t;
 
 // Operand types are tracked exactly for numbers, and only by their kinds for references: functions, exceptions and the
@@ -8811,7 +8812,7 @@ typedef struct {
 // them are not even lowered. Returns 0 for other types.
 static int8_t wah_check_kind(const wah_module_t *module, wah_type_t t) {
     static const wah_type_t tops[] = { WAH_TYPE_FUNC, WAH_TYPE_EXN, WAH_TYPE_EXTERN, WAH_TYPE_ANY }; // Any is checked last
-    if (t == WAH_TYPE_I32 || t == WAH_TYPE_I64 || t == WAH_TYPE_F32 || t == WAH_TYPE_F64) return (int8_t)t;
+    if (t == WAH_TYPE_I32 || t == WAH_TYPE_I64 || t == WAH_TYPE_F32 || t == WAH_TYPE_F64 || t == WAH_TYPE_V128) return (int8_t)t;
     if (!WAH_TYPE_IS_REF(t) || (t >= 0 && WAH_TYIDX(t) >= module->type_count)) return 0;
     for (size_t i = 0; i < sizeof(tops) / sizeof(*tops); i++) {
         if (wah_type_is_subtype(WAH_TYPE_AS_NON_NULL(t), tops[i], module)) return (int8_t)(i < 2 ? WAH_TYPE_AS_NULLABLE(tops[i]) : WAH_TYPE_ANYREF);
@@ -8828,8 +8829,17 @@ static bool wah_check_is_ref_kind(int8_t k) {
 static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t off, wah_check_instr_t *in) {
     WAH_ENSURE(size - off >= sizeof(uint16_t), WAH_ERROR_VALIDATION_FAILED);
     uint16_t op = wah_read_u16_le(code + off);
+#if defined(WAH_X86_64) && ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
+    switch (op) { // Specializations are checked as their generic versions
+        #define WAH_CHECK_X86_64_CASE(name, suffix) case WAH_OP_##name##_##suffix: op = WAH_OP_##name; break;
+        WAH_X86_64_EXTRA_OPCODES_SINGLE(WAH_CHECK_X86_64_CASE)
+        WAH_X86_64_EXTRA_OPCODES_MULTI(WAH_CHECK_X86_64_CASE)
+        #undef WAH_CHECK_X86_64_CASE
+        default: break;
+    }
+#endif
     *in = (wah_check_instr_t){ .op = op, .base = op };
-    uint32_t n32 = 0, n64 = 0;
+    uint32_t n32 = 0, n64 = 0, n8 = 0;
     switch (op) {
         case WAH_OP_UNREACHABLE: case WAH_OP_RETURN: case WAH_OP_END: case WAH_OP_DROP: case WAH_OP_SELECT:
         case WAH_OP_F32_DEMOTE_F64: case WAH_OP_F64_PROMOTE_F32:
@@ -8861,6 +8871,12 @@ static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t
             in->c = record_count;
             return WAH_OK;
         }
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
+        case WAH_OP_V128_CONST: case WAH_OP_I8X16_SHUFFLE: // 16 bytes of the value or lanes
+            WAH_ENSURE(size - off >= sizeof(uint16_t) + 16, WAH_ERROR_VALIDATION_FAILED);
+            in->len = sizeof(uint16_t) + 16;
+            return WAH_OK;
+#endif
         case WAH_OP_I32_CONST: case WAH_OP_F32_CONST: n32 = 1; break;
         case WAH_OP_I64_CONST: case WAH_OP_F64_CONST: n64 = 1; break;
         case WAH_OP_LOCAL_GET: case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE:
@@ -8907,6 +8923,10 @@ static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t
         WAH_I32_MEM0_OPCODES_M(WAH_CHECK_MEM_I32_MEM0_CASE)
         WAH_I64_MEM_OPCODES_M(WAH_CHECK_MEM_I64_CASE)
         WAH_I64_MEM0_OPCODES_M(WAH_CHECK_MEM_I64_MEM0_CASE)
+        WAH_I32_MEM0_OPCODES_MB(WAH_CHECK_MEM_I32_CASE) // Also followed by the lane
+        WAH_I32_MEM0_OPCODES_MB(WAH_CHECK_MEM_I32_MEM0_CASE)
+        WAH_I64_MEM_OPCODES_MB(WAH_CHECK_MEM_I64_CASE)
+        WAH_I64_MEM0_OPCODES_MB(WAH_CHECK_MEM_I64_MEM0_CASE)
 #undef WAH_CHECK_MEM_CASE
 #undef WAH_CHECK_MEM_I32_CASE
 #undef WAH_CHECK_MEM_I32_MEM0_CASE
@@ -8927,16 +8947,22 @@ static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t
                 case WAH_OPCLASS__F_L: case WAH_OPCLASS__F_F: case WAH_OPCLASS__FF_I: case WAH_OPCLASS__FF_F:
                 case WAH_OPCLASS__D_I: case WAH_OPCLASS__D_L: case WAH_OPCLASS__D_D: case WAH_OPCLASS__DD_I:
                 case WAH_OPCLASS__DD_L: case WAH_OPCLASS__DD_D:
+                case WAH_OPCLASS__I_V: case WAH_OPCLASS__IV_V: case WAH_OPCLASS__L_V: case WAH_OPCLASS__LV_V:
+                case WAH_OPCLASS__F_V: case WAH_OPCLASS__D_V: case WAH_OPCLASS__V_I: case WAH_OPCLASS__V_V:
+                case WAH_OPCLASS__VI_V: case WAH_OPCLASS__VV_V: case WAH_OPCLASS__VVV_V:
                     break;
+                case WAH_OPCLASS_B: n8 = 1; break; // Lane
                 default: return WAH_ERROR_UNSUPPORTED;
             }
     }
-    in->len = sizeof(uint16_t) + n32 * sizeof(uint32_t) + n64 * sizeof(uint64_t);
+    if (in->mem != WAH_CHECK_MEM_NONE && wah_opclasses[in->base] == WAH_OPCLASS_MB) n8 = 1; // Lane
+    in->len = sizeof(uint16_t) + n32 * sizeof(uint32_t) + n64 * sizeof(uint64_t) + n8;
     WAH_ENSURE(size - off >= in->len, WAH_ERROR_VALIDATION_FAILED);
     const uint8_t *p = code + off + sizeof(uint16_t);
     uint32_t *imm[3] = { &in->a, &in->b, &in->c };
     for (uint32_t i = 0; i < n32; i++, p += sizeof(uint32_t)) *imm[i] = wah_read_u32_le(p);
     if (n64) in->x = wah_read_u64_le(p);
+    if (n8) in->lane = p[n64 * sizeof(uint64_t)];
     return WAH_OK;
 }
 
@@ -9054,6 +9080,7 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                 switch (in.op) {
                     case WAH_OP_I32_CONST: case WAH_OP_I64_CONST: case WAH_OP_F32_CONST: case WAH_OP_F64_CONST:
                     case WAH_OP_GLOBAL_GET: case WAH_OP_END: WAH_IF_REF_TYPES(case WAH_OP_REF_NULL: case WAH_OP_REF_FUNC:)
+                    WAH_IF_SIMD(case WAH_OP_V128_CONST:)
                         break;
                     default: CK_ENSURE(in.op < WAH_FE && wah_opclasses[in.op] >= WAH_OPCLASS__I_I &&
                                        wah_opclasses[in.op] <= WAH_OPCLASS__VVV_V);
@@ -9097,6 +9124,24 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                 case WAH_OP_I64_CONST: CK_PUSH(WAH_TYPE_I64); break;
                 case WAH_OP_F32_CONST: CK_PUSH(WAH_TYPE_F32); break;
                 case WAH_OP_F64_CONST: CK_PUSH(WAH_TYPE_F64); break;
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
+                case WAH_OP_V128_CONST: CK_PUSH(WAH_TYPE_V128); break;
+                case WAH_OP_I8X16_SHUFFLE: // Lanes index both operands
+                    for (uint32_t i = 0; i < 16; i++) CK_ENSURE(code[off + sizeof(uint16_t) + i] < 32);
+                    CK_BIN(V128, V128);
+                case WAH_OP_I8X16_EXTRACT_LANE_S: case WAH_OP_I8X16_EXTRACT_LANE_U: CK_ENSURE(in.lane < 16); CK_UN(V128, I32);
+                case WAH_OP_I16X8_EXTRACT_LANE_S: case WAH_OP_I16X8_EXTRACT_LANE_U: CK_ENSURE(in.lane < 8); CK_UN(V128, I32);
+                case WAH_OP_I32X4_EXTRACT_LANE: CK_ENSURE(in.lane < 4); CK_UN(V128, I32);
+                case WAH_OP_I64X2_EXTRACT_LANE: CK_ENSURE(in.lane < 2); CK_UN(V128, I64);
+                case WAH_OP_F32X4_EXTRACT_LANE: CK_ENSURE(in.lane < 4); CK_UN(V128, F32);
+                case WAH_OP_F64X2_EXTRACT_LANE: CK_ENSURE(in.lane < 2); CK_UN(V128, F64);
+                case WAH_OP_I8X16_REPLACE_LANE: CK_ENSURE(in.lane < 16); CK_POP(WAH_TYPE_I32); CK_UN(V128, V128);
+                case WAH_OP_I16X8_REPLACE_LANE: CK_ENSURE(in.lane < 8); CK_POP(WAH_TYPE_I32); CK_UN(V128, V128);
+                case WAH_OP_I32X4_REPLACE_LANE: CK_ENSURE(in.lane < 4); CK_POP(WAH_TYPE_I32); CK_UN(V128, V128);
+                case WAH_OP_I64X2_REPLACE_LANE: CK_ENSURE(in.lane < 2); CK_POP(WAH_TYPE_I64); CK_UN(V128, V128);
+                case WAH_OP_F32X4_REPLACE_LANE: CK_ENSURE(in.lane < 4); CK_POP(WAH_TYPE_F32); CK_UN(V128, V128);
+                case WAH_OP_F64X2_REPLACE_LANE: CK_ENSURE(in.lane < 2); CK_POP(WAH_TYPE_F64); CK_UN(V128, V128);
+#endif
                 case WAH_OP_F32_DEMOTE_F64: CK_UN(F64, F32);
                 case WAH_OP_F64_PROMOTE_F32: CK_UN(F32, F64);
                 case WAH_OP_LOCAL_GET: case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE: {
@@ -9282,7 +9327,29 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                                 CK_POP(WAH_TYPE_I64); CK_POP(at); break;
                             case WAH_OP_F32_STORE: CK_POP(WAH_TYPE_F32); CK_POP(at); break;
                             case WAH_OP_F64_STORE: CK_POP(WAH_TYPE_F64); CK_POP(at); break;
-                            default: err = WAH_ERROR_UNSUPPORTED; goto cleanup; // SIMD
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_SIMD)
+                            case WAH_OP_V128_LOAD: case WAH_OP_V128_LOAD8X8_S: case WAH_OP_V128_LOAD8X8_U:
+                            case WAH_OP_V128_LOAD16X4_S: case WAH_OP_V128_LOAD16X4_U: case WAH_OP_V128_LOAD32X2_S:
+                            case WAH_OP_V128_LOAD32X2_U: case WAH_OP_V128_LOAD8_SPLAT: case WAH_OP_V128_LOAD16_SPLAT:
+                            case WAH_OP_V128_LOAD32_SPLAT: case WAH_OP_V128_LOAD64_SPLAT: case WAH_OP_V128_LOAD32_ZERO:
+                            case WAH_OP_V128_LOAD64_ZERO:
+                                CK_POP(at); CK_PUSH(WAH_TYPE_V128); break;
+                            case WAH_OP_V128_STORE: CK_POP(WAH_TYPE_V128); CK_POP(at); break;
+                            case WAH_OP_V128_LOAD8_LANE: case WAH_OP_V128_LOAD16_LANE: case WAH_OP_V128_LOAD32_LANE:
+                            case WAH_OP_V128_LOAD64_LANE: case WAH_OP_V128_STORE8_LANE: case WAH_OP_V128_STORE16_LANE:
+                            case WAH_OP_V128_STORE32_LANE: case WAH_OP_V128_STORE64_LANE: {
+                                bool load = in.base == WAH_OP_V128_LOAD8_LANE || in.base == WAH_OP_V128_LOAD16_LANE ||
+                                            in.base == WAH_OP_V128_LOAD32_LANE || in.base == WAH_OP_V128_LOAD64_LANE;
+                                uint32_t lanes = in.base == WAH_OP_V128_LOAD8_LANE || in.base == WAH_OP_V128_STORE8_LANE ? 16 :
+                                                 in.base == WAH_OP_V128_LOAD16_LANE || in.base == WAH_OP_V128_STORE16_LANE ? 8 :
+                                                 in.base == WAH_OP_V128_LOAD32_LANE || in.base == WAH_OP_V128_STORE32_LANE ? 4 : 2;
+                                CK_ENSURE(in.lane < lanes);
+                                CK_POP(WAH_TYPE_V128); CK_POP(at);
+                                if (load) CK_PUSH(WAH_TYPE_V128);
+                                break;
+                            }
+#endif
+                            default: CK_FAIL();
                         }
                         break;
                     }
@@ -9309,6 +9376,17 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                         case WAH_OPCLASS__DD_I: CK_BIN(F64, I32);
                         case WAH_OPCLASS__DD_L: CK_BIN(F64, I64);
                         case WAH_OPCLASS__DD_D: CK_BIN(F64, F64);
+                        case WAH_OPCLASS__I_V: CK_UN(I32, V128);
+                        case WAH_OPCLASS__L_V: CK_UN(I64, V128);
+                        case WAH_OPCLASS__F_V: CK_UN(F32, V128);
+                        case WAH_OPCLASS__D_V: CK_UN(F64, V128);
+                        case WAH_OPCLASS__V_I: CK_UN(V128, I32);
+                        case WAH_OPCLASS__V_V: CK_UN(V128, V128);
+                        case WAH_OPCLASS__VV_V: CK_BIN(V128, V128);
+                        case WAH_OPCLASS__IV_V: CK_POP(WAH_TYPE_V128); CK_UN(I32, V128);
+                        case WAH_OPCLASS__LV_V: CK_POP(WAH_TYPE_V128); CK_UN(I64, V128);
+                        case WAH_OPCLASS__VI_V: CK_POP(WAH_TYPE_I32); CK_UN(V128, V128);
+                        case WAH_OPCLASS__VVV_V: CK_POP(WAH_TYPE_V128); CK_BIN(V128, V128);
                         default: CK_FAIL();
                     }
             }
