@@ -188,7 +188,7 @@ $(LIBFUZZER_HARNESS_BIN): $(LIBFUZZER_HARNESS_SRC) wah.h
 # --- CBMC proofs ---
 # Each entry is FILE.HARNESS, checking proofs/FILE.c from harness_HARNESS with loops unwound up to CBMC_UNWIND_FILE
 # and extra flags CBMC_FLAGS_FILE. Conversions to signed types and unsigned wraparound are intended, so they aren't
-# checked by default.
+# checked by default. Logs leave out passing properties, which are tens of thousands over the whole implementation.
 
 CBMC ?= cbmc
 CBMC_FLAGS := --bounds-check --pointer-check --signed-overflow-check --undefined-shift-check --unwinding-assertions
@@ -221,8 +221,9 @@ $(CBMC_TARGETS): cbmc_%: FORCE
 	@echo "## Proving harness_$(word 2,$(subst ., ,$*)) in proofs/$(word 1,$(subst ., ,$*)).c..."
 	@$(CBMC) proofs/$(word 1,$(subst ., ,$*)).c --function harness_$(word 2,$(subst ., ,$*)) \
 		--unwind $(CBMC_UNWIND_$(word 1,$(subst ., ,$*))) $(CBMC_FLAGS) $(CBMC_FLAGS_$(word 1,$(subst ., ,$*))) \
-		> proofs/$*.log 2>&1 || \
-		{ grep -E 'FAILURE|ERROR|error' proofs/$*.log; exit 1; }
+		> proofs/$*.log.tmp 2>&1; status=$$?; \
+		grep -v ': SUCCESS$$' proofs/$*.log.tmp > proofs/$*.log; rm -f proofs/$*.log.tmp; \
+		[ $$status -eq 0 ] || { grep -E 'FAILURE|ERROR|error' proofs/$*.log; exit 1; }
 
 # --- Coverage ---
 
