@@ -3416,7 +3416,7 @@ static inline void wah_free(const wah_alloc_t *a, void *ptr) {
 
 static inline wah_error_t wah_malloc(const wah_alloc_t *a, size_t count, size_t elemsize, void** out_ptr) {
     *out_ptr = NULL;
-    if (count == 0) return WAH_OK;
+    if (count == 0 || elemsize == 0) return WAH_OK; // Allocators never get zero sizes
     if (elemsize != 0 && count > SIZE_MAX / elemsize) return WAH_ERROR_OUT_OF_MEMORY;
     size_t size = count * elemsize;
     if (wah_alloc_padded(a)) {
@@ -3431,7 +3431,7 @@ static inline wah_error_t wah_malloc(const wah_alloc_t *a, size_t count, size_t 
 }
 
 static inline wah_error_t wah_realloc(const wah_alloc_t *a, size_t count, size_t elemsize, void** p_ptr) {
-    if (count == 0) {
+    if (count == 0 || elemsize == 0) {
         wah_free(a, *p_ptr);
         *p_ptr = NULL;
         return WAH_OK;

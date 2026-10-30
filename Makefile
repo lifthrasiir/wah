@@ -197,7 +197,8 @@ CBMC_FLOAT_PROOFS := $(foreach n, 32 64, $(patsubst %, float.%_f$(n), min max ne
 	$(foreach t, i32 u32 i64 u64, float.trunc_f$(n)_to_$(t) float.trunc_sat_f$(n)_to_$(t)))
 CBMC_PROOFS := leb128.uleb128 leb128.uleb128_64 leb128.sleb128_32 leb128.sleb128_64 utf8.valid \
 	bounds.effective_addr bounds.range_in_bounds bounds.count decode.opcode decode.memarg decode.val_type \
-	decode.storage_type $(CBMC_FLOAT_PROOFS) $(patsubst %, float_boundary.%, $(CBMC_FLOAT_BOUNDARY_PROOFS))
+	decode.storage_type $(CBMC_FLOAT_PROOFS) $(patsubst %, float_boundary.%, $(CBMC_FLOAT_BOUNDARY_PROOFS)) \
+	$(foreach e, 0 1 3 16 huge, alloc.malloc_$(e) alloc.realloc_$(e))
 CBMC_UNWIND_leb128 := 12
 CBMC_UNWIND_utf8 := 9
 CBMC_UNWIND_bounds := 9
@@ -205,6 +206,8 @@ CBMC_UNWIND_decode := 22
 CBMC_UNWIND_float := 2
 CBMC_UNWIND_float_boundary := 2
 CBMC_FLAGS_float := --conversion-check
+CBMC_UNWIND_alloc := 9
+CBMC_FLAGS_alloc := --memory-leak-check
 
 CBMC_TARGETS := $(patsubst %, cbmc_%, $(CBMC_PROOFS))
 
