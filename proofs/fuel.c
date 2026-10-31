@@ -42,6 +42,24 @@ void harness_bulk_limit(void) {
     __CPROVER_assert(ctx.fuel >= -1, "fuel stays at -1 or above");
 }
 
+// Array operations take as many whole elements as they can afford, but at least one
+void harness_bulk_limit_elems(void) {
+    setup();
+    int64_t fuel = ctx.fuel;
+    uint32_t elem_size = 1u << (nondet_u32() % 5);
+    uint64_t bytes = nondet_u64();
+    __CPROVER_assume(bytes >= elem_size);
+    uint64_t limit = wah_bulk_fuel_limit_elems(&ctx, bytes, elem_size), whole = bytes - bytes % elem_size;
+    __CPROVER_assert(limit % elem_size == 0 && limit >= elem_size && limit <= bytes, "whole elements, at least one");
+    if (!module.fuel_metering || fuel < 0) {
+        __CPROVER_assert(limit == (module.fuel_metering ? elem_size : whole), "all or one without fuel");
+        return;
+    }
+    __CPROVER_assert(limit == whole || fuel_units(limit + elem_size) > (uint64_t)fuel + 1, "as many as affordable");
+    wah_bulk_fuel_charge(&ctx, limit);
+    __CPROVER_assert(ctx.fuel >= -1, "fuel stays at -1 or above");
+}
+
 void harness_budget(void) {
     ctx.max_memory_bytes = nondet_u64();
     ctx.memory_bytes_committed = nondet_u64();

@@ -13311,6 +13311,13 @@ static inline uint64_t wah_bulk_fuel_limit(const wah_exec_context_t *ctx, uint64
     return chunk < affordable ? chunk : affordable;
 }
 
+// Same as wah_bulk_fuel_limit for array elements charged per byte, but whole elements and at least one at a time.
+// The number of bytes should be at least the element size.
+static inline uint64_t wah_bulk_fuel_limit_elems(const wah_exec_context_t *ctx, uint64_t bytes, uint32_t elem_size) {
+    uint64_t limit = wah_bulk_fuel_limit(ctx, bytes);
+    return limit > elem_size ? limit - limit % elem_size : elem_size;
+}
+
 static inline void wah_bulk_fuel_charge(wah_exec_context_t *ctx, uint64_t chunk) {
     if (ctx->module->fuel_metering && chunk > 0)
         ctx->fuel -= (int64_t)(chunk / WAH_BULK_ITEMS_PER_FUEL + (chunk % WAH_BULK_ITEMS_PER_FUEL != 0));
@@ -13691,9 +13698,7 @@ static uint32_t wah_bulk_array_fill(wah_exec_context_t *ctx, wah_type_t et, uint
                                      uint32_t offset, uint32_t size, uint32_t elem_size, const wah_value_t *fill_val) {
     for (uint32_t done = 0; done < size; ) {
         uint32_t chunk = size - done < WAH_BULK_CHECK_INTERVAL ? size - done : WAH_BULK_CHECK_INTERVAL;
-        // Charged per byte like other array operations, but at least one element at a time
-        uint64_t bytes = wah_bulk_fuel_limit(ctx, (uint64_t)chunk * elem_size);
-        if (bytes < (uint64_t)chunk * elem_size) chunk = bytes > elem_size ? (uint32_t)(bytes / elem_size) : 1;
+        chunk = (uint32_t)(wah_bulk_fuel_limit_elems(ctx, (uint64_t)chunk * elem_size, elem_size) / elem_size);
         for (uint32_t i = 0; i < chunk; i++)
             wah_gc_store_field(et, elems + (offset + done + i) * elem_size, fill_val);
         done += chunk;
@@ -14835,9 +14840,7 @@ WAH_RUN(ARRAY_COPY) {
     bool backward = (dst_obj == src_obj && dst_offset > src_offset && dst_offset < src_offset + size);
     for (size_t done = 0; done < byte_size; ) {
         size_t chunk = byte_size - done < WAH_BULK_CHECK_INTERVAL ? byte_size - done : WAH_BULK_CHECK_INTERVAL;
-        chunk = (size_t)wah_bulk_fuel_limit(ctx, (uint64_t)chunk);
-        if (chunk > esz) chunk -= chunk % esz; else chunk = esz;
-        if (chunk > byte_size - done) chunk = byte_size - done;
+        chunk = (size_t)wah_bulk_fuel_limit_elems(ctx, (uint64_t)chunk, esz);
         if (backward) {
             size_t tail = byte_size - done;
             memmove(dst_elems + (size_t)dst_offset * esz + tail - chunk,
@@ -14894,9 +14897,7 @@ WAH_RUN(ARRAY_INIT_DATA) {
     size_t byte_size = (size_t)size * esz;
     for (size_t done = 0; done < byte_size; ) {
         size_t chunk = byte_size - done < WAH_BULK_CHECK_INTERVAL ? byte_size - done : WAH_BULK_CHECK_INTERVAL;
-        chunk = (size_t)wah_bulk_fuel_limit(ctx, (uint64_t)chunk);
-        if (chunk > esz) chunk -= chunk % esz; else chunk = esz;
-        if (chunk > byte_size - done) chunk = byte_size - done;
+        chunk = (size_t)wah_bulk_fuel_limit_elems(ctx, (uint64_t)chunk, esz);
         memcpy(elems + (size_t)dst_offset * esz + done, seg->data + src_offset + done, chunk);
         done += chunk;
         wah_bulk_fuel_charge(ctx, (uint64_t)chunk);
