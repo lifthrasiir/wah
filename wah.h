@@ -13313,7 +13313,7 @@ static inline uint64_t wah_bulk_fuel_limit(const wah_exec_context_t *ctx, uint64
 
 static inline void wah_bulk_fuel_charge(wah_exec_context_t *ctx, uint64_t chunk) {
     if (ctx->module->fuel_metering && chunk > 0)
-        ctx->fuel -= (int64_t)((chunk + WAH_BULK_ITEMS_PER_FUEL - 1) / WAH_BULK_ITEMS_PER_FUEL);
+        ctx->fuel -= (int64_t)(chunk / WAH_BULK_ITEMS_PER_FUEL + (chunk % WAH_BULK_ITEMS_PER_FUEL != 0));
 }
 
 // Charges for zeroing locals on calls, rounded down so that functions with few locals cost nothing extra.
