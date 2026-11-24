@@ -11509,8 +11509,9 @@ static wah_error_t wah_parse_start_section(const uint8_t **ptr, const uint8_t *s
 static wah_error_t wah_parse_element_section(const uint8_t **ptr, const uint8_t *section_end, wah_module_t *module) {
     const wah_alloc_t *alloc = &module->alloc;
     uint32_t count;
-    // An element segment requires at least 1 byte (flags)
-    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 1));
+    // An element segment requires at least 3 bytes (flags, elemkind or reftype or offset, and empty vec), which
+    // should be bounded before allocating them, since each takes much more memory.
+    WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 3));
 
     module->element_segment_count = 0;
     if (count > 0) {

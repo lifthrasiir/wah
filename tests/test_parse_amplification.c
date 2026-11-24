@@ -6,12 +6,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-static size_t cur_bytes;
+static size_t cur_bytes, peak_bytes;
 static void *count_malloc(size_t n, void *u) {
     (void)u;
     size_t *p = malloc(n + 16);
     if (!p) return NULL;
     p[0] = n, cur_bytes += n;
+    if (cur_bytes > peak_bytes) peak_bytes = cur_bytes;
     return (char *)p + 16;
 }
 static void *count_realloc(void *q, size_t n, void *u) {
@@ -20,6 +21,7 @@ static void *count_realloc(void *q, size_t n, void *u) {
     p = realloc(p, n + 16);
     if (!p) return NULL;
     p[0] = n, cur_bytes += n - old;
+    if (cur_bytes > peak_bytes) peak_bytes = cur_bytes;
     return (char *)p + 16;
 }
 static void count_free(void *q, void *u) {
@@ -93,10 +95,46 @@ static void check(int kind, const char *name) {
     assert_eq_u64(cur_bytes, 0);
 }
 
+// Sections claiming as many entries as they could fit, but only with zeros
+static void check_section_counts(void) {
+    static const uint8_t sections[] = { 2 /* import */, 4 /* table */, 5 /* memory */, 6 /* global */, 7 /* export */,
+                                        9 /* element */, 10 /* code */, 11 /* data */, 13 /* tag */ };
+    enum { SIZE = 1 << 20 };
+    for (size_t k = 0; k < sizeof(sections); k++) {
+        printf("Testing memory allocated for section %u with too many entries...\n", sections[k]);
+        size_t peak = 0;
+        for (uint32_t per_entry = 1; per_entry <= 8; per_entry++) {
+            len = 0;
+            static const uint8_t header[] = { 0, 0x61, 0x73, 0x6d, 1, 0, 0, 0 };
+            for (size_t i = 0; i < sizeof(header); i++) b(header[i]);
+            if (sections[k] == 10) { // Functions should be declared as many
+                b(1); size_t s = mark(); leb(1); b(0x60); leb(0); leb(0); patch(s);
+                b(3); s = mark(); leb(SIZE / per_entry); for (uint32_t i = 0; i < SIZE / per_entry; i++) b(0); patch(s);
+            }
+            b(sections[k]);
+            size_t s = mark();
+            leb(SIZE / per_entry);
+            for (int i = 0; i < SIZE; i++) b(0);
+            patch(s);
+            wah_alloc_t alloc = { count_malloc, count_realloc, count_free, NULL, 0 };
+            wah_parse_options_t opts = { .features = WAH_FEATURE_ALL, .alloc = &alloc };
+            wah_module_t mod;
+            peak_bytes = 0;
+            wah_error_t err = wah_parse_module(&mod, buf, len, &opts);
+            if (peak_bytes > peak) peak = peak_bytes;
+            if (err == WAH_OK) wah_free_module(&mod); // Such as empty memories
+            assert_eq_u64(cur_bytes, 0);
+        }
+        printf("  %zu bytes at peak\n", peak);
+        assert_true(peak <= 64 * len + 256 * 1024);
+    }
+}
+
 int main(void) {
     check(EXACT_TYPES, "ref maps of slots changing only exact types");
     check(REF_NESS, "ref maps of slots changing reference-ness");
     check(LABELS, "labels with reference types");
+    check_section_counts();
     free(buf);
     printf("All parse amplification tests passed!\n");
     return 0;
