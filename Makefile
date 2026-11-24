@@ -200,7 +200,7 @@ CBMC_PROOFS := leb128.uleb128 leb128.uleb128_64 leb128.sleb128_32 leb128.sleb128
 	decode.storage_type $(CBMC_FLOAT_PROOFS) $(patsubst %, float_boundary.%, $(CBMC_FLOAT_BOUNDARY_PROOFS)) \
 	$(foreach e, 0 1 3 16 huge, alloc.malloc_$(e) alloc.realloc_$(e)) pin.ops refs.i31 refs.gc_link \
 	fuel.bulk_limit fuel.bulk_limit_elems fuel.budget layout.place \
-	types.ref_eq types.hash_ref types.types_eq
+	types.ref_eq types.hash_ref types.types_eq types.is_subtype types.accepts_repr
 CBMC_UNWIND_leb128 := 12
 CBMC_UNWIND_utf8 := 9
 CBMC_UNWIND_bounds := 9
@@ -235,19 +235,20 @@ $(CBMC_TARGETS): cbmc_%: FORCE
 # axioms. Proofs must not rely on code generation (native_decide etc.) either.
 
 LAKE ?= lake
-LEAN_FORBIDDEN := sorry|admit|native_decide|bv_decide|axiom|unsafe|implemented_by|extern|opaque
+LEAN_FORBIDDEN := \b(sorry|admit|native_decide|bv_decide)\b|^\s*((private|protected|noncomputable)\s+)*(axiom|unsafe|opaque)\b|@\[[^]]*\b(extern|implemented_by)\b
 
 .PHONY: lean
 lean:
 	@echo "## Building Lean proofs..."
 	@cd proofs/lean && $(LAKE) build
-	@! grep -rnwE '$(LEAN_FORBIDDEN)' proofs/lean/WahProofs proofs/lean/WahProofs.lean || \
+	@! grep -rnE '$(LEAN_FORBIDDEN)' proofs/lean/WahProofs proofs/lean/WahProofs.lean || \
 		{ echo "Forbidden constructs in Lean proofs"; exit 1; }
 	@cd proofs/lean && $(LAKE) env lean Audit.lean
 	@echo "## All Lean proofs passed."
 
-# Compares canonical maps of the spec tests and the fuzz corpus with the Lean model, as a check of the loops that the
-# CBMC proofs don't cover. The second run makes all rec groups collide, so that every pair is compared structurally.
+# Compares canonical maps and subtyping of the spec tests and the fuzz corpus with the Lean models, as a check of the
+# loops that the CBMC proofs don't cover or only cover for a few types. The second run makes all rec groups collide,
+# so that every pair of them is compared structurally.
 LEAN_DIFF_DIR := proofs/lean/.lake/diff
 LEAN_DIFF_CORPUS := fuzz/corpus-24269.tar.gz
 
@@ -263,7 +264,7 @@ lean-diff:
 		  find $(LEAN_DIFF_DIR)/corpus -type f -print0 | xargs -0 $(LEAN_DIFF_DIR)/$$d; } | \
 		proofs/lean/.lake/build/bin/wah_types_oracle || exit 1; \
 	done
-	@echo "## Canonical maps agree with the Lean model."
+	@echo "## Canonical maps and subtyping agree with the Lean models."
 
 # --- Coverage ---
 

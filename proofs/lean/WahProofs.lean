@@ -18,6 +18,11 @@ C code that CI checks. When you change a modeled C function, change its model an
   proofs/types.c (`make cbmc_types.*`) checks `canonRef`, `refEq`, `typesEq` and `hashRef` with the encoding of
   wah_type_t, and `make lean-diff` compares canonical maps of the spec tests and the fuzz corpus with `build`
   (Oracle.lean, which reads dumps of dump_types.c), also with all hashes colliding.
+- WahProofs/Subtype.lean defines the subtyping of the spec over closed forms (`HSub`, `VSub`) and models
+  `wah_type_is_subtype` (`wahSub`) and `wah_type_accepts_repr` (`acceptsWalk`), which agree with it for valid modules
+  and canonical maps like `canonical_map`. Bridges: proofs/types.c (`make cbmc_types.is_subtype`,
+  `make cbmc_types.accepts_repr`), and `make lean-diff` compares subtyping between all types of a module.
 -/
 import WahProofs.Layout
 import WahProofs.Types
+import WahProofs.Subtype

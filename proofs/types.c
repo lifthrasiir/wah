@@ -1,7 +1,8 @@
 // CBMC proofs that types are compared as `typesEq` (with `canonRef` and `refEq`) and references are hashed as
 // `hashRef` of proofs/lean/WahProofs/Types.lean, which proves that canonical_map maps types to the least equivalent
-// type. Hashing whole rec groups (`groupHash`) is beyond CBMC even with one type, so it is only checked by review and
-// by comparing canonical maps with the Lean model.
+// type, and that subtypes are checked as `wahSub` of proofs/lean/WahProofs/Subtype.lean, which proves that it is the
+// subtyping of the spec. Hashing whole rec groups (`groupHash`) is beyond CBMC even with one type, so it is only
+// checked by review and by comparing canonical maps with the Lean model.
 #include <stdint.h>
 // The Lean model works for any mixer, so it is an uninterpreted function here
 uint64_t __CPROVER_uninterpreted_mix(uint64_t h, uint64_t v);
@@ -190,3 +191,106 @@ void harness_types_eq(void) {
     __CPROVER_assert(wah_types_structurally_equal(&module, a, b, canon) == model_types_eq(n, a, b), "same equality");
 }
 
+
+// `wahSub` of proofs/lean/WahProofs/Subtype.lean, which proves that it is the subtyping of the spec
+static int64_t emod2(int64_t t) { return ((t % 2) + 2) % 2; } // Int.emod of Lean
+
+static bool model_walk(uint32_t pi, uint32_t fuel, uint32_t t) { // `walk`
+    for (; fuel > 0; --fuel) {
+        uint32_t st = defs[t].supertype;
+        if (st == WAH_NO_SUPERTYPE) return false;
+        if (st == pi || canon[st] == canon[pi]) return true;
+        t = st;
+    }
+    return false;
+}
+
+static uint32_t model_kind(uint32_t n, int64_t t) { // `wahKind`
+    return t >= 0 && t / 2 < n ? (uint32_t)defs[t / 2].kind : 0;
+}
+
+static bool model_abs_table(int64_t sub, int64_t sup) { // `absTable`
+    bool sub_ref = (-54 <= sub && sub <= -31) || sub >= 0, sup_ref = (-54 <= sup && sup <= -31) || sup >= 0;
+    if (!sub_ref || !sup_ref) return false;
+    if (sup == -36) return !(sub == -34 || sub == -46 || sub == -50 || sub == -54 || sub == -32 || sub == -48);
+    if (sup == -38) return sub == -40 || sub == -42 || sub == -44 || sub == -52;
+    if (sup == -42 || sup == -44 || sup == -40) return sub == -52;
+    if (sup == -32) return sub == -48;
+    if (sup == -34) return sub == -50;
+    if (sup == -46) return sub == -54;
+    return false;
+}
+
+static bool model_is_subtype(uint32_t n, int64_t sub, int64_t sup) { // `wahSub`
+    if (sub == sup || sub == -99) return true;
+    if (emod2(sub) == 1 && emod2(sup) != 1) return false;
+    sub -= emod2(sub), sup -= emod2(sup);
+    if (sub == sup) return true;
+    if (sub >= 0 && sup >= 0) {
+        uint32_t si = (uint32_t)(sub / 2), pi = (uint32_t)(sup / 2);
+        return si < n && pi < n && (canon[si] == canon[pi] || model_walk(pi, n, si));
+    }
+    if (sub >= 0) {
+        uint32_t k = model_kind(n, sub);
+        if (sup == -36 || sup == -38) return k == WAH_COMP_STRUCT || k == WAH_COMP_ARRAY;
+        if (sup == -42) return k == WAH_COMP_STRUCT;
+        if (sup == -44) return k == WAH_COMP_ARRAY;
+        if (sup == -32) return k == WAH_COMP_FUNC;
+        return false;
+    }
+    if (sup >= 0) {
+        uint32_t k = model_kind(n, sup);
+        if (sub == -52) return k == WAH_COMP_STRUCT || k == WAH_COMP_ARRAY;
+        if (sub == -48) return k == WAH_COMP_FUNC;
+        return false;
+    }
+    return model_abs_table(sub, sup);
+}
+
+static wah_type_t nondet_valid_type(uint32_t n) { // `ValidCode`
+    wah_type_t t = nondet_i32();
+    __CPROVER_assume((t >= -18 && t <= -2 && t % 2 == 0 && t != -12 && t != -14) || t == -99 ||
+                     (t >= -54 && t <= -31) || (t >= 0 && WAH_TYIDX(t) < n));
+    return t;
+}
+
+void harness_is_subtype(void) {
+    uint32_t n = setup_module();
+    for (uint32_t i = 0; i < N; ++i) // Supertypes are earlier types (`SubWF`)
+        __CPROVER_assume(defs[i].supertype == WAH_NO_SUPERTYPE || defs[i].supertype < i);
+    module.canonical_map = canon;
+    wah_type_t sub = nondet_valid_type(n), sup = nondet_valid_type(n);
+    __CPROVER_assert(wah_type_is_subtype(sub, sup, &module) == model_is_subtype(n, sub, sup), "same subtyping");
+}
+
+static bool model_accepts(uint32_t target, uint32_t fuel, uint32_t t) { // `acceptsWalk`
+    for (; fuel > 0; --fuel) {
+        if (canon[t] == canon[target]) return true;
+        if (defs[t].supertype == WAH_NO_SUPERTYPE) return false;
+        t = defs[t].supertype;
+    }
+    return false;
+}
+
+static wah_repr_info_t repr_store[N], *reprs[N];
+
+void harness_accepts_repr(void) {
+    uint32_t n = setup_module();
+    for (uint32_t i = 0; i < N; ++i)
+        __CPROVER_assume(defs[i].supertype == WAH_NO_SUPERTYPE || defs[i].supertype < i);
+    module.canonical_map = canon;
+    uint32_t repr_count = nondet_u32();
+    __CPROVER_assume(repr_count <= N);
+    for (uint32_t r = 0; r < N; ++r) {
+        repr_store[r].typeidx = nondet_u32();
+        __CPROVER_assume(repr_store[r].typeidx < n);
+        reprs[r] = &repr_store[r];
+    }
+    module.repr_infos = reprs;
+    module.repr_count = repr_count;
+    uint32_t target = nondet_u32();
+    wah_repr_t repr_id = (wah_repr_t)nondet_i32();
+    bool model = repr_id >= 0 && (uint32_t)repr_id < repr_count && target < n &&
+                 model_accepts(target, n, repr_store[repr_id].typeidx);
+    __CPROVER_assert(wah_type_accepts_repr(&module, target, repr_id) == model, "same cast check");
+}

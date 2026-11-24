@@ -1,8 +1,8 @@
-/- Checks canonical maps dumped by dump_types.c against `canonicalMap` of WahProofs/Types.lean (`make lean-diff`).
-With a constant hash, `HashOK` holds trivially, so the model maps types to the least equivalent type
-(`canonicalMap_least`), and so must the C code. -/
-import WahProofs.Types
-open Wah.Types
+/- Checks canonical maps and subtyping dumped by dump_types.c against `canonicalMap` of WahProofs/Types.lean and
+`wahSub` of WahProofs/Subtype.lean (`make lean-diff`). With a constant hash, `HashOK` holds trivially, so the model
+maps types to the least equivalent type (`canonicalMap_least`), and so must the C code. -/
+import WahProofs.Subtype
+open Wah.Types Wah.Subtype
 
 /-- wah_type_t as in proofs/types.c: negative values are atoms, others are references of index t / 2. -/
 def decodeVT (t : Int) : VT := if t < 0 then .atom (t + 2 ^ 32).toNat else .ref (t.toNat / 2) (t.toNat % 2 == 1)
@@ -13,6 +13,7 @@ structure Module where
   sizes : Array Nat
   tds : Array TD
   canon : Array Nat
+  sub : String
 
 def Module.toM (md : Module) : M :=
   { n := md.n, d := fun i => md.tds.getD i default, start := fun i => md.starts.getD i 0,
@@ -24,6 +25,12 @@ def wfCheck (m : M) : Bool :=
     m.start t ≤ t && t < m.start t + m.gsize t && m.start t + m.gsize t ≤ m.n &&
     ((List.range (m.gsize t)).all fun k => m.start (m.start t + k) == m.start t && m.gsize (m.start t + k) == m.gsize t) &&
     (m.d t).refs.all fun x => x < m.start t + m.gsize t
+
+/-- `SubWF` beyond `WF`: supertypes are earlier types of the same kind. -/
+def subCheck (m : M) : Bool :=
+  (List.range m.n).all fun t => match (m.d t).super with
+    | none => true
+    | some s => s < t && (m.d s).kind == (m.d t).kind
 
 def parseInts (ws : List String) : Option (List Int) := ws.mapM String.toInt?
 
@@ -49,15 +56,17 @@ partial def parseModules (lines : List String) (acc : Array Module) : Except Str
       let n := n.toNat!
       let tlines := rest.take n
       let cline := (rest.drop n).head?.getD ""
+      let sline := (rest.drop (n + 1)).head?.getD ""
       let types := tlines.filterMap fun t => match t.splitOn " " with
         | "T" :: ws => (parseInts ws).bind parseType
         | _ => none
       match cline.splitOn " " with
       | "C" :: cs =>
-        if types.length != n || cs.length != n then .error s!"malformed module at: {l}" else
+        if types.length != n || cs.length != n || !sline.startsWith "S " || sline.length != n * n + 2 then
+          .error s!"malformed module at: {l}" else
         let md : Module := ⟨n, (types.map (·.1)).toArray, (types.map (·.2.1)).toArray,
-          (types.map (·.2.2)).toArray, (cs.map String.toNat!).toArray⟩
-        parseModules (rest.drop (n + 1)) (acc.push md)
+          (types.map (·.2.2)).toArray, (cs.map String.toNat!).toArray, (sline.drop 2).toString⟩
+        parseModules (rest.drop (n + 2)) (acc.push md)
       | _ => .error s!"missing canonical map after: {l}"
     | [""] => parseModules rest acc
     | _ => .error s!"unexpected line: {l}"
@@ -72,11 +81,15 @@ def main : IO UInt32 := do
     for md in mods do
       let m := md.toM
       types := types + m.n
-      if !wfCheck m then
+      if !wfCheck m || !subCheck m then
         bad := bad + 1; IO.eprintln s!"module outside the model (not WF), canonical map {md.canon}"; continue
       let c := (build m (fun _ => 0) m.n).get -- canonicalMap, computed once
       let model := (List.range m.n).map c
       if model != md.canon.toList then
         bad := bad + 1; IO.eprintln s!"canonical map {md.canon} differs from the model {model}"
+      let subs := String.ofList <| (List.range m.n).flatMap fun i => (List.range m.n).map fun j =>
+        if wahSub m c (2 * Int.ofNat i) (2 * Int.ofNat j) then '1' else '0'
+      if subs != md.sub then
+        bad := bad + 1; IO.eprintln s!"subtyping {md.sub} differs from the model {subs} (canonical map {md.canon})"
     IO.println s!"{mods.size} modules with {types} types, {bad} failures"
     return if bad == 0 then 0 else 1

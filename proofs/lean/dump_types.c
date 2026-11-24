@@ -3,6 +3,7 @@
 //   M <type count>
 //   T <start> <size> <kind> <final> <supertype or -1> <count1> <count2> <field count> (<wah_type_t> <mutable>)*
 //   C <canonical type>*
+//   S <1 if type i is a subtype of type j, else 0, for i, j in order>
 // where functions have their params and results as immutable fields and counts, as `TD` in Lean.
 // With DUMP_COLLIDE, all rec groups have the same hash, so that every pair of them is compared structurally.
 #include <inttypes.h>
@@ -38,6 +39,11 @@ static void dump_module(const wah_module_t *m) {
     }
     printf("C");
     for (uint32_t i = 0; i < m->type_count; ++i) printf(" %" PRIu32, m->canonical_map ? m->canonical_map[i] : i);
+    printf("\nS ");
+    for (uint32_t i = 0; i < m->type_count; ++i) {
+        for (uint32_t j = 0; j < m->type_count; ++j)
+            putchar(wah_type_is_subtype(WAH_TYPE_FROM_IDX(i, 0), WAH_TYPE_FROM_IDX(j, 0), m) ? '1' : '0');
+    }
     printf("\n");
 }
 
