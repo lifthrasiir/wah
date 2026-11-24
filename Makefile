@@ -199,7 +199,7 @@ CBMC_PROOFS := leb128.uleb128 leb128.uleb128_64 leb128.sleb128_32 leb128.sleb128
 	bounds.effective_addr bounds.range_in_bounds bounds.count decode.opcode decode.memarg decode.val_type \
 	decode.storage_type $(CBMC_FLOAT_PROOFS) $(patsubst %, float_boundary.%, $(CBMC_FLOAT_BOUNDARY_PROOFS)) \
 	$(foreach e, 0 1 3 16 huge, alloc.malloc_$(e) alloc.realloc_$(e)) pin.ops refs.i31 refs.gc_link \
-	fuel.bulk_limit fuel.bulk_limit_elems fuel.budget
+	fuel.bulk_limit fuel.bulk_limit_elems fuel.budget layout.place
 CBMC_UNWIND_leb128 := 12
 CBMC_UNWIND_utf8 := 9
 CBMC_UNWIND_bounds := 9
@@ -212,6 +212,7 @@ CBMC_FLAGS_alloc := --memory-leak-check
 CBMC_UNWIND_pin := 8
 CBMC_UNWIND_refs := 2
 CBMC_UNWIND_fuel := 2
+CBMC_UNWIND_layout := 6
 
 CBMC_TARGETS := $(patsubst %, cbmc_%, $(CBMC_PROOFS))
 
@@ -226,6 +227,22 @@ $(CBMC_TARGETS): cbmc_%: FORCE
 		> proofs/$*.log.tmp 2>&1; status=$$?; \
 		grep -v ': SUCCESS$$' proofs/$*.log.tmp > proofs/$*.log; rm -f proofs/$*.log.tmp; \
 		[ $$status -eq 0 ] || { grep -E 'FAILURE|ERROR|error' proofs/$*.log; exit 1; }
+
+# --- Lean proofs ---
+# Builds proofs/lean, rejects unproven or unsound constructs, and checks that every theorem only uses the standard
+# axioms. Proofs must not rely on code generation (native_decide etc.) either.
+
+LAKE ?= lake
+LEAN_FORBIDDEN := sorry|admit|native_decide|bv_decide|axiom|unsafe|implemented_by|extern|opaque
+
+.PHONY: lean
+lean:
+	@echo "## Building Lean proofs..."
+	@cd proofs/lean && $(LAKE) build
+	@! grep -rnwE '$(LEAN_FORBIDDEN)' proofs/lean/WahProofs proofs/lean/WahProofs.lean || \
+		{ echo "Forbidden constructs in Lean proofs"; exit 1; }
+	@cd proofs/lean && $(LAKE) env lean Audit.lean
+	@echo "## All Lean proofs passed."
 
 # --- Coverage ---
 

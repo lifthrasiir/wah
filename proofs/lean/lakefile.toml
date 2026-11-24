@@ -1,0 +1,5 @@
+name = "WahProofs"
+defaultTargets = ["WahProofs"]
+
+[[lean_lib]]
+name = "WahProofs"

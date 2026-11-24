@@ -5591,67 +5591,31 @@ static wah_error_t wah_field_type_layout(wah_type_t ft, uint32_t *out_size, wah_
     }
 }
 
-typedef struct {
-    uint32_t *offsets;
-    uint32_t count;
-    uint32_t cap;
-} wah_layout_slot_list_t;
-
-static inline uint32_t wah_layout_slot_index(uint32_t size) {
-    switch (size) {
-        case 1: return 0;
-        case 2: return 1;
-        case 4: return 2;
-        case 8: return 3;
-        default: WAH_ASSERT(0 && "invalid layout slot size"); return 0;
+// Places a struct field of 2^k bytes (k <= 4). It takes the smallest free slot of 2^j >= 2^k bytes, where j = 4 is a
+// new 16-byte chunk at the frontier, and leaves the rest of it as a free slot of 2^i bytes for each k <= i < j. So
+// there is at most one free slot of each size (bit i of free_mask is set if slots[i] is free), and fields are aligned,
+// disjoint and padded by at most 15 bytes in total. This is the `place` of proofs/lean/WahProofs/Layout.lean, which
+// proves these properties, and proofs/layout.c checks that they agree.
+static wah_error_t wah_layout_place(uint32_t slots[4], uint32_t *free_mask, uint32_t *frontier, uint32_t k,
+                                    uint32_t *out_offset) {
+    uint32_t j, offset;
+    WAH_ASSERT(k <= 4 && *free_mask < 16);
+    for (j = k; j < 4 && !(*free_mask & (1u << j)); ++j) {}
+    if (j < 4) {
+        offset = slots[j];
+        *free_mask &= ~(1u << j);
+    } else {
+        WAH_ENSURE(*frontier <= UINT32_MAX - 16, WAH_ERROR_TOO_LARGE);
+        offset = *frontier;
+        *frontier += 16;
     }
-}
-
-static wah_error_t wah_layout_slot_push(wah_layout_slot_list_t slots[4], uint32_t size, uint32_t offset, const wah_alloc_t *alloc) {
-    WAH_ASSERT(size == 1 || size == 2 || size == 4 || size == 8);
-    WAH_ASSERT((offset & (size - 1)) == 0);
-    wah_layout_slot_list_t *list = &slots[wah_layout_slot_index(size)];
-    WAH_GROW_ARRAY(list->offsets, list->cap, (size_t)list->count + 1);
-    uint32_t i = list->count;
-    while (i > 0 && list->offsets[i - 1] > offset) {
-        list->offsets[i] = list->offsets[i - 1];
-        --i;
+    while (j > k) {
+        --j;
+        slots[j] = offset + (1u << j);
+        *free_mask |= 1u << j;
     }
-    list->offsets[i] = offset;
-    list->count++;
+    *out_offset = offset;
     return WAH_OK;
-}
-
-static bool wah_layout_slot_pop(wah_layout_slot_list_t slots[4], uint32_t size, uint32_t *out_offset) {
-    wah_layout_slot_list_t *list = &slots[wah_layout_slot_index(size)];
-    if (list->count == 0) return false;
-    *out_offset = list->offsets[0];
-    memmove(list->offsets, list->offsets + 1, (size_t)(list->count - 1) * sizeof(list->offsets[0]));
-    list->count--;
-    return true;
-}
-
-static wah_error_t wah_layout_split_slot(wah_layout_slot_list_t slots[4], uint32_t offset,
-                                         uint32_t from_size, uint32_t used_size, const wah_alloc_t *alloc) {
-    while (from_size / 2 >= used_size) {
-        from_size /= 2;
-        WAH_CHECK(wah_layout_slot_push(slots, from_size, offset + from_size, alloc));
-    }
-    return WAH_OK;
-}
-
-static wah_error_t wah_layout_record_tail_slots(wah_layout_slot_list_t slots[4], uint32_t base,
-                                                uint32_t used_size, const wah_alloc_t *alloc) {
-    WAH_ASSERT(used_size == 1 || used_size == 2 || used_size == 4 || used_size == 8 || used_size == 16);
-    for (uint32_t size = 8; size >= used_size && size > 0; size /= 2) {
-        WAH_CHECK(wah_layout_slot_push(slots, size, base + size, alloc));
-        if (size == 1) break;
-    }
-    return WAH_OK;
-}
-
-static void wah_layout_free_slots(wah_layout_slot_list_t slots[4], const wah_alloc_t *alloc) {
-    for (uint32_t i = 0; i < 4; ++i) wah_free(alloc, slots[i].offsets);
 }
 
 static wah_error_t wah_validate_struct_repr_info(const wah_type_def_t *td, const wah_repr_info_t *info, const wah_alloc_t *alloc) {
@@ -5690,7 +5654,7 @@ static wah_error_t wah_validate_struct_repr_info(const wah_type_def_t *td, const
 static wah_error_t wah_build_struct_repr_info(uint32_t typeidx, const wah_type_def_t *td,
                                               wah_repr_info_t **out_info, const wah_alloc_t *alloc) {
     wah_error_t err = WAH_OK;
-    wah_layout_slot_list_t slots[4] = {{0}};
+    uint32_t slots[4] = {0}, free_mask = 0;
     wah_repr_field_t *fields = NULL;
     wah_repr_info_t *info = NULL;
     uint32_t frontier = 0;
@@ -5708,22 +5672,9 @@ static wah_error_t wah_build_struct_repr_info(uint32_t typeidx, const wah_type_d
         WAH_ENSURE_GOTO(field_size > 0 && field_size <= 16 && (field_size & (field_size - 1)) == 0,
                         WAH_ERROR_VALIDATION_FAILED, cleanup);
 
-        if (field_size == 16) {
-            offset = frontier;
-            WAH_ENSURE_GOTO(frontier <= UINT32_MAX - 16, WAH_ERROR_TOO_LARGE, cleanup);
-            frontier += 16;
-        } else if (!wah_layout_slot_pop(slots, field_size, &offset)) {
-            uint32_t slot_size = field_size * 2;
-            while (slot_size <= 8 && !wah_layout_slot_pop(slots, slot_size, &offset)) slot_size *= 2;
-            if (slot_size <= 8) {
-                WAH_CHECK_GOTO(wah_layout_split_slot(slots, offset, slot_size, field_size, alloc), cleanup);
-            } else {
-                offset = frontier;
-                WAH_ENSURE_GOTO(frontier <= UINT32_MAX - 16, WAH_ERROR_TOO_LARGE, cleanup);
-                frontier += 16;
-                WAH_CHECK_GOTO(wah_layout_record_tail_slots(slots, offset, field_size, alloc), cleanup);
-            }
-        }
+        uint32_t k = 0;
+        while ((1u << k) < field_size) ++k;
+        WAH_CHECK_GOTO(wah_layout_place(slots, &free_mask, &frontier, k, &offset), cleanup);
 
         fields[i] = (wah_repr_field_t){ .offset = offset, .repr_id = field_repr };
         if (offset > UINT32_MAX - field_size) { err = WAH_ERROR_TOO_LARGE; goto cleanup; }
@@ -5749,7 +5700,6 @@ static wah_error_t wah_build_struct_repr_info(uint32_t typeidx, const wah_type_d
 cleanup:
     wah_free(alloc, info);
     wah_free(alloc, fields);
-    wah_layout_free_slots(slots, alloc);
     return err;
 }
 
