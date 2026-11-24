@@ -268,7 +268,8 @@ lean-diff:
 	@echo "## Comparing verdicts of the lowered code checker with the Lean model..."
 	@cd proofs/lean && $(LAKE) build wah_lowered_oracle
 	@$(CC) -O1 -Wall -Wno-unused-function -o $(LEAN_DIFF_DIR)/dump_lowered proofs/lean/dump_lowered.c -lm
-	@{ $(LEAN_DIFF_DIR)/dump_lowered tests/spectest/*.wast proofs/lean/lowered_gc.wasm && \
+	@{ $(LEAN_DIFF_DIR)/dump_lowered tests/spectest/*.wast && \
+	   $(LEAN_DIFF_DIR)/dump_lowered -m 64 proofs/lean/lowered_extra.wasm && \
 	   find $(LEAN_DIFF_DIR)/corpus -type f -print0 | xargs -0 $(LEAN_DIFF_DIR)/dump_lowered; } | \
 	   proofs/lean/.lake/build/bin/wah_lowered_oracle
 	@echo "## The lowered code checker agrees with the Lean model."

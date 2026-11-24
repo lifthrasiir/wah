@@ -1,6 +1,6 @@
 // Dumps lowered functions of the modules in .wast files (or .wasm files) for wah_lowered_oracle, which checks the
 // verdicts of wah_check_lowered_code against the model in WahProofs/Lowered.lean (`make lean-diff`). Only functions
-// whose instructions are all in the model (no exceptions or SIMD lanes) are dumped, and each also with mutants of its
+// whose instructions are all in the model (no SIMD lanes) are dumped, and each also with mutants of its
 // lowered code (a branch target, keep or drop, an immediate, an opcode replaced by one with the same immediates, or a
 // slot of a ref map), each as
 //   F <max depth> <local count> <local>* <result count> <result>* <verdict: 1 if wah_check_lowered_code accepts it>
@@ -10,10 +10,11 @@
 //   S <type count> <type>* <1 if type i is a subtype of type j, else 0, for i != j in order>
 //   E
 // with types as wah_type_t after wah_check_norm, and branch targets as instruction indices (offsets that are not
-// instruction starts become indices beyond the end). S covers all types in the function and their non-null
-// versions, and L all struct and array types among them, whose field types are in S as well. Module-level facts, such as signatures of callees and whether indices are valid, are resolved here, and
-// instructions that the checker rejects for them become `X` (bad). Ref maps are printed as the positions they list,
-// topmost first, or as -1 if they are malformed. Modules are parsed with and without fuel metering, to get METERs too.
+// instruction starts become indices beyond the end). S covers all types in the function and their non-null versions,
+// and L all struct and array types among them, whose field types are in S as well. Module-level facts, such as
+// signatures of callees and whether indices are valid, are resolved here, and instructions that the checker rejects for
+// them become `X` (bad). Ref maps are printed as the positions they list, topmost first, or as -1 if they are
+// malformed. Modules are parsed with and without fuel metering, to get METERs too.
 #include <inttypes.h>
 #include <stdint.h>
 #define WAH_CHECK_LOWERED
@@ -22,7 +23,8 @@
 #include "../../tests/wast.c"
 
 #define MUTANTS 8
-#define GC_MUTANTS 16 // More of those that mutate GC instructions, which are rare
+#define GC_MUTANTS 16 // More of those that mutate GC and exception instructions, which are rare
+static int mutant_scale = 1; // -m <scale> multiplies them, for small inputs made for mutants
 #define MAX_LOCALS 4096
 #define MAX_TYPES 256
 
@@ -441,6 +443,42 @@ static bool dump_instr(const wah_parsed_code_t *pc, uint32_t off, const wah_chec
         case WAH_OP_ARRAY_SET_128:
             put("Y %" PRIu32 "\n", wah_check_access(in.op));
             return true;
+        case WAH_OP_TRY_TABLE: {
+            const uint8_t *c = code + off + sizeof(uint16_t) + sizeof(uint32_t);
+            for (uint32_t i = 0; i < in.a; i++, c += 1 + 3 * sizeof(uint32_t)) {
+                bool tagged = c[0] == WAH_CATCH_KIND_CATCH || c[0] == WAH_CATCH_KIND_CATCH_REF;
+                if (c[0] > WAH_CATCH_KIND_CATCH_ALL_REF ||
+                    (tagged && wah_read_u32_le(c + 1) >= m->import_tag_count + m->tag_count)) { put("X\n"); return true; }
+            }
+            put("W %" PRIu32, in.a);
+            c = code + off + sizeof(uint16_t) + sizeof(uint32_t);
+            for (uint32_t i = 0; i < in.a; i++, c += 1 + 3 * sizeof(uint32_t)) {
+                uint32_t tag = wah_read_u32_le(c + 1);
+                bool tagged = c[0] == WAH_CATCH_KIND_CATCH || c[0] == WAH_CATCH_KIND_CATCH_REF;
+                bool ref = c[0] == WAH_CATCH_KIND_CATCH_REF || c[0] == WAH_CATCH_KIND_CATCH_ALL_REF;
+                put(" %u %" PRIu32 " %" PRIu64 " %" PRIu32, c[0], tag,
+                    target(wah_read_u32_le(c + 1 + sizeof(uint32_t)), size), wah_read_u32_le(c + 1 + 2 * sizeof(uint32_t)));
+                const wah_func_type_t *tt = tagged ? &m->types[wah_tag_type_index(m, tag)] : NULL;
+                if (!tys(tt ? tt->param_count : 0, tt ? tt->param_types : NULL, WAH_TYPE_EXN, ref)) return false;
+            }
+            put("\n");
+            return true;
+        }
+        case WAH_OP_END_TRY_TABLE: put("U\n"); return true;
+        case WAH_OP_TRIM_HANDLERS: put("V %" PRIu32 "\n", in.a); return true;
+        case WAH_OP_THROW: {
+            if (in.a >= m->import_tag_count + m->tag_count) { put("X\n"); return true; }
+            const wah_func_type_t *tt = &m->types[wah_tag_type_index(m, in.a)];
+            put("Z");
+            if (!tys(tt->param_count, tt->param_types, 0, false)) return false;
+            put("\n");
+            return true;
+        }
+        case WAH_OP_THROW_REF:
+            put("Z");
+            if (!tys(1, T(WAH_TYPE_EXNREF), 0, false)) return false;
+            put("\n");
+            return true;
         case WAH_OP_END: put("n\n"); return true;
         case WAH_OP_RETURN: put("R\n"); return true;
         case WAH_OP_UNREACHABLE: put("u\n"); return true;
@@ -548,7 +586,7 @@ static const uint16_t no_imm[] = { WAH_OP_I32_ADD, WAH_OP_I64_ADD, WAH_OP_F32_AD
                                    WAH_OP_REF_IS_NULL, WAH_OP_REF_AS_NON_NULL, WAH_OP_REF_I31, WAH_OP_I31_GET_S,
                                    WAH_OP_REF_EQ, WAH_OP_ARRAY_LEN, WAH_OP_ARRAY_GET_32, WAH_OP_ARRAY_GET_64,
                                    WAH_OP_ARRAY_GET_U8, WAH_OP_ARRAY_GET_S16, WAH_OP_ARRAY_SET_8, WAH_OP_ARRAY_SET_32,
-                                   WAH_OP_ARRAY_SET_64 };
+                                   WAH_OP_ARRAY_SET_64, WAH_OP_END_TRY_TABLE, WAH_OP_THROW_REF };
 static const uint16_t one_imm[] = { WAH_OP_LOCAL_GET, WAH_OP_LOCAL_SET, WAH_OP_LOCAL_TEE, WAH_OP_I32_CONST,
                                     WAH_OP_F32_CONST, WAH_OP_GLOBAL_GET, WAH_OP_GLOBAL_SET, WAH_OP_CALL,
                                     WAH_OP_RETURN_CALL, WAH_OP_IF, WAH_OP_ELSE, WAH_OP_POLL, WAH_OP_TICK,
@@ -558,7 +596,7 @@ static const uint16_t one_imm[] = { WAH_OP_LOCAL_GET, WAH_OP_LOCAL_SET, WAH_OP_L
                                     WAH_OP_STRUCT_GET_S8, WAH_OP_STRUCT_GET_U16, WAH_OP_STRUCT_SET_8,
                                     WAH_OP_STRUCT_SET_32, WAH_OP_STRUCT_SET_64, WAH_OP_REF_TEST, WAH_OP_REF_CAST,
                                     WAH_OP_REF_CAST_NULL, WAH_OP_STRUCT_NEW, WAH_OP_STRUCT_NEW_DEFAULT,
-                                    WAH_OP_ARRAY_COPY };
+                                    WAH_OP_ARRAY_COPY, WAH_OP_TRIM_HANDLERS, WAH_OP_THROW };
 static const uint16_t two_imm[] = { WAH_OP_ARRAY_NEW, WAH_OP_ARRAY_NEW_DEFAULT, WAH_OP_ARRAY_NEW_FIXED,
                                     WAH_OP_ARRAY_FILL, WAH_OP_ARRAY_INIT_ELEM };
 static const uint16_t cast_imm[] = { WAH_OP_BR_ON_CAST, WAH_OP_BR_ON_CAST_FAIL };
@@ -664,6 +702,21 @@ static bool mutate(uint8_t *code, uint32_t size, const uint32_t *starts, uint32_
                         memcpy(imm + 4, &v, 4);
                         return true;
                     }
+                    case WAH_OP_TRY_TABLE: { // Kind, tag, target or drop of a clause
+                        if (in.a == 0) break;
+                        uint8_t *c = imm + 4 + (size_t)rng(in.a) * 13;
+                        uint32_t which = rng(4), v;
+                        if (which == 0) { c[0] = (uint8_t)rng(5); return true; }
+                        memcpy(&v, c + 1 + (which - 1) * 4, 4);
+                        v = which == 2 ? random_target : rng(2) ? v + 1 : v - 1;
+                        memcpy(c + 1 + (which - 1) * 4, &v, 4);
+                        return true;
+                    }
+                    case WAH_OP_TRIM_HANDLERS: case WAH_OP_THROW: {
+                        uint32_t v = wah_read_u32_le(imm) + (rng(2) ? 1 : -1);
+                        memcpy(imm, &v, 4);
+                        return true;
+                    }
                     case WAH_OP_STRUCT_NEW: case WAH_OP_STRUCT_NEW_DEFAULT: case WAH_OP_ARRAY_COPY: // Types, ref maps
                     case WAH_OP_ARRAY_NEW: case WAH_OP_ARRAY_NEW_DEFAULT: case WAH_OP_ARRAY_NEW_FIXED: // and segments
                     case WAH_OP_ARRAY_FILL: case WAH_OP_ARRAY_INIT_ELEM: case WAH_OP_ARRAY_NEW_DATA:
@@ -710,9 +763,11 @@ static bool mutate(uint8_t *code, uint32_t size, const uint32_t *starts, uint32_
     return false;
 }
 
-// GC instructions (and casts) for GC_MUTANTS
+// GC and exception instructions for GC_MUTANTS
 static bool is_gc(uint16_t op) {
     switch (op) {
+        case WAH_OP_TRY_TABLE: case WAH_OP_END_TRY_TABLE: case WAH_OP_TRIM_HANDLERS: case WAH_OP_THROW:
+        case WAH_OP_THROW_REF:
         case WAH_OP_REF_EQ: case WAH_OP_REF_TEST: case WAH_OP_REF_TEST_NULL: case WAH_OP_REF_CAST:
         case WAH_OP_REF_CAST_NULL: case WAH_OP_BR_ON_CAST: case WAH_OP_BR_ON_CAST_FAIL: case WAH_OP_STRUCT_NEW:
         case WAH_OP_STRUCT_NEW_DEFAULT: case WAH_OP_ARRAY_NEW: case WAH_OP_ARRAY_NEW_DEFAULT: case WAH_OP_ARRAY_NEW_FIXED:
@@ -755,8 +810,8 @@ static void dump_function(uint32_t i) {
     wah_ref_node_t *nodes = malloc((size_t)pc->ref_node_count * sizeof(wah_ref_node_t) + 1);
     if (!nodes) abort();
     rng_state = (uint64_t)size * 31 + i;
-    for (int k = 0; k < MUTANTS + (gc_count ? GC_MUTANTS : 0); k++) {
-        bool gc = k >= MUTANTS;
+    for (int k = 0; k < (MUTANTS + (gc_count ? GC_MUTANTS : 0)) * mutant_scale; k++) {
+        bool gc = k >= MUTANTS * mutant_scale;
         wah_parsed_code_t mpc = *pc;
         memcpy(copy, pc->bytecode, size);
         if (pc->ref_node_count > 0 && !gc && rng(4) == 0) { // A slot of a ref map
@@ -793,6 +848,7 @@ static void dump_binary(const uint8_t *bytes, size_t len) {
 
 int main(int argc, char **argv) {
     for (int a = 1; a < argc; ++a) {
+        if (strcmp(argv[a], "-m") == 0 && a + 1 < argc) { mutant_scale = atoi(argv[++a]); continue; }
         size_t size;
         char *data = wast_read_file(argv[a], &size);
         if (!data) { fprintf(stderr, "cannot read %s\n", argv[a]); return 1; }

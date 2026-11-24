@@ -1,6 +1,6 @@
 /-
-Model of `wah_check_lowered_code` in wah.h without exceptions (P3a-P3c), and its soundness against an abstract
-machine of the interpreter.
+Model of `wah_check_lowered_code` in wah.h (P3a-P3d), and its soundness against an abstract machine of the
+interpreter.
 
 Code is a sequence of decoded instructions, indexed by instruction rather than by byte offset; branch targets that
 are not instruction starts are out of range. Instructions only carry what the checker needs: numeric operators,
@@ -22,12 +22,18 @@ suspension points list exactly the slots of references (`exactMap`), as they are
 after a POLL, whose ref map scans the frame while the callee runs. Objects are accessed by layouts of the types of
 values, which may be subtypes of what the checker has: accessors find fields at their offsets with the storage that
 they access, writes need mutable fields and values of their types, and array.copy and array.init_elem copy
-elements of subtypes. Going wrong is `Out.wrong`; traps are allowed.
+elements of subtypes. try_tables push handlers with their catch clauses and the stack height, which END_TRY_TABLE
+and TRIM_HANDLERS pop, and anything that throws (throw, throw_ref and calls, after taking the arguments) may go to
+any clause of any handler, rewinding the stack to below the height there, which has to be there. Going wrong is
+`Out.wrong`; traps are allowed.
 
 The checker (`check`) mirrors the C code: pass 1 checks targets of all instructions, and pass 2 walks from each join
 point with the operand stack recorded there, merging the stack at each branch target and at fall-throughs into join
 points (`T`), where it must equal the stack recorded first. Join points at `end` and at stack maps (`ann`) take
-subtypes of the types annotated there on top of the stack, and record the annotated types instead.
+subtypes of the types annotated there on top of the stack, and record the annotated types instead. Join points
+record handlers as well, which have to be equal (by their clauses), except that labels followed by TRIM_HANDLERS
+(`trimAt`) only record those that it keeps, and `end` none. Paths keep the other handlers until TRIM_HANDLERS, as
+the machine does (`HRel`), so METERs before it may only branch to slow islands that trim them too.
 
 `check_sound`: no state reachable from the entry of code accepted by `check` goes wrong, given `SubOK` and `LayOK`,
 which `tableOK_sound` and `layOK_sound` reduce to finite checks of the subtyping table.
@@ -68,6 +74,23 @@ structure Comp where
   isStruct : Bool
   fields : List Field
 
+/-- A catch clause of a try_table: its kind and tag (by which the checker compares handlers), what it pushes (bottom
+first: the payload of the tag for `catch` and `catch_ref`, then an exnref for `catch_ref` and `catch_all_ref`), its
+target, and how many values below the try_table it drops. -/
+structure Clause where
+  kind : Nat
+  tag : Nat
+  push : List VT
+  target : Nat
+  drop : Nat
+  deriving DecidableEq
+
+/-- An active exception handler: the catch clauses of its try_table and the stack height there. -/
+abbrev H := List Clause × Nat
+
+/-- `WAH_MAX_CONTROL_DEPTH`, which bounds active handlers in the checker. -/
+def maxHandlers : Nat := 256
+
 inductive Instr
   | const (t : VT)
   | op (args res : List VT)
@@ -86,6 +109,7 @@ inductive Instr
   | brOnCast (onFail nul : Bool) (dst : VT) (t keep drop : Nat)
   | structGet (acc off : Nat) | structSet (acc off : Nat) | arrayGet (acc : Nat) | arraySet (acc : Nat)
   | arrayCopy (map : Option (List Nat)) | arrayInitElem (map : Option (List Nat)) (seg : VT)
+  | tryTable (cs : List Clause) | endTry | trim (depth : Nat) | throw (args : List VT)
   deriving Inhabited
 
 structure Fn where
@@ -171,23 +195,42 @@ structure St where
   pc : Nat
   stk : List VT
   polled : Bool
+  /-- Active handlers of the frame, innermost last. -/
+  hs : List H
 
 inductive Out
   | next (st : St) | done | trap | wrong
 
-def go (pc : Nat) (s : List VT) (p : Bool := false) : Out := .next ⟨pc, s, p⟩
+def go (pc : Nat) (s : List VT) (hs : List H) (p : Bool := false) : Out := .next ⟨pc, s, p, hs⟩
 
-def pushO (F : Fn) (pc : Nat) (ts s : List VT) : Out :=
-  if s.length + ts.length ≤ F.maxDepth then go pc (ts.reverse ++ s) else .wrong
+def pushO (F : Fn) (pc : Nat) (ts s : List VT) (hs : List H) : Out :=
+  if s.length + ts.length ≤ F.maxDepth then go pc (ts.reverse ++ s) hs else .wrong
 
 /-- Branches as `WAH_DROP_KEEP` does: the top `k` values stay and the `d` below them go. -/
-def jump (t k d : Nat) (s : List VT) : Out :=
-  if k + d ≤ s.length then go t (s.take k ++ s.drop (k + d)) else .wrong
+def jump (t k d : Nat) (s : List VT) (hs : List H) : Out :=
+  if k + d ≤ s.length then go t (s.take k ++ s.drop (k + d)) hs else .wrong
 
-def opO (F : Fn) (pc : Nat) (args res s : List VT) : List Out :=
+def opO (F : Fn) (pc : Nat) (args res s : List VT) (hs : List H) : List Out :=
   match popT F args.reverse s with
-  | some s0 => [.trap, pushO F (pc + 1) res s0]
+  | some s0 => [.trap, pushO F (pc + 1) res s0 hs]
   | none => [.wrong]
+
+/-- Catch clauses of the handlers `hs` (after `pre`), each with the handlers outside of its own, which stay active
+at its target, and the stack height at its try_table. -/
+def catchesFrom : List H → List H → List (List H × Nat × Clause)
+  | _, [] => []
+  | pre, x :: xs => x.1.map (fun c => (pre, x.2, c)) ++ catchesFrom (pre ++ [x]) xs
+
+def catches (hs : List H) : List (List H × Nat × Clause) := catchesFrom [] hs
+
+/-- Throws with the stack `s`: the exception leaves the frame, or any clause catches it, as tags are not known. The
+stack is rewound to `c.drop` values below the height `h` at the try_table, which must still be there, and gets
+what the clause pushes. -/
+def throwO (F : Fn) (s : List VT) (hs : List H) : List Out :=
+  .trap :: (catches hs).map fun (pre, h, c) =>
+    if c.drop ≤ h ∧ h - c.drop ≤ s.length ∧ h - c.drop + c.push.length ≤ F.maxDepth then
+      go c.target (c.push.reverse ++ s.drop (s.length - (h - c.drop))) pre
+    else .wrong
 
 def mapO (m : Option (List Nat)) (s : List VT) : Bool :=
   match m with
@@ -204,90 +247,93 @@ def objO (F : Fn) (x : VT) (isStruct : Bool) (k : Comp → List Out) : List Out 
 /-- What `br_on_cast` leaves when the cast fails: not null if nulls pass. -/
 def castSrc (nul : Bool) (x : VT) : VT := if nul then nn x else x
 
-def stepI (F : Fn) (pc : Nat) (s : List VT) (lp : Bool) : Instr → List Out
-  | .const t => [pushO F (pc + 1) [t] s]
-  | .op args res => opO F pc args res s
-  | .opMap m args res => if mapO m s then opO F pc args res s else [.wrong]
-  | .call args res => if lp then opO F pc args res s else [.wrong]
+def stepI (F : Fn) (pc : Nat) (s : List VT) (hs : List H) (lp : Bool) : Instr → List Out
+  | .const t => [pushO F (pc + 1) [t] s hs]
+  | .op args res => opO F pc args res s hs
+  | .opMap m args res => if mapO m s then opO F pc args res s hs else [.wrong]
+  | .call args res => if lp then match popT F args.reverse s with
+      | some s0 => .trap :: pushO F (pc + 1) res s0 hs :: throwO F s0 hs
+      | none => [.wrong]
+    else [.wrong]
   | .retCall args res => match popT F args.reverse s with
     | some _ => if leB F res F.results then [.trap, .done] else [.wrong]
     | none => [.wrong]
   | .drop => match s with
-    | _ :: s0 => [go (pc + 1) s0]
+    | _ :: s0 => [go (pc + 1) s0 hs]
     | [] => [.wrong]
   | .select => match s with
-    | c :: a :: b :: s0 => if F.sub c i32 then [go (pc + 1) (a :: s0), go (pc + 1) (b :: s0)] else [.wrong]
+    | c :: a :: b :: s0 => if F.sub c i32 then [go (pc + 1) (a :: s0) hs, go (pc + 1) (b :: s0) hs] else [.wrong]
     | _ => [.wrong]
   | .localGet i => match F.locals[i]? with
-    | some t => [pushO F (pc + 1) [t] s]
+    | some t => [pushO F (pc + 1) [t] s hs]
     | none => [.wrong]
   | .localSet i => match F.locals[i]?, s with
-    | some t, x :: s0 => if F.sub x t then [go (pc + 1) s0] else [.wrong]
+    | some t, x :: s0 => if F.sub x t then [go (pc + 1) s0 hs] else [.wrong]
     | _, _ => [.wrong]
   | .localTee i => match F.locals[i]?, s with
-    | some t, x :: s0 => if F.sub x t then [pushO F (pc + 1) [t] s0] else [.wrong]
+    | some t, x :: s0 => if F.sub x t then [pushO F (pc + 1) [t] s0 hs] else [.wrong]
     | _, _ => [.wrong]
   | .refIsNull => match s with
-    | x :: s0 => if isRef x then [pushO F (pc + 1) [i32] s0] else [.wrong]
+    | x :: s0 => if isRef x then [pushO F (pc + 1) [i32] s0 hs] else [.wrong]
     | [] => [.wrong]
   | .refAsNonNull => match s with
-    | x :: s0 => if isRef x then [.trap, go (pc + 1) (nn x :: s0)] else [.wrong]
+    | x :: s0 => if isRef x then [.trap, go (pc + 1) (nn x :: s0) hs] else [.wrong]
     | [] => [.wrong]
-  | .br t k d => [jump t k d s]
+  | .br t k d => [jump t k d s hs]
   | .brIf t k d => match s with
-    | c :: s0 => if F.sub c i32 then [go (pc + 1) s0, jump t k d s0] else [.wrong]
+    | c :: s0 => if F.sub c i32 then [go (pc + 1) s0 hs, jump t k d s0 hs] else [.wrong]
     | _ => [.wrong]
   | .brTable k recs => match s with
-    | c :: s0 => if F.sub c i32 && !recs.isEmpty then recs.map (fun r => jump r.1 k r.2 s0) else [.wrong]
+    | c :: s0 => if F.sub c i32 && !recs.isEmpty then recs.map (fun r => jump r.1 k r.2 s0 hs) else [.wrong]
     | _ => [.wrong]
   | .brOnNull t k d => match s with
-    | x :: s0 => if isRef x then [jump t k d s0, go (pc + 1) (nn x :: s0)] else [.wrong]
+    | x :: s0 => if isRef x then [jump t k d s0 hs, go (pc + 1) (nn x :: s0) hs] else [.wrong]
     | [] => [.wrong]
   | .brOnNonNull t k d => match s with
-    | x :: s0 => if isRef x then [jump t k d (nn x :: s0), go (pc + 1) s0] else [.wrong]
+    | x :: s0 => if isRef x then [jump t k d (nn x :: s0) hs, go (pc + 1) s0 hs] else [.wrong]
     | [] => [.wrong]
   | .if_ t => match s with
-    | c :: s0 => if F.sub c i32 then [go (pc + 1) s0, go t s0] else [.wrong]
+    | c :: s0 => if F.sub c i32 then [go (pc + 1) s0 hs, go t s0 hs] else [.wrong]
     | _ => [.wrong]
-  | .else_ t => [go t s]
-  | .meter t => [go (pc + 1) s, go t s]
-  | .poll m => if mapO m s then [go (pc + 1) s true] else [.wrong]
-  | .tick m => if mapO m s then [go (pc + 1) s] else [.wrong]
+  | .else_ t => [go t s hs]
+  | .meter t => [go (pc + 1) s hs, go t s hs]
+  | .poll m => if mapO m s then [go (pc + 1) s hs true] else [.wrong]
+  | .tick m => if mapO m s then [go (pc + 1) s hs] else [.wrong]
   | .end_ => if leB F s F.results.reverse then [.done] else [.wrong]
   | .ret => if (popT F F.results.reverse s).isSome then [.done] else [.wrong]
   | .unreachable => [.trap]
   | .bad => [.wrong]
   | .refEq => match s with
-    | x :: y :: s0 => if isRef x && isRef y then [pushO F (pc + 1) [i32] s0] else [.wrong]
+    | x :: y :: s0 => if isRef x && isRef y then [pushO F (pc + 1) [i32] s0 hs] else [.wrong]
     | _ => [.wrong]
   | .refCast t => match s with
-    | x :: s0 => if isRef x then [.trap, pushO F (pc + 1) [t] s0] else [.wrong]
+    | x :: s0 => if isRef x then [.trap, pushO F (pc + 1) [t] s0 hs] else [.wrong]
     | [] => [.wrong]
   | .brOnCast onFail nul dst t k d => match s with
     | x :: s0 => if isRef x then
-        [jump t k d ((if onFail then castSrc nul x else dst) :: s0),
-         go (pc + 1) ((if onFail then dst else castSrc nul x) :: s0)]
+        [jump t k d ((if onFail then castSrc nul x else dst) :: s0) hs,
+         go (pc + 1) ((if onFail then dst else castSrc nul x) :: s0) hs]
       else [.wrong]
     | [] => [.wrong]
   | .structGet acc off => match s with
     | x :: s0 => objO F x true fun c => match fieldAt off c.fields with
-      | some f => if accessible acc f.ty then [pushO F (pc + 1) [unp f.ty] s0] else [.wrong]
+      | some f => if accessible acc f.ty then [pushO F (pc + 1) [unp f.ty] s0 hs] else [.wrong]
       | none => [.wrong]
     | [] => [.wrong]
   | .structSet acc off => match s with
     | v :: x :: s0 => objO F x true fun c => match fieldAt off c.fields with
-      | some f => if accessible acc f.ty && f.mutable && F.sub v (unp f.ty) then [go (pc + 1) s0] else [.wrong]
+      | some f => if accessible acc f.ty && f.mutable && F.sub v (unp f.ty) then [go (pc + 1) s0 hs] else [.wrong]
       | none => [.wrong]
     | _ => [.wrong]
   | .arrayGet acc => match s with
     | i :: x :: s0 => if F.sub i i32 then objO F x false fun c => match c.fields with
-        | f :: _ => if accessible acc f.ty then [pushO F (pc + 1) [unp f.ty] s0] else [.wrong]
+        | f :: _ => if accessible acc f.ty then [pushO F (pc + 1) [unp f.ty] s0 hs] else [.wrong]
         | [] => [.wrong]
       else [.wrong]
     | _ => [.wrong]
   | .arraySet acc => match s with
     | v :: i :: x :: s0 => if F.sub i i32 then objO F x false fun c => match c.fields with
-        | f :: _ => if accessible acc f.ty && f.mutable && F.sub v (unp f.ty) then [go (pc + 1) s0] else [.wrong]
+        | f :: _ => if accessible acc f.ty && f.mutable && F.sub v (unp f.ty) then [go (pc + 1) s0 hs] else [.wrong]
         | [] => [.wrong]
       else [.wrong]
     | _ => [.wrong]
@@ -295,7 +341,7 @@ def stepI (F : Fn) (pc : Nat) (s : List VT) (lp : Bool) : Instr → List Out
     | n :: so :: y :: dof :: x :: s0 =>
       if mapO m s && F.sub n i32 && F.sub so i32 && F.sub dof i32 then
         objO F x false fun cd => objO F y false fun cs => match cd.fields, cs.fields with
-        | fd :: _, fs :: _ => if fd.mutable && F.sub fs.ty fd.ty then [go (pc + 1) s0] else [.wrong]
+        | fd :: _, fs :: _ => if fd.mutable && F.sub fs.ty fd.ty then [go (pc + 1) s0 hs] else [.wrong]
         | _, _ => [.wrong]
       else [.wrong]
     | _ => [.wrong]
@@ -303,49 +349,86 @@ def stepI (F : Fn) (pc : Nat) (s : List VT) (lp : Bool) : Instr → List Out
     | n :: so :: dof :: x :: s0 =>
       if mapO m s && F.sub n i32 && F.sub so i32 && F.sub dof i32 then
         objO F x false fun c => match c.fields with
-        | f :: _ => if f.mutable && storage f.ty == 0x208 && F.sub seg f.ty then [go (pc + 1) s0] else [.wrong]
+        | f :: _ => if f.mutable && storage f.ty == 0x208 && F.sub seg f.ty then [go (pc + 1) s0 hs] else [.wrong]
         | [] => [.wrong]
       else [.wrong]
     | _ => [.wrong]
+  | .tryTable cs => [go (pc + 1) s (hs ++ [(cs, s.length)])]
+  | .endTry => if hs.isEmpty then [.wrong] else [go (pc + 1) s hs.dropLast]
+  | .trim d => if d ≤ hs.length then [go (pc + 1) s (hs.take d)] else [.trap]
+  | .throw args => match popT F args.reverse s with
+    | some s0 => throwO F s0 hs
+    | none => [.wrong]
 
 def steps (F : Fn) (st : St) : List Out :=
   match F.code[st.pc]? with
-  | some i => stepI F st.pc st.stk st.polled i
+  | some i => stepI F st.pc st.stk st.hs st.polled i
   | none => [.wrong]
 
 inductive Reach (F : Fn) : St → Prop
-  | init : Reach F ⟨0, [], false⟩
+  | init : Reach F ⟨0, [], false, []⟩
   | step {st st'} : Reach F st → Out.next st' ∈ steps F st → Reach F st'
 
 /-! ## The checker -/
 
-/-- What an instruction does to the operand stack: branch edges, and the stack after it if it falls through. -/
+/-- An edge to a target, with the stack and active handlers there. -/
+abbrev E := Nat × List VT × List H
+
+/-- What an instruction does to the operand stack and active handlers: branch edges, and the stack and handlers
+after it if it falls through. -/
 inductive Xf
   | fail
-  | stop (es : List (Nat × List VT))
-  | next (es : List (Nat × List VT)) (s : List VT) (p : Bool)
+  | stop (es : List E)
+  | next (es : List E) (s : List VT) (hs : List H) (p : Bool)
 
 def pushX (F : Fn) (ts s : List VT) : Option (List VT) :=
   if s.length + ts.length ≤ F.maxDepth then some (ts.reverse ++ s) else none
 
-def edge (t k d : Nat) (s : List VT) : Option (Nat × List VT) :=
-  if k + d ≤ s.length then some (t, s.take k ++ s.drop (k + d)) else none
+def edge (t k d : Nat) (s : List VT) (hs : List H) : Option E :=
+  if k + d ≤ s.length then some (t, s.take k ++ s.drop (k + d), hs) else none
 
-def edges (k : Nat) (s : List VT) : List (Nat × Nat) → Option (List (Nat × List VT))
+def edges (k : Nat) (s : List VT) (hs : List H) : List (Nat × Nat) → Option (List E)
   | [] => some []
-  | r :: rs => match edge r.1 k r.2 s, edges k s rs with
+  | r :: rs => match edge r.1 k r.2 s hs, edges k s hs rs with
     | some e, some es => some (e :: es)
     | _, _ => none
 
-def nextX (F : Fn) (ts s : List VT) : Xf :=
+def nextX (F : Fn) (ts s : List VT) (hs : List H) : Xf :=
   match pushX F ts s with
-  | some s' => .next [] s' false
+  | some s' => .next [] s' hs false
   | none => .fail
 
-def opX (F : Fn) (args res s : List VT) : Xf :=
+def opX (F : Fn) (args res s : List VT) (hs : List H) : Xf :=
   match popT F args.reverse s with
-  | some s0 => nextX F res s0
+  | some s0 => nextX F res s0 hs
   | none => .fail
+
+/-- The stack at the target of the clause `c` of a handler at the height `h` (`h - c.drop` is unsigned in C, so
+that it fails if `c.drop > h`). -/
+def catchS (F : Fn) (h : Nat) (c : Clause) (s : List VT) : Option (List VT) :=
+  if c.drop ≤ h ∧ h - c.drop ≤ s.length ∧ h - c.drop + c.push.length ≤ F.maxDepth then
+    some (c.push.reverse ++ s.drop (s.length - (h - c.drop)))
+  else none
+
+def optAll {α : Type} : List (Option α) → Option (List α)
+  | [] => some []
+  | some a :: l => (optAll l).map (a :: ·)
+  | none :: _ => none
+
+/-- `CK_THROW`: edges to every catch clause of the handlers `hs`, from the stack `s`. -/
+def catchesX (F : Fn) (s : List VT) (hs : List H) : Option (List E) :=
+  optAll ((catches hs).map fun q => (catchS F q.2.1 q.2.2 s).map fun s' => (q.2.2.target, s', q.1))
+
+/-- `wah_check_trim_depth`: the depth of TRIM_HANDLERS at `pc` or after POLLs, METERs and TICKs there, looking at
+`n` instructions at most. -/
+def trimAtN (F : Fn) : Nat → Nat → Option Nat
+  | 0, _ => none
+  | n + 1, pc => match F.code[pc]? with
+    | some (.trim d) => some d
+    | some (.poll _) | some (.tick _) | some (.meter _) => trimAtN F n (pc + 1)
+    | _ => none
+
+def trimAt (F : Fn) (pc : Nat) : Option Nat := trimAtN F F.code.size pc
 
 /-- `wah_check_ref_map`: positions strictly decrease from the top, have references, and are all of them. -/
 def decr (s : List VT) (below : Nat) : List Nat → Bool
@@ -364,105 +447,110 @@ def objX (F : Fn) (t : VT) (isStruct : Bool) (k : Comp → Xf) : Xf :=
   | some none => .stop []
   | none => .fail
 
-def xfer (F : Fn) (s : List VT) (p : Bool) : Instr → Xf
-  | .const t => nextX F [t] s
-  | .op args res => opX F args res s
-  | .opMap m args res => if mapX m s then opX F args res s else .fail
-  | .call args res => if p then opX F args res s else .fail
+def xfer (F : Fn) (pc : Nat) (s : List VT) (hs : List H) (p : Bool) : Instr → Xf
+  | .const t => nextX F [t] s hs
+  | .op args res => opX F args res s hs
+  | .opMap m args res => if mapX m s then opX F args res s hs else .fail
+  | .call args res => if p then match popT F args.reverse s with
+      | some s0 => match catchesX F s0 hs, pushX F res s0 with
+        | some es, some s' => .next es s' hs false
+        | _, _ => .fail
+      | none => .fail
+    else .fail
   | .retCall args res => match popT F args.reverse s with
     | some _ => if leB F res F.results then .stop [] else .fail
     | none => .fail
   | .drop => match s with
-    | _ :: s0 => .next [] s0 false
+    | _ :: s0 => .next [] s0 hs false
     | [] => .fail
   | .select => match s with
-    | c :: a :: b :: s0 => if F.sub c i32 && a == b then .next [] (a :: s0) false else .fail
+    | c :: a :: b :: s0 => if F.sub c i32 && a == b then .next [] (a :: s0) hs false else .fail
     | _ => .fail
   | .localGet i => match F.locals[i]? with
-    | some t => nextX F [t] s
+    | some t => nextX F [t] s hs
     | none => .fail
   | .localSet i => match F.locals[i]?, s with
-    | some t, x :: s0 => if F.sub x t then .next [] s0 false else .fail
+    | some t, x :: s0 => if F.sub x t then .next [] s0 hs false else .fail
     | _, _ => .fail
   | .localTee i => match F.locals[i]?, s with
-    | some t, x :: s0 => if F.sub x t then nextX F [t] s0 else .fail
+    | some t, x :: s0 => if F.sub x t then nextX F [t] s0 hs else .fail
     | _, _ => .fail
   | .refIsNull => match s with
-    | x :: s0 => if isRef x then nextX F [i32] s0 else .fail
+    | x :: s0 => if isRef x then nextX F [i32] s0 hs else .fail
     | [] => .fail
   | .refAsNonNull => match s with
-    | x :: s0 => if isRef x then .next [] (nn x :: s0) false else .fail
+    | x :: s0 => if isRef x then .next [] (nn x :: s0) hs false else .fail
     | [] => .fail
-  | .br t k d => match edge t k d s with
+  | .br t k d => match edge t k d s hs with
     | some e => .stop [e]
     | none => .fail
   | .brIf t k d => match s with
-    | c :: s0 => if F.sub c i32 then match edge t k d s0 with
-        | some e => .next [e] s0 false
+    | c :: s0 => if F.sub c i32 then match edge t k d s0 hs with
+        | some e => .next [e] s0 hs false
         | none => .fail
       else .fail
     | _ => .fail
   | .brTable k recs => match s with
-    | c :: s0 => if F.sub c i32 && !recs.isEmpty then match edges k s0 recs with
+    | c :: s0 => if F.sub c i32 && !recs.isEmpty then match edges k s0 hs recs with
         | some es => .stop es
         | none => .fail
       else .fail
     | _ => .fail
   | .brOnNull t k d => match s with
-    | x :: s0 => if isRef x then match edge t k d s0 with
-        | some e => .next [e] (nn x :: s0) false
+    | x :: s0 => if isRef x then match edge t k d s0 hs with
+        | some e => .next [e] (nn x :: s0) hs false
         | none => .fail
       else .fail
     | [] => .fail
   | .brOnNonNull t k d => match s with
-    | x :: s0 => if isRef x then match edge t k d (nn x :: s0) with
-        | some e => .next [e] s0 false
+    | x :: s0 => if isRef x then match edge t k d (nn x :: s0) hs with
+        | some e => .next [e] s0 hs false
         | none => .fail
       else .fail
     | [] => .fail
   | .if_ t => match s with
-    | c :: s0 => if F.sub c i32 then .next [(t, s0)] s0 false else .fail
+    | c :: s0 => if F.sub c i32 then .next [(t, s0, hs)] s0 hs false else .fail
     | _ => .fail
-  | .else_ t => .stop [(t, s)]
-  | .meter t => .next [(t, s)] s false
-  | .poll m => if mapX m s then .next [] s true else .fail
-  | .tick m => if mapX m s then .next [] s false else .fail
+  | .else_ t => .stop [(t, s, hs)]
+  | .meter t => if (trimAt F pc).isNone || (trimAt F t).isSome then .next [(t, s, hs)] s hs false else .fail
+  | .poll m => if mapX m s then .next [] s hs true else .fail
+  | .tick m => if mapX m s then .next [] s hs false else .fail
   | .end_ => if leB F s F.results.reverse then .stop [] else .fail
   | .ret => if (popT F F.results.reverse s).isSome then .stop [] else .fail
   | .unreachable => .stop []
   | .bad => .fail
   | .refEq => match s with
-    | x :: y :: s0 => if isRef x && isRef y then nextX F [i32] s0 else .fail
+    | x :: y :: s0 => if isRef x && isRef y then nextX F [i32] s0 hs else .fail
     | _ => .fail
   | .refCast t => match s with
-    | x :: s0 => if isRef x then nextX F [t] s0 else .fail
+    | x :: s0 => if isRef x then nextX F [t] s0 hs else .fail
     | [] => .fail
   | .brOnCast onFail nul dst t k d => match s with
     | x :: s0 => if isRef x then
-        match edge t k d ((if onFail then castSrc nul x else dst) :: s0) with
-        | some e => .next [e] ((if onFail then dst else castSrc nul x) :: s0) false
+        match edge t k d ((if onFail then castSrc nul x else dst) :: s0) hs with
+        | some e => .next [e] ((if onFail then dst else castSrc nul x) :: s0) hs false
         | none => .fail
       else .fail
     | [] => .fail
   | .structGet acc off => match s with
     | x :: s0 => objX F x true fun c => match fieldAt off c.fields with
-      | some f => if accessible acc f.ty then nextX F [unp f.ty] s0 else .fail
+      | some f => if accessible acc f.ty then nextX F [unp f.ty] s0 hs else .fail
       | none => .fail
     | [] => .fail
   | .structSet acc off => match s with
     | v :: x :: s0 => objX F x true fun c => match fieldAt off c.fields with
-      | some f => if accessible acc f.ty && f.mutable && F.sub v (unp f.ty) then .next [] s0 false else .fail
+      | some f => if accessible acc f.ty && f.mutable && F.sub v (unp f.ty) then .next [] s0 hs false else .fail
       | none => .fail
     | _ => .fail
   | .arrayGet acc => match s with
     | i :: x :: s0 => if F.sub i i32 then objX F x false fun c => match c.fields with
-        | f :: _ => if accessible acc f.ty then nextX F [unp f.ty] s0 else .fail
+        | f :: _ => if accessible acc f.ty then nextX F [unp f.ty] s0 hs else .fail
         | [] => .fail
       else .fail
     | _ => .fail
   | .arraySet acc => match s with
     | v :: i :: x :: s0 => if F.sub i i32 then objX F x false fun c => match c.fields with
-        | f :: _ => if accessible acc f.ty && f.mutable && F.sub v (unp f.ty) then .next [] s0 false else .fail
+        | f :: _ => if accessible acc f.ty && f.mutable && F.sub v (unp f.ty) then .next [] s0 hs false else .fail
         | [] => .fail
       else .fail
     | _ => .fail
@@ -470,7 +558,7 @@ def xfer (F : Fn) (s : List VT) (p : Bool) : Instr → Xf
     | n :: so :: y :: dof :: x :: s0 =>
       if mapX m s && F.sub n i32 && F.sub so i32 && F.sub dof i32 && (compX F y false).isSome then
         objX F x false fun cd => objX F y false fun cs => match cd.fields, cs.fields with
-        | fd :: _, fs :: _ => if fd.mutable && F.sub fs.ty fd.ty then .next [] s0 false else .fail
+        | fd :: _, fs :: _ => if fd.mutable && F.sub fs.ty fd.ty then .next [] s0 hs false else .fail
         | _, _ => .fail
       else .fail
     | _ => .fail
@@ -478,10 +566,21 @@ def xfer (F : Fn) (s : List VT) (p : Bool) : Instr → Xf
     | n :: so :: dof :: x :: s0 =>
       if mapX m s && F.sub n i32 && F.sub so i32 && F.sub dof i32 then
         objX F x false fun c => match c.fields with
-        | f :: _ => if f.mutable && storage f.ty == 0x208 && F.sub seg f.ty then .next [] s0 false else .fail
+        | f :: _ => if f.mutable && storage f.ty == 0x208 && F.sub seg f.ty then .next [] s0 hs false else .fail
         | [] => .fail
       else .fail
     | _ => .fail
+  | .tryTable cs =>
+    if decide (hs.length < maxHandlers) && cs.all (fun c => decide (c.drop ≤ s.length)) then
+      .next [] s (hs ++ [(cs, s.length)]) false
+    else .fail
+  | .endTry => if hs.isEmpty then .fail else .next [] s hs.dropLast false
+  | .trim d => if d ≤ hs.length then .next [] s (hs.take d) false else .fail
+  | .throw args => match popT F args.reverse s with
+    | some s0 => match catchesX F s0 hs with
+      | some es => .stop es
+      | none => .fail
+    | none => .fail
 
 /-- Types annotated at a join point: results at `end`, or a stack map, which are on top of the stack bottom first. -/
 def ann (F : Fn) (t : Nat) : Option (List VT) :=
@@ -500,37 +599,49 @@ def nrm (F : Fn) (t : Nat) (s : List VT) : List VT :=
   | some a => a.reverse ++ s.drop a.length
   | none => s
 
-/-- Recorded stacks at join points. -/
-abbrev Joins := Nat → Option (List VT)
+/-- The handlers recorded at a join point: none at `end` (returning drops them), and those that TRIM_HANDLERS keeps
+there, which have to be active. -/
+def hsAt (F : Fn) (t : Nat) (hs : List H) : Option (List H) :=
+  match F.code[t]? with
+  | some .end_ => some []
+  | _ => match trimAt F t with
+    | some d => if d ≤ hs.length then some (hs.take d) else none
+    | none => some hs
 
-def upd (J : Joins) (t : Nat) (s : List VT) : Joins := fun u => if u = t then some s else J u
+/-- Recorded stacks and handlers at join points. -/
+abbrev Joins := Nat → Option (List VT × List H)
 
-/-- `CK_MERGE`: records the stack at a join point, or checks it against the recorded one. -/
-def mergeM (F : Fn) (jw : Joins × List Nat) (t : Nat) (s : List VT) : Option (Joins × List Nat) :=
+def upd (J : Joins) (t : Nat) (r : List VT × List H) : Joins := fun u => if u = t then some r else J u
+
+/-- `CK_MERGE`: records the stack and handlers at a join point, or checks them against the recorded ones. -/
+def mergeM (F : Fn) (jw : Joins × List Nat) (t : Nat) (s : List VT) (hs : List H) : Option (Joins × List Nat) :=
   if annOK F t s then
-    match jw.1 t with
-    | none => some (upd jw.1 t (nrm F t s), t :: jw.2)
-    | some s' => if s' = nrm F t s then some jw else none
+    match hsAt F t hs with
+    | some hs' => match jw.1 t with
+      | none => some (upd jw.1 t (nrm F t s, hs'), t :: jw.2)
+      | some r => if r = (nrm F t s, hs') then some jw else none
+    | none => none
   else none
 
-def mergeAllM (F : Fn) : Joins × List Nat → List (Nat × List VT) → Option (Joins × List Nat)
+def mergeAllM (F : Fn) : Joins × List Nat → List E → Option (Joins × List Nat)
   | jw, [] => some jw
-  | jw, e :: es => match mergeM F jw e.1 e.2 with
+  | jw, e :: es => match mergeM F jw e.1 e.2.1 e.2.2 with
     | some jw' => mergeAllM F jw' es
     | none => none
 
 /-- Walks from `pc` with the stack `s`, where `p` tells whether the last instruction was POLL, until the path ends or
 falls through into a join point (other than where it started, `first`). -/
-def walkM (F : Fn) (T : Nat → Bool) : Nat → Joins × List Nat → Nat → List VT → Bool → Bool → Option (Joins × List Nat)
-  | 0, _, _, _, _, _ => none
-  | n + 1, jw, pc, s, p, first => match F.code[pc]? with
+def walkM (F : Fn) (T : Nat → Bool) :
+    Nat → Joins × List Nat → Nat → List VT → List H → Bool → Bool → Option (Joins × List Nat)
+  | 0, _, _, _, _, _, _ => none
+  | n + 1, jw, pc, s, hs, p, first => match F.code[pc]? with
     | none => none
-    | some i => if !first && T pc then mergeM F jw pc s else
-      match xfer F s p i with
+    | some i => if !first && T pc then mergeM F jw pc s hs else
+      match xfer F pc s hs p i with
       | .fail => none
       | .stop es => mergeAllM F jw es
-      | .next es s' p' => match mergeAllM F jw es with
-        | some jw' => walkM F T n jw' (pc + 1) s' p' false
+      | .next es s' hs' p' => match mergeAllM F jw es with
+        | some jw' => walkM F T n jw' (pc + 1) s' hs' p' false
         | none => none
 
 /-- The worklist of join points to walk from, last in first out. -/
@@ -538,7 +649,7 @@ def loopM (F : Fn) (T : Nat → Bool) (N : Nat) : Nat → Joins → List Nat →
   | 0, _, _ => none
   | _ + 1, J, [] => some J
   | n + 1, J, t :: w => match J t with
-    | some s => match walkM F T N (J, w) t s false true with
+    | some r => match walkM F T N (J, w) t r.1 r.2 false true with
       | some jw => loopM F T N n jw.1 jw.2
       | none => none
     | none => none
@@ -547,6 +658,7 @@ def targets : Instr → List Nat
   | .br t _ _ | .brIf t _ _ | .brOnNull t _ _ | .brOnNonNull t _ _ | .if_ t | .else_ t | .meter t => [t]
   | .brOnCast _ _ _ t _ _ => [t]
   | .brTable _ recs => recs.map (·.1)
+  | .tryTable cs => cs.map (·.target)
   | _ => []
 
 /-- Join points: the entry and every branch target. -/
@@ -561,7 +673,7 @@ def check (F : Fn) : Bool :=
   decide (0 < F.code.size) &&
   F.code.all (fun i => (targets i).all (· < F.code.size)) &&
   F.maps.all (·.1 < F.code.size) && decide (F.maps.map (·.1)).Nodup &&
-  match mergeM F (fun _ => none, []) 0 [] with
+  match mergeM F (fun _ => none, []) 0 [] [] with
   | some jw => (loopM F T N (N + 1) jw.1 jw.2).isSome
   | none => false
 
@@ -687,40 +799,49 @@ theorem le_nrm {F : Fn} (hs : SubOK F) {t : Nat} {M S : List VT} (ha : annOK F t
 /-! ### The worklist computes joins that every walk agrees with -/
 
 /-- The checks of a walk against final joins. -/
-def mergeOK (F : Fn) (J : Joins) (t : Nat) (s : List VT) : Bool := annOK F t s && J t == some (nrm F t s)
-
-def wkB (F : Fn) (T : Nat → Bool) (J : Joins) : Nat → Nat → List VT → Bool → Bool → Bool
-  | 0, _, _, _, _ => false
-  | n + 1, pc, s, p, first => match F.code[pc]? with
+def mergeOK (F : Fn) (J : Joins) (t : Nat) (s : List VT) (hs : List H) : Bool :=
+  annOK F t s && match hsAt F t hs with
+    | some hs' => decide (J t = some (nrm F t s, hs'))
     | none => false
-    | some i => if !first && T pc then mergeOK F J pc s else
-      match xfer F s p i with
-      | .fail => false
-      | .stop es => es.all (fun e => mergeOK F J e.1 e.2)
-      | .next es s' p' => es.all (fun e => mergeOK F J e.1 e.2) && wkB F T J n (pc + 1) s' p' false
 
-def Ext (J J' : Joins) : Prop := ∀ t s, J t = some s → J' t = some s
+def wkB (F : Fn) (T : Nat → Bool) (J : Joins) : Nat → Nat → List VT → List H → Bool → Bool → Bool
+  | 0, _, _, _, _, _ => false
+  | n + 1, pc, s, hs, p, first => match F.code[pc]? with
+    | none => false
+    | some i => if !first && T pc then mergeOK F J pc s hs else
+      match xfer F pc s hs p i with
+      | .fail => false
+      | .stop es => es.all (fun e => mergeOK F J e.1 e.2.1 e.2.2)
+      | .next es s' hs' p' => es.all (fun e => mergeOK F J e.1 e.2.1 e.2.2) && wkB F T J n (pc + 1) s' hs' p' false
+
+def Ext (J J' : Joins) : Prop := ∀ t r, J t = some r → J' t = some r
 
 theorem Ext.refl (J : Joins) : Ext J J := fun _ _ h => h
-theorem Ext.trans {J J' J'' : Joins} (a : Ext J J') (b : Ext J' J'') : Ext J J'' := fun t s h => b t s (a t s h)
+theorem Ext.trans {J J' J'' : Joins} (a : Ext J J') (b : Ext J' J'') : Ext J J'' := fun t r h => b t r (a t r h)
 
-theorem mergeOK_mono {F : Fn} {J J' : Joins} (h : Ext J J') {t s} (hm : mergeOK F J t s = true) :
-    mergeOK F J' t s = true := by
-  simp only [mergeOK, Bool.and_eq_true, beq_iff_eq] at hm ⊢
-  exact ⟨hm.1, h _ _ hm.2⟩
+theorem mergeOK_mono {F : Fn} {J J' : Joins} (h : Ext J J') {t s hs} (hm : mergeOK F J t s hs = true) :
+    mergeOK F J' t s hs = true := by
+  simp only [mergeOK, Bool.and_eq_true] at hm ⊢
+  refine ⟨hm.1, ?_⟩
+  have := hm.2
+  split at this
+  · simp only [decide_eq_true_eq] at this ⊢
+    exact h _ _ this
+  · cases this
 
-theorem all_mergeOK_mono {F : Fn} {J J' : Joins} (h : Ext J J') {es : List (Nat × List VT)}
-    (hm : es.all (fun e => mergeOK F J e.1 e.2) = true) : es.all (fun e => mergeOK F J' e.1 e.2) = true := by
+theorem all_mergeOK_mono {F : Fn} {J J' : Joins} (h : Ext J J') {es : List E}
+    (hm : es.all (fun e => mergeOK F J e.1 e.2.1 e.2.2) = true) :
+    es.all (fun e => mergeOK F J' e.1 e.2.1 e.2.2) = true := by
   simp only [List.all_eq_true] at hm ⊢
   exact fun e he => mergeOK_mono h (hm e he)
 
 theorem wkB_mono {F : Fn} {T} {J J' : Joins} (h : Ext J J') :
-    ∀ n pc s p first, wkB F T J n pc s p first = true → wkB F T J' n pc s p first = true := by
+    ∀ n pc s hs p first, wkB F T J n pc s hs p first = true → wkB F T J' n pc s hs p first = true := by
   intro n
   induction n with
-  | zero => intro _ _ _ _ hw; simp [wkB] at hw
+  | zero => intro _ _ _ _ _ hw; simp [wkB] at hw
   | succ n ih =>
-    intro pc s p first hw
+    intro pc s hs p first hw
     simp only [wkB] at hw ⊢
     split at hw
     · exact absurd hw (by simp)
@@ -734,54 +855,57 @@ theorem wkB_mono {F : Fn} {T} {J J' : Joins} (h : Ext J J') :
         · exact absurd hw (by simp)
         · exact all_mergeOK_mono h hw
         · simp only [Bool.and_eq_true] at hw ⊢
-          exact ⟨all_mergeOK_mono h hw.1, ih _ _ _ _ hw.2⟩
+          exact ⟨all_mergeOK_mono h hw.1, ih _ _ _ _ _ hw.2⟩
 
 /-- Joins whose new entries are all in the worklist. -/
 def Tracked (J J' : Joins) (w : List Nat) : Prop := ∀ t, J' t ≠ none → J t ≠ none ∨ t ∈ w
 
 def Listed (J : Joins) (w : List Nat) : Prop := ∀ t ∈ w, J t ≠ none
 
-theorem mergeM_spec {F : Fn} {jw jw' : Joins × List Nat} {t s} (h : mergeM F jw t s = some jw') :
-    Ext jw.1 jw'.1 ∧ mergeOK F jw'.1 t s = true ∧ Tracked jw.1 jw'.1 jw'.2 ∧ (∀ u ∈ jw.2, u ∈ jw'.2) ∧
+theorem mergeM_spec {F : Fn} {jw jw' : Joins × List Nat} {t s hs} (h : mergeM F jw t s hs = some jw') :
+    Ext jw.1 jw'.1 ∧ mergeOK F jw'.1 t s hs = true ∧ Tracked jw.1 jw'.1 jw'.2 ∧ (∀ u ∈ jw.2, u ∈ jw'.2) ∧
     (Listed jw.1 jw.2 → Listed jw'.1 jw'.2) := by
   unfold mergeM at h
   split at h
   · rename_i ha
     split at h
-    · rename_i hn
-      cases h
-      refine ⟨?_, ?_, ?_, ?_, ?_⟩
-      · intro u s' hu
-        simp only [upd]
-        split
-        · subst_vars; rw [hn] at hu; cases hu
-        · exact hu
-      · simp [mergeOK, ha, upd]
-      · intro u hu
-        simp only [upd] at hu
-        by_cases e : u = t
-        · exact Or.inr (by simp [e])
-        · simp only [e, ite_false] at hu; exact Or.inl hu
-      · intro u hu; exact List.mem_cons_of_mem _ hu
-      · intro hl u hu
-        simp only [upd]
-        split
-        · simp
-        · rcases List.mem_cons.mp hu with e | e
-          · contradiction
-          · exact hl u e
-    · rename_i s' hs
+    · rename_i hs' hh
       split at h
-      · cases h
-        rename_i e
-        refine ⟨Ext.refl _, ?_, fun u hu => Or.inl hu, fun u hu => hu, id⟩
-        simp [mergeOK, ha, hs, e]
-      · cases h
+      · rename_i hn
+        cases h
+        refine ⟨?_, ?_, ?_, ?_, ?_⟩
+        · intro u r hu
+          simp only [upd]
+          split
+          · subst_vars; rw [hn] at hu; cases hu
+          · exact hu
+        · simp [mergeOK, ha, hh, upd]
+        · intro u hu
+          simp only [upd] at hu
+          by_cases e : u = t
+          · exact Or.inr (by simp [e])
+          · simp only [e, ite_false] at hu; exact Or.inl hu
+        · intro u hu; exact List.mem_cons_of_mem _ hu
+        · intro hl u hu
+          simp only [upd]
+          split
+          · simp
+          · rcases List.mem_cons.mp hu with e | e
+            · contradiction
+            · exact hl u e
+      · rename_i r hr
+        split at h
+        · cases h
+          rename_i e
+          refine ⟨Ext.refl _, ?_, fun u hu => Or.inl hu, fun u hu => hu, id⟩
+          simp [mergeOK, ha, hh, hr, e]
+        · cases h
+    · cases h
   · cases h
 
-theorem mergeAllM_spec {F : Fn} : ∀ {es : List (Nat × List VT)} {jw jw' : Joins × List Nat},
+theorem mergeAllM_spec {F : Fn} : ∀ {es : List E} {jw jw' : Joins × List Nat},
     mergeAllM F jw es = some jw' →
-    Ext jw.1 jw'.1 ∧ es.all (fun e => mergeOK F jw'.1 e.1 e.2) = true ∧ Tracked jw.1 jw'.1 jw'.2 ∧
+    Ext jw.1 jw'.1 ∧ es.all (fun e => mergeOK F jw'.1 e.1 e.2.1 e.2.2) = true ∧ Tracked jw.1 jw'.1 jw'.2 ∧
     (∀ u ∈ jw.2, u ∈ jw'.2) ∧ (Listed jw.1 jw.2 → Listed jw'.1 jw'.2)
   | [], jw, jw', h => by
     simp only [mergeAllM, Option.some.injEq] at h
@@ -804,12 +928,12 @@ theorem mergeAllM_spec {F : Fn} : ∀ {es : List (Nat × List VT)} {jw jw' : Joi
         · exact Or.inr a
     · cases h
 
-theorem walkM_spec {F : Fn} {T} : ∀ {n pc s p first} {jw jw' : Joins × List Nat},
-    walkM F T n jw pc s p first = some jw' →
-    Ext jw.1 jw'.1 ∧ wkB F T jw'.1 n pc s p first = true ∧ Tracked jw.1 jw'.1 jw'.2 ∧
+theorem walkM_spec {F : Fn} {T} : ∀ {n pc s hs p first} {jw jw' : Joins × List Nat},
+    walkM F T n jw pc s hs p first = some jw' →
+    Ext jw.1 jw'.1 ∧ wkB F T jw'.1 n pc s hs p first = true ∧ Tracked jw.1 jw'.1 jw'.2 ∧
     (∀ u ∈ jw.2, u ∈ jw'.2) ∧ (Listed jw.1 jw.2 → Listed jw'.1 jw'.2)
-  | 0, _, _, _, _, _, _, h => by simp [walkM] at h
-  | n + 1, pc, s, p, first, jw, jw', h => by
+  | 0, _, _, _, _, _, _, _, h => by simp [walkM] at h
+  | n + 1, pc, s, hs, p, first, jw, jw', h => by
     simp only [walkM] at h
     split at h
     · cases h
@@ -826,7 +950,7 @@ theorem walkM_spec {F : Fn} {T} : ∀ {n pc s p first} {jw jw' : Joins × List N
           obtain ⟨x, m, t, w, l⟩ := mergeAllM_spec h
           refine ⟨x, ?_, t, w, l⟩
           simp only [wkB, hi, hT, hx]; exact m
-        · rename_i es s' p' hx
+        · rename_i es s' hs' p' hx
           split at h
           · rename_i jw1 h1
             obtain ⟨x1, m1, t1, w1, l1⟩ := mergeAllM_spec h1
@@ -843,61 +967,71 @@ theorem walkM_spec {F : Fn} {T} : ∀ {n pc s p first} {jw jw' : Joins × List N
 
 /-- Every recorded stack has been walked from, against the final joins. -/
 def Final (F : Fn) (T : Nat → Bool) (N : Nat) (J : Joins) : Prop :=
-  ∀ t s, J t = some s → wkB F T J N t s false true = true
+  ∀ t r, J t = some r → wkB F T J N t r.1 r.2 false true = true
 
 theorem loopM_spec {F : Fn} {T} {N} : ∀ {k J w J'}, loopM F T N k J w = some J' →
-    Listed J w → (∀ t s, J t = some s → t ∈ w ∨ wkB F T J N t s false true = true) →
+    Listed J w → (∀ t r, J t = some r → t ∈ w ∨ wkB F T J N t r.1 r.2 false true = true) →
     Ext J J' ∧ Final F T N J'
   | 0, _, _, _, h, _, _ => by simp [loopM] at h
   | k + 1, J, [], J', h, _, hd => by
     simp only [loopM, Option.some.injEq] at h
     subst h
-    refine ⟨Ext.refl _, fun t s ht => ?_⟩
-    rcases hd t s ht with a | a
+    refine ⟨Ext.refl _, fun t r ht => ?_⟩
+    rcases hd t r ht with a | a
     · cases a
     · exact a
   | k + 1, J, t :: w, J', h, hl, hd => by
     simp only [loopM] at h
     split at h
-    · rename_i s hs
+    · rename_i r hr
       split at h
       · rename_i jw hw
         obtain ⟨x, wk, tr, ww, ll⟩ := walkM_spec hw
         have hl' : Listed jw.1 jw.2 := ll (fun u hu => hl u (List.mem_cons_of_mem _ hu))
         obtain ⟨x2, fin⟩ := loopM_spec h hl' (by
-          intro u s' hu
+          intro u r' hu
           by_cases e : J u = none
           · rcases tr u (by rw [hu]; simp) with a | a
             · exact absurd e a
             · exact Or.inl a
-          · obtain ⟨s2, hs2⟩ := Option.ne_none_iff_exists'.mp e
-            have e2 := x u s2 hs2
+          · obtain ⟨r2, hr2⟩ := Option.ne_none_iff_exists'.mp e
+            have e2 := x u r2 hr2
             rw [hu] at e2
             obtain rfl := Option.some.inj e2
-            rcases hd u _ hs2 with a | a
+            rcases hd u _ hr2 with a | a
             · rcases List.mem_cons.mp a with b | b
               · subst b
-                rw [hs] at hs2
-                cases hs2
+                rw [hr] at hr2
+                cases hr2
                 exact Or.inr wk
               · exact Or.inl (ww u b)
-            · exact Or.inr (wkB_mono x _ _ _ _ _ a))
+            · exact Or.inr (wkB_mono x _ _ _ _ _ _ a))
         exact ⟨Ext.trans x x2, fin⟩
       · cases h
     · cases h
 
 /-! ### Each step agrees with `xfer` -/
 
+/-- The machine has the handlers of the checker, and more only where they are about to be trimmed (after a label
+that records fewer, until TRIM_HANDLERS, where nothing throws) or at `end`. -/
+def HRel (F : Fn) (pc : Nat) (hm hc : List H) : Prop :=
+  ∃ x, hm = hc ++ x ∧ (x = [] ∨ (trimAt F pc).isSome ∨ F.code[pc]? = some .end_)
+
+theorem HRel.rfl {F : Fn} {pc hs} : HRel F pc hs hs := ⟨[], by simp, Or.inl (Eq.refl _)⟩
+
+/-- A machine state at the target of an edge. -/
+def EdgeOK (F : Fn) (st : St) (e : E) : Prop :=
+  st.polled = false ∧ st.pc = e.1 ∧ Le F st.stk e.2.1 ∧ HRel F st.pc st.hs e.2.2
+
 /-- What the machine may do from an instruction that the checker passes, with a stack of subtypes. -/
 def Covered (F : Fn) (pc : Nat) (o : Out) : Xf → Prop
   | .fail => True
-  | .stop es => o ≠ .wrong ∧ ∀ st, o = .next st → st.polled = false ∧ ∃ e ∈ es, st.pc = e.1 ∧ Le F st.stk e.2
-  | .next es s' p' => o ≠ .wrong ∧ ∀ st, o = .next st →
-      (st.polled = false ∧ ∃ e ∈ es, st.pc = e.1 ∧ Le F st.stk e.2) ∨
-      (st.pc = pc + 1 ∧ st.polled = p' ∧ Le F st.stk s')
+  | .stop es => o ≠ .wrong ∧ ∀ st, o = .next st → ∃ e ∈ es, EdgeOK F st e
+  | .next es s' hs' p' => o ≠ .wrong ∧ ∀ st, o = .next st →
+      (∃ e ∈ es, EdgeOK F st e) ∨ (st.pc = pc + 1 ∧ st.polled = p' ∧ Le F st.stk s' ∧ HRel F st.pc st.hs hs')
 
-theorem jump_covered {F : Fn} {t k d M S e o} (hl : Le F M S) (he : edge t k d S = some e) (ho : o = jump t k d M) :
-    o ≠ .wrong ∧ ∀ st, o = .next st → st.polled = false ∧ st.pc = e.1 ∧ Le F st.stk e.2 := by
+theorem jump_covered {F : Fn} {t k d M S hd e o} (hl : Le F M S) (he : edge t k d S hd = some e)
+    (ho : o = jump t k d M hd) : o ≠ .wrong ∧ ∀ st, o = .next st → EdgeOK F st e := by
   simp only [edge] at he
   split at he
   · rename_i hk
@@ -907,11 +1041,11 @@ theorem jump_covered {F : Fn} {t k d M S e o} (hl : Le F M S) (he : edge t k d S
     refine ⟨by simp, fun st h => ?_⟩
     simp only [Out.next.injEq] at h
     subst h
-    exact ⟨rfl, rfl, Le.append (Le.take k hl) (Le.drop (k + d) hl)⟩
+    exact ⟨rfl, rfl, Le.append (Le.take k hl) (Le.drop (k + d) hl), HRel.rfl⟩
   · cases he
 
-theorem edges_mem {k s} : ∀ {recs : List (Nat × Nat)} {es}, edges k s recs = some es →
-    ∀ r ∈ recs, ∃ e, edge r.1 k r.2 s = some e ∧ e ∈ es
+theorem edges_mem {k s hd} : ∀ {recs : List (Nat × Nat)} {es}, edges k s hd recs = some es →
+    ∀ r ∈ recs, ∃ e, edge r.1 k r.2 s hd = some e ∧ e ∈ es
   | [], _, _, r, hr => by cases hr
   | r :: rs, es, h, r', hr => by
     simp only [edges] at h
@@ -927,7 +1061,7 @@ theorem edges_mem {k s} : ∀ {recs : List (Nat × Nat)} {es}, edges k s recs = 
 theorem trap_covered {F : Fn} {pc} : ∀ x, Covered F pc .trap x
   | .fail => trivial
   | .stop _ => ⟨by simp, fun _ h => by cases h⟩
-  | .next _ _ _ => ⟨by simp, fun _ h => by cases h⟩
+  | .next _ _ _ _ => ⟨by simp, fun _ h => by cases h⟩
 
 /-! ### Objects -/
 
@@ -1054,38 +1188,39 @@ theorem obj_covered (hL : LayOK F) {pc x y st kM kX} (h : F.sub x y = true)
   · trivial
 
 omit hs in
-theorem next_covered {pc M S o} (hl : Le F M S) (ho : o = go (pc + 1) M) : Covered F pc o (.next [] S false) := by
+theorem next_covered {pc M S hd o} (hl : Le F M S) (ho : o = go (pc + 1) M hd) :
+    Covered F pc o (.next [] S hd false) := by
   subst ho
   refine ⟨by simp [go], fun st h => Or.inr ?_⟩
   simp only [go, Out.next.injEq] at h
   subst h
-  exact ⟨rfl, rfl, hl⟩
+  exact ⟨rfl, rfl, hl, HRel.rfl⟩
 
 omit hs in
-theorem push1_covered {pc x y M S o} (hl : Le F M S) (h : F.sub x y = true) (ho : o = pushO F (pc + 1) [x] M) :
-    Covered F pc o (nextX F [y] S) := by
+theorem push1_covered {pc x y M S hd o} (hl : Le F M S) (h : F.sub x y = true)
+    (ho : o = pushO F (pc + 1) [x] M hd) : Covered F pc o (nextX F [y] S hd) := by
   subst ho
   simp only [nextX, pushX, pushO, hl.length, List.length_singleton]
   split
   · refine ⟨by simp [go], fun st h' => Or.inr ?_⟩
     simp only [go, Out.next.injEq] at h'
     subst h'
-    exact ⟨rfl, rfl, .cons h hl⟩
+    exact ⟨rfl, rfl, .cons h hl, HRel.rfl⟩
   · simp [Covered]
 
-theorem push_covered {pc ts M S o} (hl : Le F M S) (ho : o = pushO F (pc + 1) ts M) :
-    Covered F pc o (nextX F ts S) := by
+theorem push_covered {pc ts M S hd o} (hl : Le F M S) (ho : o = pushO F (pc + 1) ts M hd) :
+    Covered F pc o (nextX F ts S hd) := by
   subst ho
   simp only [nextX, pushX, pushO, hl.length]
   split
   · refine ⟨by simp [go], fun st h => Or.inr ?_⟩
     simp only [go, Out.next.injEq] at h
     subst h
-    exact ⟨rfl, rfl, Le.append (Le.refl hs _) hl⟩
+    exact ⟨rfl, rfl, Le.append (Le.refl hs _) hl, HRel.rfl⟩
   · simp [Covered]
 
-theorem op_covered {pc args res M S o} (hl : Le F M S) (ho : o ∈ opO F pc args res M) :
-    Covered F pc o (opX F args res S) := by
+theorem op_covered {pc args res M S hd o} (hl : Le F M S) (ho : o ∈ opO F pc args res M hd) :
+    Covered F pc o (opX F args res S hd) := by
   simp only [opX]
   split
   · rename_i S0 h0
@@ -1098,8 +1233,48 @@ theorem op_covered {pc args res M S o} (hl : Le F M S) (ho : o ∈ opO F pc args
     · exact push_covered hs hl0 a
   · trivial
 
-theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (p lp : Bool) (hp : p = true → lp = true)
-    (i : Instr) (o : Out) (ho : o ∈ stepI F pc M lp i) : Covered F pc o (xfer F S p i) := by
+omit hs in
+theorem optAll_mem {α : Type} : ∀ {l : List (Option α)} {es}, optAll l = some es →
+    ∀ o ∈ l, ∃ e, o = some e ∧ e ∈ es
+  | [], _, _, o, ho => by cases ho
+  | some a :: l, es, h, o, ho => by
+    simp only [optAll] at h
+    cases hl : optAll l with
+    | none => rw [hl] at h; cases h
+    | some es' =>
+      rw [hl] at h
+      simp only [Option.map_some, Option.some.injEq] at h
+      subst h
+      rcases List.mem_cons.mp ho with rfl | ho
+      · exact ⟨a, rfl, by simp⟩
+      · obtain ⟨e, he, hm⟩ := optAll_mem hl o ho
+        exact ⟨e, he, List.mem_cons_of_mem _ hm⟩
+  | none :: _, _, h, _, _ => by simp [optAll] at h
+
+theorem throw_covered {M S hd es} (hl : Le F M S) (h : catchesX F S hd = some es) :
+    ∀ o ∈ throwO F M hd, o ≠ .wrong ∧ ∀ st, o = .next st → ∃ e ∈ es, EdgeOK F st e := by
+  intro o ho
+  rcases List.mem_cons.mp ho with rfl | ho
+  · exact ⟨by simp, fun _ h => by cases h⟩
+  obtain ⟨q, hq, rfl⟩ := List.mem_map.mp ho
+  obtain ⟨e, he, hm⟩ := optAll_mem h _ (List.mem_map.mpr ⟨q, hq, rfl⟩)
+  simp only [catchS] at he
+  rw [hl.length]
+  split at he
+  · rename_i hc
+    simp only [Option.map_some, Option.some.injEq] at he
+    subst he
+    simp only [hc, and_self, ite_true]
+    refine ⟨by simp [go], fun st h => ⟨_, hm, ?_⟩⟩
+    simp only [go, Out.next.injEq] at h
+    subst h
+    exact ⟨rfl, rfl, Le.append (Le.refl hs _) (Le.drop _ hl), HRel.rfl⟩
+  · simp at he
+
+/-- Each step with the handlers of the checker. -/
+theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (hd : List H) (p lp : Bool)
+    (hp : p = true → lp = true) (i : Instr) (o : Out) (ho : o ∈ stepI F pc M hd lp i) :
+    Covered F pc o (xfer F pc S hd p i) := by
   cases i with
   | const t => exact push_covered hs hl (List.mem_singleton.mp ho)
   | op args res => exact op_covered hs hl ho
@@ -1114,8 +1289,30 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
     simp only [xfer]
     split
     · rename_i hpt
-      simp only [stepI, hp hpt, ite_true] at ho
-      exact op_covered hs hl ho
+      split
+      · rename_i S0 h0
+        obtain ⟨M0, hm, hl0⟩ := popT_le hs hl h0
+        split
+        · rename_i es s' hes hs'
+          simp only [stepI, hp hpt, ite_true, hm] at ho
+          rcases List.mem_cons.mp ho with a | a
+          · subst a; exact trap_covered _
+          rcases List.mem_cons.mp a with a | a
+          · subst a
+            simp only [pushX] at hs'
+            split at hs'
+            · rename_i hk
+              cases hs'
+              simp only [pushO, hl0.length, hk, ite_true]
+              refine ⟨by simp [go], fun st h => Or.inr ?_⟩
+              simp only [go, Out.next.injEq] at h
+              subst h
+              exact ⟨rfl, rfl, Le.append (Le.refl hs _) hl0, HRel.rfl⟩
+            · cases hs'
+          · obtain ⟨nw, hn⟩ := throw_covered hs hl0 hes o a
+            exact ⟨nw, fun st h => Or.inl (hn st h)⟩
+        · trivial
+      · trivial
     · trivial
   | retCall args res =>
     simp only [xfer]
@@ -1138,7 +1335,7 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
         refine ⟨by simp [go], fun st h => Or.inr ?_⟩
         simp only [go, Out.next.injEq] at h
         subst h
-        simp_all
+        exact ⟨rfl, rfl, t, HRel.rfl⟩
     · trivial
   | select =>
     simp only [xfer]
@@ -1156,8 +1353,8 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
                 or_false] at ho
               refine ⟨by rcases ho with h | h <;> simp [h, go], fun st h => Or.inr ?_⟩
               rcases ho with e | e <;> subst e <;> simp only [go, Out.next.injEq] at h <;> subst h
-              · exact ⟨rfl, rfl, .cons h2 t3⟩
-              · exact ⟨rfl, rfl, .cons h3 t3⟩
+              · exact ⟨rfl, rfl, .cons h2 t3, HRel.rfl⟩
+              · exact ⟨rfl, rfl, .cons h3 t3, HRel.rfl⟩
       · trivial
     · trivial
   | localGet i =>
@@ -1180,7 +1377,7 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
           refine ⟨by simp [go], fun st h => Or.inr ?_⟩
           simp only [go, Out.next.injEq] at h
           subst h
-          exact ⟨rfl, rfl, t1⟩
+          exact ⟨rfl, rfl, t1, HRel.rfl⟩
       · trivial
     · trivial
   | localTee i =>
@@ -1224,7 +1421,7 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
             refine ⟨by simp [go], fun st h => Or.inr ?_⟩
             simp only [go, Out.next.injEq] at h
             subst h
-            exact ⟨rfl, rfl, .cons (hs.nn _ _ h1 ey) t1⟩
+            exact ⟨rfl, rfl, .cons (hs.nn _ _ h1 ey) t1, HRel.rfl⟩
       · trivial
     · trivial
   | br t k d =>
@@ -1232,7 +1429,7 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
     split
     · rename_i e he
       obtain ⟨nw, hn⟩ := jump_covered hl he (List.mem_singleton.mp ho)
-      exact ⟨nw, fun st h => by obtain ⟨a, b, c⟩ := hn st h; exact ⟨a, e, by simp, b, c⟩⟩
+      exact ⟨nw, fun st h => ⟨e, by simp, hn st h⟩⟩
     · trivial
   | brIf t k d =>
     simp only [xfer]
@@ -1250,9 +1447,9 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
               refine ⟨by simp [go], fun st h => Or.inr ?_⟩
               simp only [go, Out.next.injEq] at h
               subst h
-              exact ⟨rfl, rfl, t1⟩
+              exact ⟨rfl, rfl, t1, HRel.rfl⟩
             · obtain ⟨nw, hn⟩ := jump_covered t1 he h
-              exact ⟨nw, fun st h' => Or.inl (by obtain ⟨a, b, c⟩ := hn st h'; exact ⟨a, e, by simp, b, c⟩)⟩
+              exact ⟨nw, fun st h' => Or.inl ⟨e, by simp, hn st h'⟩⟩
         · trivial
       · trivial
     · trivial
@@ -1271,7 +1468,7 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
             obtain ⟨r, hr', hro⟩ := List.mem_map.mp ho
             obtain ⟨e, he, hm⟩ := edges_mem hes r hr'
             obtain ⟨nw, hn⟩ := jump_covered t1 he hro.symm
-            exact ⟨nw, fun st h => by obtain ⟨a, b, c⟩ := hn st h; exact ⟨a, e, hm, b, c⟩⟩
+            exact ⟨nw, fun st h => ⟨e, hm, hn st h⟩⟩
         · trivial
       · trivial
     · trivial
@@ -1290,12 +1487,12 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
             simp only [stepI, ey, ite_true, List.mem_cons, List.not_mem_nil, or_false] at ho
             rcases ho with h | h
             · obtain ⟨nw, hn⟩ := jump_covered t1 he h
-              exact ⟨nw, fun st h' => Or.inl (by obtain ⟨a, b, c⟩ := hn st h'; exact ⟨a, e, by simp, b, c⟩)⟩
+              exact ⟨nw, fun st h' => Or.inl ⟨e, by simp, hn st h'⟩⟩
             · subst h
               refine ⟨by simp [go], fun st h => Or.inr ?_⟩
               simp only [go, Out.next.injEq] at h
               subst h
-              exact ⟨rfl, rfl, .cons (hs.nn _ _ h1 ey) t1⟩
+              exact ⟨rfl, rfl, .cons (hs.nn _ _ h1 ey) t1, HRel.rfl⟩
         · trivial
       · trivial
     · trivial
@@ -1314,12 +1511,12 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
             simp only [stepI, ey, ite_true, List.mem_cons, List.not_mem_nil, or_false] at ho
             rcases ho with h | h
             · obtain ⟨nw, hn⟩ := jump_covered (.cons (hs.nn _ _ h1 ey) t1) he h
-              exact ⟨nw, fun st h' => Or.inl (by obtain ⟨a, b, c⟩ := hn st h'; exact ⟨a, e, by simp, b, c⟩)⟩
+              exact ⟨nw, fun st h' => Or.inl ⟨e, by simp, hn st h'⟩⟩
             · subst h
               refine ⟨by simp [go], fun st h => Or.inr ?_⟩
               simp only [go, Out.next.injEq] at h
               subst h
-              exact ⟨rfl, rfl, t1⟩
+              exact ⟨rfl, rfl, t1, HRel.rfl⟩
         · trivial
       · trivial
     · trivial
@@ -1334,8 +1531,8 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
           simp only [stepI, hs.trans _ _ _ h1 ec, ite_true, List.mem_cons, List.not_mem_nil, or_false] at ho
           refine ⟨by rcases ho with h | h <;> simp [h, go], fun st h => ?_⟩
           rcases ho with e | e <;> subst e <;> simp only [go, Out.next.injEq] at h <;> subst h
-          · exact Or.inr ⟨rfl, rfl, t1⟩
-          · exact Or.inl ⟨rfl, (t, S0), by simp, rfl, t1⟩
+          · exact Or.inr ⟨rfl, rfl, t1, HRel.rfl⟩
+          · exact Or.inl ⟨(t, S0, hd), by simp, rfl, rfl, t1, HRel.rfl⟩
       · trivial
     · trivial
   | else_ t =>
@@ -1344,14 +1541,16 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
     refine ⟨by simp [go], fun st h => ?_⟩
     simp only [go, Out.next.injEq] at h
     subst h
-    exact ⟨rfl, (t, S), by simp, rfl, hl⟩
+    exact ⟨(t, S, hd), by simp, rfl, rfl, hl, HRel.rfl⟩
   | meter t =>
-    simp only [stepI, List.mem_cons, List.not_mem_nil, or_false] at ho
     simp only [xfer]
-    refine ⟨by rcases ho with h | h <;> simp [h, go], fun st h => ?_⟩
-    rcases ho with e | e <;> subst e <;> simp only [go, Out.next.injEq] at h <;> subst h
-    · exact Or.inr ⟨rfl, rfl, hl⟩
-    · exact Or.inl ⟨rfl, (t, S), by simp, rfl, hl⟩
+    split
+    · simp only [stepI, List.mem_cons, List.not_mem_nil, or_false] at ho
+      refine ⟨by rcases ho with h | h <;> simp [h, go], fun st h => ?_⟩
+      rcases ho with e | e <;> subst e <;> simp only [go, Out.next.injEq] at h <;> subst h
+      · exact Or.inr ⟨rfl, rfl, hl, HRel.rfl⟩
+      · exact Or.inl ⟨(t, S, hd), by simp, rfl, rfl, hl, HRel.rfl⟩
+    · trivial
   | poll m =>
     simp only [xfer]
     split
@@ -1361,7 +1560,7 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
       refine ⟨by simp [go], fun st h => Or.inr ?_⟩
       simp only [go, Out.next.injEq] at h
       subst h
-      exact ⟨rfl, rfl, hl⟩
+      exact ⟨rfl, rfl, hl, HRel.rfl⟩
     · trivial
   | tick m =>
     simp only [xfer]
@@ -1372,7 +1571,7 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
       refine ⟨by simp [go], fun st h => Or.inr ?_⟩
       simp only [go, Out.next.injEq] at h
       subst h
-      exact ⟨rfl, rfl, hl⟩
+      exact ⟨rfl, rfl, hl, HRel.rfl⟩
     · trivial
   | end_ =>
     simp only [xfer]
@@ -1442,12 +1641,12 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
             simp only [stepI, ey, ite_true, List.mem_cons, List.not_mem_nil, or_false] at ho
             rcases ho with h | h
             · obtain ⟨nw, hn⟩ := jump_covered (.cons (pick onFail).1 t1) he h
-              exact ⟨nw, fun st h' => Or.inl (by obtain ⟨a, b, c⟩ := hn st h'; exact ⟨a, e, by simp, b, c⟩)⟩
+              exact ⟨nw, fun st h' => Or.inl ⟨e, by simp, hn st h'⟩⟩
             · subst h
               refine ⟨by simp [go], fun st h => Or.inr ?_⟩
               simp only [go, Out.next.injEq] at h
               subst h
-              exact ⟨rfl, rfl, .cons (pick onFail).2 t1⟩
+              exact ⟨rfl, rfl, .cons (pick onFail).2 t1, HRel.rfl⟩
         · trivial
       · trivial
     · trivial
@@ -1610,22 +1809,181 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
       · trivial
     · trivial
 
+  | tryTable cs =>
+    simp only [xfer]
+    split
+    · simp only [stepI, List.mem_singleton] at ho
+      subst ho
+      refine ⟨by simp [go], fun st h => Or.inr ?_⟩
+      simp only [go, Out.next.injEq] at h
+      subst h
+      refine ⟨rfl, rfl, hl, ?_⟩
+      simp only [hl.length]
+      exact HRel.rfl
+    · trivial
+  | endTry =>
+    simp only [xfer]
+    split
+    · trivial
+    · rename_i he
+      simp only [stepI, he, Bool.false_eq_true, ite_false, List.mem_singleton] at ho
+      exact next_covered hl ho
+  | trim d =>
+    simp only [xfer]
+    split
+    · rename_i hk
+      simp only [stepI, hk, ite_true, List.mem_singleton] at ho
+      exact next_covered hl ho
+    · trivial
+  | throw args =>
+    simp only [xfer]
+    split
+    · rename_i S0 h0
+      obtain ⟨M0, hm, hl0⟩ := popT_le hs hl h0
+      split
+      · rename_i es hes
+        simp only [stepI, hm] at ho
+        exact throw_covered hs hl0 hes o ho
+      · trivial
+    · trivial
+
 end
+
+/-! ### Handlers left to trim -/
+
+theorem trimAtN_succ {F : Fn} : ∀ {n pc}, F.code.size ≤ pc + n → trimAtN F (n + 1) pc = trimAtN F n pc
+  | 0, pc, h => by
+    have : F.code[pc]? = none := Array.getElem?_eq_none (by omega)
+    simp [trimAtN, this]
+  | n + 1, pc, h => by
+    have ih := trimAtN_succ (F := F) (n := n) (pc := pc + 1) (by omega)
+    rw [trimAtN.eq_2 F pc (n + 1), trimAtN.eq_2 F pc n]
+    cases hc : F.code[pc]? with
+    | none => rfl
+    | some i => cases i <;> first | rfl | exact ih
+
+/-- `trimAt` after an instruction. -/
+theorem trimAt_eq {F : Fn} {pc i} (hc : F.code[pc]? = some i) : trimAt F pc = match i with
+    | .trim d => some d
+    | .poll _ | .tick _ | .meter _ => trimAt F (pc + 1)
+    | _ => none := by
+  have hlt : pc < F.code.size := by
+    rcases Nat.lt_or_ge pc F.code.size with h | h
+    · exact h
+    · rw [Array.getElem?_eq_none h] at hc; cases hc
+  obtain ⟨m, hm⟩ : ∃ m, F.code.size = m + 1 := ⟨F.code.size - 1, by omega⟩
+  have hs := trimAtN_succ (F := F) (n := m) (pc := pc + 1) (by omega)
+  unfold trimAt
+  rw [hm, trimAtN.eq_2 F pc m]
+  simp only [hc]
+  cases i <;> first | rfl | exact hs.symm
+
+theorem hrel_hsAt {F : Fn} {t hm hc hs'} (hr : HRel F t hm hc) (h : hsAt F t hc = some hs') : HRel F t hm hs' := by
+  obtain ⟨x, rfl, hx⟩ := hr
+  unfold hsAt at h
+  split at h
+  · rename_i e
+    cases h
+    exact ⟨hc ++ x, by simp, Or.inr (Or.inr e)⟩
+  · split at h
+    · rename_i d hd
+      split at h
+      · cases h
+        exact ⟨hc.drop d ++ x, by rw [← List.append_assoc, List.take_append_drop], Or.inr (Or.inl (by simp [hd]))⟩
+      · cases h
+    · cases h
+      exact ⟨x, rfl, hx⟩
+
+/-- Each step, where the machine may have more handlers than the checker. -/
+theorem step_any {F : Fn} (hs : SubOK F) (hL : LayOK F) {pc i M S hm hc p lp o} (hi : F.code[pc]? = some i)
+    (hl : Le F M S) (hr : HRel F pc hm hc) (hp : p = true → lp = true) (ho : o ∈ stepI F pc M hm lp i) :
+    Covered F pc o (xfer F pc S hc p i) := by
+  obtain ⟨x, rfl, hx⟩ := hr
+  by_cases x0 : x = []
+  · subst x0
+    simp only [List.append_nil] at ho
+    exact step_covered hs hL pc M S hl hc p lp hp i o ho
+  have tr : (trimAt F pc).isSome = true ∨ i = .end_ := by
+    rcases hx with h | h | h
+    · exact absurd h x0
+    · exact Or.inl h
+    · rw [hi] at h; cases h; exact Or.inr rfl
+  have te := trimAt_eq hi
+  have next : ∀ {st : St}, st.pc = pc + 1 → st.hs = hc ++ x → (trimAt F pc).isSome = true →
+      (trimAt F (pc + 1)) = trimAt F pc → HRel F st.pc st.hs hc := fun e1 e2 t1 t2 =>
+    ⟨x, e2, Or.inr (Or.inl (by rw [e1, t2]; exact t1))⟩
+  cases i with
+  | poll m =>
+    have t1 : (trimAt F pc).isSome = true := tr.resolve_right (fun h => by cases h)
+    simp only [xfer]
+    split
+    · rename_i hmx
+      simp only [stepI, mapX_exact hs hl hmx, ite_true, List.mem_singleton] at ho
+      subst ho
+      refine ⟨by simp [go], fun st h => Or.inr ?_⟩
+      simp only [go, Out.next.injEq] at h
+      subst h
+      exact ⟨rfl, rfl, hl, next rfl rfl t1 te.symm⟩
+    · trivial
+  | tick m =>
+    have t1 : (trimAt F pc).isSome = true := tr.resolve_right (fun h => by cases h)
+    simp only [xfer]
+    split
+    · rename_i hmx
+      simp only [stepI, mapX_exact hs hl hmx, ite_true, List.mem_singleton] at ho
+      subst ho
+      refine ⟨by simp [go], fun st h => Or.inr ?_⟩
+      simp only [go, Out.next.injEq] at h
+      subst h
+      exact ⟨rfl, rfl, hl, next rfl rfl t1 te.symm⟩
+    · trivial
+  | meter t =>
+    have t1 : (trimAt F pc).isSome = true := tr.resolve_right (fun h => by cases h)
+    simp only [xfer]
+    split
+    · rename_i hc'
+      have t2 : (trimAt F t).isSome = true := by
+        simp only [Bool.or_eq_true, Option.isNone_iff_eq_none] at hc'
+        rcases hc' with h | h
+        · rw [h] at t1; cases t1
+        · exact h
+      simp only [stepI, List.mem_cons, List.not_mem_nil, or_false] at ho
+      refine ⟨by rcases ho with h | h <;> simp [h, go], fun st h => ?_⟩
+      rcases ho with e | e <;> subst e <;> simp only [go, Out.next.injEq] at h <;> subst h
+      · exact Or.inr ⟨rfl, rfl, hl, next rfl rfl t1 te.symm⟩
+      · exact Or.inl ⟨(t, S, hc), by simp, rfl, rfl, hl, ⟨x, rfl, Or.inr (Or.inl t2)⟩⟩
+    · trivial
+  | trim d =>
+    simp only [xfer]
+    split
+    · rename_i hk
+      have hk' : d ≤ (hc ++ x).length := by simp; omega
+      simp only [stepI, hk', ite_true, List.mem_singleton, List.take_append_of_le_length hk] at ho
+      exact next_covered hl ho
+    · trivial
+  | end_ => exact step_covered hs hL pc M S hl hc p lp hp .end_ o ho
+  | _ => rcases tr with h | h <;> simp_all
 
 /-! ### Reachable states are walked -/
 
 def Inv (F : Fn) (T : Nat → Bool) (J : Joins) (st : St) : Prop :=
-  ∃ n p S, (p = true → st.polled = true) ∧ Le F st.stk S ∧ wkB F T J n st.pc S p true = true
+  ∃ n p S HS, (p = true → st.polled = true) ∧ Le F st.stk S ∧ HRel F st.pc st.hs HS ∧
+    wkB F T J n st.pc S HS p true = true
 
-theorem inv_of_join {F : Fn} (hs : SubOK F) {T N J} (fin : Final F T N J) {t M S} (hl : Le F M S)
-    (h : mergeOK F J t S = true) : Inv F T J ⟨t, M, false⟩ := by
-  simp only [mergeOK, Bool.and_eq_true, beq_iff_eq] at h
-  exact ⟨N, false, _, by simp, le_nrm hs h.1 hl, fin t _ h.2⟩
+theorem inv_of_join {F : Fn} (hs : SubOK F) {T N J} (fin : Final F T N J) {t M S hm hc} (hl : Le F M S)
+    (hr : HRel F t hm hc) (h : mergeOK F J t S hc = true) : Inv F T J ⟨t, M, false, hm⟩ := by
+  simp only [mergeOK, Bool.and_eq_true] at h
+  obtain ⟨ha, h2⟩ := h
+  split at h2
+  · rename_i hs' e
+    simp only [decide_eq_true_eq] at h2
+    exact ⟨N, false, _, _, by simp, le_nrm hs ha hl, hrel_hsAt hr e, fin t _ h2⟩
+  · cases h2
 
 theorem inv_step {F : Fn} (hs : SubOK F) (hL : LayOK F) {T N J} (fin : Final F T N J) {st : St} (hi : Inv F T J st) :
     ∀ o ∈ steps F st, o ≠ .wrong ∧ ∀ st', o = .next st' → Inv F T J st' := by
   intro o ho
-  obtain ⟨n, p, S, hp, hl, hw⟩ := hi
+  obtain ⟨n, p, S, HS, hp, hl, hr, hw⟩ := hi
   cases n with
   | zero => simp [wkB] at hw
   | succ n =>
@@ -1636,24 +1994,24 @@ theorem inv_step {F : Fn} (hs : SubOK F) (hL : LayOK F) {T N J} (fin : Final F T
   · rename_i i hc
     rw [hc] at ho
     simp only [Bool.not_true, Bool.false_and, Bool.false_eq_true, ite_false] at hw
-    have cov := step_covered hs hL st.pc st.stk S hl p st.polled hp i o ho
+    have cov := step_any hs hL hc hl hr hp ho
     revert cov hw
-    cases xfer F S p i with
+    cases xfer F st.pc S HS p i with
     | fail => simp
     | stop es =>
       intro hw cov
       refine ⟨cov.1, fun st' h => ?_⟩
-      obtain ⟨hpo, e, hm, hpc, hle⟩ := cov.2 st' h
+      obtain ⟨e, hm, hpo, hpc, hle, hre⟩ := cov.2 st' h
       simp only [List.all_eq_true] at hw
-      have := inv_of_join hs fin hle (hw _ hm)
-      cases st'; simp only at hpo hpc; subst hpo hpc; exact this
-    | next es s' p' =>
+      cases st'; simp only at hpo hpc hle hre; subst hpo hpc
+      exact inv_of_join hs fin hle hre (hw _ hm)
+    | next es s' hs' p' =>
       intro hw cov
       simp only [Bool.and_eq_true, List.all_eq_true] at hw
       refine ⟨cov.1, fun st' h => ?_⟩
-      rcases cov.2 st' h with ⟨hpo, e, hm, hpc, hle⟩ | ⟨hpc, hpo, hle⟩
-      · have := inv_of_join hs fin hle (hw.1 _ hm)
-        cases st'; simp only at hpo hpc; subst hpo hpc; exact this
+      rcases cov.2 st' h with ⟨e, hm, hpo, hpc, hle, hre⟩ | ⟨hpc, hpo, hle, hre⟩
+      · cases st'; simp only at hpo hpc hle hre; subst hpo hpc
+        exact inv_of_join hs fin hle hre (hw.1 _ hm)
       · have h2 := hw.2
         cases n with
         | zero => simp [wkB] at h2
@@ -1664,17 +2022,17 @@ theorem inv_step {F : Fn} (hs : SubOK F) (hL : LayOK F) {T N J} (fin : Final F T
         · rename_i i' hc'
           by_cases hT : T (st.pc + 1) = true
           · simp only [hT, Bool.not_false, Bool.and_self, ite_true] at h2
-            obtain ⟨n', p'', S', hp'', hl'', hw''⟩ := inv_of_join hs fin hle h2
-            refine ⟨n', p'', S', fun e => absurd (hp'' e) (by simp), hl'', ?_⟩
-            rw [hpc]; exact hw''
-          · refine ⟨n + 1, p', s', fun e => by rw [hpo]; exact e, hle, ?_⟩
+            cases st'; simp only at hpo hpc hle hre; subst hpc
+            obtain ⟨n', p'', S', H', hp'', hl'', hr'', hw''⟩ := inv_of_join hs fin hle hre h2
+            exact ⟨n', p'', S', H', fun e => absurd (hp'' e) (by simp), hl'', hr'', hw''⟩
+          · refine ⟨n + 1, p', s', hs', fun e => by rw [hpo]; exact e, hle, hre, ?_⟩
             rw [hpc]
             simp only [wkB, hc', Bool.not_true, Bool.false_and]
             simp only [hT, Bool.and_false] at h2
             exact h2
 
 theorem check_final {F : Fn} (h : check F = true) :
-    ∃ J, Final F (fun pc => (joinPoints F)[pc]?.getD false) (F.code.size + 1) J ∧ mergeOK F J 0 [] = true := by
+    ∃ J, Final F (fun pc => (joinPoints F)[pc]?.getD false) (F.code.size + 1) J ∧ mergeOK F J 0 [] [] = true := by
   simp only [check, Bool.and_eq_true] at h
   obtain ⟨_, hm⟩ := h
   split at hm
@@ -1683,7 +2041,7 @@ theorem check_final {F : Fn} (h : check F = true) :
     obtain ⟨x, m, tr, _, ll⟩ := mergeM_spec hjw
     have l0 : Listed jw.1 jw.2 := ll (fun _ h => by cases h)
     obtain ⟨x2, fin⟩ := loopM_spec hJ l0 (by
-      intro t s ht
+      intro t r ht
       rcases tr t (by rw [ht]; simp) with a | a
       · exact absurd rfl a
       · exact Or.inl a)
@@ -1696,7 +2054,7 @@ theorem check_sound {F : Fn} (hs : SubOK F) (hL : LayOK F) (h : check F = true) 
   obtain ⟨J, fin, h0⟩ := check_final h
   have : Inv F (fun pc => (joinPoints F)[pc]?.getD false) J st := by
     induction hr with
-    | init => exact inv_of_join hs fin .nil h0
+    | init => exact inv_of_join hs fin .nil HRel.rfl h0
     | step _ hs' ih => exact (inv_step hs hL fin ih _ hs').2 _ rfl
   exact fun o ho => (inv_step hs hL fin this o ho).1
 

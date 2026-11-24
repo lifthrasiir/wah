@@ -13,6 +13,8 @@ ref maps as -1 (malformed) or `<count> <position>*`:
   Q / c t                ref.eq / ref.cast  C f n t' t k d      br_on_cast(_fail if f) to t' (nulls pass if n)
   G a o / H a o          struct.get/set of the storage a at the offset o
   A a / Y a              array.get/set      P map / I map t     array.copy / array.init_elem of a segment of t
+  W n (k g t d types)*   try_table with catch clauses of kind k, tag g, target t, drop d and what they push
+  U / V d / Z types      end of try_table / TRIM_HANDLERS / throw (or throw_ref) of the types
 Struct and array types are lines `L <type index> <1 if struct> <field count> (<offset> <type> <1 if mutable>)*`. -/
 import WahProofs.Lowered
 import Std.Data.HashSet
@@ -38,6 +40,14 @@ def pairs : List Int → Option (List (Nat × Nat))
   | [] => some []
   | a :: b :: rest => do return (a.toNat, b.toNat) :: (← pairs rest)
   | [_] => none
+
+partial def clauses : List Int → Option (List Clause)
+  | [] => some []
+  | k :: g :: t :: d :: rest => do
+    let (ts, rest) ← types rest
+    if 0 ≤ k ∧ 0 ≤ g ∧ 0 ≤ t ∧ 0 ≤ d then return ⟨k.toNat, g.toNat, ts, t.toNat, d.toNat⟩ :: (← clauses rest)
+    else none
+  | _ => none
 
 def parseInstr (op : String) (ns : List Int) : Option Instr := do
   let n := fun (i : Int) => if 0 ≤ i then some i.toNat else none
@@ -80,6 +90,12 @@ def parseInstr (op : String) (ns : List Int) : Option Instr := do
   | "I", _ => let (m, rest) ← map ns; match rest with
     | [t] => return .arrayInitElem m t
     | _ => none
+  | "W", c :: rest => do
+    let cs ← clauses rest
+    if cs.length == c.toNat then return .tryTable cs else none
+  | "U", [] => return .endTry
+  | "V", [d] => return .trim (← n d)
+  | "Z", _ => let (a, rest) ← types ns; if rest.isEmpty then return .throw a else none
   | _, _ => none
 
 def words (l : String) : Option (String × List Int) := do

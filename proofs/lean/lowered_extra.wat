@@ -1,15 +1,21 @@
-;; Extra input of `make lean-diff` (compiled to lowered_gc.wasm by `wasm-tools parse`): contexts where single mutants
-;; of GC instructions break rules of wah_check_lowered_code that spec tests and the fuzz corpus do not reach, such
-;; as the nullability of ref.cast results and element types of array.copy and array.init_elem.
+;; Extra input of `make lean-diff` (compiled to lowered_extra.wasm by `wasm-tools parse`, and dumped with many
+;; mutants): contexts where single mutants break rules of wah_check_lowered_code that spec tests and the fuzz corpus
+;; do not reach, such as the nullability of ref.cast results, element types of array.copy and array.init_elem, and
+;; stacks that catch clauses rewind to.
 (module
   (type $s (struct (field (mut i32)) (field i64) (field (mut (ref null $s)))))
   (type $a32 (array (mut i32)))
   (type $a64 (array (mut i64)))
   (type $af (array (mut funcref)))
   (type $ai (array (mut i31ref)))
+  (type $c32 (array i32))
   (func $f)
   (elem $e1 funcref (ref.func $f))
   (elem $e2 i31ref (item (ref.i31 (i32.const 1))))
+  (tag $t (param i32))
+  (tag $t2 (param i32 i32))
+  (func $g (param i32) (throw $t (local.get 0)))
+  (func $g2 (param i32) (throw $t2 (local.get 0) (local.get 0)))
   (func (export "cast") (param anyref) (result (ref $s)) (ref.cast (ref $s) (local.get 0)))
   (func (export "cast_array") (param anyref) (result (ref $a32)) (ref.cast (ref $a32) (local.get 0)))
   (func (export "cast_null") (param anyref) (result (ref null $s)) (ref.cast (ref null $s) (local.get 0)))
@@ -18,6 +24,8 @@
   (func (export "set") (param anyref) (struct.set $s 0 (ref.cast (ref $s) (local.get 0)) (i32.const 1)))
   (func (export "array_get") (param anyref) (result i32)
     (array.get $a32 (ref.cast (ref $a32) (local.get 0)) (i32.const 0)))
+  (func (export "array_set") (array.set $a32 (array.new_default $a32 (i32.const 1)) (i32.const 0) (i32.const 1)))
+  (func (export "array_const") (result i32) (array.get $c32 (array.new_default $c32 (i32.const 1)) (i32.const 0)))
   (func (export "copy32")
     (array.copy $a32 $a32 (array.new_default $a32 (i32.const 1)) (i32.const 0)
                           (array.new_default $a32 (i32.const 1)) (i32.const 0) (i32.const 1)))
@@ -32,4 +40,27 @@
   (func (export "init_i31")
     (array.init_elem $ai $e2 (array.new_default $ai (i32.const 1)) (i32.const 0) (i32.const 0) (i32.const 1)))
   (func (export "br_on_cast") (param anyref) (result (ref $s))
-    (block $l (result (ref $s)) (br_on_cast $l anyref (ref $s) (local.get 0)) (drop) (unreachable))))
+    (block $l (result (ref $s)) (br_on_cast $l anyref (ref $s) (local.get 0)) (drop) (unreachable)))
+  ;; Mutants may consume the value below the try_table that the clause keeps, or push more than the label takes
+  (func (export "rewind") (param i32) (result i32 i32)
+    (local.get 0)
+    (block $h (result i32)
+      (try_table (catch $t $h) (local.get 0) (i32.eqz) (call $g))
+      (i32.const 0)))
+  (func (export "rewind_throw") (param i32) (result i32 i32)
+    (local.get 0)
+    (block $h (result i32)
+      (try_table (catch $t $h) (local.get 0) (i32.eqz) (throw $t))
+      (i32.const 0)))
+  (func (export "deepest") (param i32) (result i32)
+    (block $h (result i32)
+      (local.get 0)
+      (try_table (catch $t $h) (local.get 0) (call $g))
+      (unreachable)))
+  ;; The callee throws more than it takes, which the catch target has just room for
+  (func (export "deepest2") (param i32) (result i32 i32)
+    (block $h (result i32 i32)
+      (local.get 0)
+      (try_table (catch $t2 $h) (local.get 0) (call $g2))
+      (unreachable))
+    (return)))
