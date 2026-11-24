@@ -160,8 +160,8 @@ typedef struct { uint32_t stub, resume, cont; bool poll; } wah_jit_stub_t;
 // A 16-byte constant placed after the function, loaded by a label
 typedef struct { uint8_t bytes[16]; uint32_t label; } wah_jit_vconst_t;
 
-// Arguments of helper calls, where SLOT is the address of an operand stack slot and SLOT_U32 is its 32-bit value
-enum { WAH_JA_CTX, WAH_JA_IMM, WAH_JA_SLOT, WAH_JA_SLOT_U32 };
+// Arguments of helper calls, where SLOT is the address of an operand stack slot and SLOT_U32/U64 is its value
+enum { WAH_JA_CTX, WAH_JA_IMM, WAH_JA_SLOT, WAH_JA_SLOT_U32, WAH_JA_SLOT_U64 };
 typedef struct { uint8_t kind; uint32_t v; } wah_jit_arg_t;
 
 // Kinds of operations, translated by each architecture
@@ -1434,7 +1434,7 @@ static wah_error_t wah_jit_call_host(wah_exec_context_t *ctx, uint32_t func_idx,
 
 // Returns the code of a wasm function to call, 1 if a host function was called, or 0 with ctx->jit->err on errors.
 static uintptr_t wah_jit_call_indirect(wah_exec_context_t *ctx, uint32_t type_idx, uint32_t table_idx,
-                                       uint32_t elem_idx, wah_value_t *args) {
+                                       uint64_t elem_idx, wah_value_t *args) {
     wah_error_t err = WAH_ERROR_TRAP;
     const wah_table_inst_t *table = &ctx->tables[WAH_TABLEIDX(table_idx)];
     if (elem_idx >= table->size) goto fail;
@@ -1670,12 +1670,13 @@ static void wah_jit_call_helper(wah_jit_fn_t *f, uintptr_t fn, const wah_jit_arg
     const uint32_t nregs = (uint32_t)(sizeof(regs) / sizeof(*regs));
     for (uint32_t i = 0; i < nargs; i++) {
         int r = i < nregs ? regs[i] : WAH_JR_T0;
-        uint32_t off = args[i].kind == WAH_JA_SLOT || args[i].kind == WAH_JA_SLOT_U32 ? wah_jit_slot_off(f, args[i].v) : 0;
+        uint32_t off = args[i].kind >= WAH_JA_SLOT ? wah_jit_slot_off(f, args[i].v) : 0;
         switch (args[i].kind) {
             case WAH_JA_CTX: wah_x64_mov(f, true, r, WAH_JR_CTX); break;
             case WAH_JA_IMM: wah_jit_mov_imm(f, r, args[i].v); break;
             case WAH_JA_SLOT: wah_x64_mem(f, WAH_X64_LEA, WAH_X64_W, r, WAH_JR_FP, -1, 0, (int32_t)off); break;
             case WAH_JA_SLOT_U32: wah_jit_ldst(f, false, false, false, r, WAH_JR_FP, off); break;
+            case WAH_JA_SLOT_U64: wah_jit_ldst(f, false, false, true, r, WAH_JR_FP, off); break;
         }
         if (i >= nregs) wah_jit_ldst(f, true, false, true, r, WAH_X64_RSP, 32 + 8 * (i - nregs));
     }
@@ -3384,6 +3385,7 @@ static void wah_jit_call_helper(wah_jit_fn_t *f, uintptr_t fn, const wah_jit_arg
             case WAH_JA_IMM: wah_a64_mov_imm(f, false, r, args[i].v); break;
             case WAH_JA_SLOT: wah_a64_add_imm(f, r, WAH_JR_FP, wah_jit_slot_off(f, args[i].v)); break;
             case WAH_JA_SLOT_U32: wah_a64_ldst(f, WAH_A64_LDRW, r, WAH_JR_FP, wah_jit_slot_off(f, args[i].v)); break;
+            case WAH_JA_SLOT_U64: wah_a64_ldst(f, WAH_A64_LDRX, r, WAH_JR_FP, wah_jit_slot_off(f, args[i].v)); break;
         }
     }
     if (host) {
@@ -4799,13 +4801,14 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
         }
         case WAH_OP_CALL_INDIRECT: {
             const wah_func_type_t *ft = &f->module->types[in->imm.u32_u32.a];
+            bool table64 = wah_table_type(f->module, in->imm.u32_u32.b)->addr_type == WAH_TYPE_I64;
             wah_jit_flush(f);
             wah_jit_sync_pins(f, true);
             f->h--;
             uint32_t args = f->h - ft->param_count, done = wah_jit_new_label(f);
             const wah_jit_arg_t a[] = {
                 { WAH_JA_CTX, 0 }, { WAH_JA_IMM, in->imm.u32_u32.a }, { WAH_JA_IMM, in->imm.u32_u32.b },
-                { WAH_JA_SLOT_U32, f->h }, { WAH_JA_SLOT, args },
+                { table64 ? WAH_JA_SLOT_U64 : WAH_JA_SLOT_U32, f->h }, { WAH_JA_SLOT, args },
             };
             wah_jit_call_helper(f, (uintptr_t)wah_jit_call_indirect, a, 5, true);
             wah_jit_cbz(f, false, true, WAH_JR_RET, f->l_err_jit);

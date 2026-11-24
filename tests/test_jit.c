@@ -443,6 +443,13 @@ static void test_calls(void) {
         check_call(spec, &env, 3, &p, 1, 1);
     }
     wah_free_module(&env);
+
+    // Indices of 64-bit tables should not be truncated to 32 bits
+    const char *spec64 = "wasm types {[ fn [] [i32], fn [i64] [i32] ]} funcs {[ 0, 1 ]} tables {[ funcref limits.i64/1 1 ]} \
+        elements {[ elem.active.table#0 i64.const 0 end [0] ]} code {[ {[] i32.const 42 end}, \
+        {[] local.get 0 call_indirect 0 0 end} ]}";
+    static const int64_t indices[] = { 0, 1, 0x100000000LL, -1, INT64_MIN };
+    for (size_t i = 0; i < COUNT(indices); i++) check_call(spec64, NULL, 1, &(wah_value_t){ .i64 = indices[i] }, 1, 1);
 }
 
 static void host_interrupt(wah_call_context_t *call, void *userdata) {
