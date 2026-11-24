@@ -1179,6 +1179,28 @@ static void test_fallback(void) {
     inst_free(&a);
 }
 
+static int live_blocks;
+static void *count_malloc(size_t n, void *u) { (void)u; void *p = malloc(n); live_blocks += p != NULL; return p; }
+static void *count_realloc(void *p, size_t n, void *u) {
+    (void)u;
+    void *q = realloc(p, n);
+    live_blocks += q && !p;
+    return q;
+}
+static void count_free(void *p, void *u) { (void)u; live_blocks -= p != NULL; free(p); }
+
+static void test_parse_failure(void) {
+    printf("Testing failed parses hold no resources...\n");
+    static const uint8_t bad_magic[] = { 0, 'a', 's', 'n', 1, 0, 0, 0 }, bad_version[] = { 0, 'a', 's', 'm', 2, 0, 0, 0 };
+    wah_alloc_t alloc = { count_malloc, count_realloc, count_free, NULL, 0 };
+    wah_parse_options_t opts = { .alloc = &alloc };
+    wah_module_t mod;
+    assert_err(wah_parse_module(&mod, bad_magic, sizeof(bad_magic), &opts), WAH_ERROR_INVALID_MAGIC_NUMBER);
+    assert_eq_i32(live_blocks, 0);
+    assert_err(wah_parse_module(&mod, bad_version, sizeof(bad_version), &opts), WAH_ERROR_INVALID_VERSION);
+    assert_eq_i32(live_blocks, 0);
+}
+
 int main(void) {
     const char *guard = getenv("WAH_TEST_GUARD_PAGES");
     if (guard && *guard) { // Natively compiled code relies on guard pages then
@@ -1204,6 +1226,7 @@ int main(void) {
     test_simd_values();
     test_simd_long_function();
     test_fallback();
+    test_parse_failure();
     printf("All JIT tests passed.\n");
     return 0;
 }

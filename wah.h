@@ -11760,9 +11760,6 @@ wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t
     module->enabled_features = wah_feature_closure(requested) & (WAH_COMPILED_FEATURES);
     module->required_features = 0;
     module->fuel_metering = options && options->enable_fuel_metering;
-#ifdef WAH_JIT
-    if (!(options && options->disable_jit) && !module->fuel_metering) wah_jit_new_module(module);
-#endif
 
     const uint8_t *ptr = binary;
     const uint8_t *end = binary + binary_size;
@@ -11780,6 +11777,9 @@ wah_error_t wah_parse_module(wah_module_t *module, const uint8_t *binary, size_t
     uint32_t version = wah_read_u32_le(ptr);
     ptr += 4;
     WAH_ENSURE(version == 0x01, WAH_ERROR_INVALID_VERSION);
+#ifdef WAH_JIT // After the early returns above, which leave nothing to free
+    if (!(options && options->disable_jit) && !module->fuel_metering) wah_jit_new_module(module);
+#endif
 
     // 3. Parse Sections
     while (ptr < end) {
