@@ -1364,6 +1364,38 @@ static void test_parse_failure(void) {
     assert_eq_i32(live_blocks, 0);
 }
 
+// Accesses with the same index and different offsets, which share the address computed into x16 on AArch64 with
+// guard pages, also where the index is overwritten by a load or a label is bound before the access
+static void test_shared_addresses(void) {
+    printf("Testing accesses sharing their addresses...\n");
+    printf("  guard pages: %s\n", wah_strerror(wah_enable_guard_pages(WAH_HANDLES_FAULT)));
+    const char *spec = "wasm types {[ fn [i32, i32] [i32, i32, i32] ]} funcs {[ 0 ]} memories {[ limits.i32/1 1 ]} \
+        code {[ {[2 i32] \
+        local.get 0 i32.const 0xff00 i32.and local.set 0 \
+        local.get 0 local.get 1 i32.store 2 4 local.get 0 local.get 0 i32.store 2 8 local.get 0 i32.const 4 i32.store 2 12 \
+        local.get 0 i32.load 2 4 local.get 0 i32.load 2 8 i32.add local.get 0 i32.load 2 12 i32.add local.set 2 \
+        local.get 0 i32.load 2 12 local.set 0 local.get 0 i32.load 2 8 local.set 3 \
+        local.get 0 i32.const 0xff00 i32.and local.set 0 local.get 1 i32.const 0xff00 i32.and local.set 1 \
+        block void \
+            local.get 1 i32.load 2 4 local.set 2 local.get 3 i32.const 4 i32.and br_if 0 \
+            local.get 0 i32.load 2 8 local.set 2 \
+        end \
+        local.get 0 i32.load 2 12 local.get 2 i32.add local.set 2 \
+        local.get 0 i32.load 2 4 local.set 3 local.get 1 i32.load 2 4 local.get 3 i32.add local.set 3 \
+        loop void \
+            local.get 0 i32.load 2 4 local.get 0 i32.load 2 8 i32.add local.get 3 i32.add local.set 3 \
+            local.get 0 local.get 3 i32.store 2 4 \
+            local.get 0 i32.const 4 i32.add local.tee 0 i32.const 0xff00 i32.and local.get 1 i32.const 0xff00 i32.and i32.lt_u br_if 0 \
+        end \
+        local.get 0 i32.load8_u 0 5 local.set 1 \
+        local.get 0 local.get 0 i32.load16_u 1 6 i32.add local.get 0 i32.load 2 4 local.get 1 i32.add i32.add \
+        local.get 2 local.get 3 end} ]}";
+    for (size_t i = 0; i < COUNT(I32_SAMPLES); i++) {
+        wah_value_t p[2] = { { .i32 = I32_SAMPLES[i] }, { .i32 = I32_SAMPLES[(i * 7 + 2) % COUNT(I32_SAMPLES)] } };
+        check_call(spec, NULL, 0, p, 2, 3);
+    }
+}
+
 int main(void) {
     const char *guard = getenv("WAH_TEST_GUARD_PAGES");
     if (guard && *guard) { // Natively compiled code relies on guard pages then
@@ -1393,6 +1425,7 @@ int main(void) {
     test_simd_long_function();
     test_fallback();
     test_parse_failure();
+    test_shared_addresses(); // Last, as it enables guard pages for the rest of the process
     printf("All JIT tests passed.\n");
     return 0;
 }

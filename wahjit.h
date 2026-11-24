@@ -217,6 +217,11 @@ typedef struct {
     uint32_t nvconsts, vconsts_cap;
     uint32_t l_trap, l_oob, l_stack, l_err, l_err_jit; // Shared stubs exiting with the corresponding error
 
+    uint32_t label_end;  // Code offset + 1 of the last label bound, 0 if none
+#ifdef WAH_JIT_AARCH64
+    uint32_t addr_end;   // Code offset + 1 up to which x16 = addr_base + uxtw(addr_index) since an access, 0 if none
+    int addr_base, addr_index;
+#endif
     bool dead;           // The current code is unreachable
     uint32_t dead_depth; // Number of blocks entered in unreachable code
     bool long_branches;  // Conditional branches go through unconditional ones, for AArch64 functions over 1MB
@@ -268,6 +273,7 @@ static uint32_t wah_jit_new_label(wah_jit_fn_t *f) {
 
 static void wah_jit_bind(wah_jit_fn_t *f, uint32_t label) {
     if (!f->fail) f->labels[label] = wah_jit_pos(f);
+    f->label_end = wah_jit_pos(f) + 1;
 }
 
 static void wah_jit_add_patch(wah_jit_fn_t *f, uint8_t kind, uint32_t label, uint32_t base, uint32_t pos) {
@@ -3725,9 +3731,9 @@ static void wah_jit_convert(wah_jit_fn_t *f, int type, bool sf, bool is_signed) 
     wah_jit_push_fpr(f, d);
 }
 
-// Effective address of an access: base + uxtw(index) if index >= 0, x16 + imm if imm_form, otherwise base + x16.
-// base is also the register to free if it is not WAH_JR_MEM.
-typedef struct { int base, index; bool imm_form; uint32_t imm; } wah_a64_addr_t;
+// Effective address of an access: base + uxtw(index) if index >= 0, x16 + imm if imm_form (x16 = base + uxtw(x16_index)),
+// otherwise base + x16. base is also the register to free if it is not WAH_JR_MEM.
+typedef struct { int base, index; bool imm_form; uint32_t imm; int x16_index; } wah_a64_addr_t;
 
 // Loads or stores rt by op (in its unsigned offset form) at the address.
 static void wah_a64_access(wah_jit_fn_t *f, uint32_t op, int rt, const wah_a64_addr_t *ad) {
@@ -3735,6 +3741,12 @@ static void wah_a64_access(wah_jit_fn_t *f, uint32_t op, int rt, const wah_a64_a
         wah_a64(f, (op & ~0x01000000u) | 0x00204800u | (uint32_t)ad->index << 16 | (uint32_t)ad->base << 5 | (uint32_t)rt);
     } else if (ad->imm_form) {
         wah_a64_ldst(f, op, rt, WAH_JR_T0, ad->imm);
+        // x16 stays for the next access, unless this loads a general register it was computed from: opc (bits 23-22)
+        // is nonzero for loads, and V (bit 26) is set for SIMD/FP registers, which also store with opc = 2
+        bool loads_gpr = (op >> 22 & 3) != 0 && !(op >> 26 & 1);
+        f->addr_end = loads_gpr && (rt == WAH_JR_T0 || rt == ad->base || rt == ad->x16_index) ? 0 : wah_jit_pos(f) + 1;
+        f->addr_base = ad->base;
+        f->addr_index = ad->x16_index;
     } else {
         wah_a64_ldst_reg(f, op, rt, ad->base, WAH_JR_T0);
     }
@@ -3799,10 +3811,16 @@ static wah_a64_addr_t wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, ui
         return ad;
     }
     if (fold && !check && m->offset % size == 0 && m->offset / size < 4096) {
-        wah_a64(f, 0x8B204000u | (uint32_t)a << 16 | (uint32_t)base << 5 | WAH_JR_T0); // ADD x16, base, wA, UXTW
+        // x16 is still base + wA if nothing was emitted since the last access (other than spills by the caller,
+        // which don't touch it), and no label was bound here
+        uint32_t pos = wah_jit_pos(f) + 1;
+        if (f->addr_end != pos || f->label_end == pos || f->addr_base != base || f->addr_index != a) {
+            wah_a64(f, 0x8B204000u | (uint32_t)a << 16 | (uint32_t)base << 5 | WAH_JR_T0); // ADD x16, base, wA, UXTW
+        }
         wah_jit_free_gpr(f, a);
         ad.imm_form = true;
         ad.imm = m->offset;
+        ad.x16_index = a;
         return ad;
     }
     if (m->offset < ((uint64_t)1 << 24)) {
