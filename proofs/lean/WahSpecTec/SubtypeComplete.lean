@@ -15,7 +15,8 @@ open Wah.Types Wah.Subtype
 
 /-! ### The empty substitution -/
 
-theorem forall2_eq {α : Type} : ∀ (l1 l2 : List α), l1.length = l2.length → Forall₂ (fun a b => a = b) l1 l2 → l1 = l2
+theorem forall2_eq {α : Type} :
+    ∀ (l1 l2 : List α), l1.length = l2.length → Forall₂ (fun a b => a = b) l1 l2 → l1 = l2
   | [], [], _, _ => rfl
   | a :: l1, b :: l2, hl, h => by
     have e : a = b := h a b (by simp)
@@ -40,14 +41,16 @@ theorem forall2_id {α : Type} {R : α → α → Prop} (hR : ∀ {x y}, R x y �
 /-- Atoms of well-shaped closed forms: no other atom translates to the same type, which is neither a concrete
 reference nor bottom (where other atoms may go). -/
 def ShapeAtom (A : Nat → storagetype) (a : Nat) : Prop :=
-  (∀ b, A b = A a → b = a) ∧ (∀ n i, A a ≠ .REF n (.REC i)) ∧ (∀ n rt i, A a ≠ .REF n (._DEF rt i)) ∧ A a ≠ .BOT
+  (∀ b, A b = A a → b = a) ∧ (∀ n i, A a ≠ .REF n (.REC i)) ∧ (∀ n rt i, A a ≠ .REF n (._DEF rt i)) ∧
+    A a ≠ .BOT
 
 /-- Fields of function types are value types. -/
 def NotPacked (A : Nat → storagetype) : CT → Prop
   | .atom a => A a ≠ .I8 ∧ A a ≠ .I16
   | _ => True
 
-def FuncFields (A : Nat → storagetype) (fs : List (CT × Bool)) : Prop := ∀ f ∈ fs, f.2 = false ∧ NotPacked A f.1
+def FuncFields (A : Nat → storagetype) (fs : List (CT × Bool)) : Prop :=
+  ∀ f ∈ fs, f.2 = false ∧ NotPacked A f.1
 
 mutual
 /-- The shapes of `wah_type_def_t`: structs and arrays have `(field_count, 0)` as counts, arrays one field, and
@@ -146,7 +149,8 @@ theorem inj_trU {A : Nat → storagetype} :
 termination_by structural s1 _ _ _ _ => s1
 
 theorem inj_trFs {A : Nat → storagetype} :
-    ∀ {fs1 fs2 : List (CT × Bool)}, ShapeFs A fs1 → ShapeFs A fs2 → trFs A none fs1 = trFs A none fs2 → fs1 = fs2
+    ∀ {fs1 fs2 : List (CT × Bool)}, ShapeFs A fs1 → ShapeFs A fs2 → trFs A none fs1 = trFs A none fs2 →
+      fs1 = fs2
   | [], [], _, _, _ => rfl
   | (c, m) :: fs, (c', m') :: fs', s1, s2, h => by
     simp only [trFs, List.cons.injEq, fieldtype.mk_fieldtype.injEq] at h
@@ -539,7 +543,8 @@ theorem kindS_of {d f tus ct} (h : rolled d = some (.SUB f tus ct)) : kindS d = 
 
 /-- One step up from a valid defined type: the supertype has the same kind and is valid. -/
 theorem ok_step {C : context} {d : deftype} (h : Deftype_ok C d) (hT : C.TYPES = []) :
-    NiceD d ∧ ∀ e, superS d = some e → kindS e = kindS d ∧ ∃ C' : context, C'.TYPES = [] ∧ Deftype_ok C' e := by
+    NiceD d ∧ ∀ e, superS d = some e →
+      kindS e = kindS d ∧ ∃ C' : context, C'.TYPES = [] ∧ Deftype_ok C' e := by
   cases h with
   | mk_Deftype_ok _ rt i n sts hR hrt hi wfC _ wfC' wfR hn =>
     subst hrt hn
@@ -1008,7 +1013,7 @@ theorem hsub_complete {a b : CH} (ha : OkH a) (hb : OkH b) (sa : ShapeH A a) (sb
 /-- Both directions. -/
 theorem hsub_iff_spec (hA : AtomsOK A) {a b : CH} (ha : OkH a) (hb : OkH b) (sa : ShapeH A a) (sb : ShapeH A b)
     (va : ValidH a) (vb : ValidH b) : HSub a b ↔ Heaptype_sub C0 (trH A a) (trH A b) :=
-  ⟨hsub_sound hA hMR ha hb va, hsub_complete hMR ha hb sa sb va vb⟩
+  ⟨hsub_sound hA wfC0 hMR ha hb va, hsub_complete hMR ha hb sa sb va vb⟩
 
 /-! ### The atoms of WAH
 
@@ -1085,5 +1090,6 @@ theorem shapeAtom_wah (a : Nat) (hb : wahAtom a ≠ .BOT) : ShapeAtom wahAtom a 
     revert h; unfold wahAtom; dsimp only
     repeat' split
     all_goals first | (intro h; cases h; done) | (intro h; simp at h; done) | skip
-    · rename_i hab _; intro h; simp only [storagetype.REF.injEq] at h; revert h; cases hab_ : ‹Abs› <;> simp [trAbs]
+    · rename_i hab _
+      intro h; simp only [storagetype.REF.injEq] at h; revert h; cases hab_ : ‹Abs› <;> simp [trAbs]
 end Wah.SpecTec

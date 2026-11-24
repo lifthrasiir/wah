@@ -332,7 +332,8 @@ theorem substOK_nil (hMR : MinusRecs) (n : Nat) : SubstOK [] [] none n where
   minus := by rw [hMR]; rfl
 
 omit hA in
-theorem forall2_map {α β : Type} (l : List α) (p q : α → β) (R : β → β → Prop) (h : ∀ x ∈ l, R (q x) (p x)) :
+theorem forall2_map {α β : Type} (l : List α) (p q : α → β) (R : β → β → Prop)
+    (h : ∀ x ∈ l, R (q x) (p x)) :
     Forall₂ R (l.map q) (l.map p) := by
   intro x y hxy
   rw [List.zip_map'] at hxy
@@ -431,7 +432,8 @@ theorem subst_rec_list (rt : rectype) : ∀ (l : List Nat) (i : Nat),
   | j :: l, i => by
     have h := fun_subst_typevar.fun_subst_typevar_case_1 (.REC i) (.REC j) _ (._DEF rt j) _ _ (subst_rec_list rt l i)
     have e : Option.map (fun v => if (typevar.REC i == typevar.REC j) then typeuse._DEF rt j else v)
-        (some (if i ∈ l then typeuse._DEF rt i else .REC i)) = some (if i ∈ j :: l then ._DEF rt i else .REC i) := by
+        (some (if i ∈ l then typeuse._DEF rt i else .REC i)) =
+          some (if i ∈ j :: l then ._DEF rt i else .REC i) := by
       by_cases hij : i = j
       · subst hij; simp
       · have : (typevar.REC i == typevar.REC j) = false := by simp [hij]
@@ -506,43 +508,47 @@ def absOf : Abs → absheaptype
 omit hA in
 theorem trAbs_eq (h : Abs) : trAbs h = heaptype_absheaptype (absOf h) := by cases h <;> rfl
 
-omit hA in
-theorem ok_trAbs (h : Abs) : Heaptype_ok C0 (trAbs h) := by rw [trAbs_eq]; exact .abs C0 _ wfC0
+variable {C : context}
 
 omit hA in
-theorem sub_refl (h : Abs) : Heaptype_sub C0 (trAbs h) (trAbs h) := .refl C0 _ wfC0 (wf_trAbs h)
+theorem ok_trAbs (hC : wf_context C) (h : Abs) : Heaptype_ok C (trAbs h) := by rw [trAbs_eq]; exact .abs C _ hC
 
 omit hA in
-theorem sub_trans {a b c : heaptype} (hb : Heaptype_ok C0 b) (wa : wf_heaptype a) (wb : wf_heaptype b)
-    (wc : wf_heaptype c) (h1 : Heaptype_sub C0 a b) (h2 : Heaptype_sub C0 b c) : Heaptype_sub C0 a c :=
-  .trans C0 a c b hb h1 h2 wfC0 wa wc wb
+theorem sub_refl (hC : wf_context C) (h : Abs) : Heaptype_sub C (trAbs h) (trAbs h) := .refl C _ hC (wf_trAbs h)
 
 omit hA in
-theorem sub_eq_any {h : heaptype} (wh : wf_heaptype h) (s : Heaptype_sub C0 h .EQ) : Heaptype_sub C0 h .ANY :=
-  sub_trans (ok_trAbs .eq) wh (wf_trAbs .eq) (wf_trAbs .any) s (.eq_any C0 wfC0 .heaptype_case_1 .heaptype_case_0)
+theorem sub_trans (hC : wf_context C) {a b c : heaptype} (hb : Heaptype_ok C b) (wa : wf_heaptype a) (wb : wf_heaptype
+    b)
+    (wc : wf_heaptype c) (h1 : Heaptype_sub C a b) (h2 : Heaptype_sub C b c) : Heaptype_sub C a c :=
+  .trans C a c b hb h1 h2 hC wa wc wb
 
 omit hA in
-theorem abs_sound (a b : Abs) (h : absSub a b = true) : Heaptype_sub C0 (trAbs a) (trAbs b) := by
-  have i31 : Heaptype_sub C0 .I31 .EQ := .i31_eq C0 wfC0 .heaptype_case_2 .heaptype_case_1
-  have st : Heaptype_sub C0 .STRUCT .EQ := .struct_eq C0 wfC0 .heaptype_case_3 .heaptype_case_1
-  have ar : Heaptype_sub C0 .ARRAY .EQ := .array_eq C0 wfC0 .heaptype_case_4 .heaptype_case_1
-  have none_ : ∀ x : Abs, Heaptype_sub C0 (trAbs x) .ANY → Heaptype_sub C0 .NONE (trAbs x) := fun x hx =>
-    .none C0 _ hx (by cases x <;> simp [trAbs]) wfC0 (wf_trAbs x) .heaptype_case_5 .heaptype_case_0 .heaptype_case_12
-  have any : Heaptype_sub C0 .ANY .ANY := sub_refl .any
+theorem sub_eq_any (hC : wf_context C) {h : heaptype} (wh : wf_heaptype h) (s : Heaptype_sub C h .EQ) : Heaptype_sub C
+    h .ANY :=
+  sub_trans hC (ok_trAbs hC .eq) wh (wf_trAbs .eq) (wf_trAbs .any) s (.eq_any C hC .heaptype_case_1 .heaptype_case_0)
+
+omit hA in
+theorem abs_sound (hC : wf_context C) (a b : Abs) (h : absSub a b = true) : Heaptype_sub C (trAbs a) (trAbs b) := by
+  have i31 : Heaptype_sub C .I31 .EQ := .i31_eq C hC .heaptype_case_2 .heaptype_case_1
+  have st : Heaptype_sub C .STRUCT .EQ := .struct_eq C hC .heaptype_case_3 .heaptype_case_1
+  have ar : Heaptype_sub C .ARRAY .EQ := .array_eq C hC .heaptype_case_4 .heaptype_case_1
+  have none_ : ∀ x : Abs, Heaptype_sub C (trAbs x) .ANY → Heaptype_sub C .NONE (trAbs x) := fun x hx =>
+    .none C _ hx (by cases x <;> simp [trAbs]) hC (wf_trAbs x) .heaptype_case_5 .heaptype_case_0 .heaptype_case_12
+  have any : Heaptype_sub C .ANY .ANY := sub_refl hC .any
   cases a <;> cases b <;> simp [absSub] at h <;> first
-    | exact sub_refl _
-    | exact .eq_any C0 wfC0 .heaptype_case_1 .heaptype_case_0
+    | exact sub_refl hC _
+    | exact .eq_any C hC .heaptype_case_1 .heaptype_case_0
     | exact i31 | exact st | exact ar
-    | exact sub_eq_any (wf_trAbs _) i31 | exact sub_eq_any (wf_trAbs _) st | exact sub_eq_any (wf_trAbs _) ar
+    | exact sub_eq_any hC (wf_trAbs _) i31 | exact sub_eq_any hC (wf_trAbs _) st | exact sub_eq_any hC (wf_trAbs _) ar
     | exact none_ .any any
-    | exact none_ .eq (.eq_any C0 wfC0 .heaptype_case_1 .heaptype_case_0)
-    | exact none_ .i31 (sub_eq_any (wf_trAbs _) i31) | exact none_ .struct (sub_eq_any (wf_trAbs _) st)
-    | exact none_ .array (sub_eq_any (wf_trAbs _) ar)
-    | exact .nofunc C0 _ (sub_refl .func) (by simp [trAbs]) wfC0 .heaptype_case_6 .heaptype_case_7
+    | exact none_ .eq (.eq_any C hC .heaptype_case_1 .heaptype_case_0)
+    | exact none_ .i31 (sub_eq_any hC (wf_trAbs _) i31) | exact none_ .struct (sub_eq_any hC (wf_trAbs _) st)
+    | exact none_ .array (sub_eq_any hC (wf_trAbs _) ar)
+    | exact .nofunc C _ (sub_refl hC .func) (by simp [trAbs]) hC .heaptype_case_6 .heaptype_case_7
         .heaptype_case_6 .heaptype_case_12
-    | exact .noextern C0 _ (sub_refl .extern) (by simp [trAbs]) wfC0 .heaptype_case_10 .heaptype_case_11
+    | exact .noextern C _ (sub_refl hC .extern) (by simp [trAbs]) hC .heaptype_case_10 .heaptype_case_11
         .heaptype_case_10 .heaptype_case_12
-    | exact .noexn C0 _ (sub_refl .exn) (by simp [trAbs]) wfC0 .heaptype_case_8 .heaptype_case_9
+    | exact .noexn C _ (sub_refl hC .exn) (by simp [trAbs]) hC .heaptype_case_8 .heaptype_case_9
         .heaptype_case_8 .heaptype_case_12
 
 /-- Defined types that translate to well-formed types. -/
@@ -594,64 +600,66 @@ theorem expand_tr (hMR : MinusRecs) {d : DT} (h : OkD d) {fin kind super counts 
   refine ⟨.mk_Expand _ _ _ _ _ hu' rfl (.deftype_case_0 _ _ (wf_trG hA _ h.1)) hw hw, ?_⟩
   cases hw; assumption
 
-theorem def_abs_sound (hMR : MinusRecs) {d : DT} (h : OkD d) {b : Abs} (hb : defAbs (kindOf d) b = true) :
-    Heaptype_sub C0 (trD A d) (trAbs b) := by
+theorem def_abs_sound (hC : wf_context C) (hMR : MinusRecs) {d : DT} (h : OkD d) {b : Abs} (hb : defAbs (kindOf d) b =
+    true) :
+    Heaptype_sub C (trD A d) (trAbs b) := by
   obtain ⟨fin, kind, super, counts, fields, hc, hs, hl, hf⟩ := okD_sub h
   obtain ⟨he, hw⟩ := expand_tr hA hMR h hc hs hl hf
   have hk : kindOf d = kind := by simp [kindOf, hc]
   rw [hk] at hb
   have hd := wf_trD hA h
-  have toStruct : kind = kStruct → Heaptype_sub C0 (trD A d) .STRUCT := fun e => by
+  have toStruct : kind = kStruct → Heaptype_sub C (trD A d) .STRUCT := fun e => by
     simp only [trComp, e, ite_true] at he hw
-    exact .struct C0 _ _ he wfC0 (.deftype_case_0 _ _ (wf_trG hA _ h.1)) .heaptype_case_3 hw
-  have toArray : kind = kArray → Heaptype_sub C0 (trD A d) .ARRAY := fun e => by
+    exact .struct C _ _ he hC (.deftype_case_0 _ _ (wf_trG hA _ h.1)) .heaptype_case_3 hw
+  have toArray : kind = kArray → Heaptype_sub C (trD A d) .ARRAY := fun e => by
     simp only [trComp, e, kArray, kStruct] at he hw
-    exact .array C0 _ _ he wfC0 (.deftype_case_0 _ _ (wf_trG hA _ h.1)) .heaptype_case_4 hw
-  have toFunc : kind = kFunc → Heaptype_sub C0 (trD A d) .FUNC := fun e => by
+    exact .array C _ _ he hC (.deftype_case_0 _ _ (wf_trG hA _ h.1)) .heaptype_case_4 hw
+  have toFunc : kind = kFunc → Heaptype_sub C (trD A d) .FUNC := fun e => by
     simp only [trComp, e, kArray, kStruct, kFunc] at he hw
-    exact .func C0 _ _ _ he wfC0 (.deftype_case_0 _ _ (wf_trG hA _ h.1)) .heaptype_case_6 hw
-  have st : Heaptype_sub C0 .STRUCT .EQ := .struct_eq C0 wfC0 .heaptype_case_3 .heaptype_case_1
-  have ar : Heaptype_sub C0 .ARRAY .EQ := .array_eq C0 wfC0 .heaptype_case_4 .heaptype_case_1
-  have toEq : (kind = kStruct ∨ kind = kArray) → Heaptype_sub C0 (trD A d) .EQ := fun e => by
+    exact .func C _ _ _ he hC (.deftype_case_0 _ _ (wf_trG hA _ h.1)) .heaptype_case_6 hw
+  have st : Heaptype_sub C .STRUCT .EQ := .struct_eq C hC .heaptype_case_3 .heaptype_case_1
+  have ar : Heaptype_sub C .ARRAY .EQ := .array_eq C hC .heaptype_case_4 .heaptype_case_1
+  have toEq : (kind = kStruct ∨ kind = kArray) → Heaptype_sub C (trD A d) .EQ := fun e => by
     rcases e with e | e
-    · exact sub_trans (ok_trAbs .struct) hd .heaptype_case_3 .heaptype_case_1 (toStruct e) st
-    · exact sub_trans (ok_trAbs .array) hd .heaptype_case_4 .heaptype_case_1 (toArray e) ar
+    · exact sub_trans hC (ok_trAbs hC .struct) hd .heaptype_case_3 .heaptype_case_1 (toStruct e) st
+    · exact sub_trans hC (ok_trAbs hC .array) hd .heaptype_case_4 .heaptype_case_1 (toArray e) ar
   cases b <;> simp [defAbs] at hb
-  · exact sub_eq_any hd (toEq hb)
+  · exact sub_eq_any hC hd (toEq hb)
   · exact toEq hb
   · exact toStruct hb
   · exact toArray hb
   · exact toFunc hb
 
-theorem abs_def_sound (hMR : MinusRecs) {d : DT} (h : OkD d) {a : Abs} (ha : absDef (kindOf d) a = true) :
-    Heaptype_sub C0 (trAbs a) (trD A d) := by
+theorem abs_def_sound (hC : wf_context C) (hMR : MinusRecs) {d : DT} (h : OkD d) {a : Abs} (ha : absDef (kindOf d) a =
+    true) :
+    Heaptype_sub C (trAbs a) (trD A d) := by
   have hd := wf_trD hA h
   have ne : trD A d ≠ .BOT := by simp [trD]
   cases a <;> simp [absDef] at ha
   · have hb : defAbs (kindOf d) .any = true := by simp [defAbs, ha]
-    exact .none C0 _ (def_abs_sound hA hMR h hb) ne wfC0 hd .heaptype_case_5 .heaptype_case_0 .heaptype_case_12
+    exact .none C _ (def_abs_sound hA hC hMR h hb) ne hC hd .heaptype_case_5 .heaptype_case_0 .heaptype_case_12
   · have hb : defAbs (kindOf d) .func = true := by simp [defAbs, ha]
-    exact .nofunc C0 _ (def_abs_sound hA hMR h hb) ne wfC0 hd .heaptype_case_7 .heaptype_case_6 .heaptype_case_12
+    exact .nofunc C _ (def_abs_sound hA hC hMR h hb) ne hC hd .heaptype_case_7 .heaptype_case_6 .heaptype_case_12
 
 /-- One step up the declared supertype. -/
-theorem super_sound (hMR : MinusRecs) {d e : DT} (h : OkD d) (s : superOf d = some e) :
-    OkD e ∧ ∀ d', Heaptype_sub C0 (trD A e) (trD A d') → OkD d' →
-      Heaptype_sub C0 (trD A d) (trD A d') := by
+theorem super_sound (hC : wf_context C) (hMR : MinusRecs) {d e : DT} (h : OkD d) (s : superOf d = some e) :
+    OkD e ∧ ∀ d', Heaptype_sub C (trD A e) (trD A d') → OkD d' →
+      Heaptype_sub C (trD A d) (trD A d') := by
   obtain ⟨fin, kind, super, counts, fields, hc, hs, hl, hf⟩ := okD_sub h
   have hu : ∀ r, some (trG A d.1) = some r → wf_rectype r := fun r e => by cases e; exact wf_trG hA _ h.1
   have hw := wf_trS hA (some (trG A d.1)) hu d.1.length (.sub fin kind super counts fields) ⟨hs, hl, hf⟩
   have hun := unroll_tr hA hMR d.1 h.1 d.2 _ hc
   rw [trS.eq_1] at hw hun
   have step : ∀ (t : CT), super = some t → OkD e → trD A e = heaptype_typeuse (trU A (some (trG A d.1)) t) →
-      ∀ d', Heaptype_sub C0 (trD A e) (trD A d') → OkD d' → Heaptype_sub C0 (trD A d) (trD A d') := by
+      ∀ d', Heaptype_sub C (trD A e) (trD A d') → OkD d' → Heaptype_sub C (trD A d) (trD A d') := by
     intro t ht he ee d' hs' hd'
     subst ht
-    have ds : Deftype_sub C0 (._DEF (trG A d.1) d.2) (._DEF (trG A d'.1) d'.2) :=
-      .super C0 _ _ _ _ _ 0 _ hun rfl (by simp [trSup]) (by
+    have ds : Deftype_sub C (._DEF (trG A d.1) d.2) (._DEF (trG A d'.1) d'.2) :=
+      .super C _ _ _ _ _ 0 _ hun rfl (by simp [trSup]) (by
         have e0 : ([trU A (some (trG A d.1)) t] : List typeuse)[0]! = trU A (some (trG A d.1)) t := rfl
-        simp only [trSup, e0]; rw [← ee]; exact hs') wfC0
+        simp only [trSup, e0]; rw [← ee]; exact hs') hC
         (.deftype_case_0 _ _ (wf_trG hA _ h.1)) (.deftype_case_0 _ _ (wf_trG hA _ hd'.1)) hw hw
-    exact .def C0 _ _ ds wfC0 (.deftype_case_0 _ _ (wf_trG hA _ h.1)) (.deftype_case_0 _ _ (wf_trG hA _ hd'.1))
+    exact .def C _ _ ds hC (.deftype_case_0 _ _ (wf_trG hA _ h.1)) (.deftype_case_0 _ _ (wf_trG hA _ hd'.1))
   simp only [superOf, hc] at s
   cases super with
   | none => simp at s
@@ -668,29 +676,30 @@ theorem super_sound (hMR : MinusRecs) {d e : DT} (h : OkD d) (s : superOf d = so
     | atom _ => simp at s
     | sub _ _ _ _ _ => simp at s
 
-theorem chain_sound (hMR : MinusRecs) {d d' : DT} (c : Chain d d') (h : OkD d) :
-    Heaptype_sub C0 (trD A d) (trD A d') ∧ OkD d' := by
+theorem chain_sound (hC : wf_context C) (hMR : MinusRecs) {d d' : DT} (c : Chain d d') (h : OkD d) :
+    Heaptype_sub C (trD A d) (trD A d') ∧ OkD d' := by
   induction c with
-  | refl d => exact ⟨.refl C0 _ wfC0 (wf_trD hA h), h⟩
+  | refl d => exact ⟨.refl C _ hC (wf_trD hA h), h⟩
   | step s _ ih =>
-    obtain ⟨he, k⟩ := super_sound hA hMR h s
+    obtain ⟨he, k⟩ := super_sound hA hC hMR h s
     obtain ⟨ih1, ih2⟩ := ih he
     exact ⟨k _ ih1 ih2, ih2⟩
 
 /-- The algorithmic subtyping, which `wah_type_is_subtype` follows, is sound for the spec. -/
-theorem algo_sound (hMR : MinusRecs) {a b : CH} (ha : OkH a) (hb : OkH b) (h : Algo a b) :
-    Heaptype_sub C0 (trH A a) (trH A b) := by
+theorem algo_sound (hC : wf_context C) (hMR : MinusRecs) {a b : CH} (ha : OkH a) (hb : OkH b) (h : Algo a b) :
+    Heaptype_sub C (trH A a) (trH A b) := by
   cases a with
   | abs x => cases b with
-    | abs y => exact abs_sound x y h
-    | defd d => exact abs_def_sound hA hMR hb h
+    | abs y => exact abs_sound hC x y h
+    | defd d => exact abs_def_sound hA hC hMR hb h
   | defd d => cases b with
-    | abs y => exact def_abs_sound hA hMR ha h
-    | defd d' => exact (chain_sound hA hMR h ha).1
+    | abs y => exact def_abs_sound hA hC hMR ha h
+    | defd d' => exact (chain_sound hA hC hMR h ha).1
 
-/-- Heap subtyping of WahProofs/Subtype.lean implies `Heaptype_sub` of the spec for closed types. -/
-theorem hsub_sound (hMR : MinusRecs) {a b : CH} (ha : OkH a) (hb : OkH b) (hv : ValidH a) (h : HSub a b) :
-    Heaptype_sub C0 (trH A a) (trH A b) :=
-  algo_sound hA hMR ha hb (algo_of_hsub h hv)
+/-- Heap subtyping of WahProofs/Subtype.lean implies `Heaptype_sub` of the spec for closed types, in any context. -/
+theorem hsub_sound (hC : wf_context C) (hMR : MinusRecs) {a b : CH} (ha : OkH a) (hb : OkH b) (hv : ValidH a) (h :
+    HSub a b) :
+    Heaptype_sub C (trH A a) (trH A b) :=
+  algo_sound hA hC hMR ha hb (algo_of_hsub h hv)
 
 end Wah.SpecTec
