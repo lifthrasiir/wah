@@ -615,6 +615,50 @@ static void test_array_new_fuel_proportional(void) {
     wah_free_module(&mod);
 }
 
+// array.new* can't be resumed midway, so it should be paid in full before allocating, even with little fuel at a time
+static void test_array_new_prepaid(void) {
+    printf("Testing array.new* is paid before allocating...\n");
+    wah_module_t mod = {0};
+    wah_exec_context_t ctx = {0};
+
+    PARSE_FUEL(&mod, "wasm \
+        types {[array i8 mut, sub [] array funcref mut, fn [i32] [i32]]} \
+        funcs {[2, 2, 2, 2]} \
+        elements {[ elem.passive.expr funcref [" REP128("ref.null funcref end, ") "] ]} \
+        datacount {1} \
+        code {[ \
+            {[] i32.const 7 local.get 0 array.new 0 array.len end}, \
+            {[] local.get 0 array.new_default 0 array.len end}, \
+            {[] i32.const 0 local.get 0 array.new_data 0 0 array.len end}, \
+            {[] i32.const 0 local.get 0 array.new_elem 1 0 array.len end}, \
+        ]} \
+        data {[data.passive {%'" REP128("CC") "'}]}");
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_gc_start(&ctx));
+    assert_ok(wah_instantiate(&ctx));
+
+    for (uint32_t f = 0; f < 4; ++f) {
+        int32_t len = f < 2 ? 1024 : 128; // Segments have 128 elements
+        wah_value_t p = { .i32 = len }, r;
+        uint32_t steps = 0;
+        assert_ok(wah_set_fuel(&ctx, 1));
+        assert_ok(wah_start(&ctx, f, &p, 1));
+        wah_error_t err;
+        while ((err = wah_resume(&ctx)) == WAH_STATUS_FUEL_EXHAUSTED) {
+            assert_true(wah_get_fuel(&ctx) > -8); // Only overdrawn by METER for a few instructions
+            assert_ok(wah_set_fuel(&ctx, 1));
+            steps++;
+        }
+        assert_ok(err);
+        assert_ok(wah_finish(&ctx, &r, 1, NULL));
+        assert_eq_i32(r.i32, len);
+        assert_true(steps >= (uint32_t)len / 16); // At least one fuel per WAH_BULK_ITEMS_PER_FUEL (= 16) bytes
+    }
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+}
+
 // ============================================================
 // struct.new*: fuel should be proportional to the struct size
 // ============================================================
@@ -1225,6 +1269,7 @@ static void test_linked_elem_expr_fuel(void) {
 
 int main(void) {
     test_array_new_fuel_proportional();
+    test_array_new_prepaid();
     test_elem_expr_alloc_fuel();
     test_struct_new_fuel_proportional();
     test_call_locals_fuel();

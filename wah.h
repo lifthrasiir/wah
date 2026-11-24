@@ -2702,6 +2702,7 @@ typedef struct wah_gc_state_s {
     // Host function being called by the owner, whose results are written above the stack pointer
     const struct wah_function_s *host_call_fn;
     wah_value_t *host_call_results;
+    uint64_t prepaid_fuel; // Paid by the suspended array.new* of the owner's activation, see wah_array_new_prepay
 #ifdef WAH_DEBUG
     uint32_t total_collections;
     uint32_t total_allocations;
@@ -8034,6 +8035,7 @@ static bool wah_opcode_is_resumable_bulk(uint16_t opcode) {
         WAH_IF_BULK_MEMORY(case WAH_OP_MEMORY_FILL: case WAH_OP_MEMORY_COPY: case WAH_OP_MEMORY_INIT:)
         WAH_IF_REF_TYPES(case WAH_OP_TABLE_FILL:) WAH_IF_BULK_MEMORY(case WAH_OP_TABLE_COPY: case WAH_OP_TABLE_INIT:)
         case WAH_OP_ARRAY_FILL: case WAH_OP_ARRAY_COPY: case WAH_OP_ARRAY_INIT_DATA: case WAH_OP_ARRAY_INIT_ELEM:
+        case WAH_OP_ARRAY_NEW: case WAH_OP_ARRAY_NEW_DEFAULT: case WAH_OP_ARRAY_NEW_DATA: case WAH_OP_ARRAY_NEW_ELEM: // Only at start
             return true;
         default:
             return false;
@@ -8753,7 +8755,9 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
             }
         }
 
-        WAH_IF_GC(if (wah_opcode_is_resumable_bulk(opcode)) WAH_LOWER_U32(instr->ref_map);) // For WAH_BULK_YIELD
+        // For WAH_BULK_YIELD, or UINT32_MAX in const expressions, which never suspend
+        WAH_IF_GC(if (wah_opcode_is_resumable_bulk(opcode))
+                      WAH_LOWER_U32(ac->mode == WAH_ANALYZE_CONST_EXPR ? UINT32_MAX : instr->ref_map);)
 
         WAH_METER_RECORD_INSTR_END();
 
@@ -9100,14 +9104,16 @@ static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t
         case WAH_OP_ARRAY_GET_32: case WAH_OP_ARRAY_GET_64: case WAH_OP_ARRAY_GET_128: case WAH_OP_ARRAY_SET_8:
         case WAH_OP_ARRAY_SET_16: case WAH_OP_ARRAY_SET_32: case WAH_OP_ARRAY_SET_64: case WAH_OP_ARRAY_SET_128:
             break;
+        case WAH_OP_ARRAY_NEW: case WAH_OP_ARRAY_NEW_DEFAULT: n32 = 2; break; // Type, ref map
+        case WAH_OP_ARRAY_NEW_DATA: case WAH_OP_ARRAY_NEW_ELEM: n32 = 3; break; // Type, segment, ref map
         case WAH_OP_REF_TEST: case WAH_OP_REF_TEST_NULL: case WAH_OP_REF_CAST: case WAH_OP_REF_CAST_NULL: // Heap type
-        case WAH_OP_STRUCT_NEW: case WAH_OP_STRUCT_NEW_DEFAULT: case WAH_OP_ARRAY_NEW: case WAH_OP_ARRAY_NEW_DEFAULT: // Type
+        case WAH_OP_STRUCT_NEW: case WAH_OP_STRUCT_NEW_DEFAULT: // Type
         case WAH_OP_STRUCT_GET_S8: case WAH_OP_STRUCT_GET_S16: case WAH_OP_STRUCT_GET_U8: case WAH_OP_STRUCT_GET_U16: // Offset
         case WAH_OP_STRUCT_GET_32: case WAH_OP_STRUCT_GET_64: case WAH_OP_STRUCT_GET_128: case WAH_OP_STRUCT_SET_8:
         case WAH_OP_STRUCT_SET_16: case WAH_OP_STRUCT_SET_32: case WAH_OP_STRUCT_SET_64: case WAH_OP_STRUCT_SET_128:
         case WAH_OP_ARRAY_COPY: // Ref map
             n32 = 1; break;
-        case WAH_OP_ARRAY_NEW_FIXED: case WAH_OP_ARRAY_NEW_DATA: case WAH_OP_ARRAY_NEW_ELEM: // Type, length or segment
+        case WAH_OP_ARRAY_NEW_FIXED: // Type, length
         case WAH_OP_ARRAY_FILL: case WAH_OP_ARRAY_INIT_ELEM: // Type or segment, ref map
             n32 = 2; break;
         case WAH_OP_ARRAY_INIT_DATA: n32 = 3; break; // Type, segment, ref map
@@ -9701,6 +9707,10 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
                     const wah_type_def_t *td = &module->type_defs[in.a];
                     wah_type_t et = td->field_types[0];
                     bool ref = (wah_check_storage(et) & 0x200) != 0;
+                    if (in.op != WAH_OP_ARRAY_NEW_FIXED) { // Can be suspended at start, except in const expressions
+                        uint32_t ref_map = in.op == WAH_OP_ARRAY_NEW || in.op == WAH_OP_ARRAY_NEW_DEFAULT ? in.b : in.c;
+                        CK_ENSURE(is_func ? wah_check_ref_map(pc, ref_map, stk, h) : ref_map == UINT32_MAX);
+                    }
                     switch (in.op) {
                         case WAH_OP_ARRAY_NEW: CK_POP(WAH_TYPE_I32); CK_POP(CK_UNPACKED(et)); break;
                         case WAH_OP_ARRAY_NEW_DEFAULT: CK_ENSURE(!td->non_defaultable); CK_POP(WAH_TYPE_I32); break;
@@ -13367,6 +13377,23 @@ static inline bool wah_bulk_should_stop(const wah_exec_context_t *ctx) {
            (ctx->module->fuel_metering && ctx->fuel < 0);
 }
 
+// Whether array.new* can start, being paid in full before allocating since it can't be resumed midway.
+// Otherwise all fuel is kept as paid, so that it can be paid over suspensions with a little fuel at a time.
+static inline bool wah_array_new_prepay(wah_exec_context_t *ctx, uint64_t bytes) {
+    if (!ctx->module->fuel_metering) return true;
+    WAH_ASSERT(ctx->gc && ctx->fuel >= 0 && "array.new* runs with GC after METER");
+    uint64_t cost = bytes / WAH_BULK_ITEMS_PER_FUEL + (bytes % WAH_BULK_ITEMS_PER_FUEL != 0);
+    uint64_t paid = ctx->gc->prepaid_fuel + (uint64_t)ctx->fuel; // prepaid_fuel < cost, which is below 2^40
+    if (paid < cost) {
+        ctx->gc->prepaid_fuel = paid;
+        ctx->fuel = 0;
+        return false;
+    }
+    ctx->gc->prepaid_fuel = 0;
+    ctx->fuel = (int64_t)(paid - cost);
+    return true;
+}
+
 // Yield from a bulk op: rewind IP to instruction start, return appropriate status.
 // Caller must have already pushed remaining args onto sp before this.
 // ref_map describes the stack before the instruction, which those args restore. It only exists with GC.
@@ -13381,6 +13408,19 @@ static inline bool wah_bulk_should_stop(const wah_exec_context_t *ctx) {
     } \
     bytecode_ip = (instr_start); \
     goto cleanup; \
+} while (0)
+
+// Starts array.new* of `bytes` with its operands still on the stack, or yields if interrupted or not paid yet.
+// Const expressions can't suspend (UINT32_MAX for ref_map), and are only charged afterwards.
+#define WAH_ARRAY_NEW_START(instr_start, ref_map, bytes) do { \
+    if ((ref_map) == UINT32_MAX) { wah_bulk_fuel_charge(ctx, (bytes)); break; } \
+    WAH_BULK_CHECK_START(instr_start, ref_map); \
+    if (!wah_array_new_prepay(ctx, (bytes))) { \
+        WAH_IF_GC(frame->poll_idx = (ref_map);) \
+        err = WAH_STATUS_FUEL_EXHAUSTED; \
+        bytecode_ip = (instr_start); \
+        goto cleanup; \
+    } \
 } while (0)
 
 // Yields at the start of a bulk op if interrupted, since ops smaller than WAH_BULK_CHECK_INTERVAL don't check it
@@ -14666,14 +14706,16 @@ WAH_RUN(STRUCT_SET_64)  WAH_STRUCT_SET_BODY(*(int64_t *)addr = val.i64)
 WAH_RUN(STRUCT_SET_128) WAH_STRUCT_SET_BODY(memcpy(addr, &val, sizeof(wah_v128_t)))
 
 WAH_RUN(ARRAY_NEW) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
-    uint32_t length = (uint32_t)(--sp)->i32;
-    wah_value_t init_val = *--sp;
+    uint32_t ref_map = wah_decode_u32_le(&bytecode_ip);
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
+    WAH_ARRAY_NEW_START(instr_start, ref_map, (uint64_t)(uint32_t)sp[-1].i32 * info->size);
+    uint32_t length = (uint32_t)(--sp)->i32;
+    wah_value_t init_val = *--sp;
     void *obj = wah_gc_alloc_array(ctx, fctx->module, repr_id, info, length);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
-    wah_bulk_fuel_charge(ctx, (uint64_t)length * info->size); // Can't be resumed, so may leave fuel negative
     uint8_t *elems = (uint8_t *)obj + sizeof(wah_gc_array_body_t);
     wah_type_t et = fctx->module->type_defs[typeidx].field_types[0];
     for (uint32_t i = 0; i < length; i++)
@@ -14684,13 +14726,15 @@ WAH_RUN(ARRAY_NEW) {
 }
 
 WAH_RUN(ARRAY_NEW_DEFAULT) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
-    uint32_t length = (uint32_t)(--sp)->i32;
+    uint32_t ref_map = wah_decode_u32_le(&bytecode_ip);
     wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
+    WAH_ARRAY_NEW_START(instr_start, ref_map, (uint64_t)(uint32_t)sp[-1].i32 * info->size);
+    uint32_t length = (uint32_t)(--sp)->i32;
     void *obj = wah_gc_alloc_array(ctx, fctx->module, repr_id, info, length);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
-    wah_bulk_fuel_charge(ctx, (uint64_t)length * info->size);
     (*sp++).ref = obj;
     WAH_NEXT();
     WAH_CLEANUP();
@@ -14764,20 +14808,22 @@ WAH_RUN(ARRAY_LEN) {
 }
 
 WAH_RUN(ARRAY_NEW_DATA) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
     uint32_t dataidx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t ref_map = wah_decode_u32_le(&bytecode_ip);
+    wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
+    const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
+    uint32_t esz = info->size;
+    WAH_ARRAY_NEW_START(instr_start, ref_map, (uint64_t)(uint32_t)sp[-1].i32 * esz);
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t offset = (uint32_t)(--sp)->i32;
     WAH_ASSERT(dataidx < fctx->module->data_segment_count);
     const wah_data_segment_t *seg = &fctx->module->data_segments[dataidx];
-    wah_repr_t repr_id = fctx->module->typeidx_to_repr[typeidx];
-    const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
-    uint32_t esz = info->size;
     uint32_t seg_len = wah_data_seg_data_len(fctx, dataidx);
     WAH_ENSURE_GOTO((uint64_t)offset + (uint64_t)size * esz <= seg_len, WAH_ERROR_TRAP, cleanup);
     void *obj = wah_gc_alloc_array(ctx, fctx->module, repr_id, info, size);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
-    wah_bulk_fuel_charge(ctx, (uint64_t)size * info->size);
     uint8_t *elems = (uint8_t *)obj + sizeof(wah_gc_array_body_t);
     if (size > 0) memcpy(elems, seg->data + offset, (size_t)size * esz); // Empty segments have no data
     (*sp++).ref = obj;
@@ -14786,8 +14832,12 @@ WAH_RUN(ARRAY_NEW_DATA) {
 }
 
 WAH_RUN(ARRAY_NEW_ELEM) {
+    const uint8_t *instr_start = bytecode_ip - sizeof(uint16_t);
     uint32_t typeidx = wah_decode_u32_le(&bytecode_ip);
     uint32_t elemidx = wah_decode_u32_le(&bytecode_ip);
+    uint32_t ref_map = wah_decode_u32_le(&bytecode_ip);
+    WAH_ARRAY_NEW_START(instr_start, ref_map,
+                        (uint64_t)(uint32_t)sp[-1].i32 * fctx->module->repr_infos[fctx->module->typeidx_to_repr[typeidx]]->size);
     uint32_t size = (uint32_t)(--sp)->i32;
     uint32_t offset = (uint32_t)(--sp)->i32;
     WAH_ASSERT(elemidx < fctx->module->element_segment_count);
@@ -14798,7 +14848,6 @@ WAH_RUN(ARRAY_NEW_ELEM) {
     const wah_repr_info_t *info = fctx->module->repr_infos[repr_id];
     void *obj = wah_gc_alloc_array(ctx, fctx->module, repr_id, info, size);
     WAH_ENSURE_GOTO(obj != NULL, WAH_ERROR_OUT_OF_MEMORY, cleanup);
-    wah_bulk_fuel_charge(ctx, (uint64_t)size * info->size);
     uint8_t *elems = (uint8_t *)obj + sizeof(wah_gc_array_body_t);
     for (uint32_t i = 0; i < size; i++) {
         if (!seg->is_expr_elem) {
@@ -17863,6 +17912,7 @@ static wah_error_t wah_start_function_internal(
     const wah_value_t *params, uint32_t param_count
 ) {
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
+    WAH_IF_GC(if (ctx->gc) ctx->gc->prepaid_fuel = 0;) // Left by a cancelled activation
 
     ctx->lifecycle.base_sp = ctx->sp;
     ctx->lifecycle.base_call_depth = ctx->call_depth;
