@@ -17,7 +17,13 @@ audits axioms like `make lean`. They are not part of `make lean`, as the model i
   recursive types of other contexts is not covered.
 - WahSpecTec/Valtype.lean: value subtyping (`VSub`) implies `Valtype_sub` in any context (`vsub_sound`), and the
   converse in the empty context (`vsub_iff_spec`).
+- WahSpecTec/Closed.lean: the closed forms of the types of a valid module (`dtOf` of WahProofs/Types.lean) are what
+  the spec makes of them: `$rollrt` rolls each rec group uniquely, and `$clos_deftypes` closes the types with their
+  groups rolled to the translations of `dtOf`, uniquely (`dtOf_spec`). Closed groups of valid modules translate to
+  well-formed types (`okG_closeGroup`), so the subtyping theorems apply to them. The generated `fun_rolldt` lacks the
+  length of its result, so the theorems go through `fun_rollrt` and the definition of `$rolldt` instead.
 -/
 import WahSpecTec.Subtype
 import WahSpecTec.SubtypeComplete
 import WahSpecTec.Valtype
+import WahSpecTec.Closed
