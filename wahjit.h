@@ -773,6 +773,7 @@ static void wah_a64_msub(wah_jit_fn_t *f, bool sf, int rd, int rn, int rm, int r
 
 // rd = rn + imm, also for large immediates, using x16 if needed
 static void wah_a64_add_imm(wah_jit_fn_t *f, int rd, int rn, uint64_t imm) {
+    WAH_ASSERT((imm < ((uint64_t)1 << 24) || (rn != 31 && rn != WAH_JR_T0)) && "ADD (shifted register) can't use SP or x16");
     if (imm < 4096) {
         if (imm || rd != rn) wah_a64_addsub_imm(f, WAH_A64_ADDI, true, rd, rn, (uint32_t)imm, false);
     } else if (imm < ((uint64_t)1 << 24)) {
@@ -815,14 +816,19 @@ static void wah_a64_cset(wah_jit_fn_t *f, int rd, int cond) { // CSINC rd, wzr, 
     wah_a64(f, 0x1A9F07E0u | (uint32_t)(cond ^ 1) << 12 | (uint32_t)rd);
 }
 
+// Whether a load/store stores a general-purpose register, which has opc = 0 and V = 0
+#define WAH_A64_STORES_GPR(op) (((op) & (1u << 26)) == 0 && (((op) >> 22) & 3) == 0)
+
 static void wah_a64_ldst(wah_jit_fn_t *f, uint32_t op, int rt, int rn, uint64_t off) {
     uint32_t sz = WAH_A64_LDST_SIZE(op);
     if ((off & ((1u << sz) - 1)) == 0 && (off >> sz) < 4096) {
         wah_a64(f, op | (uint32_t)(off >> sz) << 10 | (uint32_t)rn << 5 | (uint32_t)rt);
     } else if (rn == WAH_JR_T1) { // Such as globals, using x16 for offsets over 24 bits
+        WAH_ASSERT((off < ((uint64_t)1 << 24) || rt != WAH_JR_T0 || !WAH_A64_STORES_GPR(op)) && "x16 to store is clobbered");
         wah_a64_add_imm(f, WAH_JR_T1, WAH_JR_T1, off);
         wah_a64(f, op | (uint32_t)WAH_JR_T1 << 5 | (uint32_t)rt);
     } else {
+        WAH_ASSERT((rt != WAH_JR_T1 || !WAH_A64_STORES_GPR(op)) && "x17 to store is clobbered");
         wah_a64_mov_imm(f, true, WAH_JR_T1, off);
         wah_a64_rrr(f, WAH_A64_ADD, true, WAH_JR_T1, rn, WAH_JR_T1);
         wah_a64(f, op | (uint32_t)WAH_JR_T1 << 5 | (uint32_t)rt);
@@ -1687,6 +1693,9 @@ static void wah_jit_call_helper(wah_jit_fn_t *f, uintptr_t fn, const wah_jit_arg
     static const int regs[] = { WAH_X64_RDI, WAH_X64_RSI, WAH_X64_RDX, WAH_X64_RCX, WAH_X64_R8, WAH_X64_R9 };
 #endif
     const uint32_t nregs = (uint32_t)(sizeof(regs) / sizeof(*regs));
+#ifndef _WIN32
+    WAH_ASSERT(nargs <= nregs && "stack arguments are only placed for Windows, above its shadow space");
+#endif
     for (uint32_t i = 0; i < nargs; i++) {
         int r = i < nregs ? regs[i] : WAH_JR_T0;
         uint32_t off = args[i].kind >= WAH_JA_SLOT ? wah_jit_slot_off(f, args[i].v) : 0;
