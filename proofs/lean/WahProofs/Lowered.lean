@@ -6,26 +6,27 @@ Code is a sequence of decoded instructions, indexed by instruction rather than b
 are not instruction starts are out of range. Instructions only carry what the checker needs: numeric operators,
 memory, table and global accesses, typed select and the like are `op` with the types that they pop and push (as
 resolved against the module by the dumper of the bridge), bulk operations that can be suspended midway are `opMap`
-with their ref maps, and calls are `call` with the types of the callee. Types are `wah_type_t` after
+with their ref maps, SIMD instructions with lane immediates (which the interpreter indexes vectors by) are `lanes`
+with the lane count, and calls are `call` with the types of the callee. Types are `wah_type_t` after
 `wah_check_norm`, with the subtyping `sub` of the module (`wah_type_is_subtype`), which `SubOK` requires to be a
 preorder that keeps references apart from other types and is monotone under `nn` (`WAH_TYPE_AS_NON_NULL`).
 Struct and array types have layouts (`lay`: field offsets, types and mutability), which `LayOK` requires to agree
 with subtyping: fields of a supertype are at the same offsets of its subtypes with the same storage, of subtypes
 for immutable ones and of the same type (both ways) for mutable ones, and only bottoms are below bottoms.
 
-The machine (`steps`) runs on types of values only: conditions and nulls are not known, so it takes every branch.
-A value may have a subtype of what the checker has for it, as stack maps join paths by subtyping. This is enough
-for the properties that the interpreter relies on without checking them: operands have their types, branch targets
-and fall-throughs are instructions, `keep + drop` values are there, the stack never grows beyond `maxDepth` (for
-which the interpreter has made room), locals keep their types, results are there on returns, ref maps at
-suspension points list exactly the slots of references (`exactMap`), as they are the GC roots, and calls are right
-after a POLL, whose ref map scans the frame while the callee runs. Objects are accessed by layouts of the types of
-values, which may be subtypes of what the checker has: accessors find fields at their offsets with the storage that
-they access, writes need mutable fields and values of their types, and array.copy and array.init_elem copy
-elements of subtypes. try_tables push handlers with their catch clauses and the stack height, which END_TRY_TABLE
-and TRIM_HANDLERS pop, and anything that throws (throw, throw_ref and calls, after taking the arguments) may go to
-any clause of any handler, rewinding the stack to below the height there, which has to be there. Going wrong is
-`Out.wrong`; traps are allowed.
+The machine (`steps`) runs on types of values only: conditions and nulls are not known, so it takes every branch. A
+value may have a subtype of what the checker has for it, as stack maps join paths by subtyping. This is enough for
+the properties that the interpreter relies on without checking them: operands have their types, lanes are in range,
+branch targets and fall-throughs are instructions, `keep + drop` values are there, the stack never grows beyond
+`maxDepth` (for which the interpreter has made room), locals keep their types, results are there on returns, ref
+maps at suspension points list exactly the slots of references (`exactMap`), as they are the GC roots, and calls are
+right after a POLL, whose ref map scans the frame while the callee runs. Objects are accessed by layouts of the
+types of values, which may be subtypes of what the checker has: accessors find fields at their offsets with the
+storage that they access, writes need mutable fields and values of their types, and array.copy and array.init_elem
+copy elements of subtypes. try_tables push handlers with their catch clauses and the stack height, which
+END_TRY_TABLE and TRIM_HANDLERS pop, and anything that throws (throw, throw_ref and calls, after taking the
+arguments) may go to any clause of any handler, rewinding the stack to below the height there, which has to be
+there. Going wrong is `Out.wrong`; traps are allowed.
 
 The checker (`check`) mirrors the C code: pass 1 checks targets of all instructions, and pass 2 walks from each join
 point with the operand stack recorded there, merging the stack at each branch target and at fall-throughs into join
@@ -95,6 +96,7 @@ inductive Instr
   | const (t : VT)
   | op (args res : List VT)
   | opMap (map : Option (List Nat)) (args res : List VT)
+  | lanes (ks : List Nat) (n : Nat) (args res : List VT)
   | call (args res : List VT)
   | retCall (args res : List VT)
   | drop | select
@@ -251,6 +253,7 @@ def stepI (F : Fn) (pc : Nat) (s : List VT) (hs : List H) (lp : Bool) : Instr �
   | .const t => [pushO F (pc + 1) [t] s hs]
   | .op args res => opO F pc args res s hs
   | .opMap m args res => if mapO m s then opO F pc args res s hs else [.wrong]
+  | .lanes ks n args res => if ks.all (· < n) then opO F pc args res s hs else [.wrong]
   | .call args res => if lp then match popT F args.reverse s with
       | some s0 => .trap :: pushO F (pc + 1) res s0 hs :: throwO F s0 hs
       | none => [.wrong]
@@ -451,6 +454,7 @@ def xfer (F : Fn) (pc : Nat) (s : List VT) (hs : List H) (p : Bool) : Instr → 
   | .const t => nextX F [t] s hs
   | .op args res => opX F args res s hs
   | .opMap m args res => if mapX m s then opX F args res s hs else .fail
+  | .lanes ks n args res => if ks.all (· < n) then opX F args res s hs else .fail
   | .call args res => if p then match popT F args.reverse s with
       | some s0 => match catchesX F s0 hs, pushX F res s0 with
         | some es, some s' => .next es s' hs false
@@ -1283,6 +1287,13 @@ theorem step_covered (hL : LayOK F) (pc : Nat) (M S : List VT) (hl : Le F M S) (
     split
     · rename_i hm
       simp only [stepI, mapX_exact hs hl hm, ite_true] at ho
+      exact op_covered hs hl ho
+    · trivial
+  | lanes ks n args res =>
+    simp only [xfer]
+    split
+    · rename_i hk
+      simp only [stepI, hk, ite_true] at ho
       exact op_covered hs hl ho
     · trivial
   | call args res =>

@@ -1,8 +1,8 @@
 // Dumps lowered functions of the modules in .wast files (or .wasm files) for wah_lowered_oracle, which checks the
 // verdicts of wah_check_lowered_code against the model in WahProofs/Lowered.lean (`make lean-diff`). Only functions
-// whose instructions are all in the model (no SIMD lanes) are dumped, and each also with mutants of its
-// lowered code (a branch target, keep or drop, an immediate, an opcode replaced by one with the same immediates, or a
-// slot of a ref map), each as
+// whose instructions are all in the model are dumped, and each also with mutants of its lowered code (a branch target,
+// keep or drop, an immediate such as a lane, an opcode replaced by one with the same immediates, or a slot of a ref
+// map), each as
 //   F <max depth> <local count> <local>* <result count> <result>* <verdict: 1 if wah_check_lowered_code accepts it>
 //   <one line per instruction, see LoweredOracle.lean>
 //   M <instruction index> <type count> <type>*      for each stack map
@@ -23,9 +23,8 @@
 #include "../../tests/wast.c"
 
 #define MUTANTS 8
-#define GC_MUTANTS 16 // More of those that mutate GC and exception instructions, which are rare
+#define RARE_MUTANTS 16 // More of those that mutate GC, exception and lane instructions, which are rare
 static int mutant_scale = 1; // -m <scale> multiplies them, for small inputs made for mutants
-#define MAX_LOCALS 4096
 #define MAX_TYPES 256
 
 // Output of one function, built in memory as it may turn out not to be in the model
@@ -161,8 +160,42 @@ static bool mem_sig(uint16_t base, wah_type_t *load, wah_type_t *store) {
             *store = WAH_TYPE_I64; return true;
         case WAH_OP_F32_STORE: *store = WAH_TYPE_F32; return true;
         case WAH_OP_F64_STORE: *store = WAH_TYPE_F64; return true;
+        case WAH_OP_V128_LOAD: case WAH_OP_V128_LOAD8X8_S: case WAH_OP_V128_LOAD8X8_U: case WAH_OP_V128_LOAD16X4_S:
+        case WAH_OP_V128_LOAD16X4_U: case WAH_OP_V128_LOAD32X2_S: case WAH_OP_V128_LOAD32X2_U:
+        case WAH_OP_V128_LOAD8_SPLAT: case WAH_OP_V128_LOAD16_SPLAT: case WAH_OP_V128_LOAD32_SPLAT:
+        case WAH_OP_V128_LOAD64_SPLAT: case WAH_OP_V128_LOAD32_ZERO: case WAH_OP_V128_LOAD64_ZERO:
+            *load = WAH_TYPE_V128; return true;
+        case WAH_OP_V128_STORE: *store = WAH_TYPE_V128; return true;
         default: return false;
     }
+}
+
+// Lanes of SIMD loads and stores of lanes, or 0 for others
+static uint32_t mem_lanes(uint16_t base, bool *load) {
+    *load = true;
+    switch (base) {
+        case WAH_OP_V128_LOAD8_LANE: return 16;
+        case WAH_OP_V128_LOAD16_LANE: return 8;
+        case WAH_OP_V128_LOAD32_LANE: return 4;
+        case WAH_OP_V128_LOAD64_LANE: return 2;
+        default: break;
+    }
+    *load = false;
+    switch (base) {
+        case WAH_OP_V128_STORE8_LANE: return 16;
+        case WAH_OP_V128_STORE16_LANE: return 8;
+        case WAH_OP_V128_STORE32_LANE: return 4;
+        case WAH_OP_V128_STORE64_LANE: return 2;
+        default: return 0;
+    }
+}
+
+// `l`: an instruction with lanes `ks` of `n` lanes
+static bool lanes(uint32_t n, uint32_t count, const uint8_t *ks, uint32_t na, const wah_type_t *a, uint32_t nr,
+                  const wah_type_t *r) {
+    put("l %" PRIu32 " %" PRIu32, n, count);
+    for (uint32_t i = 0; i < count; i++) put(" %u", ks[i]);
+    return sig("", na, a, nr, r);
 }
 
 static bool mem_ok(uint32_t idx, wah_type_t at) {
@@ -189,6 +222,34 @@ static bool dump_instr(const wah_parsed_code_t *pc, uint32_t off, const wah_chec
         case WAH_OP_F32_CONST: SIG("o", 0, NULL, 1, T(WAH_TYPE_F32)); return true;
         case WAH_OP_F64_CONST: SIG("o", 0, NULL, 1, T(WAH_TYPE_F64)); return true;
         case WAH_OP_V128_CONST: SIG("o", 0, NULL, 1, T(WAH_TYPE_V128)); return true;
+        case WAH_OP_I8X16_SHUFFLE: { // Lanes index both operands
+            enum { V = WAH_TYPE_V128 };
+            return lanes(32, 16, code + off + sizeof(uint16_t), 2, T(V, V), 1, T(V));
+        }
+        case WAH_OP_I8X16_EXTRACT_LANE_S: case WAH_OP_I8X16_EXTRACT_LANE_U: case WAH_OP_I16X8_EXTRACT_LANE_S:
+        case WAH_OP_I16X8_EXTRACT_LANE_U: case WAH_OP_I32X4_EXTRACT_LANE: case WAH_OP_I64X2_EXTRACT_LANE:
+        case WAH_OP_F32X4_EXTRACT_LANE: case WAH_OP_F64X2_EXTRACT_LANE: case WAH_OP_I8X16_REPLACE_LANE:
+        case WAH_OP_I16X8_REPLACE_LANE: case WAH_OP_I32X4_REPLACE_LANE: case WAH_OP_I64X2_REPLACE_LANE:
+        case WAH_OP_F32X4_REPLACE_LANE: case WAH_OP_F64X2_REPLACE_LANE: {
+            enum { I = WAH_TYPE_I32, L = WAH_TYPE_I64, F = WAH_TYPE_F32, D = WAH_TYPE_F64, V = WAH_TYPE_V128 };
+            uint32_t n; wah_type_t t; bool extract = true;
+            switch (in.op) {
+                case WAH_OP_I8X16_REPLACE_LANE: extract = false; // fallthrough
+                case WAH_OP_I8X16_EXTRACT_LANE_S: case WAH_OP_I8X16_EXTRACT_LANE_U: n = 16; t = I; break;
+                case WAH_OP_I16X8_REPLACE_LANE: extract = false; // fallthrough
+                case WAH_OP_I16X8_EXTRACT_LANE_S: case WAH_OP_I16X8_EXTRACT_LANE_U: n = 8; t = I; break;
+                case WAH_OP_I32X4_REPLACE_LANE: extract = false; // fallthrough
+                case WAH_OP_I32X4_EXTRACT_LANE: n = 4; t = I; break;
+                case WAH_OP_I64X2_REPLACE_LANE: extract = false; // fallthrough
+                case WAH_OP_I64X2_EXTRACT_LANE: n = 2; t = L; break;
+                case WAH_OP_F32X4_REPLACE_LANE: extract = false; // fallthrough
+                case WAH_OP_F32X4_EXTRACT_LANE: n = 4; t = F; break;
+                case WAH_OP_F64X2_REPLACE_LANE: extract = false; // fallthrough
+                default: n = 2; t = D; break;
+            }
+            uint8_t k = in.lane;
+            return extract ? lanes(n, 1, &k, 1, T(V), 1, T(t)) : lanes(n, 1, &k, 2, T(V, t), 1, T(V));
+        }
         case WAH_OP_F32_DEMOTE_F64: SIG("o", 1, T(WAH_TYPE_F64), 1, T(WAH_TYPE_F32)); return true;
         case WAH_OP_F64_PROMOTE_F32: SIG("o", 1, T(WAH_TYPE_F32), 1, T(WAH_TYPE_F64)); return true;
         case WAH_OP_REF_I31: SIG("o", 1, T(WAH_TYPE_I32), 1, T(WAH_TYPE_I31)); return true;
@@ -484,10 +545,14 @@ static bool dump_instr(const wah_parsed_code_t *pc, uint32_t off, const wah_chec
         case WAH_OP_UNREACHABLE: put("u\n"); return true;
         default:
             if (in.mem != WAH_CHECK_MEM_NONE) {
-                if (!mem_sig(in.base, &load, &store)) return false;
+                bool lane_load;
+                uint32_t n = mem_lanes(in.base, &lane_load);
+                if (!n && !mem_sig(in.base, &load, &store)) return false;
                 bool mem0 = in.mem == WAH_CHECK_MEM_I32_MEM0 || in.mem == WAH_CHECK_MEM_I64_MEM0;
                 wah_type_t at = in.mem == WAH_CHECK_MEM_I32 || in.mem == WAH_CHECK_MEM_I32_MEM0 ? WAH_TYPE_I32 : WAH_TYPE_I64;
                 if (!mem_ok(mem0 ? 0 : in.a, at)) { put("X\n"); return true; }
+                uint8_t k = in.lane;
+                if (n) return lanes(n, 1, &k, 2, T(at, WAH_TYPE_V128), lane_load, T(WAH_TYPE_V128));
                 if (load) return sig("o", 1, T(at), 1, T(load));
                 return sig("o", 2, T(at, store), 0, NULL);
             }
@@ -538,7 +603,6 @@ static bool dump_code(const wah_func_type_t *ft, const wah_code_body_t *body, co
         if (wah_check_decode(code, size, off, &in) != WAH_OK) return false; // Pass 1 of the checker fails
         index_of[off] = instr_count++;
     }
-    if (ft->param_count + body->local_count > MAX_LOCALS) return false;
     bool ok = wah_check_lowered_code(cur, pc, ft, body, body->max_stack_depth, WAH_TYPE_BOT) == WAH_OK;
     max_depth = body->max_stack_depth;
     type_count = 0;
@@ -623,7 +687,7 @@ static uint32_t random_offset(uint32_t v) {
 }
 
 // Opcodes that differ only in how they treat types, so that swapping them often keeps code valid but for one rule
-static const uint16_t siblings[][8] = {
+static const uint16_t siblings[][16] = {
     { WAH_OP_REF_CAST, WAH_OP_REF_CAST_NULL, WAH_OP_REF_TEST, WAH_OP_REF_TEST_NULL },
     { WAH_OP_BR_ON_CAST, WAH_OP_BR_ON_CAST_FAIL }, { WAH_OP_BR_ON_NULL, WAH_OP_BR_ON_NON_NULL },
     { WAH_OP_STRUCT_GET_S8, WAH_OP_STRUCT_GET_S16, WAH_OP_STRUCT_GET_U8, WAH_OP_STRUCT_GET_U16, WAH_OP_STRUCT_GET_32,
@@ -634,6 +698,15 @@ static const uint16_t siblings[][8] = {
     { WAH_OP_ARRAY_SET_8, WAH_OP_ARRAY_SET_16, WAH_OP_ARRAY_SET_32, WAH_OP_ARRAY_SET_64, WAH_OP_ARRAY_SET_128 },
     { WAH_OP_STRUCT_NEW, WAH_OP_STRUCT_NEW_DEFAULT }, { WAH_OP_ARRAY_NEW, WAH_OP_ARRAY_NEW_DEFAULT },
     { WAH_OP_ARRAY_NEW_DATA, WAH_OP_ARRAY_NEW_ELEM },
+    { WAH_OP_I8X16_EXTRACT_LANE_S, WAH_OP_I8X16_EXTRACT_LANE_U, WAH_OP_I16X8_EXTRACT_LANE_S,
+      WAH_OP_I16X8_EXTRACT_LANE_U, WAH_OP_I32X4_EXTRACT_LANE, WAH_OP_I64X2_EXTRACT_LANE, WAH_OP_F32X4_EXTRACT_LANE,
+      WAH_OP_F64X2_EXTRACT_LANE, WAH_OP_I8X16_REPLACE_LANE, WAH_OP_I16X8_REPLACE_LANE, WAH_OP_I32X4_REPLACE_LANE,
+      WAH_OP_I64X2_REPLACE_LANE, WAH_OP_F32X4_REPLACE_LANE, WAH_OP_F64X2_REPLACE_LANE },
+    { WAH_OP_V128_LOAD8_LANE_i32_mem0, WAH_OP_V128_LOAD16_LANE_i32_mem0, WAH_OP_V128_LOAD32_LANE_i32_mem0,
+      WAH_OP_V128_LOAD64_LANE_i32_mem0, WAH_OP_V128_STORE8_LANE_i32_mem0, WAH_OP_V128_STORE16_LANE_i32_mem0,
+      WAH_OP_V128_STORE32_LANE_i32_mem0, WAH_OP_V128_STORE64_LANE_i32_mem0 },
+    { WAH_OP_V128_LOAD_i32_mem0, WAH_OP_V128_STORE_i32_mem0, WAH_OP_V128_LOAD8_SPLAT_i32_mem0,
+      WAH_OP_V128_LOAD64_ZERO_i32_mem0, WAH_OP_I32_LOAD_i32_mem0, WAH_OP_I64_STORE_i32_mem0 },
 };
 
 static bool in_list(uint16_t op, const uint16_t *list, size_t n) {
@@ -712,6 +785,14 @@ static bool mutate(uint8_t *code, uint32_t size, const uint32_t *starts, uint32_
                         memcpy(c + 1 + (which - 1) * 4, &v, 4);
                         return true;
                     }
+                    case WAH_OP_I8X16_SHUFFLE: imm[rng(16)] = (uint8_t)(rng(2) ? 31 + rng(2) : rng(256)); return true;
+                    case WAH_OP_I8X16_EXTRACT_LANE_S: case WAH_OP_I8X16_EXTRACT_LANE_U: case WAH_OP_I16X8_EXTRACT_LANE_S:
+                    case WAH_OP_I16X8_EXTRACT_LANE_U: case WAH_OP_I32X4_EXTRACT_LANE: case WAH_OP_I64X2_EXTRACT_LANE:
+                    case WAH_OP_F32X4_EXTRACT_LANE: case WAH_OP_F64X2_EXTRACT_LANE: case WAH_OP_I8X16_REPLACE_LANE:
+                    case WAH_OP_I16X8_REPLACE_LANE: case WAH_OP_I32X4_REPLACE_LANE: case WAH_OP_I64X2_REPLACE_LANE:
+                    case WAH_OP_F32X4_REPLACE_LANE: case WAH_OP_F64X2_REPLACE_LANE: // Lanes
+                        imm[0] = (uint8_t)(rng(4) ? rng(17) : rng(256));
+                        return true;
                     case WAH_OP_TRIM_HANDLERS: case WAH_OP_THROW: {
                         uint32_t v = wah_read_u32_le(imm) + (rng(2) ? 1 : -1);
                         memcpy(imm, &v, 4);
@@ -727,14 +808,19 @@ static bool mutate(uint8_t *code, uint32_t size, const uint32_t *starts, uint32_
                         memcpy(imm + which * 4, &v, 4);
                         return true;
                     }
-                    default: break;
+                    default:
+                        if (in.mem != WAH_CHECK_MEM_NONE && wah_opclasses[in.base] == WAH_OPCLASS_MB) { // Lanes
+                            code[off + in.len - 1] = (uint8_t)(rng(4) ? rng(17) : rng(256));
+                            return true;
+                        }
+                        break;
                 }
                 break;
             default: { // Opcodes
                 const uint16_t *list = NULL;
                 size_t n = 0;
                 for (size_t g = 0; g < sizeof(siblings) / sizeof(*siblings); g++) {
-                    for (n = 0; n < 8 && siblings[g][n]; n++) {}
+                    for (n = 0; n < 16 && siblings[g][n]; n++) {}
                     if (!in_list(in.op, siblings[g], n) || rng(2)) continue;
                     uint16_t op = siblings[g][rng((uint32_t)n)];
                     memcpy(code + off, &op, 2);
@@ -763,9 +849,10 @@ static bool mutate(uint8_t *code, uint32_t size, const uint32_t *starts, uint32_
     return false;
 }
 
-// GC and exception instructions for GC_MUTANTS
-static bool is_gc(uint16_t op) {
-    switch (op) {
+// GC, exception and lane instructions for RARE_MUTANTS
+static bool is_rare(const wah_check_instr_t *in) {
+    if (in->mem != WAH_CHECK_MEM_NONE) return wah_opclasses[in->base] == WAH_OPCLASS_MB;
+    switch (in->op) {
         case WAH_OP_TRY_TABLE: case WAH_OP_END_TRY_TABLE: case WAH_OP_TRIM_HANDLERS: case WAH_OP_THROW:
         case WAH_OP_THROW_REF:
         case WAH_OP_REF_EQ: case WAH_OP_REF_TEST: case WAH_OP_REF_TEST_NULL: case WAH_OP_REF_CAST:
@@ -779,6 +866,11 @@ static bool is_gc(uint16_t op) {
         case WAH_OP_ARRAY_GET_S8: case WAH_OP_ARRAY_GET_S16: case WAH_OP_ARRAY_GET_U8: case WAH_OP_ARRAY_GET_U16:
         case WAH_OP_ARRAY_GET_32: case WAH_OP_ARRAY_GET_64: case WAH_OP_ARRAY_GET_128: case WAH_OP_ARRAY_SET_8:
         case WAH_OP_ARRAY_SET_16: case WAH_OP_ARRAY_SET_32: case WAH_OP_ARRAY_SET_64: case WAH_OP_ARRAY_SET_128:
+        case WAH_OP_I8X16_SHUFFLE: case WAH_OP_I8X16_EXTRACT_LANE_S: case WAH_OP_I8X16_EXTRACT_LANE_U:
+        case WAH_OP_I16X8_EXTRACT_LANE_S: case WAH_OP_I16X8_EXTRACT_LANE_U: case WAH_OP_I32X4_EXTRACT_LANE:
+        case WAH_OP_I64X2_EXTRACT_LANE: case WAH_OP_F32X4_EXTRACT_LANE: case WAH_OP_F64X2_EXTRACT_LANE:
+        case WAH_OP_I8X16_REPLACE_LANE: case WAH_OP_I16X8_REPLACE_LANE: case WAH_OP_I32X4_REPLACE_LANE:
+        case WAH_OP_I64X2_REPLACE_LANE: case WAH_OP_F32X4_REPLACE_LANE: case WAH_OP_F64X2_REPLACE_LANE:
             return true;
         default: return false;
     }
@@ -796,29 +888,29 @@ static void dump_function(uint32_t i) {
     fwrite(buf, 1, buf_len, stdout);
     dumped++;
 
-    uint32_t size = pc->bytecode_size, count = instr_count, gc_count = 0;
-    uint32_t *starts = malloc((size_t)count * sizeof(uint32_t)), *gc_starts = malloc((size_t)count * sizeof(uint32_t));
+    uint32_t size = pc->bytecode_size, count = instr_count, rare_count = 0;
+    uint32_t *starts = malloc((size_t)count * sizeof(uint32_t)), *rare_starts = malloc((size_t)count * sizeof(uint32_t));
     uint8_t *copy = malloc(size);
-    if (!starts || !gc_starts || !copy) abort();
+    if (!starts || !rare_starts || !copy) abort();
     for (uint32_t off = 0, k = 0; off < size; k++) {
         starts[k] = off;
         wah_check_instr_t in;
         wah_check_decode(pc->bytecode, size, off, &in);
-        if (is_gc(in.op)) gc_starts[gc_count++] = off;
+        if (is_rare(&in)) rare_starts[rare_count++] = off;
         off += in.len;
     }
     wah_ref_node_t *nodes = malloc((size_t)pc->ref_node_count * sizeof(wah_ref_node_t) + 1);
     if (!nodes) abort();
     rng_state = (uint64_t)size * 31 + i;
-    for (int k = 0; k < (MUTANTS + (gc_count ? GC_MUTANTS : 0)) * mutant_scale; k++) {
-        bool gc = k >= MUTANTS * mutant_scale;
+    for (int k = 0; k < (MUTANTS + (rare_count ? RARE_MUTANTS : 0)) * mutant_scale; k++) {
+        bool rare = k >= MUTANTS * mutant_scale;
         wah_parsed_code_t mpc = *pc;
         memcpy(copy, pc->bytecode, size);
-        if (pc->ref_node_count > 0 && !gc && rng(4) == 0) { // A slot of a ref map
+        if (pc->ref_node_count > 0 && !rare && rng(4) == 0) { // A slot of a ref map
             memcpy(nodes, pc->ref_nodes, (size_t)pc->ref_node_count * sizeof(wah_ref_node_t));
             nodes[rng(pc->ref_node_count)].pos += rng(2) ? 1 : -1;
             mpc.ref_nodes = nodes;
-        } else if (!mutate(copy, size, gc ? gc_starts : starts, gc ? gc_count : count)) {
+        } else if (!mutate(copy, size, rare ? rare_starts : starts, rare ? rare_count : count)) {
             continue;
         }
         mpc.bytecode = copy;
@@ -828,7 +920,7 @@ static void dump_function(uint32_t i) {
         mutants++;
     }
     free(starts);
-    free(gc_starts);
+    free(rare_starts);
     free(copy);
     free(nodes);
 }

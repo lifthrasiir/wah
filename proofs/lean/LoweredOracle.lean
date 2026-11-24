@@ -4,6 +4,7 @@
 wah_type_t, signatures as `<count> <type>*` for what is popped (bottom first) and then for what is pushed, and
 ref maps as -1 (malformed) or `<count> <position>*`:
   o sig sig              op                 y map sig sig   op with a ref map
+  l n ks sig sig         op with lanes ks (as `<count> <lane>*`) of n lanes
   k sig sig              call               r sig sig       return_call
   d / s                  drop / select      z / a           ref.is_null / ref.as_non_null
   g i / x i / t i        local.get/set/tee
@@ -54,6 +55,10 @@ def parseInstr (op : String) (ns : List Int) : Option Instr := do
   match op, ns with
   | "o", _ => let (a, r) ← sig ns; return .op a r
   | "y", _ => let (m, rest) ← map ns; let (a, r) ← sig rest; return .opMap m a r
+  | "l", c :: rest => do
+    let (ks, rest) ← types rest
+    let (a, r) ← sig rest
+    if 0 ≤ c ∧ ks.all (0 ≤ ·) then return .lanes (ks.map Int.toNat) c.toNat a r else none
   | "k", _ => let (a, r) ← sig ns; return .call a r
   | "r", _ => let (a, r) ← sig ns; return .retCall a r
   | "d", [] => return .drop
