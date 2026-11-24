@@ -56,8 +56,53 @@ static void test_wide_i32_result(void) {
     wah_free_module(&host);
 }
 
+static wah_exec_context_t *ctx_to_free;
+static void free_ctx(wah_call_context_t *ctx, void *userdata) {
+    (void)ctx, (void)userdata;
+    wah_free_exec_context(ctx_to_free); // Misuse: the context or its link domain is running
+}
+
+// Keeps an exception in a global, so that the call cancelled with an error sweeps exceptions, then loads from p.mem
+static const char *CONSUMER_SPEC = "wasm types {[ fn [] [], fn [] [i32], fn [] [i32, exnref], fn [i32] [] ]} \
+    imports {[ {'h'} {'f'} fn# 0, {'p'} {'mem'} mem# limits.i32/1 1 ]} funcs {[ 1 ]} tags {[ tag.type# 3 ]} \
+    globals {[ exnref mut ref.null exnref end ]} code {[ {[] \
+        block 2 try_table void [catch_ref 0 0] i32.const 1 throw 0 end i32.const 0 ref.null exnref end \
+        global.set 0 drop call 0 i32.const 100 i32.load 2 0 end} ]}";
+
+static void test_free_running(bool self) {
+    printf("Testing freeing %s from a host function...\n", self ? "the running context" : "a linked context");
+    wah_module_t prov = {0}, cons = {0}, host = {0};
+    wah_exec_context_t pctx = {0}, ctx = {0};
+    assert_ok(wah_parse_module_from_spec(&prov, "wasm memories {[ limits.i32/1 1 ]} exports {[ {'mem'} mem# 0 ]}"));
+    assert_ok(wah_new_module(&host, NULL));
+    assert_ok(wah_export_func(&host, "f", "()", free_ctx, NULL, NULL));
+    assert_ok(wah_parse_module_from_spec(&cons, CONSUMER_SPEC));
+    assert_ok(wah_new_exec_context(&pctx, &prov, NULL));
+    assert_ok(wah_instantiate(&pctx));
+    assert_ok(wah_new_exec_context(&ctx, &cons, NULL));
+    assert_ok(wah_link_module(&ctx, "h", &host));
+    assert_ok(wah_link_context(&ctx, "p", &pctx));
+    assert_ok(wah_instantiate(&ctx));
+    ctx_to_free = self ? &ctx : &pctx;
+    wah_value_t r;
+    wah_error_t err = wah_call(&ctx, 1, NULL, 0, &r);
+    if (self) { // Not freed
+        assert_ok(err);
+        assert_eq_i32(r.i32, 0);
+    } else { // Not to use the freed memory
+        assert_err(err, WAH_ERROR_MISUSE);
+    }
+    wah_free_exec_context(&ctx);
+    if (self) wah_free_exec_context(&pctx);
+    wah_free_module(&cons);
+    wah_free_module(&prov);
+    wah_free_module(&host);
+}
+
 int main(void) {
     test_trap_with_non_error();
+    test_free_running(false);
+    test_free_running(true);
     test_wide_i32_result();
     printf("All release misuse tests passed!\n");
     return 0;

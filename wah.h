@@ -1085,6 +1085,8 @@ void wah_get_limits(const wah_exec_context_t *exec_ctx, wah_limits_t *out);
 //   only be freed, in any order. Contexts that failed to link or were never instantiated are exempt,
 //   unless they have host objects from `wah_gc_alloc_host` left.
 //   It must not be called while any context in the link domain is running, e.g. from a host function.
+//   Otherwise a running context is not freed (leaked), and running contexts trap with WAH_ERROR_MISUSE once host
+//   functions return. This is not checked across threads.
 void wah_free_exec_context(wah_exec_context_t *exec_ctx);
 
 // Function: wah_call
@@ -13148,6 +13150,10 @@ void wah_get_limits(const wah_exec_context_t *exec_ctx, wah_limits_t *out) {
 
 void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     if (!exec_ctx) return;
+    // Misuse, e.g. from a host function. Leaked since the interpreter still uses it.
+    // Others in the link domain get poisoned, so they trap right after host functions.
+    WAH_ASSERT(exec_ctx->lifecycle.state != WAH_EXEC_RUNNING && "Freed a running context");
+    if (exec_ctx->lifecycle.state == WAH_EXEC_RUNNING) return;
     wah_alloc_t alloc_storage = wah_resolve_alloc(&exec_ctx->alloc);
     const wah_alloc_t *alloc = &alloc_storage;
     // Other contexts in the link domain may be freed already if this one is poisoned.
@@ -13622,6 +13628,8 @@ static wah_error_t wah_call_host_function_internal(
     fn->func(&call_ctx, fn->userdata);
 #endif
 
+    // The host may have freed a context in the link domain by misuse, whose state shouldn't be used further
+    WAH_ENSURE(!exec_ctx->poisoned, WAH_ERROR_MISUSE);
     WAH_ENSURE(call_ctx.trap_reason == WAH_OK, call_ctx.trap_reason);
     for (uint32_t i = 0; i < fn->nresults; i++) { // Results not set are null
         wah_type_t t = fn->result_types[i];
@@ -17725,6 +17733,7 @@ static void wah_gc_sweep_unreachable_exceptions(wah_exec_context_t *ctx) {
 }
 #endif
 
+// The exception sweep visits the link domain, which may have been freed if `ctx` is poisoned.
 static void wah_cancel_internal(wah_exec_context_t *ctx) {
     wah_timer_set_armed(ctx, false);
 #ifdef WAH_JIT
@@ -17737,7 +17746,7 @@ static void wah_cancel_internal(wah_exec_context_t *ctx) {
 #endif
     if (ctx->lifecycle.state == WAH_EXEC_READY) {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
-        wah_gc_sweep_unreachable_exceptions(ctx);
+        if (!ctx->poisoned) wah_gc_sweep_unreachable_exceptions(ctx);
 #endif
         return;
     }
@@ -17747,7 +17756,7 @@ static void wah_cancel_internal(wah_exec_context_t *ctx) {
     ctx->exception_handler_depth = ctx->lifecycle.base_handler_depth;
     ctx->lifecycle = (struct wah_exec_lifecycle_s){0};
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
-    wah_gc_sweep_unreachable_exceptions(ctx);
+    if (!ctx->poisoned) wah_gc_sweep_unreachable_exceptions(ctx);
 #endif
 }
 
