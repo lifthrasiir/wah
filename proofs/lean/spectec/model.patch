@@ -1,0 +1,163 @@
+--- a/SpecTec/Wasm.lean
++++ b/SpecTec/Wasm.lean
+@@ -5961,11 +5961,12 @@
+ 
+ /- Inductive Relations Definition at: ../../specification/wasm-3.0/2.1-validation.types.spectec:10.1-10.91 -/
+ inductive Reftype_ok : context -> reftype -> Prop where
+-  | mk_Reftype_ok : forall (C : context) (v_heaptype : heaptype), 
++  | mk_Reftype_ok : forall (C : context) (v_heaptype : heaptype) (opt_1 : (Option null)), 
+     (Heaptype_ok C v_heaptype) ->
++    ((opt_1 = none) ∨ (opt_1 = (some .NULL))) ->
+     (wf_context C) ->
+-    (wf_reftype (.REF (some .NULL) v_heaptype)) ->
+-    Reftype_ok C (.REF (some .NULL) v_heaptype)
++    (wf_reftype (.REF opt_1 v_heaptype)) ->
++    Reftype_ok C (.REF opt_1 v_heaptype)
+ 
+ /- Inductive Relations Definition at: ../../specification/wasm-3.0/2.1-validation.types.spectec:11.1-11.91 -/
+ inductive Valtype_ok : context -> valtype -> Prop where
+@@ -6020,11 +6021,12 @@
+ 
+ /- Inductive Relations Definition at: ../../specification/wasm-3.0/2.1-validation.types.spectec:92.1-92.104 -/
+ inductive Fieldtype_ok : context -> fieldtype -> Prop where
+-  | mk_Fieldtype_ok : forall (C : context) (v_storagetype : storagetype), 
++  | mk_Fieldtype_ok : forall (C : context) (v_storagetype : storagetype) (opt_2 : (Option «mut»)), 
+     (Storagetype_ok C v_storagetype) ->
++    ((opt_2 = none) ∨ (opt_2 = (some .MUT))) ->
+     (wf_context C) ->
+-    (wf_fieldtype (.mk_fieldtype (some .MUT) v_storagetype)) ->
+-    Fieldtype_ok C (.mk_fieldtype (some .MUT) v_storagetype)
++    (wf_fieldtype (.mk_fieldtype opt_2 v_storagetype)) ->
++    Fieldtype_ok C (.mk_fieldtype opt_2 v_storagetype)
+ 
+ /- Inductive Relations Definition at: ../../specification/wasm-3.0/2.1-validation.types.spectec:93.1-93.106 -/
+ inductive Storagetype_ok : context -> storagetype -> Prop where
+@@ -6063,7 +6065,7 @@
+ 
+ /- Inductive Relations Definition at: ../../specification/wasm-3.0/2.1-validation.types.spectec:97.1-97.126 -/
+ inductive Subtype_ok2 : context -> subtype -> oktypenat -> Prop where
+-  | mk_Subtype_ok2 : forall (C : context) (typeuse_lst : (List typeuse)) (v_comptype : comptype) (i : Nat) (comptype'_lst : (List comptype)) (typeuse'_lst_lst : (List (List typeuse))) (var_0_lst : (List subtype)), 
++  | mk_Subtype_ok2 : forall (C : context) (typeuse_lst : (List typeuse)) (v_comptype : comptype) (i : Nat) (comptype'_lst : (List comptype)) (typeuse'_lst_lst : (List (List typeuse))) (opt_3 : (Option final)) (var_0_lst : (List subtype)), 
+     Forall₂ (fun (var_0 : subtype) (v_typeuse : typeuse) => (fun_unrollht_ C (heaptype_typeuse v_typeuse) var_0)) var_0_lst typeuse_lst ->
+     ((List.length typeuse_lst) <= 1) ->
+     Forall (fun (v_typeuse : typeuse) => (Typeuse_ok C v_typeuse)) typeuse_lst ->
+@@ -6073,15 +6075,16 @@
+     Forall₃ (fun (var_0 : subtype) (comptype' : comptype) (typeuse'_lst : (List typeuse)) => (var_0 = (.SUB none typeuse'_lst comptype'))) var_0_lst comptype'_lst typeuse'_lst_lst ->
+     (Comptype_ok C v_comptype) ->
+     Forall (fun (comptype' : comptype) => (Comptype_sub C v_comptype comptype')) comptype'_lst ->
++    ((opt_3 = none) ∨ (opt_3 = (some .FINAL))) ->
+     (wf_context C) ->
+     Forall (fun (var_0 : subtype) => (wf_subtype var_0)) var_0_lst ->
+-    (wf_subtype (.SUB (some .FINAL) typeuse_lst v_comptype)) ->
++    (wf_subtype (.SUB opt_3 typeuse_lst v_comptype)) ->
+     Forall₂ (fun (comptype' : comptype) (typeuse'_lst : (List typeuse)) => (wf_subtype (.SUB none typeuse'_lst comptype'))) comptype'_lst typeuse'_lst_lst ->
+     ((List.length var_0_lst) = (List.length typeuse_lst)) ->
+     ((List.length var_0_lst) = (List.length comptype'_lst)) ->
+     ((List.length var_0_lst) = (List.length typeuse'_lst_lst)) ->
+     ((List.length comptype'_lst) = (List.length typeuse'_lst_lst)) ->
+-    Subtype_ok2 C (.SUB (some .FINAL) typeuse_lst v_comptype) (.OK i)
++    Subtype_ok2 C (.SUB opt_3 typeuse_lst v_comptype) (.OK i)
+ 
+ /- Inductive Relations Definition at: ../../specification/wasm-3.0/2.1-validation.types.spectec:98.1-98.126 -/
+ inductive Rectype_ok2 : context -> rectype -> oktypenat -> Prop where
+@@ -6324,12 +6327,13 @@
+     (wf_reftype (.REF none ht_1)) ->
+     (wf_reftype (.REF none ht_2)) ->
+     Reftype_sub C (.REF none ht_1) (.REF none ht_2)
+-  | null : forall (C : context) (ht_1 : heaptype) (ht_2 : heaptype), 
++  | null : forall (C : context) (ht_1 : heaptype) (ht_2 : heaptype) (opt_4 : (Option null)), 
+     (Heaptype_sub C ht_1 ht_2) ->
++    ((opt_4 = none) ∨ (opt_4 = (some .NULL))) ->
+     (wf_context C) ->
+-    (wf_reftype (.REF (some .NULL) ht_1)) ->
++    (wf_reftype (.REF opt_4 ht_1)) ->
+     (wf_reftype (.REF (some .NULL) ht_2)) ->
+-    Reftype_sub C (.REF (some .NULL) ht_1) (.REF (some .NULL) ht_2)
++    Reftype_sub C (.REF opt_4 ht_1) (.REF (some .NULL) ht_2)
+ 
+ /- Inductive Relations Definition at: ../../specification/wasm-3.0/2.2-validation.subtyping.spectec:11.1-11.103 -/
+ inductive Valtype_sub : context -> valtype -> valtype -> Prop where
+@@ -6453,7 +6457,7 @@
+ 
+ /- Inductive Relations Definition at: ../../specification/wasm-3.0/2.1-validation.types.spectec:95.1-95.126 -/
+ inductive Subtype_ok : context -> subtype -> oktypeidx -> Prop where
+-  | mk_Subtype_ok : forall (C : context) (x_lst : (List idx)) (v_comptype : comptype) (x_0 : idx) (comptype'_lst : (List comptype)) (yy_lst_lst : (List (List typeuse))) (var_0_lst : (List subtype)), 
++  | mk_Subtype_ok : forall (C : context) (x_lst : (List idx)) (v_comptype : comptype) (x_0 : idx) (comptype'_lst : (List comptype)) (yy_lst_lst : (List (List typeuse))) (opt_5 : (Option final)) (var_0_lst : (List subtype)), 
+     Forall₂ (fun (var_0 : subtype) (x : idx) => (fun_unrolldt ((C.TYPES)[(proj_uN_0 x)]!) var_0)) var_0_lst x_lst ->
+     ((List.length x_lst) <= 1) ->
+     Forall (fun (x : idx) => ((proj_uN_0 x) < (proj_uN_0 x_0))) x_lst ->
+@@ -6463,16 +6467,17 @@
+     Forall₃ (fun (var_0 : subtype) (comptype' : comptype) (yy_lst : (List typeuse)) => (var_0 = (.SUB none yy_lst comptype'))) var_0_lst comptype'_lst yy_lst_lst ->
+     (Comptype_ok C v_comptype) ->
+     Forall (fun (comptype' : comptype) => (Comptype_sub C v_comptype comptype')) comptype'_lst ->
++    ((opt_5 = none) ∨ (opt_5 = (some .FINAL))) ->
+     (wf_context C) ->
+     Forall (fun (var_0 : subtype) => (wf_subtype var_0)) var_0_lst ->
+-    (wf_subtype (.SUB (some .FINAL) (List.map (fun (x : idx) => ((._IDX x) : typeuse)) x_lst) v_comptype)) ->
++    (wf_subtype (.SUB opt_5 (List.map (fun (x : idx) => ((._IDX x) : typeuse)) x_lst) v_comptype)) ->
+     (wf_oktypeidx (.OK x_0)) ->
+     Forall₂ (fun (comptype' : comptype) (yy_lst : (List typeuse)) => (wf_subtype (.SUB none yy_lst comptype'))) comptype'_lst yy_lst_lst ->
+     ((List.length var_0_lst) = (List.length x_lst)) ->
+     ((List.length var_0_lst) = (List.length comptype'_lst)) ->
+     ((List.length var_0_lst) = (List.length yy_lst_lst)) ->
+     ((List.length comptype'_lst) = (List.length yy_lst_lst)) ->
+-    Subtype_ok C (.SUB (some .FINAL) (List.map (fun (x : idx) => ((._IDX x) : typeuse)) x_lst) v_comptype) (.OK x_0)
++    Subtype_ok C (.SUB opt_5 (List.map (fun (x : idx) => ((._IDX x) : typeuse)) x_lst) v_comptype) (.OK x_0)
+ 
+ /- Recursive Definition at: ../../specification/wasm-3.0/2.1-validation.types.spectec:96.1-96.126 -/
+ /- Inductive Relations Definition at: ../../specification/wasm-3.0/2.1-validation.types.spectec:96.1-96.126 -/
+@@ -6513,11 +6518,12 @@
+ 
+ /- Inductive Relations Definition at: ../../specification/wasm-3.0/2.1-validation.types.spectec:208.1-208.100 -/
+ inductive Globaltype_ok : context -> globaltype -> Prop where
+-  | mk_Globaltype_ok : forall (C : context) (t : valtype), 
++  | mk_Globaltype_ok : forall (C : context) (t : valtype) (opt_6 : (Option «mut»)), 
+     (Valtype_ok C t) ->
++    ((opt_6 = none) ∨ (opt_6 = (some .MUT))) ->
+     (wf_context C) ->
+-    (wf_globaltype (.mk_globaltype (some .MUT) t)) ->
+-    Globaltype_ok C (.mk_globaltype (some .MUT) t)
++    (wf_globaltype (.mk_globaltype opt_6 t)) ->
++    Globaltype_ok C (.mk_globaltype opt_6 t)
+ 
+ /- Inductive Relations Definition at: ../../specification/wasm-3.0/2.1-validation.types.spectec:209.1-209.97 -/
+ inductive Memtype_ok : context -> memtype -> Prop where
+@@ -6905,14 +6911,15 @@
+     (wf_instr (.BR_ON_NULL l)) ->
+     (wf_instrtype (.mk_instrtype (.mk_list (t_lst ++ ([(.REF (some .NULL) ht)] : (List valtype)))) [] (.mk_list (t_lst ++ ([(.REF none ht)] : (List valtype)))))) ->
+     Instr_ok C (.BR_ON_NULL l) (.mk_instrtype (.mk_list (t_lst ++ ([(.REF (some .NULL) ht)] : (List valtype)))) [] (.mk_list (t_lst ++ ([(.REF none ht)] : (List valtype)))))
+-  | br_on_non_null : forall (C : context) (l : labelidx) (t_lst : (List valtype)) (ht : heaptype), 
++  | br_on_non_null : forall (C : context) (l : labelidx) (t_lst : (List valtype)) (ht : heaptype) (opt_7 : (Option null)), 
+     ((proj_uN_0 l) < (List.length (C.LABELS))) ->
+-    (((C.LABELS)[(proj_uN_0 l)]!) = (.mk_list (t_lst ++ ([(.REF (some .NULL) ht)] : (List valtype))))) ->
++    (((C.LABELS)[(proj_uN_0 l)]!) = (.mk_list (t_lst ++ ([(.REF opt_7 ht)] : (List valtype))))) ->
++    ((opt_7 = none) ∨ (opt_7 = (some .NULL))) ->
+     (wf_context C) ->
+     (wf_instr (.BR_ON_NON_NULL l)) ->
+     (wf_instrtype (.mk_instrtype (.mk_list (t_lst ++ ([(.REF (some .NULL) ht)] : (List valtype)))) [] (.mk_list t_lst))) ->
+-    ((List.length (List.map (fun (X_17435 : valtype) => X_17435) (proj_list_0 valtype (.mk_list (t_lst ++ ([(.REF (some .NULL) ht)] : (List valtype))))))) < (2 ^ 32)) ->
+-    Forall (fun (iter : valtype) => (wf_valtype iter)) (proj_list_0 valtype (.mk_list (t_lst ++ ([(.REF (some .NULL) ht)] : (List valtype))))) ->
++    ((List.length (List.map (fun (X_17435 : valtype) => X_17435) (proj_list_0 valtype (.mk_list (t_lst ++ ([(.REF opt_7 ht)] : (List valtype))))))) < (2 ^ 32)) ->
++    Forall (fun (iter : valtype) => (wf_valtype iter)) (proj_list_0 valtype (.mk_list (t_lst ++ ([(.REF opt_7 ht)] : (List valtype))))) ->
+     Instr_ok C (.BR_ON_NON_NULL l) (.mk_instrtype (.mk_list (t_lst ++ ([(.REF (some .NULL) ht)] : (List valtype)))) [] (.mk_list t_lst))
+   | br_on_cast : forall (C : context) (l : labelidx) (rt_1 : reftype) (rt_2 : reftype) (t_lst : (List valtype)) (rt : reftype), 
+     ((proj_uN_0 l) < (List.length (C.LABELS))) ->
+@@ -7893,13 +7900,14 @@
+ 
+ /- Inductive Relations Definition at: ../../specification/wasm-3.0/2.4-validation.modules.spectec:9.1-9.99 -/
+ inductive Global_ok : context -> global -> globaltype -> Prop where
+-  | mk_Global_ok : forall (C : context) (v_globaltype : globaltype) (v_expr : expr) (t : valtype), 
+-    (Globaltype_ok C v_globaltype) ->
+-    (v_globaltype = (.mk_globaltype (some .MUT) t)) ->
++  | mk_Global_ok : forall (C : context) (v_globaltype : globaltype) (v_expr : expr) (t : valtype) (opt_8 : (Option «mut»)), 
++    (Globaltype_ok C v_globaltype) ->
++    (v_globaltype = (.mk_globaltype opt_8 t)) ->
+     (Expr_ok_const C v_expr t) ->
++    ((opt_8 = none) ∨ (opt_8 = (some .MUT))) ->
+     (wf_context C) ->
+     (wf_global (.GLOBAL v_globaltype v_expr)) ->
+-    (wf_globaltype (.mk_globaltype (some .MUT) t)) ->
++    (wf_globaltype (.mk_globaltype opt_8 t)) ->
+     Global_ok C (.GLOBAL v_globaltype v_expr) v_globaltype
+ 
+ /- Inductive Relations Definition at: ../../specification/wasm-3.0/2.4-validation.modules.spectec:10.1-10.96 -/

@@ -247,19 +247,23 @@ lean:
 	@echo "## All Lean proofs passed."
 
 # Proofs against the Lean model of Wasm 3.0 that SpecTec generates (WahSpecTec.lean), pinned to a commit of
-# sgraf812/spectec-wp and fetched into .lake. The model takes about 6 minutes to elaborate the first time.
+# sgraf812/spectec-wp and fetched into .lake, with proofs/lean/spectec/model.patch: the model that the generator
+# fixed by proofs/lean/spectec/generator.patch generates. The model takes minutes to elaborate the first time.
 SPECTEC_WP_REV := c8f6efb767384785473c10d3cc618d15461b1d6d
 SPECTEC_WP_SHA256 := 3eeb9832941cabe951b23bf8bd420b7e3aacc3c2a68d8ee6385295432ca23acb
+SPECTEC_MODEL_SHA256 := 83b496e41ba9b552a2be81482b94e0cf55523253fe857b1b14ba1e7407ee2b41
 SPECTEC_MODEL := proofs/lean/.lake/spectec/SpecTec/Wasm.lean
 
 .PHONY: lean-spectec
 lean-spectec:
 	@echo "## Building Lean proofs against the SpecTec model..."
-	@echo "$(SPECTEC_WP_SHA256)  $(SPECTEC_MODEL)" | shasum -a 256 -c --status 2>/dev/null || { \
+	@echo "$(SPECTEC_MODEL_SHA256)  $(SPECTEC_MODEL)" | shasum -a 256 -c --status 2>/dev/null || { \
 		mkdir -p $(dir $(SPECTEC_MODEL)) && \
 		curl -sfL -o $(SPECTEC_MODEL) \
 			https://raw.githubusercontent.com/sgraf812/spectec-wp/$(SPECTEC_WP_REV)/SpecTecWP/Wasm.lean && \
-		echo "$(SPECTEC_WP_SHA256)  $(SPECTEC_MODEL)" | shasum -a 256 -c --status; } || \
+		echo "$(SPECTEC_WP_SHA256)  $(SPECTEC_MODEL)" | shasum -a 256 -c --status && \
+		patch -s $(SPECTEC_MODEL) proofs/lean/spectec/model.patch && \
+		echo "$(SPECTEC_MODEL_SHA256)  $(SPECTEC_MODEL)" | shasum -a 256 -c --status; } || \
 		{ echo "Failed to fetch the SpecTec model"; exit 1; }
 	@cd proofs/lean && $(LAKE) build WahSpecTec
 	@! grep -rnE '$(LEAN_FORBIDDEN)' proofs/lean/WahSpecTec proofs/lean/WahSpecTec.lean || \

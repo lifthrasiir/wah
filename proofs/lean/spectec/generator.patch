@@ -1,0 +1,47 @@
+Fix of the SpecTec Lean 4 backend that generates spectec/model.patch, against 8184a11e85659216910141768fba2a45935601c8 of sgraf812/spectec
+(branch lean4-fixes). Option iterations without iteration variables, such as NULL? in `REF NULL? ht`, became
+OptE (Some e) in the remove-indexed-types pass, so rules only held for present ones.
+
+diff --git a/spectec/src/middlend/undep.ml b/spectec/src/middlend/undep.ml
+index 3008c49..567c475 100644
+--- a/spectec/src/middlend/undep.ml
++++ b/spectec/src/middlend/undep.ml
+@@ -538,10 +538,38 @@ let get_extra_prems_rel modemap rid env quants exp prems =
+   let quant_prems = (List.filter_map get_exp_typ quants_filtered) |> List.concat_map (get_wf_pred env) in
+   quant_prems @ call_prems @ constr_prems
+ 
++(* An option iteration without iteration variables, such as NULL? in `REF NULL? ht`, is either absent or present,
++   so it becomes a fresh variable of the option type that is constrained to be one of them. *)
++let fresh_opt = ref 0
++
++let lift_opts exp prems =
++  let found = ref [] in
++  let f e = match e.it with
++    | IterE (e1, (Opt, [])) ->
++      incr fresh_opt;
++      let id = ("opt_" ^ string_of_int !fresh_opt) $ e.at in
++      found := (id, e.note, e1) :: !found;
++      VarE id $$ e.at % e.note
++    | _ -> e
++  in
++  let tf = { base_transformer with transform_exp = f } in
++  let exp' = transform_exp tf exp in
++  let prems' = List.map (transform_prem tf) prems in
++  let bool = BoolT $ exp.at in
++  let quants, cond_prems = List.split (List.rev_map (fun (id, t, e1) ->
++    let v = VarE id $$ id.at % t in
++    let eq e' = CmpE (`EqOp, `BoolT, v, e') $$ id.at % bool in
++    let cond = BinE (`OrOp, `BoolT, eq (OptE None $$ id.at % t), eq (OptE (Some e1) $$ id.at % t)) $$ id.at % bool in
++    (ExpP (id, t) $ id.at, IfPr cond $ id.at)
++  ) !found) in
++  (quants, exp', prems' @ cond_prems)
++
+ let t_rule modemap rid env rule = 
+   let tf = { base_transformer with transform_exp = t_exp env; transform_typ = t_typ} in
+   (match rule.it with
+   | RuleD (id, quants, m, exp, prems) -> 
++    let opt_quants, exp, prems = lift_opts exp prems in
++    let quants = quants @ opt_quants in
+     let extra_prems = get_extra_prems_rel modemap rid env quants exp prems in 
+     RuleD (id, 
+       List.map (transform_param tf) quants, 
