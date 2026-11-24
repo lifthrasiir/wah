@@ -169,8 +169,37 @@ static void test_change_used_module(void) {
     wah_free_module(&linked);
 }
 
+static void *fake_ref;
+static void result_fake_ref(wah_call_context_t *ctx, void *userdata) {
+    (void)userdata;
+    wah_result_ref(ctx, 0, fake_ref);
+}
+
+static void test_raw_refs(void) {
+    printf("Testing references not from wah_gc_alloc_host are refused...\n");
+    WAH_ALIGNAS(16) static uint8_t buf[64]; // Zeroes are like a header of a struct, not a host object
+    fake_ref = buf + 32;
+    wah_module_t mod = {0}, host = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_module(&host, NULL));
+    assert_ok(wah_export_func(&host, "f", "() -> anyref", result_fake_ref, NULL, NULL));
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm types {[ fn [anyref] [i32], fn [] [anyref], fn [] [i32] ]} \
+        imports {[ {'h'} {'f'} fn# 1 ]} funcs {[ 0, 2 ]} code {[ \
+        {[] local.get 0 ref.is_null end}, {[] call 0 ref.is_null end} ]}"));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_link_module(&ctx, "h", &host));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t p = { .ref = fake_ref }, r;
+    assert_err(wah_call(&ctx, 1, &p, 1, &r), WAH_ERROR_MISUSE);
+    assert_err(wah_call(&ctx, 2, NULL, 0, &r), WAH_ERROR_MISUSE);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+    wah_free_module(&host);
+}
+
 int main(void) {
     test_trap_with_non_error();
+    test_raw_refs();
     test_change_used_module();
     test_accessors();
     test_free_running(false);

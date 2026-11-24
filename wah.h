@@ -17914,6 +17914,8 @@ static wah_error_t wah_load_host_params(const wah_exec_context_t *ctx, wah_value
                 value = s->value;
             } else {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
+                // Otherwise it could be anything the host made, or a reference leaked by misuse (but never sanitized)
+                WAH_ENSURE(wah_gc_header(value.ref)->repr_id == WAH_REPR_HOST, WAH_ERROR_MISUSE);
                 WAH_ENSURE(wah_host_object_accepts(types[i]), WAH_ERROR_MISUSE);
 #else
                 return WAH_ERROR_MISUSE; // There are no host objects without GC
@@ -18891,7 +18893,7 @@ void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value) {
     } else if (value) {
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)
         WAH_ASSERT(wah_gc_header(value)->repr_id == WAH_REPR_HOST && "Reference result must be a host object");
-        if (!wah_host_object_accepts(ctx->result_types[index])) {
+        if (wah_gc_header(value)->repr_id != WAH_REPR_HOST || !wah_host_object_accepts(ctx->result_types[index])) {
 #else
         { // There are no host objects without GC
 #endif
