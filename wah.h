@@ -2852,6 +2852,14 @@ typedef struct wah_export_s {
 
 // --- Type Stack for Validation ---
 #define WAH_MAX_TYPE_STACK_SIZE 1024 // Maximum size of the type stack for validation
+// Reference slots of all ref maps in the code section, at most BASE + PER_CODE_BYTE * (section size).
+// Ordinary code has far fewer slots than its size, but calls with many reference params or results may need more.
+#ifndef WAH_REF_NODES_PER_CODE_BYTE
+#define WAH_REF_NODES_PER_CODE_BYTE 2
+#endif
+#ifndef WAH_REF_NODES_BASE
+#define WAH_REF_NODES_BASE (4 * WAH_MAX_TYPE_STACK_SIZE)
+#endif
 typedef struct {
     wah_type_t *data; // WAH_MAX_TYPE_STACK_SIZE entries, only valid below sp
     uint32_t sp; // Stack pointer
@@ -3076,6 +3084,7 @@ typedef struct {
     uint32_t max_stack_depth; // Maximum stack depth seen during validation
     bool is_unreachable; // True if the current code path is unreachable
     uint32_t max_global_idx; // For const_expr mode: globals before this index only
+    uint64_t ref_nodes_left; // Reference slots that ref maps can still add, shared by the code section
 
     // Control flow validation stack
     wah_validation_control_frame_t *control_stack; // WAH_MAX_CONTROL_DEPTH entries, only valid below control_sp
@@ -8028,6 +8037,13 @@ static bool wah_opcode_is_resumable_bulk(uint16_t opcode) {
 }
 #endif
 
+// Stack maps are only read by wah_check_lowered_code, and would otherwise take memory far beyond the code size
+#ifdef WAH_CHECK_LOWERED
+#define WAH_LOWER_STACK_MAPS 1
+#else
+#define WAH_LOWER_STACK_MAPS 0
+#endif
+
 // Lowering function that consumes analyzed IR instead of raw Wasm bytes
 // Types of the label of a block: its params if a loop, and its results otherwise.
 static void wah_block_label_types(const wah_module_t *module, const wah_block_type_imm_t *bt, bool loop,
@@ -8227,6 +8243,7 @@ static wah_error_t wah_lower_analyzed_code(wah_module_t* module, const wah_analy
         const wah_type_t *_lt; \
         uint32_t _ln, _keep = 0, _pos = (pos); \
         bool _has_ref = false; \
+        if (!WAH_LOWER_STACK_MAPS) break; \
         wah_block_label_types(module, (bt), (loop), &_lt, &_ln); \
         for (uint32_t _i = 0; _i < _ln; _i++) _has_ref = _has_ref || WAH_TYPE_IS_REF(_lt[_i]); \
         if (!_has_ref) break; \
@@ -10001,7 +10018,8 @@ static wah_error_t wah_analyze_stream(
     uint32_t ref_node_count = 0;
     uint32_t poll_ref_tops_cap = 0, ref_nodes_cap = 0;
 
-    // The operand stack at the previous POLL point, so that its reference slots can be reused
+    // The operand stack at the previous POLL point, so that its reference slots can be reused.
+    // Only whether each slot is a reference matters, so other types are kept as they were.
     wah_type_t captured_types[WAH_MAX_TYPE_STACK_SIZE];
     uint32_t captured_tops[WAH_MAX_TYPE_STACK_SIZE + 1]; // Topmost reference slot of each stack prefix
     uint32_t captured_depth = 0;
@@ -10016,12 +10034,14 @@ static wah_error_t wah_analyze_stream(
             uint32_t _depth = _ts->sp; \
             uint32_t _common = _ts->lwm < captured_depth ? _ts->lwm : captured_depth; \
             while (_common < _depth && _common < captured_depth && \
-                   captured_types[_common] == _ts->data[_common]) _common++; \
+                   WAH_TYPE_IS_REF(captured_types[_common]) == WAH_TYPE_IS_REF(_ts->data[_common])) _common++; \
             for (uint32_t _j = _common; _j < _depth; _j++) { \
                 wah_type_t _t = _ts->data[_j]; \
                 captured_types[_j] = _t; \
                 captured_tops[_j + 1] = captured_tops[_j]; \
                 if (WAH_TYPE_IS_REF(_t)) { \
+                    WAH_ENSURE_GOTO(vctx->ref_nodes_left > 0, WAH_ERROR_TOO_LARGE, cleanup); \
+                    vctx->ref_nodes_left--; \
                     WAH_ENSURE_CAP_GOTO(ref_nodes, ref_node_count + 1, cleanup); \
                     ref_nodes[ref_node_count++] = (wah_ref_node_t){ .parent = captured_tops[_j], .pos = _j }; \
                     captured_tops[_j + 1] = ref_node_count; \
@@ -10878,6 +10898,8 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
     wah_local_inits_t local_inits = {0};
     wah_br_table_labels_t br_table_labels = {0};
     wah_analyzed_code_t ac = {0};
+    // A single call can change every slot of ref maps, so they are bounded by the code size
+    uint64_t ref_nodes_left = WAH_REF_NODES_BASE + WAH_REF_NODES_PER_CODE_BYTE * (uint64_t)(section_end - *ptr);
 
     uint32_t count;
     // A code body entry requires at least 3 bytes (body_size, num_locals, END opcode).
@@ -10910,6 +10932,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
             .module = module,
             .func_type = func_type,
             .total_locals = func_type->param_count + module->code_bodies[i].local_count,
+            .ref_nodes_left = ref_nodes_left,
             .type_stack = { .data = storage.type_stack },
             .control_stack = storage.control_stack,
             .local_inits = &local_inits,
@@ -10925,6 +10948,7 @@ static wah_error_t wah_parse_code_section(const uint8_t **ptr, const uint8_t *se
         ac = (wah_analyzed_code_t){0};
 
         WAH_CHECK_GOTO(wah_analyze_stream(&code_ptr, code_body_end, &vctx, &module->code_bodies[i], 0, &ac), cleanup);
+        ref_nodes_left = vctx.ref_nodes_left;
 
         module->code_bodies[i].parsed_code.poll_ref_tops = ac.poll_ref_tops;
         module->code_bodies[i].parsed_code.poll_count = ac.poll_count;
