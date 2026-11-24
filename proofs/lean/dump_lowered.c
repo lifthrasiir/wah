@@ -1,17 +1,17 @@
 // Dumps lowered functions of the modules in .wast files (or .wasm files) for wah_lowered_oracle, which checks the
 // verdicts of wah_check_lowered_code against the model in WahProofs/Lowered.lean (`make lean-diff`). Only functions
-// whose instructions are all in the model (no GC objects or exceptions) are dumped, and each also with mutants of its
+// whose instructions are all in the model (no exceptions or SIMD lanes) are dumped, and each also with mutants of its
 // lowered code (a branch target, keep or drop, an immediate, an opcode replaced by one with the same immediates, or a
-// slot of a ref map),
-// each as
+// slot of a ref map), each as
 //   F <max depth> <local count> <local>* <result count> <result>* <verdict: 1 if wah_check_lowered_code accepts it>
 //   <one line per instruction, see LoweredOracle.lean>
 //   M <instruction index> <type count> <type>*      for each stack map
+//   L <type index> <1 if struct> <field count> (<offset> <type> <1 if mutable>)*   for each struct and array type
 //   S <type count> <type>* <1 if type i is a subtype of type j, else 0, for i != j in order>
 //   E
 // with types as wah_type_t after wah_check_norm, and branch targets as instruction indices (offsets that are not
 // instruction starts become indices beyond the end). S covers all types in the function and their non-null
-// versions. Module-level facts, such as signatures of callees and whether indices are valid, are resolved here, and
+// versions, and L all struct and array types among them, whose field types are in S as well. Module-level facts, such as signatures of callees and whether indices are valid, are resolved here, and
 // instructions that the checker rejects for them become `X` (bad). Ref maps are printed as the positions they list,
 // topmost first, or as -1 if they are malformed. Modules are parsed with and without fuel metering, to get METERs too.
 #include <inttypes.h>
@@ -22,6 +22,7 @@
 #include "../../tests/wast.c"
 
 #define MUTANTS 8
+#define GC_MUTANTS 16 // More of those that mutate GC instructions, which are rare
 #define MAX_LOCALS 4096
 #define MAX_TYPES 256
 
@@ -52,6 +53,7 @@ static void add_type(wah_type_t t) {
 }
 
 static const wah_module_t *cur;
+static uint32_t max_depth; // Of the function
 
 // A type in the model, or false for others (packed types, which never appear in lowered code)
 static bool ty(wah_type_t t) {
@@ -62,6 +64,20 @@ static bool ty(wah_type_t t) {
     put(" %" PRId32, t);
     return true;
 }
+
+// A field type, which may be packed
+static bool fty(wah_type_t t) {
+    if (!WAH_TYPE_IS_PACKED(t)) return ty(t);
+    add_type(t);
+    put(" %" PRId32, t);
+    return true;
+}
+
+static wah_type_t unpacked(wah_type_t t) { return WAH_TYPE_IS_PACKED(t) ? WAH_TYPE_I32 : t; }
+
+static bool heap_ok(wah_type_t t) { return WAH_TYPE_IS_REF(t) && (t < 0 || WAH_TYIDX(t) < cur->type_count); }
+
+static bool comp_ok(uint32_t t, int kind) { return t < cur->type_count && cur->type_defs[t].kind == kind; }
 
 static bool tys(uint32_t n, const wah_type_t *t, wah_type_t extra, bool has_extra) {
     put(" %" PRIu32, n + has_extra);
@@ -185,7 +201,7 @@ static bool dump_instr(const wah_parsed_code_t *pc, uint32_t off, const wah_chec
         }
         case WAH_OP_REF_NULL: {
             wah_type_t ht = (wah_type_t)(int32_t)in.a;
-            if (!WAH_TYPE_IS_REF(ht) || (ht >= 0 && WAH_TYIDX(ht) >= m->type_count)) { put("X\n"); return true; }
+            if (!heap_ok(ht)) { put("X\n"); return true; }
             SIG("o", 0, NULL, 1, T(WAH_TYPE_AS_NULLABLE(ht)));
             return true;
         }
@@ -330,6 +346,101 @@ static bool dump_instr(const wah_parsed_code_t *pc, uint32_t off, const wah_chec
         case WAH_OP_POLL: case WAH_OP_TICK:
             put(in.op == WAH_OP_POLL ? "p" : "q"), put_map(pc, in.a), put("\n");
             return true;
+        case WAH_OP_REF_EQ: put("Q\n"); return true;
+        case WAH_OP_ARRAY_LEN: SIG("o", 1, T(WAH_TYPE_ARRAYREF), 1, T(WAH_TYPE_I32)); return true;
+        case WAH_OP_REF_TEST: case WAH_OP_REF_TEST_NULL: case WAH_OP_REF_CAST: case WAH_OP_REF_CAST_NULL: {
+            wah_type_t ht = (wah_type_t)(int32_t)in.a;
+            if (!heap_ok(ht)) put("X\n");
+            else if (in.op == WAH_OP_REF_TEST || in.op == WAH_OP_REF_TEST_NULL) put("z\n");
+            else if (put("c"), !ty(in.op == WAH_OP_REF_CAST ? WAH_TYPE_AS_NON_NULL(ht) : WAH_TYPE_AS_NULLABLE(ht))) return false;
+            else put("\n");
+            return true;
+        }
+        case WAH_OP_BR_ON_CAST: case WAH_OP_BR_ON_CAST_FAIL: {
+            wah_type_t ht = (wah_type_t)(int32_t)in.b;
+            bool nul = (in.lane & 0x02) != 0;
+            if (!heap_ok(ht)) { put("X\n"); return true; }
+            put("C %d %d", in.op == WAH_OP_BR_ON_CAST_FAIL, nul);
+            if (!ty(nul ? WAH_TYPE_AS_NULLABLE(ht) : WAH_TYPE_AS_NON_NULL(ht))) return false;
+            put(" %" PRIu64 " %" PRIu32 " %" PRIu32 "\n", target(in.a, size), in.c, (uint32_t)in.x);
+            return true;
+        }
+        case WAH_OP_STRUCT_NEW: case WAH_OP_STRUCT_NEW_DEFAULT: {
+            if (!comp_ok(in.a, WAH_COMP_STRUCT)) { put("X\n"); return true; }
+            const wah_type_def_t *td = &m->type_defs[in.a];
+            if (in.op == WAH_OP_STRUCT_NEW_DEFAULT) {
+                if (td->non_defaultable) put("X\n");
+                else SIG("o", 0, NULL, 1, T(WAH_TYPE_FROM_IDX(in.a, 0)));
+                return true;
+            }
+            put("o %" PRIu32, td->field_count);
+            for (uint32_t i = 0; i < td->field_count; i++) if (!ty(unpacked(td->field_types[i]))) return false;
+            put(" 1");
+            if (!ty(WAH_TYPE_FROM_IDX(in.a, 0))) return false;
+            put("\n");
+            return true;
+        }
+        case WAH_OP_ARRAY_NEW: case WAH_OP_ARRAY_NEW_DEFAULT: case WAH_OP_ARRAY_NEW_FIXED: case WAH_OP_ARRAY_NEW_DATA:
+        case WAH_OP_ARRAY_NEW_ELEM: case WAH_OP_ARRAY_FILL: case WAH_OP_ARRAY_INIT_DATA: {
+            if (!comp_ok(in.a, WAH_COMP_ARRAY)) { put("X\n"); return true; }
+            const wah_type_def_t *td = &m->type_defs[in.a];
+            wah_type_t et = td->field_types[0], ut = unpacked(et), r = WAH_TYPE_FROM_IDX(in.a, 0);
+            bool ref = (wah_check_storage(et) & 0x200) != 0;
+            switch (in.op) {
+                case WAH_OP_ARRAY_NEW: put("y"), put_map(pc, in.b); return sig("", 2, T(ut, WAH_TYPE_I32), 1, T(r));
+                case WAH_OP_ARRAY_NEW_DEFAULT:
+                    if (td->non_defaultable) { put("X\n"); return true; }
+                    put("y"), put_map(pc, in.b);
+                    return sig("", 1, T(WAH_TYPE_I32), 1, T(r));
+                case WAH_OP_ARRAY_NEW_FIXED:
+                    // Popping more than the stack can hold always fails, and mutants may have huge lengths
+                    if (in.b > max_depth) { put("X\n"); return true; }
+                    put("o %" PRIu32, in.b);
+                    for (uint32_t i = 0; i < in.b; i++) if (!ty(ut)) return false;
+                    put(" 1");
+                    if (!ty(r)) return false;
+                    put("\n");
+                    return true;
+                case WAH_OP_ARRAY_NEW_DATA: case WAH_OP_ARRAY_NEW_ELEM:
+                    if (in.op == WAH_OP_ARRAY_NEW_DATA ? in.b >= m->data_segment_count || ref :
+                        in.b >= m->element_segment_count || !ref ||
+                        !wah_check_sub(m, m->element_segments[in.b].elem_type, et)) { put("X\n"); return true; }
+                    put("y"), put_map(pc, in.c);
+                    return sig("", 2, T(WAH_TYPE_I32, WAH_TYPE_I32), 1, T(r));
+                default: // array.fill and array.init_data
+                    if (!td->field_mutables[0] ||
+                        (in.op == WAH_OP_ARRAY_INIT_DATA && (in.b >= m->data_segment_count || ref))) {
+                        put("X\n");
+                        return true;
+                    }
+                    put("y"), put_map(pc, in.op == WAH_OP_ARRAY_FILL ? in.b : in.c);
+                    return sig("", 4, T(WAH_TYPE_FROM_IDX(in.a, 1), WAH_TYPE_I32,
+                                        in.op == WAH_OP_ARRAY_FILL ? ut : WAH_TYPE_I32, WAH_TYPE_I32), 0, NULL);
+            }
+        }
+        case WAH_OP_ARRAY_COPY: put("P"), put_map(pc, in.a), put("\n"); return true;
+        case WAH_OP_ARRAY_INIT_ELEM:
+            if (in.a >= m->element_segment_count) { put("X\n"); return true; }
+            put("I"), put_map(pc, in.b);
+            if (!ty(m->element_segments[in.a].elem_type)) return false;
+            put("\n");
+            return true;
+        case WAH_OP_STRUCT_GET_S8: case WAH_OP_STRUCT_GET_S16: case WAH_OP_STRUCT_GET_U8: case WAH_OP_STRUCT_GET_U16:
+        case WAH_OP_STRUCT_GET_32: case WAH_OP_STRUCT_GET_64: case WAH_OP_STRUCT_GET_128:
+            put("G %" PRIu32 " %" PRIu32 "\n", wah_check_access(in.op), in.a);
+            return true;
+        case WAH_OP_STRUCT_SET_8: case WAH_OP_STRUCT_SET_16: case WAH_OP_STRUCT_SET_32: case WAH_OP_STRUCT_SET_64:
+        case WAH_OP_STRUCT_SET_128:
+            put("H %" PRIu32 " %" PRIu32 "\n", wah_check_access(in.op), in.a);
+            return true;
+        case WAH_OP_ARRAY_GET_S8: case WAH_OP_ARRAY_GET_S16: case WAH_OP_ARRAY_GET_U8: case WAH_OP_ARRAY_GET_U16:
+        case WAH_OP_ARRAY_GET_32: case WAH_OP_ARRAY_GET_64: case WAH_OP_ARRAY_GET_128:
+            put("A %" PRIu32 "\n", wah_check_access(in.op));
+            return true;
+        case WAH_OP_ARRAY_SET_8: case WAH_OP_ARRAY_SET_16: case WAH_OP_ARRAY_SET_32: case WAH_OP_ARRAY_SET_64:
+        case WAH_OP_ARRAY_SET_128:
+            put("Y %" PRIu32 "\n", wah_check_access(in.op));
+            return true;
         case WAH_OP_END: put("n\n"); return true;
         case WAH_OP_RETURN: put("R\n"); return true;
         case WAH_OP_UNREACHABLE: put("u\n"); return true;
@@ -344,6 +455,33 @@ static bool dump_instr(const wah_parsed_code_t *pc, uint32_t off, const wah_chec
             }
             return in.op < WAH_FE && opclass_sig(wah_opclasses[in.op]);
     }
+}
+
+// Struct and array types among the types of the function, which grow by their field types, or false if they lack
+// layouts. wah_check_lowered_code finds fields by offsets in wah_repr_info_t, with types in wah_type_def_t.
+static bool dump_layouts(void) {
+    uint32_t done[MAX_TYPES], done_count = 0;
+    for (uint32_t i = 0; i < type_count; i++) {
+        wah_type_t t = types[i];
+        if (t < 0 || WAH_TYIDX(t) >= cur->type_count) continue;
+        uint32_t idx = WAH_TYIDX(t);
+        const wah_type_def_t *td = &cur->type_defs[idx];
+        bool seen = false;
+        for (uint32_t j = 0; j < done_count; j++) seen |= done[j] == idx;
+        if (td->kind == WAH_COMP_FUNC || seen) continue;
+        done[done_count++] = idx;
+        const wah_repr_info_t *ri = wah_repr_info_get(cur, wah_module_typeidx_to_repr(cur, idx));
+        bool st = td->kind == WAH_COMP_STRUCT;
+        if (!ri || (st && ri->count != td->field_count)) return false;
+        put("L %" PRIu32 " %d %" PRIu32, idx, st, td->field_count);
+        for (uint32_t f = 0; f < td->field_count; f++) {
+            put(" %" PRIu32, st ? ri->fields[f].offset : 0);
+            if (!fty(td->field_types[f])) return false;
+            put(" %d", td->field_mutables[f]);
+        }
+        put("\n");
+    }
+    return true;
 }
 
 // Dumps code (which may be a mutant) of a function, or returns false if it isn't in the model
@@ -364,6 +502,7 @@ static bool dump_code(const wah_func_type_t *ft, const wah_code_body_t *body, co
     }
     if (ft->param_count + body->local_count > MAX_LOCALS) return false;
     bool ok = wah_check_lowered_code(cur, pc, ft, body, body->max_stack_depth, WAH_TYPE_BOT) == WAH_OK;
+    max_depth = body->max_stack_depth;
     type_count = 0;
     too_many_types = false;
     put("F %" PRIu32 " %" PRIu32, body->max_stack_depth, ft->param_count + body->local_count);
@@ -383,7 +522,7 @@ static bool dump_code(const wah_func_type_t *ft, const wah_code_body_t *body, co
         if (!tys(sm->count, pc->stack_map_types + sm->start, 0, false)) return false;
         put("\n");
     }
-    if (too_many_types) return false;
+    if (!dump_layouts() || too_many_types) return false;
     put("S %" PRIu32, type_count);
     for (uint32_t i = 0; i < type_count; i++) put(" %" PRId32, types[i]);
     put(" ");
@@ -406,14 +545,58 @@ static uint32_t rng(uint32_t n) {
 static const uint16_t no_imm[] = { WAH_OP_I32_ADD, WAH_OP_I64_ADD, WAH_OP_F32_ADD, WAH_OP_F64_ADD, WAH_OP_I32_EQZ,
                                    WAH_OP_I64_EQZ, WAH_OP_I32_WRAP_I64, WAH_OP_I64_EXTEND_I32_U, WAH_OP_DROP,
                                    WAH_OP_SELECT, WAH_OP_RETURN, WAH_OP_UNREACHABLE, WAH_OP_END, WAH_OP_F32_DEMOTE_F64,
-                                   WAH_OP_REF_IS_NULL, WAH_OP_REF_AS_NON_NULL, WAH_OP_REF_I31, WAH_OP_I31_GET_S };
+                                   WAH_OP_REF_IS_NULL, WAH_OP_REF_AS_NON_NULL, WAH_OP_REF_I31, WAH_OP_I31_GET_S,
+                                   WAH_OP_REF_EQ, WAH_OP_ARRAY_LEN, WAH_OP_ARRAY_GET_32, WAH_OP_ARRAY_GET_64,
+                                   WAH_OP_ARRAY_GET_U8, WAH_OP_ARRAY_GET_S16, WAH_OP_ARRAY_SET_8, WAH_OP_ARRAY_SET_32,
+                                   WAH_OP_ARRAY_SET_64 };
 static const uint16_t one_imm[] = { WAH_OP_LOCAL_GET, WAH_OP_LOCAL_SET, WAH_OP_LOCAL_TEE, WAH_OP_I32_CONST,
                                     WAH_OP_F32_CONST, WAH_OP_GLOBAL_GET, WAH_OP_GLOBAL_SET, WAH_OP_CALL,
                                     WAH_OP_RETURN_CALL, WAH_OP_IF, WAH_OP_ELSE, WAH_OP_POLL, WAH_OP_TICK,
                                     WAH_OP_MEMORY_SIZE, WAH_OP_MEMORY_GROW, WAH_OP_REF_NULL, WAH_OP_REF_FUNC,
                                     WAH_OP_SELECT_T, WAH_OP_TABLE_GET, WAH_OP_TABLE_SET, WAH_OP_TABLE_SIZE,
-                                    WAH_OP_TABLE_GROW, WAH_OP_CALL_REF };
+                                    WAH_OP_TABLE_GROW, WAH_OP_CALL_REF, WAH_OP_STRUCT_GET_32, WAH_OP_STRUCT_GET_64,
+                                    WAH_OP_STRUCT_GET_S8, WAH_OP_STRUCT_GET_U16, WAH_OP_STRUCT_SET_8,
+                                    WAH_OP_STRUCT_SET_32, WAH_OP_STRUCT_SET_64, WAH_OP_REF_TEST, WAH_OP_REF_CAST,
+                                    WAH_OP_REF_CAST_NULL, WAH_OP_STRUCT_NEW, WAH_OP_STRUCT_NEW_DEFAULT,
+                                    WAH_OP_ARRAY_COPY };
+static const uint16_t two_imm[] = { WAH_OP_ARRAY_NEW, WAH_OP_ARRAY_NEW_DEFAULT, WAH_OP_ARRAY_NEW_FIXED,
+                                    WAH_OP_ARRAY_FILL, WAH_OP_ARRAY_INIT_ELEM };
+static const uint16_t cast_imm[] = { WAH_OP_BR_ON_CAST, WAH_OP_BR_ON_CAST_FAIL };
 static const uint16_t three_imm[] = { WAH_OP_BR, WAH_OP_BR_IF, WAH_OP_BR_ON_NULL, WAH_OP_BR_ON_NON_NULL };
+
+// A type, often one of the module
+static int32_t random_type(void) {
+    static const int32_t ts[] = { WAH_TYPE_I32, WAH_TYPE_I64, WAH_TYPE_FUNCREF, WAH_TYPE_EXTERNREF, WAH_TYPE_ANYREF,
+                                  WAH_TYPE_FUNC, WAH_TYPE_NULLREF, WAH_TYPE_NONE, WAH_TYPE_STRUCT, WAH_TYPE_EQ,
+                                  WAH_TYPE_I31, 0, 1, 2, 3, 4, 5 };
+    if (cur->type_count > 0 && rng(2)) return WAH_TYPE_FROM_IDX(rng(cur->type_count), rng(2));
+    return ts[rng(sizeof(ts) / sizeof(*ts))];
+}
+
+// An offset of a field of some struct type of the module, or a nearby one
+static uint32_t random_offset(uint32_t v) {
+    static const int32_t ds[] = { 1, -1, 2, -2, 4, -4, 8, -8 };
+    uint32_t t = cur->type_count ? rng(cur->type_count) : 0;
+    if (t < cur->type_count && cur->type_defs[t].kind == WAH_COMP_STRUCT && rng(4)) {
+        const wah_repr_info_t *ri = wah_repr_info_get(cur, wah_module_typeidx_to_repr(cur, t));
+        if (ri && ri->count) return ri->fields[rng(ri->count)].offset;
+    }
+    return v + (uint32_t)ds[rng(8)];
+}
+
+// Opcodes that differ only in how they treat types, so that swapping them often keeps code valid but for one rule
+static const uint16_t siblings[][8] = {
+    { WAH_OP_REF_CAST, WAH_OP_REF_CAST_NULL, WAH_OP_REF_TEST, WAH_OP_REF_TEST_NULL },
+    { WAH_OP_BR_ON_CAST, WAH_OP_BR_ON_CAST_FAIL }, { WAH_OP_BR_ON_NULL, WAH_OP_BR_ON_NON_NULL },
+    { WAH_OP_STRUCT_GET_S8, WAH_OP_STRUCT_GET_S16, WAH_OP_STRUCT_GET_U8, WAH_OP_STRUCT_GET_U16, WAH_OP_STRUCT_GET_32,
+      WAH_OP_STRUCT_GET_64, WAH_OP_STRUCT_GET_128 },
+    { WAH_OP_STRUCT_SET_8, WAH_OP_STRUCT_SET_16, WAH_OP_STRUCT_SET_32, WAH_OP_STRUCT_SET_64, WAH_OP_STRUCT_SET_128 },
+    { WAH_OP_ARRAY_GET_S8, WAH_OP_ARRAY_GET_S16, WAH_OP_ARRAY_GET_U8, WAH_OP_ARRAY_GET_U16, WAH_OP_ARRAY_GET_32,
+      WAH_OP_ARRAY_GET_64, WAH_OP_ARRAY_GET_128 },
+    { WAH_OP_ARRAY_SET_8, WAH_OP_ARRAY_SET_16, WAH_OP_ARRAY_SET_32, WAH_OP_ARRAY_SET_64, WAH_OP_ARRAY_SET_128 },
+    { WAH_OP_STRUCT_NEW, WAH_OP_STRUCT_NEW_DEFAULT }, { WAH_OP_ARRAY_NEW, WAH_OP_ARRAY_NEW_DEFAULT },
+    { WAH_OP_ARRAY_NEW_DATA, WAH_OP_ARRAY_NEW_ELEM },
+};
 
 static bool in_list(uint16_t op, const uint16_t *list, size_t n) {
     for (size_t i = 0; i < n; i++) if (list[i] == op) return true;
@@ -454,10 +637,25 @@ static bool mutate(uint8_t *code, uint32_t size, const uint32_t *starts, uint32_
                         memcpy(imm, &v, 4);
                         return true;
                     }
-                    case WAH_OP_REF_NULL: case WAH_OP_SELECT_T: { // Types
-                        static const int32_t ts[] = { WAH_TYPE_I32, WAH_TYPE_I64, WAH_TYPE_FUNCREF, WAH_TYPE_EXTERNREF,
-                                                      WAH_TYPE_ANYREF, WAH_TYPE_FUNC, WAH_TYPE_NULLREF, 0, 1, 2, 3 };
-                        int32_t v = ts[rng(sizeof(ts) / sizeof(*ts))];
+                    case WAH_OP_REF_NULL: case WAH_OP_SELECT_T: case WAH_OP_REF_TEST: case WAH_OP_REF_CAST:
+                    case WAH_OP_REF_CAST_NULL: { // Types
+                        int32_t v = random_type();
+                        memcpy(imm, &v, 4);
+                        return true;
+                    }
+                    case WAH_OP_BR_ON_CAST: case WAH_OP_BR_ON_CAST_FAIL: { // Flags, target, type, keep, drop
+                        uint32_t which = rng(5), v;
+                        if (which == 0) { imm[0] ^= (uint8_t)(1 + rng(2)); return true; }
+                        memcpy(&v, imm + 1 + (which - 1) * 4, 4);
+                        v = which == 1 ? random_target : which == 2 ? (uint32_t)random_type() : rng(2) ? v + 1 : v - 1;
+                        memcpy(imm + 1 + (which - 1) * 4, &v, 4);
+                        return true;
+                    }
+                    case WAH_OP_STRUCT_GET_S8: case WAH_OP_STRUCT_GET_S16: case WAH_OP_STRUCT_GET_U8:
+                    case WAH_OP_STRUCT_GET_U16: case WAH_OP_STRUCT_GET_32: case WAH_OP_STRUCT_GET_64:
+                    case WAH_OP_STRUCT_GET_128: case WAH_OP_STRUCT_SET_8: case WAH_OP_STRUCT_SET_16:
+                    case WAH_OP_STRUCT_SET_32: case WAH_OP_STRUCT_SET_64: case WAH_OP_STRUCT_SET_128: { // Offsets
+                        uint32_t v = random_offset(wah_read_u32_le(imm));
                         memcpy(imm, &v, 4);
                         return true;
                     }
@@ -466,12 +664,30 @@ static bool mutate(uint8_t *code, uint32_t size, const uint32_t *starts, uint32_
                         memcpy(imm + 4, &v, 4);
                         return true;
                     }
+                    case WAH_OP_STRUCT_NEW: case WAH_OP_STRUCT_NEW_DEFAULT: case WAH_OP_ARRAY_COPY: // Types, ref maps
+                    case WAH_OP_ARRAY_NEW: case WAH_OP_ARRAY_NEW_DEFAULT: case WAH_OP_ARRAY_NEW_FIXED: // and segments
+                    case WAH_OP_ARRAY_FILL: case WAH_OP_ARRAY_INIT_ELEM: case WAH_OP_ARRAY_NEW_DATA:
+                    case WAH_OP_ARRAY_NEW_ELEM: case WAH_OP_ARRAY_INIT_DATA: {
+                        uint32_t n = (in.len - 2) / 4, which = rng(n), v = wah_read_u32_le(imm + which * 4);
+                        bool type = which == 0 && in.op != WAH_OP_ARRAY_COPY && in.op != WAH_OP_ARRAY_INIT_ELEM;
+                        v = type && cur->type_count && rng(2) ? rng(cur->type_count) : rng(2) ? v + 1 : v - 1;
+                        memcpy(imm + which * 4, &v, 4);
+                        return true;
+                    }
                     default: break;
                 }
                 break;
             default: { // Opcodes
                 const uint16_t *list = NULL;
                 size_t n = 0;
+                for (size_t g = 0; g < sizeof(siblings) / sizeof(*siblings); g++) {
+                    for (n = 0; n < 8 && siblings[g][n]; n++) {}
+                    if (!in_list(in.op, siblings[g], n) || rng(2)) continue;
+                    uint16_t op = siblings[g][rng((uint32_t)n)];
+                    memcpy(code + off, &op, 2);
+                    return true;
+                }
+                n = 0;
                 if (in_list(in.op, no_imm, sizeof(no_imm) / 2) || (in.op < WAH_FE && in.mem == WAH_CHECK_MEM_NONE &&
                     in.len == 2 && wah_opclasses[in.op] >= WAH_OPCLASS__I_I && wah_opclasses[in.op] <= WAH_OPCLASS__VVV_V)) {
                     list = no_imm, n = sizeof(no_imm) / 2;
@@ -479,6 +695,10 @@ static bool mutate(uint8_t *code, uint32_t size, const uint32_t *starts, uint32_
                     list = one_imm, n = sizeof(one_imm) / 2;
                 } else if (in_list(in.op, three_imm, sizeof(three_imm) / 2)) {
                     list = three_imm, n = sizeof(three_imm) / 2;
+                } else if (in_list(in.op, two_imm, sizeof(two_imm) / 2)) {
+                    list = two_imm, n = sizeof(two_imm) / 2;
+                } else if (in_list(in.op, cast_imm, sizeof(cast_imm) / 2)) {
+                    list = cast_imm, n = sizeof(cast_imm) / 2;
                 }
                 if (!list) break;
                 uint16_t op = list[rng((uint32_t)n)];
@@ -488,6 +708,25 @@ static bool mutate(uint8_t *code, uint32_t size, const uint32_t *starts, uint32_
         }
     }
     return false;
+}
+
+// GC instructions (and casts) for GC_MUTANTS
+static bool is_gc(uint16_t op) {
+    switch (op) {
+        case WAH_OP_REF_EQ: case WAH_OP_REF_TEST: case WAH_OP_REF_TEST_NULL: case WAH_OP_REF_CAST:
+        case WAH_OP_REF_CAST_NULL: case WAH_OP_BR_ON_CAST: case WAH_OP_BR_ON_CAST_FAIL: case WAH_OP_STRUCT_NEW:
+        case WAH_OP_STRUCT_NEW_DEFAULT: case WAH_OP_ARRAY_NEW: case WAH_OP_ARRAY_NEW_DEFAULT: case WAH_OP_ARRAY_NEW_FIXED:
+        case WAH_OP_ARRAY_NEW_DATA: case WAH_OP_ARRAY_NEW_ELEM: case WAH_OP_ARRAY_FILL: case WAH_OP_ARRAY_INIT_DATA:
+        case WAH_OP_ARRAY_COPY: case WAH_OP_ARRAY_INIT_ELEM: case WAH_OP_ARRAY_LEN:
+        case WAH_OP_STRUCT_GET_S8: case WAH_OP_STRUCT_GET_S16: case WAH_OP_STRUCT_GET_U8: case WAH_OP_STRUCT_GET_U16:
+        case WAH_OP_STRUCT_GET_32: case WAH_OP_STRUCT_GET_64: case WAH_OP_STRUCT_GET_128: case WAH_OP_STRUCT_SET_8:
+        case WAH_OP_STRUCT_SET_16: case WAH_OP_STRUCT_SET_32: case WAH_OP_STRUCT_SET_64: case WAH_OP_STRUCT_SET_128:
+        case WAH_OP_ARRAY_GET_S8: case WAH_OP_ARRAY_GET_S16: case WAH_OP_ARRAY_GET_U8: case WAH_OP_ARRAY_GET_U16:
+        case WAH_OP_ARRAY_GET_32: case WAH_OP_ARRAY_GET_64: case WAH_OP_ARRAY_GET_128: case WAH_OP_ARRAY_SET_8:
+        case WAH_OP_ARRAY_SET_16: case WAH_OP_ARRAY_SET_32: case WAH_OP_ARRAY_SET_64: case WAH_OP_ARRAY_SET_128:
+            return true;
+        default: return false;
+    }
 }
 
 static uint64_t total, dumped, mutants;
@@ -502,27 +741,29 @@ static void dump_function(uint32_t i) {
     fwrite(buf, 1, buf_len, stdout);
     dumped++;
 
-    uint32_t size = pc->bytecode_size, count = instr_count;
-    uint32_t *starts = malloc((size_t)count * sizeof(uint32_t));
+    uint32_t size = pc->bytecode_size, count = instr_count, gc_count = 0;
+    uint32_t *starts = malloc((size_t)count * sizeof(uint32_t)), *gc_starts = malloc((size_t)count * sizeof(uint32_t));
     uint8_t *copy = malloc(size);
-    if (!starts || !copy) abort();
+    if (!starts || !gc_starts || !copy) abort();
     for (uint32_t off = 0, k = 0; off < size; k++) {
         starts[k] = off;
         wah_check_instr_t in;
         wah_check_decode(pc->bytecode, size, off, &in);
+        if (is_gc(in.op)) gc_starts[gc_count++] = off;
         off += in.len;
     }
     wah_ref_node_t *nodes = malloc((size_t)pc->ref_node_count * sizeof(wah_ref_node_t) + 1);
     if (!nodes) abort();
     rng_state = (uint64_t)size * 31 + i;
-    for (int k = 0; k < MUTANTS; k++) {
+    for (int k = 0; k < MUTANTS + (gc_count ? GC_MUTANTS : 0); k++) {
+        bool gc = k >= MUTANTS;
         wah_parsed_code_t mpc = *pc;
         memcpy(copy, pc->bytecode, size);
-        if (pc->ref_node_count > 0 && rng(4) == 0) { // A slot of a ref map
+        if (pc->ref_node_count > 0 && !gc && rng(4) == 0) { // A slot of a ref map
             memcpy(nodes, pc->ref_nodes, (size_t)pc->ref_node_count * sizeof(wah_ref_node_t));
             nodes[rng(pc->ref_node_count)].pos += rng(2) ? 1 : -1;
             mpc.ref_nodes = nodes;
-        } else if (!mutate(copy, size, starts, count)) {
+        } else if (!mutate(copy, size, gc ? gc_starts : starts, gc ? gc_count : count)) {
             continue;
         }
         mpc.bytecode = copy;
@@ -532,6 +773,7 @@ static void dump_function(uint32_t i) {
         mutants++;
     }
     free(starts);
+    free(gc_starts);
     free(copy);
     free(nodes);
 }

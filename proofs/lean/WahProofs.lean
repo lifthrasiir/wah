@@ -34,14 +34,15 @@ C code that CI checks. When you change a modeled C function, change its model an
   `wah_cross_module_subtype` (`crossSub`), which is the subtyping of the spec under the same condition. Bridge:
   `make lean-diff` compares both between all types of all pairs of modules of each spec test and corpus file. The
   cache of `wah_cross_module_subtype_cached` is only checked by review.
-- WahProofs/Lowered.lean models `wah_check_lowered_code` without GC objects and exceptions (`check`: numeric,
-  memory, table and global accesses, locals, drop and select, reference instructions, branches with keep and drop
-  including br_on_null and br_on_non_null, if, else, METER, calls and returns, ref maps at POLL, TICK and bulk
-  operations, and stack maps joining paths by subtyping) and proves that code it accepts never goes wrong in an
-  abstract machine of the interpreter, for any subtyping that is a preorder like that of the spec (`check_sound`).
-  Bridge: `make lean-diff` compares verdicts on the lowered functions of the spec tests and the fuzz corpus in the
-  model, with 8 mutants of each (dump_lowered.c, LoweredOracle.lean), and checks the subtyping of each function
-  (`tableOK_sound`). The decoding of instructions and the module-level facts that the dumper resolves (signatures
+- WahProofs/Lowered.lean models `wah_check_lowered_code` without exceptions (`check`: numeric, memory, table and
+  global accesses, locals, drop and select, reference instructions, branches with keep and drop including
+  br_on_null, br_on_non_null and br_on_cast, if, else, METER, calls and returns, ref maps at POLL, TICK and bulk
+  operations, stack maps joining paths by subtyping, ref.eq and ref.cast, and struct and array accesses against
+  their layouts) and proves that code it accepts never goes wrong in an abstract machine of the interpreter, for
+  any subtyping that is a preorder like that of the spec and layouts that agree with it (`check_sound`).
+  Bridge: `make lean-diff` compares verdicts on the lowered functions of the spec tests, the fuzz corpus and
+  lowered_gc.wat in the model, with mutants of each (dump_lowered.c, LoweredOracle.lean), and checks the subtyping
+  and layouts of each function (`tableOK_sound`, `layOK_sound`). The decoding of instructions and the module-level facts that the dumper resolves (signatures
   and index checks) are only checked by review.
 -/
 import WahProofs.Layout

@@ -1,15 +1,19 @@
 /- Checks verdicts of `wah_check_lowered_code` on functions dumped by dump_lowered.c (and their mutants) against
 `check` of WahProofs/Lowered.lean (`make lean-diff`), with the subtyping of the dumped table, which must pass
-`tableOK` so that `check_sound` applies. Instructions, one per line, with types as wah_type_t, signatures as
-`<count> <type>*` for what is popped (bottom first) and then for what is pushed, and ref maps as -1 (malformed) or
-`<count> <position>*`:
+`tableOK` and the layouts `layOK` so that `check_sound` applies. Instructions, one per line, with types as
+wah_type_t, signatures as `<count> <type>*` for what is popped (bottom first) and then for what is pushed, and
+ref maps as -1 (malformed) or `<count> <position>*`:
   o sig sig              op                 y map sig sig   op with a ref map
   k sig sig              call               r sig sig       return_call
   d / s                  drop / select      z / a           ref.is_null / ref.as_non_null
   g i / x i / t i        local.get/set/tee
   b t k d / B t k d      br / br_if         N t k d / O t k d   br_on_null / br_on_non_null
   T k n (t d)*           br_table           i t / e t / m t     if / else / meter
-  p map / q map          poll / tick        n / R / u / X       end / return / unreachable / bad -/
+  p map / q map          poll / tick        n / R / u / X       end / return / unreachable / bad
+  Q / c t                ref.eq / ref.cast  C f n t' t k d      br_on_cast(_fail if f) to t' (nulls pass if n)
+  G a o / H a o          struct.get/set of the storage a at the offset o
+  A a / Y a              array.get/set      P map / I map t     array.copy / array.init_elem of a segment of t
+Struct and array types are lines `L <type index> <1 if struct> <field count> (<offset> <type> <1 if mutable>)*`. -/
 import WahProofs.Lowered
 import Std.Data.HashSet
 open Wah.Lowered
@@ -65,6 +69,17 @@ def parseInstr (op : String) (ns : List Int) : Option Instr := do
   | "R", [] => return .ret
   | "u", [] => return .unreachable
   | "X", [] => return .bad
+  | "Q", [] => return .refEq
+  | "c", [t] => return .refCast t
+  | "C", [f, nul, d, t, k, dr] => return .brOnCast (f != 0) (nul != 0) d (← n t) (← n k) (← n dr)
+  | "G", [a, o] => return .structGet (← n a) (← n o)
+  | "H", [a, o] => return .structSet (← n a) (← n o)
+  | "A", [a] => return .arrayGet (← n a)
+  | "Y", [a] => return .arraySet (← n a)
+  | "P", _ => let (m, rest) ← map ns; if rest.isEmpty then return .arrayCopy m else none
+  | "I", _ => let (m, rest) ← map ns; match rest with
+    | [t] => return .arrayInitElem m t
+    | _ => none
   | _, _ => none
 
 def words (l : String) : Option (String × List Int) := do
@@ -91,6 +106,18 @@ def parseTable (l : String) : Option (List (VT × VT)) := do
   if ts.length != n || bits.length != ps.length then none
   return (ps.zip bits).filterMap fun (p, c) => if c == '1' then some p else none
 
+def fields : List Int → Option (List Field)
+  | [] => some []
+  | o :: t :: m :: rest => do return ⟨o.toNat, t, m != 0⟩ :: (← fields rest)
+  | _ => none
+
+def parseLayout (ns : List Int) : Option (Nat × Comp) := do
+  match ns with
+  | i :: st :: c :: rest =>
+    let fs ← fields rest
+    if 0 ≤ i ∧ fs.length == c.toNat then some (i.toNat, ⟨st != 0, fs⟩) else none
+  | _ => none
+
 partial def loop (h : IO.FS.Stream) (n bad accepted : Nat) : IO (Nat × Nat × Nat) := do
   let l := (← h.getLine).trimAsciiEnd.toString
   if l.isEmpty then return (n, bad, accepted)
@@ -100,6 +127,7 @@ partial def loop (h : IO.FS.Stream) (n bad accepted : Nat) : IO (Nat × Nat × N
   let mut lines : Array String := #[]
   let mut maps : List (Nat × List VT) := []
   let mut tbl : List (VT × VT) := []
+  let mut lays : List (Nat × Comp) := []
   repeat
     let l := (← h.getLine).trimAsciiEnd.toString
     if l == "E" then break
@@ -109,6 +137,10 @@ partial def loop (h : IO.FS.Stream) (n bad accepted : Nat) : IO (Nat × Nat × N
       tbl := t
       continue
     let some (op, ns) := words l | throw (IO.userError s!"unexpected line: {l}")
+    if op == "L" then
+      let some l := parseLayout ns | throw (IO.userError s!"malformed layout: {l}")
+      lays := lays ++ [l]
+      continue
     if op == "M" then
       let some (i :: rest) := some ns | throw (IO.userError s!"malformed stack map: {l}")
       let some (ts, []) := types rest | throw (IO.userError s!"malformed stack map: {l}")
@@ -118,11 +150,16 @@ partial def loop (h : IO.FS.Stream) (n bad accepted : Nat) : IO (Nat × Nat × N
     code := code.push i
     lines := lines.push l
   let set : Std.HashSet (VT × VT) := Std.HashSet.ofList tbl
-  let F : Fn := ⟨code, locals, results, d, maps, fun a b => a == b || set.contains (a, b)⟩
+  let ls := lays
+  let F : Fn := ⟨code, locals, results, d, maps, fun a b => a == b || set.contains (a, b),
+    fun i => (ls.find? (·.1 == i)).map (·.2)⟩
   let mut bad := bad
   if !tableOK tbl then
     bad := bad + 1
     IO.eprintln s!"subtyping is not a preorder like that of the spec, or misses types: {tbl}"
+  if !layOK F tbl then
+    bad := bad + 1
+    IO.eprintln s!"objects of subtypes are not laid out as those of supertypes: {tbl}"
   let model := check F
   if model != verdict then
     bad := bad + 1
