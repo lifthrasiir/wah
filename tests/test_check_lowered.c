@@ -449,6 +449,17 @@ static void test_exceptions(void) {
     expect_rejected(&mod, IMM_AT(TRIM_HANDLERS, 0, 0), 4, 1, "label keeping a handler ended on another path");
     wah_free_module(&mod);
 
+    // The METER at the label branches to its slow island before the label trims the handler, so the island has to
+    // trim it before anything throws
+    wah_parse_options_t opts = { .enable_fuel_metering = true };
+    assert_ok(wah_parse_module_from_spec_ex(&mod, &opts, "wasm \
+        types {[fn [i32] [], fn [] []]} funcs {[0]} tags {[tag.type# 1]} \
+        code {[{[] block void try_table void [catch 0 0] local.get 0 br_if 1 end end throw 0 end}]}"));
+    assert_ok(check_func(&mod, 0));
+    pc = &mod.code_bodies[0].parsed_code;
+    expect_rejected(&mod, OP_AT(TRIM_HANDLERS, 1), 2, WAH_OP_TICK, "slow island throwing before it trims handlers");
+    wah_free_module(&mod);
+
     // Both handlers return from the function, where one of them is still active for the other, which doesn't matter
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[fn [] [i32], fn [i32] []]} funcs {[0]} tags {[tag.type# 1, tag.type# 1]} \

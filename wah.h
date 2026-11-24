@@ -9218,13 +9218,14 @@ static wah_error_t wah_check_decode(const uint8_t *code, uint32_t size, uint32_t
 }
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_EXCEPTION)
-// The depth of TRIM_HANDLERS right at `off`, or after POLL or METER there, which neither throw nor use handlers.
-// Labels left from inside try_tables get one, where active handlers may differ by paths until trimmed.
+// The depth of TRIM_HANDLERS right at `off`, or after POLLs, METERs or TICKs there, which neither throw nor use
+// handlers. Labels left from inside try_tables get one, where active handlers may differ by paths until trimmed, so
+// METERs before it can only branch to slow islands that trim them as well.
 static uint32_t wah_check_trim_depth(const uint8_t *code, uint32_t size, uint32_t off) {
     wah_check_instr_t in;
     for (; off < size && wah_check_decode(code, size, off, &in) == WAH_OK; off += in.len) {
         if (in.op == WAH_OP_TRIM_HANDLERS) return in.a;
-        if (in.op != WAH_OP_POLL && in.op != WAH_OP_METER) break;
+        if (in.op != WAH_OP_POLL && in.op != WAH_OP_METER && in.op != WAH_OP_TICK) break;
     }
     return UINT32_MAX;
 }
@@ -9468,7 +9469,11 @@ static wah_error_t wah_check_lowered_code(const wah_module_t *module, const wah_
 #else
                 case WAH_OP_POLL: case WAH_OP_TICK: break;
 #endif
-                case WAH_OP_METER: CK_MERGE(in.b, stk, h, hn); break;
+                case WAH_OP_METER:
+                    WAH_IF_EXCEPTION(CK_ENSURE(wah_check_trim_depth(code, size, off) == UINT32_MAX ||
+                                               wah_check_trim_depth(code, size, in.b) != UINT32_MAX);)
+                    CK_MERGE(in.b, stk, h, hn);
+                    break;
                 case WAH_OP_IF: CK_POP(WAH_TYPE_I32); CK_MERGE(in.a, stk, h, hn); break;
                 case WAH_OP_ELSE: CK_MERGE(in.a, stk, h, hn); ends = true; break;
                 case WAH_OP_BR: CK_BRANCH(in.a, in.b, in.c); ends = true; break;
