@@ -1464,6 +1464,21 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
 //   or called again; any such attempt returns WAH_ERROR_MISUSE. It can still be freed as usual.
 wah_error_t wah_instantiate(wah_exec_context_t *ctx);
 
+// --- Memory Access ---
+
+// Function: wah_memory_data
+//   Gets the current data and size of a memory of an instantiated context, which can be read and written by the host.
+//   They stay valid until the memory grows (by `memory.grow` from any context using it, or by the host), so they
+//   should be retrieved again after any execution. This can be also used during host function calls, for any
+//   context in the same link domain.
+//
+//   - mem_idx [in]: Index of an imported or defined memory of the module of the context.
+//   - data [out, borrowed]: Pointer to the memory data, which may be NULL if its size is zero.
+//   - size [out]: Size of the memory in bytes.
+//
+//   Returns WAH_ERROR_MISUSE if the context is not instantiated, or WAH_ERROR_NOT_FOUND for invalid indices.
+wah_error_t wah_memory_data(wah_exec_context_t *ctx, uint32_t mem_idx, uint8_t **data, uint64_t *size);
+
 // --- GC Management ---
 
 // Enum: wah_gc_phase_t
@@ -13128,6 +13143,15 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
 cleanup:
     if (err != WAH_OK) wah_free_exec_context(exec_ctx);
     return err;
+}
+
+wah_error_t wah_memory_data(wah_exec_context_t *ctx, uint32_t mem_idx, uint8_t **data, uint64_t *size) {
+    WAH_ENSURE(ctx && data && size, WAH_ERROR_MISUSE);
+    WAH_ENSURE(ctx->is_instantiated && !ctx->poisoned, WAH_ERROR_MISUSE);
+    WAH_ENSURE(mem_idx < ctx->memory_count, WAH_ERROR_NOT_FOUND);
+    *data = ctx->memories[mem_idx].data;
+    *size = ctx->memories[mem_idx].size;
+    return WAH_OK;
 }
 
 wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *limits) {
