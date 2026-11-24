@@ -1,7 +1,9 @@
 // CBMC proof of the pin table: after any sequence of pins and unpins (of any references, including stale and forged
 // ones), exactly the references pinned and not yet unpinned resolve, to their pinned values, and only they unpin.
-// Handles are never reused, so stale ones stay rejected, and freed slots are reused before the table grows.
-// Generations wrap around only after 2^30 reuses of a slot (2^10 on 32-bit targets), which is beyond the bound.
+// Handles are never reused, so stale ones stay rejected, and freed slots are reused before the table grows unless
+// their generations ran out. Generations have only one bit here so that they do within the bound, instead of 2^30
+// reuses of a slot (2^10 on 32-bit targets).
+#define WAH_PIN_SLOT_BITS (sizeof(uintptr_t) * 8 - 3)
 #include "proofs.h"
 
 bool nondet_bool(void);
@@ -16,7 +18,7 @@ static wah_pin_slot_t slots[MAX_OPS];
 static wah_pin_table_t pins = { slots, 0, MAX_OPS, 0 };
 static void *handles[MAX_OPS], *values[MAX_OPS];
 static bool live[MAX_OPS];
-static int handle_count, live_count, peak_live_count;
+static int handle_count, live_count, peak_live_count, retired_count;
 
 // Any reference: a handle given before (live or stale), or anything else
 static void *nondet_ref(void) {
@@ -53,15 +55,17 @@ void harness_ops(void) {
                 if (i < handle_count) __CPROVER_assert(handles[i] != handle, "makes a handle never given before");
             }
             if (++live_count > peak_live_count) peak_live_count = live_count;
-            __CPROVER_assert(pins.slot_count == peak_live_count, "reuses freed slots");
+            __CPROVER_assert(pins.slot_count <= peak_live_count + retired_count, "reuses freed slots");
             handles[handle_count] = handle, values[handle_count] = value, live[handle_count] = true;
             handle_count++;
         } else {
             void *ref = nondet_ref();
             int i = find_live(ref);
+            const wah_pin_slot_t *s = wah_pinned_slot(&ctx, ref);
+            bool retires = s && s->generation == WAH_PIN_GEN_MASK;
             bool ok = wah_unpin(&ctx, ref);
             __CPROVER_assert(ok == (i >= 0 || !ref), "unpins exactly live references");
-            if (i >= 0) live[i] = false, live_count--;
+            if (i >= 0) live[i] = false, live_count--, retired_count += retires;
         }
         check_resolve();
     }

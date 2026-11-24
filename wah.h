@@ -2574,7 +2574,9 @@ struct wah_call_context_s {
 // Pinned references are tagged with 0b10 in the lowest bits, unlike i31 (0bx1) and GC objects (0b00).
 // Other bits hold a slot index and its generation, which is bumped on release to detect stale references.
 #define WAH_PIN_TAG ((uintptr_t)2)
+#ifndef WAH_PIN_SLOT_BITS // Only for proofs
 #define WAH_PIN_SLOT_BITS (UINTPTR_MAX > 0xffffffffu ? 32 : 20)
+#endif
 #define WAH_PIN_GEN_MASK (((uintptr_t)1 << (sizeof(uintptr_t) * 8 - 2 - WAH_PIN_SLOT_BITS)) - 1)
 
 typedef struct wah_pin_slot_s {
@@ -17893,7 +17895,9 @@ static bool wah_unpin(wah_exec_context_t *exec, void *pinned_ref) {
     if (!s) return false;
     wah_pin_table_t *pins = exec->pins;
     s->value = (wah_value_t){0};
-    s->generation = (uint32_t)((s->generation + 1) & WAH_PIN_GEN_MASK);
+    // Retired once generations run out (after 2^10 reuses on 32-bit targets), so that stale handles never match again
+    if (s->generation == WAH_PIN_GEN_MASK) return true;
+    s->generation++;
     s->next_free = pins->free_head;
     pins->free_head = (uint32_t)(s - pins->slots) + 1;
     return true;
