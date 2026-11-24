@@ -143,8 +143,35 @@ static void test_accessors(void) {
     }
 }
 
+static void test_change_used_module(void) {
+    printf("Testing modules used by exec contexts can't be changed...\n");
+    wah_module_t mod = {0}, linked = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_module(&mod, NULL));
+    assert_ok(wah_new_module(&linked, NULL));
+    assert_ok(wah_export_global_i32(&mod, "g0", true, 1));
+    assert_ok(wah_export_global_i32(&linked, "h0", true, 1));
+    assert_ok(wah_new_exec_context(&ctx, &mod, NULL)); // Sizes globals of the context
+    assert_ok(wah_link_module(&ctx, "linked", &linked));
+    char name[16];
+    for (int i = 1; i < 40; i++) {
+        snprintf(name, sizeof(name), "g%d", i);
+        assert_err(wah_export_global_i32(&mod, name, true, i), WAH_ERROR_MISUSE);
+        assert_err(wah_export_global_i32(&linked, name, true, i), WAH_ERROR_MISUSE);
+    }
+    wah_type_t t;
+    assert_err(wah_define_type(&mod, &t, "fn () -> ()"), WAH_ERROR_MISUSE);
+    assert_err(wah_export_func(&mod, "f", "() -> ()", free_ctx, NULL, NULL), WAH_ERROR_MISUSE);
+    assert_err(wah_export_memory(&linked, "m", 1, 1), WAH_ERROR_MISUSE);
+    assert_ok(wah_instantiate(&ctx));
+    wah_free_exec_context(&ctx);
+    wah_free_module(&mod);
+    wah_free_module(&linked);
+}
+
 int main(void) {
     test_trap_with_non_error();
+    test_change_used_module();
     test_accessors();
     test_free_running(false);
     test_free_running(true);

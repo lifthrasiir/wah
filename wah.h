@@ -724,6 +724,7 @@ private:
     wah_features_t required_features;
     bool fuel_metering;
     bool x86_64_features_known; // CPUID is slow under virtualization, so it is done once per module
+    bool frozen; // Used by an exec context, so programmatic construction can't change it any more
     uint32_t x86_64_features; // wah_x86_64_features_t (private)
 
 #ifdef WAH_JIT
@@ -1216,6 +1217,8 @@ void wah_free_module(wah_module_t *module);
 //     The standard allocator is used if NULL is given.
 //
 //   On failure, `*mod` holds no resources but can still be passed to `wah_free_module`.
+//   Functions below that change the module return WAH_ERROR_MISUSE once it is given to `wah_new_exec_context`
+//   or `wah_link_module`, which may have sized their state by it.
 wah_error_t wah_new_module(wah_module_t *mod, const wah_alloc_t *alloc);
 
 // Function: wah_define_type
@@ -12933,6 +12936,12 @@ static wah_error_t wah_alloc_unified_stack(wah_exec_context_t *exec_ctx, uint64_
     return WAH_OK;
 }
 
+// Exec contexts size their state by modules, so modules can't be changed by programmatic construction once used.
+// Only written once, so that modules can be used by multiple threads afterwards.
+static void wah_freeze_module(const wah_module_t *module) {
+    if (!module->frozen) ((wah_module_t *)module)->frozen = true;
+}
+
 wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_t *module, const wah_exec_options_t *options) {
     wah_limits_t default_limits = {0};
     const wah_limits_t *limits = options ? &options->limits : &default_limits;
@@ -12940,6 +12949,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
     *exec_ctx = (wah_exec_context_t){0};
     WAH_ENSURE(module, WAH_ERROR_MISUSE);
     WAH_ENSURE(wah_alloc_valid(options ? options->alloc : NULL), WAH_ERROR_MISUSE);
+    wah_freeze_module(module);
     exec_ctx->alloc = wah_resolve_alloc(options ? options->alloc : NULL);
     wah_error_t err = WAH_OK;
     const wah_alloc_t *alloc = &exec_ctx->alloc;
@@ -18431,7 +18441,7 @@ wah_error_t wah_define_typev(wah_module_t *mod, wah_type_t *out_type, const char
     bool fresh;
     const wah_alloc_t *alloc;
 
-    WAH_ENSURE(mod, WAH_ERROR_MISUSE);
+    WAH_ENSURE(mod && !mod->frozen, WAH_ERROR_MISUSE);
     WAH_ENSURE(out_type, WAH_ERROR_MISUSE);
     WAH_ENSURE(spec, WAH_ERROR_MISUSE);
     alloc = &mod->alloc;
@@ -18600,7 +18610,7 @@ wah_error_t wah_export_func(wah_module_t *mod, const char *name, const char *typ
     wah_func_type_t ft = {0};
     const wah_alloc_t *alloc;
 
-    WAH_ENSURE(mod, WAH_ERROR_MISUSE);
+    WAH_ENSURE(mod && !mod->frozen, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(types, WAH_ERROR_MISUSE);
     WAH_ENSURE(func, WAH_ERROR_MISUSE);
@@ -18623,7 +18633,7 @@ cleanup:
 
 wah_error_t wah_export_typed_func(wah_module_t *mod, const char *name, wah_type_t type,
                                   wah_func_t func, void *userdata, wah_finalize_t finalize) {
-    WAH_ENSURE(mod, WAH_ERROR_MISUSE);
+    WAH_ENSURE(mod && !mod->frozen, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     WAH_ENSURE(func, WAH_ERROR_MISUSE);
     WAH_ENSURE(type >= 0 && WAH_TYIDX(type) < mod->type_count, WAH_ERROR_MISUSE);
@@ -18667,7 +18677,7 @@ static wah_error_t wah_export_global_internal(wah_module_t *mod, const char *nam
     wah_error_t err;
     char *name_copy = NULL;
 
-    WAH_ENSURE(mod, WAH_ERROR_MISUSE);
+    WAH_ENSURE(mod && !mod->frozen, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     const wah_alloc_t *alloc = &mod->alloc;
 
@@ -18694,7 +18704,7 @@ wah_error_t wah_export_memory(wah_module_t *mod, const char *name, uint64_t min_
     wah_error_t err;
     char *name_copy = NULL;
 
-    WAH_ENSURE(mod, WAH_ERROR_MISUSE);
+    WAH_ENSURE(mod && !mod->frozen, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     const wah_alloc_t *alloc = &mod->alloc;
     WAH_ENSURE(min_pages > 0, WAH_ERROR_MISUSE);
@@ -18946,6 +18956,7 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
 
     ctx->linked_modules[ctx->linked_module_count++] =
         (wah_linked_module_t){ .name = name_copy, .module = mod, .ctx = NULL, .owns_ctx = false };
+    wah_freeze_module(mod);
     return WAH_OK;
 }
 
