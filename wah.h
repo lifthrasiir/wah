@@ -1288,6 +1288,16 @@ wah_error_t wah_export_typed_func(wah_module_t *mod, const char *name, wah_type_
 //   - max_pages [in]: Optional maximum memory size in pages, at most 65536. Use UINT64_MAX for no maximum.
 wah_error_t wah_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages);
 
+// Function: wah_export_memory64
+//   Exports a new 64-bit memory (memory64) from the module.
+//
+//   - name [in, borrowed]: Zero-terminated name of the export.
+//   - min_pages [in]: Initial memory size in WebAssembly pages (64KiB each), at most 2^48.
+//   - max_pages [in]: Optional maximum memory size in pages, at most 2^48. Use UINT64_MAX for no maximum.
+//
+//   Returns WAH_ERROR_DISABLED_FEATURE if memory64 is compiled out.
+wah_error_t wah_export_memory64(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages);
+
 // Function: wah_export_global_*
 //   Exports a new global variable from the module.
 //
@@ -18707,16 +18717,17 @@ cleanup:
     return err;
 }
 
-wah_error_t wah_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages) {
+static wah_error_t wah_export_memory_internal(wah_module_t *mod, const char *name, wah_type_t addr_type,
+                                              uint64_t min_pages, uint64_t max_pages) {
     wah_error_t err;
     char *name_copy = NULL;
 
     WAH_ENSURE(mod && !mod->frozen, WAH_ERROR_MISUSE);
     WAH_ENSURE(name, WAH_ERROR_MISUSE);
     const wah_alloc_t *alloc = &mod->alloc;
-    WAH_ENSURE(min_pages > 0, WAH_ERROR_MISUSE);
+    uint64_t limit = addr_type == WAH_TYPE_I64 ? (UINT64_C(1) << 48) : 65536;
     WAH_ENSURE(max_pages >= min_pages, WAH_ERROR_MISUSE);
-    WAH_ENSURE(min_pages <= 65536 && (max_pages <= 65536 || max_pages == UINT64_MAX), WAH_ERROR_MISUSE); // i32 memory
+    WAH_ENSURE(min_pages <= limit && (max_pages <= limit || max_pages == UINT64_MAX), WAH_ERROR_MISUSE);
 
     WAH_CHECK_GOTO(wah_module_ensure_export(mod, name), cleanup);
 
@@ -18725,7 +18736,7 @@ wah_error_t wah_export_memory(wah_module_t *mod, const char *name, uint64_t min_
     name_copy = wah_strdup(name, alloc);
     WAH_ENSURE_GOTO(name_copy, WAH_ERROR_OUT_OF_MEMORY, cleanup);
 
-    mod->memories[mod->memory_count] = (wah_memory_type_t){ .addr_type = WAH_TYPE_I32, .min_pages = min_pages, .max_pages = max_pages };
+    mod->memories[mod->memory_count] = (wah_memory_type_t){ .addr_type = addr_type, .min_pages = min_pages, .max_pages = max_pages };
     wah_module_append_export(mod, (wah_export_t){ .name = name_copy, .name_len = strlen(name_copy),
                                                  .kind = WAH_KIND_MEMORY, .index = mod->import_memory_count + mod->memory_count });
     mod->memory_count++;
@@ -18734,6 +18745,19 @@ wah_error_t wah_export_memory(wah_module_t *mod, const char *name, uint64_t min_
 cleanup:
     wah_free(alloc, name_copy);
     return err;
+}
+
+wah_error_t wah_export_memory(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages) {
+    return wah_export_memory_internal(mod, name, WAH_TYPE_I32, min_pages, max_pages);
+}
+
+wah_error_t wah_export_memory64(wah_module_t *mod, const char *name, uint64_t min_pages, uint64_t max_pages) {
+#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
+    return wah_export_memory_internal(mod, name, WAH_TYPE_I64, min_pages, max_pages);
+#else
+    (void)mod, (void)name, (void)min_pages, (void)max_pages;
+    return WAH_ERROR_DISABLED_FEATURE;
+#endif
 }
 
 wah_error_t wah_export_global_i32(wah_module_t *mod, const char *name, bool is_mutable, int32_t init_value) {
