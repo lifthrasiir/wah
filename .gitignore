@@ -26,3 +26,4 @@ coverage_report
 tests/.build_mode
 proofs/*.log
 proofs/lean/.lake
+proofs/spec/.out

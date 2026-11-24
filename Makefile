@@ -266,6 +266,43 @@ lean-diff:
 	done
 	@echo "## Canonical maps and subtyping agree with the Lean models."
 
+# --- Comparison with the spec ---
+# Runs the fuzz corpus and modules from `wasm-tools smith` through WAH and checks what it did against the reference
+# interpreter of the spec (interpreter/wasm of https://github.com/WebAssembly/spec, built by `make` there), given as
+# WASM_REF. Disagreements are kept in SPEC_DIFF_DIR as .wast scripts with the output of the reference interpreter.
+# Smith modules have no imports, terminate and canonicalize NaNs (except in conversions, see nan_variant.sh), and
+# don't use relaxed SIMD, which is nondeterministic, or proposals beyond Wasm 3.0.
+
+WASM_REF ?=
+WASM_TOOLS ?= wasm-tools
+SPEC_SMITH_COUNT ?= 5000
+SPEC_DIFF_DIR := proofs/spec/.out
+SPEC_SMITH_FLAGS := --max-imports 0 --min-funcs 3 --ensure-termination --canonicalize-nans true \
+	--export-everything true --gc-enabled true --exceptions-enabled true --tail-call-enabled true \
+	--memory64-enabled true --relaxed-simd-enabled false --threads-enabled false \
+	--custom-page-sizes-enabled false --wide-arithmetic-enabled false
+
+.PHONY: spec-diff
+spec-diff:
+	@[ -n "$(WASM_REF)" ] || { echo "Set WASM_REF to the reference interpreter of the spec"; exit 1; }
+	@echo "## Comparing the fuzz corpus and $(SPEC_SMITH_COUNT) smith modules with the reference interpreter..."
+	@rm -rf $(SPEC_DIFF_DIR) && mkdir -p $(SPEC_DIFF_DIR)/corpus $(SPEC_DIFF_DIR)/smith
+	@tar -xzf $(LEAN_DIFF_CORPUS) -C $(SPEC_DIFF_DIR)/corpus
+	@for i in $$(seq 1 $(SPEC_SMITH_COUNT)); do \
+		perl -e "srand($$i); print map chr(int rand 256), 1..16384" | \
+		$(WASM_TOOLS) smith $(SPEC_SMITH_FLAGS) -o $(SPEC_DIFF_DIR)/smith/$$i.wasm || exit 1; \
+	done
+	@$(CC) -O1 -Wall -Wno-unused-function -o $(SPEC_DIFF_DIR)/wah_to_wast proofs/spec/wah_to_wast.c -lm
+	@proofs/spec/nan_variant.sh wah.h $(SPEC_DIFF_DIR)/wah_nan.h
+	@$(CC) -O1 -Wall -Wno-unused-function -DWAH_TO_WAST_HEADER='"$(abspath $(SPEC_DIFF_DIR))/wah_nan.h"' \
+		-o $(SPEC_DIFF_DIR)/wah_to_wast_nan proofs/spec/wah_to_wast.c -lm
+	@find $(SPEC_DIFF_DIR)/corpus $(SPEC_DIFF_DIR)/smith -type f -print0 | \
+		xargs -0 -P $$(getconf _NPROCESSORS_ONLN) -n 1 proofs/spec/check_one.sh $(SPEC_DIFF_DIR)/wah_to_wast \
+		$(SPEC_DIFF_DIR)/wah_to_wast_nan $(WASM_REF) $(SPEC_DIFF_DIR) > $(SPEC_DIFF_DIR)/results.txt 2> /dev/null
+	@awk '{ n[$$1]++ } END { for (k in n) printf "%s %d, ", k, n[k]; print "" }' $(SPEC_DIFF_DIR)/results.txt
+	@! grep '^fail' $(SPEC_DIFF_DIR)/results.txt || { echo "Disagreements are in $(SPEC_DIFF_DIR)"; exit 1; }
+	@echo "## WAH agrees with the reference interpreter."
+
 # --- Coverage ---
 
 GCOV_CFLAGS := -fprofile-arcs -ftest-coverage
