@@ -3,6 +3,8 @@
 #include "../wah.h"
 #include "common.h"
 
+static void null_params_host(wah_call_context_t *ctx, void *userdata) { (void)ctx, (void)userdata; }
+
 static void test_exec_context_misuse(void) {
     printf("Testing exec context misuse handling...\n");
 
@@ -26,6 +28,27 @@ static void test_exec_context_misuse(void) {
 
     wah_free_exec_context(&ctx);
     wah_free_module(&module);
+}
+
+static void test_null_params(void) {
+    printf("Testing NULL params with a non-zero count...\n");
+    wah_module_t module = {0}, host = {0};
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_module(&host, NULL));
+    assert_ok(wah_export_func(&host, "f", "(i32) -> ()", null_params_host, NULL, NULL));
+    assert_ok(wah_parse_module_from_spec(&module, "wasm types {[ fn [i32] [] ]} imports {[ {'h'} {'f'} fn# 0 ]} \
+        funcs {[ 0 ]} exports {[ {'g'} fn# 1 ]} code {[ {[] end} ]}"));
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
+    assert_ok(wah_link_module(&ctx, "h", &host));
+    assert_ok(wah_instantiate(&ctx));
+    for (uint32_t f = 0; f < 2; f++) { // Host and wasm
+        assert_err(wah_call(&ctx, f, NULL, 1, NULL), WAH_ERROR_MISUSE);
+        assert_err(wah_start(&ctx, f, NULL, 1), WAH_ERROR_MISUSE);
+    }
+    assert_err(wah_call_by_name(&ctx, "g", NULL, 1, NULL), WAH_ERROR_MISUSE);
+    wah_free_exec_context(&ctx);
+    wah_free_module(&module);
+    wah_free_module(&host);
 }
 
 static void test_fuel_misuse(void) {
@@ -123,6 +146,7 @@ static void test_freeable_after_failure(void) {
 
 int main(void) {
     test_exec_context_misuse();
+    test_null_params();
     test_fuel_misuse();
     test_gc_misuse();
     test_module_builder_misuse();

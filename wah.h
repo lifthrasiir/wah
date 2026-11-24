@@ -17930,6 +17930,7 @@ static wah_error_t wah_start_function_internal(
     const wah_value_t *params, uint32_t param_count
 ) {
     WAH_ENSURE(ctx->lifecycle.state == WAH_EXEC_READY, WAH_ERROR_MISUSE);
+    WAH_ENSURE(params || param_count == 0, WAH_ERROR_MISUSE);
     WAH_IF_GC(if (ctx->gc) ctx->gc->prepaid_fuel = 0;) // Left by a cancelled activation
 
     ctx->lifecycle.base_sp = ctx->sp;
