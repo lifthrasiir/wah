@@ -197,6 +197,7 @@ typedef struct {
     int8_t *pin_of;          // Register of each local if pinned, plus WAH_JIT_PIN_FP for FPRs, -1 otherwise
     wah_jit_pin_t pins[WAH_JIT_MAX_PINS];
     uint32_t npins, gpr_pins, fpr_pins; // Masks of pinned registers
+    uint32_t dirty;          // Pins (by index) whose registers may differ from their slots
 
     wah_jit_val_t *vals;
     uint32_t h;
@@ -209,6 +210,8 @@ typedef struct {
     uint32_t nctl, ctl_cap;
     uint32_t *labels; // Code offsets, UINT32_MAX if not bound yet
     uint32_t nlabels, labels_cap;
+    uint32_t *label_dirty; // Pins dirty on branches to each label, which are taken into account when it is bound
+    uint32_t label_dirty_cap;
     wah_jit_patch_t *patches;
     uint32_t npatches, patches_cap;
     wah_jit_stub_t *stubs;
@@ -266,19 +269,24 @@ static void wah_jit_set32(wah_jit_module_t *jm, uint32_t pos, uint32_t v) { memc
 
 static uint32_t wah_jit_new_label(wah_jit_fn_t *f) {
     WAH_JIT_GROW(f, labels, nlabels, labels_cap);
+    WAH_JIT_GROW(f, label_dirty, nlabels, label_dirty_cap);
     if (f->fail) return 0;
     f->labels[f->nlabels] = UINT32_MAX;
+    f->label_dirty[f->nlabels] = 0;
     return f->nlabels++;
 }
 
 static void wah_jit_bind(wah_jit_fn_t *f, uint32_t label) {
-    if (!f->fail) f->labels[label] = wah_jit_pos(f);
+    if (f->fail) return;
+    f->labels[label] = wah_jit_pos(f);
     f->label_end = wah_jit_pos(f) + 1;
+    f->dirty |= f->label_dirty[label]; // Branches to loops come later, see wah_jit_loop_writes
 }
 
 static void wah_jit_add_patch(wah_jit_fn_t *f, uint8_t kind, uint32_t label, uint32_t base, uint32_t pos) {
     WAH_JIT_GROW(f, patches, npatches, patches_cap);
     if (f->fail) return;
+    f->label_dirty[label] |= f->dirty;
     f->patches[f->npatches++] = (wah_jit_patch_t){ .pos = pos, .label = label, .base = base, .kind = kind };
 }
 
@@ -1376,8 +1384,16 @@ static void wah_jit_branch_if(wah_jit_fn_t *f, wah_jit_cond_t c, bool when, uint
 static void wah_jit_release_cond(wah_jit_fn_t *f, wah_jit_cond_t c) { if (!c.flags) wah_jit_free_gpr(f, c.reg); }
 
 // Stores pinned locals to their slots, or loads them back.
+// Stores pinned locals into their slots, or loads them back. Only dirty pins are stored on AArch64.
 static void wah_jit_sync_pins(wah_jit_fn_t *f, bool store) {
+#ifdef WAH_JIT_AARCH64
+    uint32_t mask = store ? f->dirty : ~(uint32_t)0;
+#else
+    uint32_t mask = ~(uint32_t)0;
+#endif
+    f->dirty = 0;
     for (uint32_t i = 0; i < f->npins; i++) {
+        if (!(mask >> i & 1)) continue;
         const wah_jit_pin_t *p = &f->pins[i];
         uint32_t off = p->idx * (uint32_t)sizeof(wah_value_t);
         if (p->vec) wah_jit_vldst(f, store, p->reg, WAH_JR_FP, off);
@@ -1394,6 +1410,9 @@ static wah_jit_val_t wah_jit_pinned_val(const wah_jit_fn_t *f, uint32_t idx) {
 
 // Sets the pinned local at idx to the top of the stack, which is kept.
 static void wah_jit_set_pinned(wah_jit_fn_t *f, uint32_t idx) {
+    for (uint32_t i = 0; i < f->npins; i++) {
+        if (f->pins[i].idx == idx) f->dirty |= 1u << i;
+    }
     int d = f->pin_of[idx] & (WAH_JIT_PIN_FP - 1);
     bool fp = (f->pin_of[idx] & WAH_JIT_PIN_FP) != 0;
     for (uint32_t i = 0; i + 1 < f->h; i++) { // Old values of the local are copied first
@@ -2316,7 +2335,9 @@ static void wah_jit_select(wah_jit_fn_t *f) {
 }
 
 static void wah_jit_emit_stub(wah_jit_fn_t *f, const wah_jit_stub_t *s) {
+    uint32_t dirty = f->dirty; // Of the code around, if emitted there for long branches
     wah_jit_bind(f, s->stub);
+    f->dirty = ~(uint32_t)0; // Emitted out of line, so all pins are synced
     uint32_t resume = s->resume;
     if (s->load_err) wah_jit_load_err(f);
     if (s->poll) { // Pinned locals are kept in slots while suspended, and restored when resumed or continued
@@ -2342,6 +2363,7 @@ static void wah_jit_emit_stub(wah_jit_fn_t *f, const wah_jit_stub_t *s) {
     wah_jit_ldst(f, true, false, true, WAH_JR_T1, WAH_JR_T0, offsetof(wah_jit_ctx_t, resume_pc));
     wah_jit_ldst(f, true, false, true, WAH_JR_FP, WAH_JR_T0, offsetof(wah_jit_ctx_t, resume_fp));
     wah_jit_exit(f);
+    f->dirty = dirty;
 }
 
 // Checks the stack and saves the return address. Declared locals are zeroed by the caller.
@@ -3917,7 +3939,9 @@ static void wah_jit_select(wah_jit_fn_t *f) {
 }
 
 static void wah_jit_emit_stub(wah_jit_fn_t *f, const wah_jit_stub_t *s) {
+    uint32_t dirty = f->dirty; // Of the code around, if emitted there for long branches
     wah_jit_bind(f, s->stub);
+    f->dirty = ~(uint32_t)0; // Emitted out of line, so all pins are synced
     uint32_t resume = s->resume;
     if (s->load_err) wah_jit_load_err(f);
     if (s->poll) { // Pinned locals are kept in slots while suspended, and restored when resumed or continued
@@ -3943,6 +3967,7 @@ static void wah_jit_emit_stub(wah_jit_fn_t *f, const wah_jit_stub_t *s) {
     wah_a64_ldst(f, WAH_A64_STRX, WAH_JR_T1, WAH_JR_T0, offsetof(wah_jit_ctx_t, resume_pc));
     wah_a64_ldst(f, WAH_A64_STRX, WAH_JR_FP, WAH_JR_T0, offsetof(wah_jit_ctx_t, resume_fp));
     wah_jit_exit(f);
+    f->dirty = dirty;
 }
 
 // Checks the stack and saves the return address. Declared locals are zeroed by the caller.
@@ -4640,6 +4665,9 @@ static void wah_jit_exit_with(wah_jit_fn_t *f, wah_error_t err) {
 
 static void wah_jit_reload_memory(wah_jit_fn_t *f) {
     if (wah_memory_index_limit(f->module) == 0) return;
+#ifdef WAH_JIT_AARCH64
+    if (f->jm->guarded) return; // Guarded memories never move, and x21 is preserved by calls
+#endif
     wah_jit_ldst(f, false, false, true, WAH_JR_MEM, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_base));
     if (!f->jm->guarded) wah_jit_ldst(f, false, false, true, WAH_JR_MEMSZ, WAH_JR_CTX, WAH_JIT_CTX_OFF(memory_size));
 }
@@ -4770,6 +4798,22 @@ static bool wah_jit_supported(const wah_module_t *module, const wah_decoded_inst
     }
 }
 
+// Pins set in the loop starting at the instruction being compiled, which may be dirty on its back edges
+static uint32_t wah_jit_loop_writes(const wah_jit_fn_t *f) {
+    uint32_t mask = 0, depth = 0;
+    for (uint32_t i = f->instr_idx + 1; i < f->ninstrs; i++) {
+        const wah_decoded_instr_t *in = &f->instrs[i];
+        if (in->opcode == WAH_OP_BLOCK || in->opcode == WAH_OP_LOOP || in->opcode == WAH_OP_IF) depth++;
+        else if (in->opcode == WAH_OP_END && depth-- == 0) break;
+        else if ((in->opcode == WAH_OP_LOCAL_SET || in->opcode == WAH_OP_LOCAL_TEE) && f->pin_of && f->pin_of[in->imm.u32] >= 0) {
+            for (uint32_t k = 0; k < f->npins; k++) {
+                if (f->pins[k].idx == in->imm.u32) mask |= 1u << k;
+            }
+        }
+    }
+    return mask;
+}
+
 static void wah_jit_end(wah_jit_fn_t *f) {
     wah_jit_ctl_t t = f->ctl[--f->nctl];
     if (t.opcode == WAH_OP_LOOP) return; // Only reached by falling through
@@ -4849,6 +4893,7 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
                 wah_jit_flush(f);
                 wah_jit_reset(f, f->h);
                 wah_jit_bind(f, t->label);
+                f->dirty |= wah_jit_loop_writes(f);
                 wah_jit_poll_check(f);
             }
             break;
@@ -5320,6 +5365,7 @@ static void wah_jit_free_fn(wah_jit_fn_t *f) {
     wah_free(f->alloc, f->vals);
     wah_free(f->alloc, f->ctl);
     wah_free(f->alloc, f->labels);
+    wah_free(f->alloc, f->label_dirty);
     wah_free(f->alloc, f->patches);
     wah_free(f->alloc, f->stubs);
     wah_free(f->alloc, f->vconsts);
@@ -5431,6 +5477,7 @@ static void wah_jit_compile_body(wah_jit_fn_t *f, uint32_t local_idx, const wah_
         } else {
             wah_jit_mov_imm(f, p->reg, 0);
         }
+        if (p->idx >= first) f->dirty |= 1u << i; // Not in their slots
     }
     wah_jit_poll_check(f);
 

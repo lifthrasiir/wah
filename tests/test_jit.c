@@ -1364,6 +1364,48 @@ static void test_parse_failure(void) {
     assert_eq_i32(live_blocks, 0);
 }
 
+// Pinned locals set on some paths before calls, which store only those that may have changed since the last call
+// on AArch64: in one branch of an if, later in a loop than its call, and in targets of br_table. The callee sets
+// as many locals as there are pinned registers, which would show any value left in a register but not in its slot.
+static void test_dirty_pins(void) {
+    printf("Testing pinned locals stored around calls...\n");
+    char clobber[2048] = "", *q = clobber;
+    for (int i = 1; i <= 24; i++) q += snprintf(q, (size_t)(clobber + sizeof(clobber) - q), "local.get 0 i32.const %d i32.mul local.set %d ", i * 7919, i);
+    q += snprintf(q, (size_t)(clobber + sizeof(clobber) - q), "local.get 0");
+    for (int i = 1; i <= 24; i++) q += snprintf(q, (size_t)(clobber + sizeof(clobber) - q), " local.get %d i32.xor", i);
+    char spec[4096];
+    snprintf(spec, sizeof(spec), "wasm types {[ fn [i32, i32] [i32, i32, i32, i32], fn [i32] [i32] ]} funcs {[ 0, 1 ]} \
+        code {[ {[3 i32] \
+        local.get 0 i32.const 1 i32.add local.set 2 local.get 1 i32.const 3 i32.mul local.set 3 \
+        local.get 0 call 1 drop \
+        local.get 0 i32.const 1 i32.and if void local.get 2 i32.const 100 i32.add local.set 2 \
+            else local.get 3 i32.const 7 i32.add local.set 3 end \
+        local.get 1 call 1 local.set 4 \
+        loop void \
+            local.get 4 call 1 drop \
+            local.get 4 local.get 2 i32.add local.set 4 local.get 3 local.get 2 i32.xor local.set 3 \
+            local.get 2 i32.const 1 i32.add local.tee 2 i32.const 15 i32.and br_if 0 \
+        end \
+        block void block void block void \
+            local.get 1 i32.const 3 i32.and br_table [0, 1, 2] 2 \
+        end local.get 2 i32.const 1000 i32.add local.set 2 br 1 \
+        end local.get 3 i32.const 2000 i32.add local.set 3 br 0 \
+        end \
+        local.get 3 call 1 drop \
+        local.get 2 i32.const 5 i32.mul local.set 2 local.get 0 call 1 drop \
+        local.get 2 local.get 3 local.get 4 local.get 0 end}, \
+        {[24 i32] %s end} ]}", clobber);
+    for (size_t i = 0; i < COUNT(I32_SAMPLES); i++) {
+        wah_value_t p[2] = { { .i32 = I32_SAMPLES[i] }, { .i32 = I32_SAMPLES[(i * 3 + 1) % COUNT(I32_SAMPLES)] } };
+        check_call(spec, NULL, 0, p, 2, 4);
+    }
+    // A declared local only read after a call is zero in its register, not in its slot, which the previous call at
+    // the same depth left as it was: the callee of func 1 is func 2, whose frame overlaps that of func 3
+    snprintf(spec, sizeof(spec), "wasm types {[ fn [i32] [i32] ]} funcs {[ 0, 0, 0, 0 ]} code {[         {[] local.get 0 call 1 drop local.get 0 call 3 end},         {[1 i32] local.get 0 i32.const 12345 i32.mul local.set 1 local.get 0 call 2 drop local.get 1 local.get 1 i32.add             local.get 1 i32.add end},         {[24 i32] %s end},         {[1 i32] local.get 0 call 2 drop local.get 1 local.get 1 i32.add local.get 1 i32.add local.get 1 i32.add end} ]}",
+        clobber);
+    for (size_t i = 0; i < COUNT(I32_SAMPLES); i++) check_i32(spec, 0, I32_SAMPLES[i]);
+}
+
 // Accesses with the same index and different offsets, which share the address computed into x16 on AArch64 with
 // guard pages, also where the index is overwritten by a load or a label is bound before the access
 static void test_shared_addresses(void) {
@@ -1425,6 +1467,7 @@ int main(void) {
     test_simd_long_function();
     test_fallback();
     test_parse_failure();
+    test_dirty_pins();
     test_shared_addresses(); // Last, as it enables guard pages for the rest of the process
     printf("All JIT tests passed.\n");
     return 0;
