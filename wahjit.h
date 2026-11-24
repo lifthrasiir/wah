@@ -4868,10 +4868,16 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
         }
     }
 
-    // A result set to a pinned local right away goes into its register, unless its old value is still needed
+    // A result set to a pinned local right away goes into its register, unless its old value is still needed.
+    // So does the value of an unpinned local, loaded right into it.
     f->hint = -1;
-    uint32_t arity = wah_jit_hint_arity(op);
-    if (arity > 0 && next && (next->opcode == WAH_OP_LOCAL_SET || next->opcode == WAH_OP_LOCAL_TEE) && f->pin_of &&
+#ifdef WAH_JIT_AARCH64
+    bool get = op == WAH_OP_LOCAL_GET && !(f->pin_of && f->pin_of[in->imm.u32] >= 0);
+#else
+    bool get = false;
+#endif
+    uint32_t arity = get ? 0 : wah_jit_hint_arity(op);
+    if ((arity > 0 || get) && next && (next->opcode == WAH_OP_LOCAL_SET || next->opcode == WAH_OP_LOCAL_TEE) && f->pin_of &&
         f->pin_of[next->imm.u32] >= 0 && !(f->pin_of[next->imm.u32] & WAH_JIT_PIN_FP) && f->h >= arity) {
         uint32_t idx = next->imm.u32, i = 0;
         while (i < f->h - arity && !(f->vals[i].kind == WAH_JV_LGPR && f->vals[i].imm == (int64_t)idx)) i++;
@@ -5007,6 +5013,12 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             const int32_t *local = fp ? f->fpr_local : f->gpr_local;
             int c = 31;
             while (c >= 0 && local[c] != (int32_t)idx) c--;
+            if (!fp && f->hint >= 0) { // Then set to a pinned local
+                if (c >= 0) wah_jit_mov64(f, f->hint, c);
+                else wah_jit_ldst(f, false, false, t == WAH_TYPE_I64, f->hint, WAH_JR_FP, idx * (uint32_t)sizeof(wah_value_t));
+                wah_jit_push_gpr(f, f->hint);
+                break;
+            }
             if (c < 0) {
                 wah_jit_push_load(f, t, WAH_JR_FP, idx * (uint32_t)sizeof(wah_value_t));
                 break;

@@ -819,6 +819,36 @@ static void test_local_cache(void) {
     }
 }
 
+static void test_local_get_cache(void) {
+    printf("Testing values of unpinned locals set to pinned locals...\n");
+    // Locals 1-21 are used in a loop (21 the most), so 1-16 and 21 are pinned and 22-27 stay in slots.
+    // Calls to function 1 forget the registers holding values of locals.
+    char spec[8192];
+    size_t cap = sizeof(spec);
+    int n = snprintf(spec, cap, "wasm types {[ fn [i32] [i32], fn [i32] [i32, i32, i32, i32, i64, i64, i32] ]} \
+        funcs {[ 1, 0 ]} code {[ {[20 i32, 3 i64, 4 i32] block void loop void");
+    for (int k = 2; k <= 20; k++) {
+        n += snprintf(spec + n, cap - (size_t)n, " local.get %d local.get %d i32.add local.set %d", k, k - 1, k);
+    }
+    n += snprintf(spec + n, cap - (size_t)n, " local.get 21 local.get 20 i64.extend_i32_u i64.add local.set 21 \
+        local.get 21 i64.const 3 i64.mul local.set 21 \
+        local.get 1 i32.const 1 i32.add local.tee 1 i32.const 3 i32.lt_u br_if 0 end end \
+        local.get 0 i32.const 3 i32.mul local.set 24 \
+        local.get 0 i64.extend_i32_s i64.const 0x123456789 i64.mul local.set 22 \
+        local.get 3 local.get 24 local.set 3 local.get 3 i32.sub local.set 25 \
+        local.get 0 call 1 drop local.get 24 local.set 4 local.get 22 local.set 21 local.get 22 local.set 23 \
+        local.get 0 call 1 drop local.get 24 i32.const 1 i32.add local.get 24 i32.add local.set 26 \
+        local.get 23 i64.const 7 i64.shl local.get 23 i64.xor local.set 23 \
+        local.get 24 local.get 0 local.set 24 local.get 24 i32.add local.set 27 \
+        local.get 4 local.get 25 local.get 26 local.get 27 local.get 21 local.get 23");
+    for (int k = 5; k <= 16; k++) n += snprintf(spec + n, cap - (size_t)n, " local.get %d%s", k, k > 5 ? " i32.add" : "");
+    snprintf(spec + n, cap - (size_t)n, " end}, {[] local.get 0 i32.const 7 i32.mul end} ]}");
+    for (size_t i = 0; i < COUNT(I32_SAMPLES); i++) {
+        wah_value_t p = { .i32 = I32_SAMPLES[i] };
+        check_call(spec, NULL, 0, &p, 1, 7);
+    }
+}
+
 // i32 values whose 64-bit representations may have upper bits set, used as addresses, br_table indices and
 // zero-extended operands. Params are given with garbage in their upper halves, which wasm can't observe.
 static void test_i32_upper_bits(void) {
@@ -1455,6 +1485,7 @@ int main(void) {
     test_memory_grow_hook();
     test_pinned_locals();
     test_local_cache();
+    test_local_get_cache();
     test_result_hints();
     test_peepholes();
     test_i32_upper_bits();
