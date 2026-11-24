@@ -64,3 +64,19 @@ void harness_place(void) {
     }
     __CPROVER_assert(free_mask < 16, "no other free slots");
 }
+
+// `fieldClass` of proofs/lean/WahProofs/LayoutSub.lean, which proves that subtypes lay out the fields of their
+// supertypes in the same way
+static uint32_t model_field_class(int32_t t) {
+    return t == -16 ? 0 : t == -18 ? 1 : t == -2 || t == -6 ? 2 : t == -10 ? 4 : 3;
+}
+
+void harness_field_class(void) {
+    wah_type_t t = (wah_type_t)nondet_u32();
+    // `StorageCode`: numbers, vectors, packed types and references
+    __CPROVER_assume((t >= -18 && t <= -2 && t % 2 == 0 && t != -12 && t != -14) || (t >= -54 && t <= -31) || t >= 0);
+    uint32_t size;
+    wah_repr_t repr;
+    __CPROVER_assert(wah_field_type_layout(t, &size, &repr) == WAH_OK, "storage types have layouts");
+    __CPROVER_assert(size == 1u << model_field_class(t), "same size class");
+}

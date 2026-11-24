@@ -9017,6 +9017,7 @@ static bool wah_check_layouts(const wah_module_t *module) {
         const wah_type_def_t *sd = &module->type_defs[td->supertype];
         const wah_repr_info_t *si = wah_repr_info_get(module, wah_module_typeidx_to_repr(module, td->supertype));
         if (sd->kind != td->kind || !si || sd->field_count > td->field_count) return false;
+        // Offsets always agree for valid supertypes (proofs/lean/WahProofs/LayoutSub.lean)
         for (uint32_t i = 0; i < sd->field_count; i++) {
             if (wah_check_storage(td->field_types[i]) != wah_check_storage(sd->field_types[i])) return false;
             if (td->kind == WAH_COMP_STRUCT && ri->fields[i].offset != si->fields[i].offset) return false;

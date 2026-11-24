@@ -25,8 +25,12 @@ C code that CI checks. When you change a modeled C function, change its model an
 - WahProofs/SubDecl.lean models `wah_type_matches_supertype` (`declCheck`), the check of declared supertypes, which
   agrees with the composite type subtyping of the spec (`CompSub`). Bridge: proofs/types.c
   (`make cbmc_types.matches_supertype`).
+- WahProofs/LayoutSub.lean proves that structs lay out the fields of their declared supertypes as the supertypes do,
+  as storage types of subtypes have the same size (`fieldClass`, which is checked against `wah_field_type_layout` by
+  `make cbmc_layout.field_class`). So the offset check of `wah_check_layouts` always holds for valid modules.
 -/
 import WahProofs.Layout
 import WahProofs.Types
 import WahProofs.Subtype
 import WahProofs.SubDecl
+import WahProofs.LayoutSub
