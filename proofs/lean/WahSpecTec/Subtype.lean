@@ -48,12 +48,14 @@ def toVal : storagetype → valtype
 
 variable (A : Nat → storagetype)
 
+/-- The value type of a field of a function type. -/
+def fval (f : fieldtype) : valtype := match f with | .mk_fieldtype _ t => toVal t
+
 /-- The composite type of a kind, with the fields of `wah_type_def_t`. -/
 def trComp (kind : Nat) (counts : Nat × Nat) (fs : List fieldtype) : comptype :=
   if kind = kStruct then .STRUCT (.mk_list fs)
   else if kind = kArray then .ARRAY (fs.headD (.mk_fieldtype none .BOT))
-  else .FUNC (.mk_list ((fs.take counts.1).map fun f => match f with | .mk_fieldtype _ t => toVal t))
-    (.mk_list ((fs.drop counts.1).map fun f => match f with | .mk_fieldtype _ t => toVal t))
+  else .FUNC (.mk_list ((fs.take counts.1).map fval)) (.mk_list ((fs.drop counts.1).map fval))
 
 /-- `REC i` of the outermost rec group becomes `_DEF r i` if it is unrolled by `r`. -/
 def recRef (u : Option rectype) (i : Nat) : heaptype :=
@@ -162,7 +164,7 @@ theorem wf_trAbs (h : Abs) : wf_heaptype (trAbs h) := by cases h <;> constructor
 theorem wf_comp (kind : Nat) (counts : Nat × Nat) (fs : List fieldtype) (hl : fs.length < 2 ^ 32)
     (hf : ∀ f ∈ fs, wf_fieldtype f) : wf_comptype (trComp kind counts fs) := by
   have hv : ∀ l : List fieldtype, (∀ f ∈ l, wf_fieldtype f) →
-      ∀ v ∈ l.map (fun f => match f with | .mk_fieldtype _ t => toVal t), wf_valtype v := by
+      ∀ v ∈ l.map fval, wf_valtype v := by
     intro l hl v hv
     obtain ⟨f, hf, rfl⟩ := List.mem_map.mp hv
     cases hf' : f with
@@ -267,9 +269,6 @@ theorem subst_toVal {zt zt' : storagetype} {tvs tus} (h : fun_subst_storagetype 
     fun_subst_valtype (toVal zt) tvs tus (toVal zt') := by
   cases h <;> (try rw [toVal_sv]) <;> first | assumption | exact .fun_subst_valtype_case_6 _ _
 
-/-- The value type of a field of a function type. -/
-def fval (f : fieldtype) : valtype := match f with | .mk_fieldtype _ t => toVal t
-
 omit hA in
 theorem subst_fval {f f' : fieldtype} {tvs tus} (h : fun_subst_fieldtype f tvs tus f') :
     fun_subst_valtype (fval f) tvs tus (fval f') := by
@@ -304,12 +303,10 @@ theorem subst_comp {α : Type} (kind : Nat) (counts : Nat × Nat) (l : List α) 
       cases l with
       | nil => exact subst_bot_field tvs tus
       | cons x _ => exact h x (by simp)
-    · have e1 : ∀ r : α → fieldtype, ((l.map r).take counts.1).map (fun f => match f with
-          | .mk_fieldtype _ t => toVal t) = (l.take counts.1).map (fval ∘ r) := by
-        intro r; rw [← List.map_take, List.map_map]; rfl
-      have e2 : ∀ r : α → fieldtype, ((l.map r).drop counts.1).map (fun f => match f with
-          | .mk_fieldtype _ t => toVal t) = (l.drop counts.1).map (fval ∘ r) := by
-        intro r; rw [← List.map_drop, List.map_map]; rfl
+    · have e1 : ∀ r : α → fieldtype, ((l.map r).take counts.1).map fval = (l.take counts.1).map (fval ∘ r) := by
+        intro r; rw [← List.map_take, List.map_map]
+      have e2 : ∀ r : α → fieldtype, ((l.map r).drop counts.1).map fval = (l.drop counts.1).map (fval ∘ r) := by
+        intro r; rw [← List.map_drop, List.map_map]
       rw [e1, e1, e2, e2]
       exact .fun_subst_comptype_case_2 _ _ _ _ _ _ (hv _ fun x hx => List.mem_of_mem_drop hx)
         (hv _ fun x hx => List.mem_of_mem_take hx) (by simp) (by simp)

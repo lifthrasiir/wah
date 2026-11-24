@@ -10,5 +10,10 @@ audits axioms like `make lean`. They are not part of `make lean`, as the model i
   implies `Heaptype_sub` of the spec for closed types in the empty context (`hsub_sound`), with closed forms
   translated to SpecTec syntax, assuming that `$minus_recs` (opaque in the generated model) is the function of the
   spec.
+- WahSpecTec/SubtypeComplete.lean: the converse for closed forms with the shapes of `wah_type_def_t`
+  (`hsub_complete`), so that they agree (`hsub_iff_spec`), through an algorithmic `Heaptype_sub` on SpecTec types
+  that valid types (`Heaptype_ok`, which transitivity needs) keep kinds along. Both hold for the atoms of WAH
+  (`wahAtom_ok`, `shapeAtom_wah`).
 -/
 import WahSpecTec.Subtype
+import WahSpecTec.SubtypeComplete
