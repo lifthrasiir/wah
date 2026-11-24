@@ -1313,6 +1313,7 @@ wah_type_t wah_param_type(const wah_call_context_t *ctx, size_t index);
 
 // Functions: wah_param_*
 //   Get parameters passed to a host function by index. Valid only during the host function call.
+//   Zero is returned if the index is out of range or the parameter type differs.
 //
 //   - idx [in]: Index of the parameter to retrieve. Must be less than the number of parameters.
 int32_t wah_param_i32(const wah_call_context_t *ctx, size_t index);      // i32 parameter by index
@@ -1360,6 +1361,7 @@ wah_type_t wah_result_type(const wah_call_context_t *ctx, size_t index);
 
 // Functions: wah_result_*
 //   Set results for a host function by index. Valid only during the host function call.
+//   The host function traps with WAH_ERROR_MISUSE if the index is out of range or the result type differs.
 //
 //   - index [in]: Index of the result to set. Must be less than the number of results.
 //   - value [in]: Value to set for the result.
@@ -18691,16 +18693,24 @@ wah_error_t wah_export_global_v128(wah_module_t *mod, const char *name, bool is_
 
 // --- Call Context Implementation ---
 
+// Misuse with wrong indices or types is also checked without WAH_ASSERT, which is cheap compared to host calls.
+// Otherwise it could access outside params and results, forge references in results or leak raw references.
 #define WAH_PARAM(ty, field) \
     WAH_ASSERT(ctx && "Call context is NULL"); \
     WAH_ASSERT(index < ctx->nparams && "Parameter index out of bounds"); \
-    WAH_ASSERT(ctx->param_types[index] == WAH_TYPE_##ty && "Parameter type mismatch"); \
+    WAH_ASSERT((index >= ctx->nparams || ctx->param_types[index] == WAH_TYPE_##ty) && "Parameter type mismatch"); \
+    if (index >= ctx->nparams || ctx->param_types[index] != WAH_TYPE_##ty) return (wah_value_t){0}.field; \
     return ctx->params[index].field
 #define WAH_RESULT(ty, field, pre) \
     WAH_ASSERT(ctx && "Call context is NULL"); \
     WAH_ASSERT(index < ctx->nresults && "Result index out of bounds"); \
-    WAH_ASSERT(ctx->result_types[index] == WAH_TYPE_##ty && "Result type mismatch"); \
+    WAH_ASSERT((index >= ctx->nresults || ctx->result_types[index] == WAH_TYPE_##ty) && "Result type mismatch"); \
+    if (index >= ctx->nresults || ctx->result_types[index] != WAH_TYPE_##ty) { wah_call_misuse(ctx); return; } \
     ctx->results[index].field = pre value
+
+static void wah_call_misuse(wah_call_context_t *ctx) {
+    if (ctx->trap_reason == WAH_OK) ctx->trap_reason = WAH_ERROR_MISUSE;
+}
 
 size_t wah_param_count(const wah_call_context_t *ctx) {
     WAH_ASSERT(ctx && "Call context is NULL");
@@ -18709,7 +18719,7 @@ size_t wah_param_count(const wah_call_context_t *ctx) {
 wah_type_t wah_param_type(const wah_call_context_t *ctx, size_t index) {
     WAH_ASSERT(ctx && "Call context is NULL");
     WAH_ASSERT(index < ctx->nparams && "Parameter index out of bounds");
-    return ctx->param_types[index];
+    return index < ctx->nparams ? ctx->param_types[index] : WAH_TYPE_BOT;
 }
 int32_t wah_param_i32(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(I32, i32); }
 int64_t wah_param_i64(const wah_call_context_t *ctx, size_t index) { WAH_PARAM(I64, i64); }
@@ -18719,19 +18729,20 @@ wah_v128_t wah_param_v128(const wah_call_context_t *ctx, size_t index) { WAH_PAR
 void *wah_param_ref(const wah_call_context_t *ctx, size_t index) {
     WAH_ASSERT(ctx && "Call context is NULL");
     WAH_ASSERT(index < ctx->nparams && "Parameter index out of bounds");
-    WAH_ASSERT(WAH_TYPE_IS_REF(ctx->param_types[index]) && "Parameter type mismatch");
+    WAH_ASSERT((index >= ctx->nparams || WAH_TYPE_IS_REF(ctx->param_types[index])) && "Parameter type mismatch");
+    if (index >= ctx->nparams || !WAH_TYPE_IS_REF(ctx->param_types[index])) return NULL;
     // Due to the type confusion concern, mask any non-host non-null pointer with a likely-invalid one.
     return wah_sanitize_host_ref(ctx->params[index].ref);
-}
-
-static void wah_call_misuse(wah_call_context_t *ctx) {
-    if (ctx->trap_reason == WAH_OK) ctx->trap_reason = WAH_ERROR_MISUSE;
 }
 
 void *wah_param_pinned_ref(wah_call_context_t *ctx, size_t index) {
     WAH_ASSERT(ctx && "Call context is NULL");
     WAH_ASSERT(index < ctx->nparams && "Parameter index out of bounds");
-    WAH_ASSERT(WAH_TYPE_IS_REF(ctx->param_types[index]) && "Parameter type mismatch");
+    WAH_ASSERT((index >= ctx->nparams || WAH_TYPE_IS_REF(ctx->param_types[index])) && "Parameter type mismatch");
+    if (index >= ctx->nparams || !WAH_TYPE_IS_REF(ctx->param_types[index])) {
+        wah_call_misuse(ctx);
+        return NULL;
+    }
     if (ctx->params[index].ref == NULL) return NULL;
     void *pinned = NULL;
     wah_error_t err = wah_pin(ctx->pin_ctx, ctx->params[index], ctx->module,
@@ -18776,7 +18787,7 @@ size_t wah_result_count(const wah_call_context_t *ctx) {
 wah_type_t wah_result_type(const wah_call_context_t *ctx, size_t index) {
     WAH_ASSERT(ctx && "Call context is NULL");
     WAH_ASSERT(index < ctx->nresults && "Result index out of bounds");
-    return ctx->result_types[index];
+    return index < ctx->nresults ? ctx->result_types[index] : WAH_TYPE_BOT;
 }
 void wah_result_i32(wah_call_context_t *ctx, size_t index, int32_t value) { WAH_RESULT(I32, i32, ); }
 void wah_result_i64(wah_call_context_t *ctx, size_t index, int64_t value) { WAH_RESULT(I64, i64, ); }
@@ -18789,9 +18800,13 @@ void wah_result_v128(wah_call_context_t *ctx, size_t index, const wah_v128_t *va
 void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value) {
     WAH_ASSERT(ctx && "Call context is NULL");
     WAH_ASSERT(index < ctx->nresults && "Result index out of bounds");
-    WAH_ASSERT(WAH_TYPE_IS_REF(ctx->result_types[index]) && "Result type mismatch");
-    WAH_ASSERT((value != NULL || WAH_TYPE_IS_NULLABLE(ctx->result_types[index])) &&
+    WAH_ASSERT((index >= ctx->nresults || WAH_TYPE_IS_REF(ctx->result_types[index])) && "Result type mismatch");
+    WAH_ASSERT((value != NULL || index >= ctx->nresults || WAH_TYPE_IS_NULLABLE(ctx->result_types[index])) &&
                "Non-nullable reference result cannot be set to NULL");
+    if (index >= ctx->nresults || !WAH_TYPE_IS_REF(ctx->result_types[index])) {
+        wah_call_misuse(ctx);
+        return;
+    }
     if ((uintptr_t)value & 1) { // The host can't make i31 references, so this was sanitized
         wah_call_misuse(ctx);
         return;

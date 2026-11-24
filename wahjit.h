@@ -534,7 +534,8 @@ static uint32_t wah_jit_hint_arity(uint16_t op) {
 }
 
 // i32 values are kept zero-extended in registers and slots, so that addresses need no extension.
-// Values from outside (params of the activation and results of helpers) are zero-extended as they come in.
+// Params of the activation are zero-extended as they come in. Results of host functions are already, since
+// their slots are zeroed and the host can only set i32 results with wah_result_i32.
 #define WAH_JIT_ZEXT_I32 1
 
 // rax, rcx, rdx, rsi, rdi, r8, r9 and xmm0-xmm13 are allocatable unless pinned
@@ -1432,11 +1433,6 @@ static wah_error_t wah_jit_host(wah_exec_context_t *ctx, const wah_function_t *f
     memset(results, 0, sizeof(wah_value_t) * nresults);
     ctx->sp = results;
     WAH_CHECK(wah_call_host_function_internal(ctx, fn, args, (uint32_t)nparams, results));
-    if (WAH_JIT_ZEXT_I32) { // The host may have set anything above i32 values by misuse
-        for (size_t i = 0; i < nresults; i++) {
-            if (fn->result_types[i] == WAH_TYPE_I32) results[i].i64 = (uint32_t)results[i].i32;
-        }
-    }
     if (nresults > 0) memmove(args, results, sizeof(wah_value_t) * nresults);
     return WAH_OK;
 }

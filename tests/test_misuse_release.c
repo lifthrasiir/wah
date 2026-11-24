@@ -37,7 +37,7 @@ static void result_wide_i32(wah_call_context_t *ctx, void *userdata) {
 }
 
 static void test_wide_i32_result(void) {
-    printf("Testing an i32 result set as i64 is still an i32 in memory addresses...\n");
+    printf("Testing an i32 result set as i64 is refused, not to use anything above i32 in memory addresses...\n");
     wah_module_t mod = {0}, host = {0};
     wah_exec_context_t ctx = {0};
     assert_ok(wah_new_module(&host, NULL));
@@ -49,8 +49,7 @@ static void test_wide_i32_result(void) {
     assert_ok(wah_link_module(&ctx, "h", &host));
     assert_ok(wah_instantiate(&ctx));
     wah_value_t r;
-    assert_ok(wah_call(&ctx, 1, NULL, 0, &r));
-    assert_eq_i32(r.i32, 77);
+    assert_err(wah_call(&ctx, 1, NULL, 0, &r), WAH_ERROR_MISUSE);
     wah_free_exec_context(&ctx);
     wah_free_module(&mod);
     wah_free_module(&host);
@@ -99,8 +98,54 @@ static void test_free_running(bool self) {
     wah_free_module(&host);
 }
 
+static int64_t leaked_bits;
+static void misuse_accessors(wah_call_context_t *ctx, void *userdata) {
+    (void)userdata;
+    leaked_bits = wah_param_i64(ctx, 1); // anyref
+    assert_eq_i32(wah_param_i32(ctx, (size_t)1 << 40), 0);
+    assert_true(wah_param_ref(ctx, 0) == NULL); // i32
+    assert_true(wah_param_type(ctx, (size_t)1 << 40) != WAH_TYPE_I32);
+    wah_result_i32(ctx, 1, 42);
+    wah_result_i64(ctx, 0, 0x4141414141414140LL); // anyref
+}
+static void misuse_result_index(wah_call_context_t *ctx, void *userdata) {
+    (void)userdata;
+    wah_result_i32(ctx, 1, 42);
+    wah_result_i32(ctx, (size_t)1 << 40, 1);
+}
+static void misuse_result_ref(wah_call_context_t *ctx, void *userdata) {
+    (void)userdata;
+    wah_result_i32(ctx, 1, 42);
+    wah_result_ref(ctx, 1, NULL); // i32
+}
+
+static void test_accessors(void) {
+    printf("Testing call context accessors with wrong indices or types...\n");
+    void (*fns[])(wah_call_context_t *, void *) = { misuse_accessors, misuse_result_index, misuse_result_ref };
+    for (size_t i = 0; i < sizeof(fns) / sizeof(*fns); i++) {
+        wah_module_t mod = {0}, host = {0};
+        wah_exec_context_t ctx = {0};
+        assert_ok(wah_new_module(&host, NULL));
+        assert_ok(wah_export_func(&host, "f", "(i32, anyref) -> (anyref, i32)", fns[i], NULL, NULL));
+        assert_ok(wah_parse_module_from_spec(&mod, "wasm types {[ struct [i32 mut], fn [i32, anyref] [anyref, i32], \
+            fn [] [i32] ]} imports {[ {'h'} {'f'} fn# 1 ]} funcs {[ 2 ]} code {[ {[] \
+                i32.const 7 i32.const 99 struct.new 0 call 0 drop ref.test.null eqref end} ]}"));
+        assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+        assert_ok(wah_link_module(&ctx, "h", &host));
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t r;
+        leaked_bits = 0;
+        assert_err(wah_call(&ctx, 1, NULL, 0, &r), WAH_ERROR_MISUSE);
+        assert_eq_i64(leaked_bits, 0);
+        wah_free_exec_context(&ctx);
+        wah_free_module(&mod);
+        wah_free_module(&host);
+    }
+}
+
 int main(void) {
     test_trap_with_non_error();
+    test_accessors();
     test_free_running(false);
     test_free_running(true);
     test_wide_i32_result();
