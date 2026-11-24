@@ -10568,6 +10568,8 @@ static wah_error_t wah_parse_function_section(const uint8_t **ptr, const uint8_t
     const wah_alloc_t *alloc = &module->alloc;
     uint32_t count;
     WAH_CHECK(wah_decode_and_validate_count(ptr, section_end, &count, 1));
+    // Function indices and their bitmap in wah_declare_func are computed in uint32_t
+    WAH_ENSURE(count <= UINT32_MAX - 7 - module->import_function_count, WAH_ERROR_TOO_LARGE);
 
     module->wasm_function_count = count;
     WAH_MALLOC_ARRAY(module->function_type_indices, count);
