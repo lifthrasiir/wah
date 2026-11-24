@@ -918,10 +918,18 @@ static uint32_t wah_jit_hint_arity(uint16_t op) {
         case WAH_OP_I32_ROTR: case WAH_OP_I64_ADD: case WAH_OP_I64_SUB: case WAH_OP_I64_MUL: case WAH_OP_I64_AND:
         case WAH_OP_I64_OR: case WAH_OP_I64_XOR: case WAH_OP_I64_SHL: case WAH_OP_I64_SHR_S: case WAH_OP_I64_SHR_U:
         case WAH_OP_I64_ROTL: case WAH_OP_I64_ROTR:
+        case WAH_OP_I32_EQ: case WAH_OP_I32_NE: case WAH_OP_I32_LT_S: case WAH_OP_I32_LT_U: case WAH_OP_I32_GT_S:
+        case WAH_OP_I32_GT_U: case WAH_OP_I32_LE_S: case WAH_OP_I32_LE_U: case WAH_OP_I32_GE_S: case WAH_OP_I32_GE_U:
+        case WAH_OP_I64_EQ: case WAH_OP_I64_NE: case WAH_OP_I64_LT_S: case WAH_OP_I64_LT_U: case WAH_OP_I64_GT_S:
+        case WAH_OP_I64_GT_U: case WAH_OP_I64_LE_S: case WAH_OP_I64_LE_U: case WAH_OP_I64_GE_S: case WAH_OP_I64_GE_U:
             return 2;
+        case WAH_OP_SELECT:
+            return 3;
         case WAH_OP_I32_LOAD: case WAH_OP_I64_LOAD: case WAH_OP_I32_LOAD8_S: case WAH_OP_I32_LOAD8_U:
         case WAH_OP_I32_LOAD16_S: case WAH_OP_I32_LOAD16_U: case WAH_OP_I64_LOAD8_S: case WAH_OP_I64_LOAD8_U:
         case WAH_OP_I64_LOAD16_S: case WAH_OP_I64_LOAD16_U: case WAH_OP_I64_LOAD32_S: case WAH_OP_I64_LOAD32_U:
+        case WAH_OP_I32_EQZ: case WAH_OP_I64_EQZ: case WAH_OP_I32_CLZ: case WAH_OP_I32_CTZ: case WAH_OP_I32_POPCNT:
+        case WAH_OP_I64_CLZ: case WAH_OP_I64_CTZ: case WAH_OP_I64_POPCNT:
             return 1;
         default: return 0;
     }
@@ -3507,6 +3515,29 @@ static void wah_jit_fcmp(wah_jit_fn_t *f, int type, int kind, bool fuse) {
     }
 }
 
+// Encodes v as a bitmask immediate (N:immr:imms at bits 22-10) of logical instructions, if it is one:
+// a rotated run of ones in each element of 2 to 64 bits.
+static bool wah_a64_logical_imm(bool sf, uint64_t v, uint32_t *enc) {
+    if (!sf) v = (uint32_t)v | (uint64_t)(uint32_t)v << 32;
+    if (v == 0 || v == ~(uint64_t)0) return false;
+    uint32_t size = 64;
+    while (size > 2 && (v & (((uint64_t)1 << (size / 2)) - 1)) == ((v >> (size / 2)) & (((uint64_t)1 << (size / 2)) - 1))) {
+        size /= 2;
+    }
+    uint64_t mask = size == 64 ? ~(uint64_t)0 : ((uint64_t)1 << size) - 1, e = v & mask;
+    uint32_t ones = 0;
+    for (uint64_t t = e; t; t &= t - 1) ones++;
+    uint64_t run = ((uint64_t)1 << ones) - 1; // ones < size, as e is neither 0 nor all ones
+    for (uint32_t r = 0; r < size; r++) {
+        uint64_t rot = r ? ((e >> r) | (e << (size - r))) & mask : e; // e rotated right by r
+        if (rot != run) continue;
+        uint32_t n = size == 64, immr = (size - r) % size, imms = ((~(size - 1) << 1) & 0x3f) | (ones - 1);
+        *enc = n << 22 | immr << 16 | imms << 10;
+        return true;
+    }
+    return false;
+}
+
 static void wah_jit_ibinop(wah_jit_fn_t *f, bool sf, int kind) {
     static const uint32_t ops[] = { WAH_A64_ADD, WAH_A64_SUB, WAH_A64_MUL, WAH_A64_AND, WAH_A64_ORR, WAH_A64_EOR };
     uint32_t imm;
@@ -3517,6 +3548,21 @@ static void wah_jit_ibinop(wah_jit_fn_t *f, bool sf, int kind) {
         wah_a64_addsub_imm(f, (kind == WAH_JI_SUB) != neg ? WAH_A64_SUBI : WAH_A64_ADDI, sf, d, a, imm, false);
         wah_jit_finish_gpr(f, d, a, -1);
         return;
+    }
+    const wah_jit_val_t *top = &f->vals[f->h - 1];
+    if ((kind == WAH_JI_AND || kind == WAH_JI_OR || kind == WAH_JI_XOR) && top->kind == WAH_JV_CONST) {
+        // AND, ORR or EOR (immediate), and EOR with all ones as MVN (ORN from the zero register)
+        static const uint32_t imm_ops[] = { 0x12000000u, 0x32000000u, 0x52000000u };
+        uint64_t c = sf ? (uint64_t)top->imm : (uint32_t)top->imm;
+        bool mvn = kind == WAH_JI_XOR && c == (sf ? ~(uint64_t)0 : 0xffffffffu);
+        if (mvn || wah_a64_logical_imm(sf, c, &imm)) {
+            f->h--;
+            int a = wah_jit_pop_gpr_ro(f), d = wah_jit_dest(f, false, a, -1);
+            if (mvn) wah_a64_rrr(f, 0x2A200000u, sf, d, WAH_A64_ZR, a);
+            else wah_a64(f, imm_ops[kind - WAH_JI_AND] | WAH_A64_SF(sf) | imm | (uint32_t)a << 5 | (uint32_t)d);
+            wah_jit_finish_gpr(f, d, a, -1);
+            return;
+        }
     }
     int b = wah_jit_pop_gpr_ro(f), a = wah_jit_pop_gpr_ro(f), d = wah_jit_dest(f, false, a, b);
     wah_a64_rrr(f, ops[kind], sf, d, a, b);
@@ -3819,12 +3865,22 @@ static void wah_jit_store(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size_
     else if (r != WAH_A64_ZR) wah_jit_free_gpr(f, r);
 }
 
+// Pops an integer only to be read, as the zero register if it is a constant zero.
+static int wah_a64_pop_gpr_zr(wah_jit_fn_t *f) {
+    const wah_jit_val_t *v = &f->vals[f->h - 1];
+    if (v->kind == WAH_JV_CONST && v->imm == 0) {
+        f->h--;
+        return WAH_A64_ZR;
+    }
+    return wah_jit_pop_gpr_ro(f);
+}
+
 static void wah_jit_select(wah_jit_fn_t *f) {
     wah_jit_cond_t c = wah_jit_pop_cond(f);
     bool fp = wah_jit_is_fpr(f->vals[f->h - 1].kind) || wah_jit_is_fpr(f->vals[f->h - 2].kind);
     int b, a;
     if (fp) { b = wah_jit_pop_fpr_ro(f); a = wah_jit_pop_fpr(f); }
-    else { b = wah_jit_pop_gpr_ro(f); a = wah_jit_pop_gpr(f); }
+    else { b = wah_a64_pop_gpr_zr(f); a = wah_a64_pop_gpr_zr(f); }
     int cond = c.cond;
     if (!c.flags) {
         wah_a64_addsub_imm(f, WAH_A64_SUBSI, false, WAH_A64_ZR, c.reg, 0, false);
@@ -3834,10 +3890,10 @@ static void wah_jit_select(wah_jit_fn_t *f) {
         wah_a64_fcsel(f, 1, a, a, b, cond);
         wah_jit_free_fpr(f, b);
         wah_jit_push_fpr(f, a);
-    } else {
-        wah_a64_csel(f, true, a, a, b, cond);
-        wah_jit_free_gpr(f, b);
-        wah_jit_push_gpr(f, a);
+    } else { // The zero register is never a temporary, so it is not chosen as the destination
+        int d = wah_jit_dest(f, false, a, b);
+        wah_a64_csel(f, true, d, a, b, cond);
+        wah_jit_finish_gpr(f, d, a, b);
     }
     wah_jit_release_cond(f, c);
 }

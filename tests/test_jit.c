@@ -412,6 +412,70 @@ static void test_result_hints(void) {
     }
 }
 
+// Logical operations with constants (bitmask immediates and MVN on AArch64), and selects, comparisons and unary
+// operations with constant zeros or results set to pinned locals
+static void test_peepholes(void) {
+    printf("Testing logical immediates, selects and comparisons set to locals...\n");
+    static const int64_t c32[] = { 255, 0xff00, 0x0f0f0f0f, 0x55555555, 0x7ffffffe, 1, -2, -1, 0x12345, 21632,
+                                   (int32_t)0x80000000, 0x7fffffff, 0, 0x3ffffffc };
+    static const int64_t c64[] = { 255, 0x00ff00ff00ff00ffLL, INT64_MIN + 1, -2, -1, 0x12345, 0xffffffffLL, 0x100000000LL,
+                                   0x123456789LL, INT64_MIN, 0, 0x7ffffffffffffff0LL, 0x0003000300030003LL };
+    static const char *ops[] = { "and", "or", "xor" };
+    char spec[1024];
+    for (int is64 = 0; is64 < 2; is64++) {
+        const char *t = is64 ? "i64" : "i32";
+        const int64_t *cs = is64 ? c64 : c32;
+        size_t n = is64 ? COUNT(c64) : COUNT(c32);
+        for (size_t k = 0; k < COUNT(ops); k++) {
+            for (size_t j = 0; j < n; j++) {
+                snprintf(spec, sizeof(spec), "wasm types {[ fn [%s, %s] [%s, %s, %s] ]} funcs {[ 0 ]} code {[ {[] "
+                    "local.get 0 %s.const %lld %s.%s "                   // x op c
+                    "%s.const %lld local.get 1 %s.%s "                   // c op y
+                    "local.get 1 %s.const %lld %s.%s local.set 1 local.get 1 end} ]}", // y = y op c
+                    t, t, t, t, t, t, (long long)cs[j], t, ops[k], t, (long long)cs[j], t, ops[k],
+                    t, (long long)cs[j], t, ops[k]);
+                static const int64_t samples[][2] = { { 0, 0 }, { -1, 1 }, { 0x123456789abcdefLL, -0x5555555555555556LL } };
+                for (size_t i = 0; i < COUNT(samples); i++) {
+                    wah_value_t p[2];
+                    if (is64) p[0].i64 = samples[i][0], p[1].i64 = samples[i][1];
+                    else p[0].i32 = (int32_t)samples[i][0], p[1].i32 = (int32_t)samples[i][1];
+                    check_call(spec, NULL, 0, p, 2, 3);
+                }
+            }
+        }
+    }
+    const char *sel32 = "wasm types {[ fn [i32, i32] [i32, i32, i32, i32, i32, i32, i32, i32] ]} funcs {[ 0 ]} \
+        code {[ {[6 i32] \
+        local.get 0 i32.const 0 local.get 1 select local.set 2 \
+        i32.const 0 local.get 1 local.get 0 select local.set 3 \
+        local.get 3 local.get 2 local.get 1 select local.set 2 \
+        i32.const 0 i32.const 0 local.get 0 select local.get 3 i32.add local.set 3 \
+        local.get 0 local.get 1 i32.lt_s local.set 4 \
+        local.get 0 local.get 1 i32.ge_u local.set 5 \
+        local.get 2 i32.eqz local.set 6 \
+        local.get 0 i32.clz local.get 1 i32.ctz i32.add local.set 7 \
+        local.get 1 local.get 0 local.get 0 local.get 1 i32.gt_s select local.set 1 \
+        local.get 0 i32.popcnt local.set 0 \
+        local.get 1 local.get 1 i32.const 7 i32.eq local.tee 1 i32.add local.set 1 \
+        local.get 0 local.get 1 local.get 2 local.get 3 local.get 4 local.get 5 local.get 6 local.get 7 end} ]}";
+    const char *sel64 = "wasm types {[ fn [i64, i64, i32] [i64, i64, i64, i32, i64] ]} funcs {[ 0 ]} code {[ {[2 i64] \
+        local.get 0 i64.const 0 local.get 2 select local.set 3 \
+        i64.const 0 local.get 1 local.get 2 select local.set 4 \
+        local.get 0 local.get 1 local.get 0 local.get 1 i64.lt_u select local.set 0 \
+        local.get 0 local.get 1 i64.ne local.set 2 \
+        local.get 1 i64.ctz local.get 1 i64.popcnt i64.add local.get 1 i64.eqz i64.extend_i32_u i64.add local.set 1 \
+        local.get 0 local.get 1 local.get 3 local.get 2 local.get 4 end} ]}";
+    for (size_t i = 0; i < COUNT(I32_SAMPLES); i++) {
+        wah_value_t p[2] = { { .i32 = I32_SAMPLES[i] }, { .i32 = I32_SAMPLES[(i * 5 + 3) % COUNT(I32_SAMPLES)] } };
+        check_call(sel32, NULL, 0, p, 2, 8);
+    }
+    for (size_t i = 0; i < COUNT(I64_SAMPLES); i++) {
+        wah_value_t p[3] = { { .i64 = I64_SAMPLES[i] }, { .i64 = I64_SAMPLES[(i * 5 + 3) % COUNT(I64_SAMPLES)] },
+                             { .i32 = (int32_t)(i % 3) } };
+        check_call(sel64, NULL, 0, p, 3, 5);
+    }
+}
+
 static void host_twice(wah_call_context_t *call, void *userdata) {
     (void)userdata;
     wah_result_i64(call, 0, wah_param_i64(call, 0) * 2);
@@ -1318,6 +1382,7 @@ int main(void) {
     test_pinned_locals();
     test_local_cache();
     test_result_hints();
+    test_peepholes();
     test_i32_upper_bits();
     test_simd_binary();
     test_simd_unary();
