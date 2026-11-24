@@ -246,6 +246,27 @@ lean:
 	@cd proofs/lean && $(LAKE) env lean Audit.lean
 	@echo "## All Lean proofs passed."
 
+# Proofs against the Lean model of Wasm 3.0 that SpecTec generates (WahSpecTec.lean), pinned to a commit of
+# sgraf812/spectec-wp and fetched into .lake. The model takes about 6 minutes to elaborate the first time.
+SPECTEC_WP_REV := c8f6efb767384785473c10d3cc618d15461b1d6d
+SPECTEC_WP_SHA256 := 3eeb9832941cabe951b23bf8bd420b7e3aacc3c2a68d8ee6385295432ca23acb
+SPECTEC_MODEL := proofs/lean/.lake/spectec/SpecTec/Wasm.lean
+
+.PHONY: lean-spectec
+lean-spectec:
+	@echo "## Building Lean proofs against the SpecTec model..."
+	@echo "$(SPECTEC_WP_SHA256)  $(SPECTEC_MODEL)" | shasum -a 256 -c --status 2>/dev/null || { \
+		mkdir -p $(dir $(SPECTEC_MODEL)) && \
+		curl -sfL -o $(SPECTEC_MODEL) \
+			https://raw.githubusercontent.com/sgraf812/spectec-wp/$(SPECTEC_WP_REV)/SpecTecWP/Wasm.lean && \
+		echo "$(SPECTEC_WP_SHA256)  $(SPECTEC_MODEL)" | shasum -a 256 -c --status; } || \
+		{ echo "Failed to fetch the SpecTec model"; exit 1; }
+	@cd proofs/lean && $(LAKE) build WahSpecTec
+	@! grep -rnE '$(LEAN_FORBIDDEN)' proofs/lean/WahSpecTec proofs/lean/WahSpecTec.lean || \
+		{ echo "Forbidden constructs in Lean proofs"; exit 1; }
+	@cd proofs/lean && $(LAKE) env lean AuditSpecTec.lean
+	@echo "## All Lean proofs against the SpecTec model passed."
+
 # Compares canonical maps and subtyping of the spec tests and the fuzz corpus with the Lean models, as a check of the
 # loops that the CBMC proofs don't cover or only cover for a few types. The second run makes all rec groups collide,
 # so that every pair of them is compared structurally.

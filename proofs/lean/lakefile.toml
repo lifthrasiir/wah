@@ -11,3 +11,13 @@ root = "Oracle"
 [[lean_exe]]
 name = "wah_lowered_oracle"
 root = "LoweredOracle"
+
+# The Lean model of Wasm 3.0 that SpecTec generates, fetched by `make lean-spectec` (not built by `make lean`)
+[[lean_lib]]
+name = "SpecTec"
+srcDir = ".lake/spectec"
+roots = ["SpecTec.Wasm"]
+leanOptions = { linter.unusedSimpArgs = false }
+
+[[lean_lib]]
+name = "WahSpecTec"
