@@ -1424,6 +1424,11 @@ static wah_error_t wah_jit_host(wah_exec_context_t *ctx, const wah_function_t *f
     memset(results, 0, sizeof(wah_value_t) * nresults);
     ctx->sp = results;
     WAH_CHECK(wah_call_host_function_internal(ctx, fn, args, (uint32_t)nparams, results));
+    if (WAH_JIT_ZEXT_I32) { // The host may have set anything above i32 values by misuse
+        for (size_t i = 0; i < nresults; i++) {
+            if (fn->result_types[i] == WAH_TYPE_I32) results[i].i64 = (uint32_t)results[i].i32;
+        }
+    }
     if (nresults > 0) memmove(args, results, sizeof(wah_value_t) * nresults);
     return WAH_OK;
 }
