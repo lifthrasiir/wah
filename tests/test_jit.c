@@ -917,6 +917,48 @@ static void test_local_get_cache(void) {
     }
 }
 
+static void test_pin_liveness(void) {
+    printf("Testing pinned locals synced around calls only while live...\n");
+    // Function 1 has pinned locals of its own, overwriting the registers of the caller's pins
+    char spec[8192];
+    size_t cap = sizeof(spec);
+    int n = snprintf(spec, cap, "wasm types {[ fn [i32, i32] [i32, i32, i32, i32, i32, i32, i32, i32], fn [i32] [i32] ]} \
+        funcs {[ 0, 1 ]} code {[ {[8 i32] \
+        local.get 0 i32.const 3 i32.mul local.set 2 local.get 1 i32.const 7 i32.add local.set 5 \
+        local.get 1 i32.const 9 i32.xor local.set 6 local.get 0 i32.const 13 i32.add local.set 8 \
+        local.get 0 call 1 drop i32.const 5 local.set 2 \
+        i32.const 0 local.set 3 local.get 1 local.set 4 \
+        loop void \
+            local.get 4 local.get 3 i32.add local.set 4 local.get 3 call 1 drop \
+            local.get 3 i32.const 1 i32.add local.tee 3 i32.const 3 i32.lt_u br_if 0 \
+        end \
+        block void local.get 0 call 1 drop local.get 0 br_if 0 i32.const 9 local.set 2 end \
+        local.get 0 i32.const 1 i32.and if void local.get 1 call 1 drop else i32.const 11 local.set 5 end \
+        local.get 1 call 1 drop local.get 0 i32.const 2 i32.and if void local.get 6 local.set 7 end \
+        block void block void local.get 0 call 1 drop local.get 0 i32.const 3 i32.and br_table [0, 1] 1 end \
+            local.get 8 local.set 9 end \
+        local.get 1 call 1 drop local.get 0 i32.const 4 i32.and if void else local.get 6 local.get 7 i32.add local.set 7 end \
+        i32.const 2 local.set 6 i32.const 0 local.set 3 local.get 0 local.set 4 \
+        loop void \
+            local.get 4 local.get 3 i32.add local.tee 4 local.get 8 i32.xor local.set 8 local.get 3 call 1 drop \
+            local.get 3 i32.const 1 i32.add local.tee 3 i32.const 3 i32.lt_u br_if 0 \
+        end \
+        i32.const 1 local.set 4 \
+        local.get 2 local.get 3 local.get 4 local.get 5 local.get 6 local.get 7 local.get 8 local.get 9 end}, \
+        {[20 i32] local.get 0 local.set 1 block void loop void");
+    for (int k = 2; k <= 20; k++) {
+        n += snprintf(spec + n, cap - (size_t)n, " local.get %d local.get %d i32.add i32.const %d i32.xor local.set %d",
+                      k, k - 1, k * 77, k);
+    }
+    n += snprintf(spec + n, cap - (size_t)n, " local.get 1 i32.const 1 i32.add local.tee 1 i32.const 9 i32.lt_u br_if 0 end end local.get 1");
+    for (int k = 2; k <= 20; k++) n += snprintf(spec + n, cap - (size_t)n, " local.get %d i32.add", k);
+    snprintf(spec + n, cap - (size_t)n, " end} ]}");
+    for (size_t i = 0; i < COUNT(I32_SAMPLES); i++) {
+        wah_value_t p[2] = { { .i32 = I32_SAMPLES[i] }, { .i32 = I32_SAMPLES[(i * 7 + 2) % COUNT(I32_SAMPLES)] } };
+        check_call(spec, NULL, 0, p, 2, 8);
+    }
+}
+
 // i32 values whose 64-bit representations may have upper bits set, used as addresses, br_table indices and
 // zero-extended operands. Params are given with garbage in their upper halves, which wasm can't observe.
 static void test_i32_upper_bits(void) {
@@ -1578,6 +1620,7 @@ int main(void) {
     test_pinned_locals();
     test_local_cache();
     test_local_get_cache();
+    test_pin_liveness();
     test_result_hints();
     test_peepholes();
     test_folded_operands();

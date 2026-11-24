@@ -200,6 +200,7 @@ typedef struct {
     wah_jit_pin_t pins[WAH_JIT_MAX_PINS];
     uint32_t npins, gpr_pins, fpr_pins; // Masks of pinned registers
     uint32_t dirty;          // Pins (by index) whose registers may differ from their slots
+    uint32_t *live;          // Pins that may be read before set from each instruction on [ninstrs + 1], NULL if all
 
     wah_jit_val_t *vals;
     uint32_t h;
@@ -1391,13 +1392,14 @@ static void wah_jit_branch_if(wah_jit_fn_t *f, wah_jit_cond_t c, bool when, uint
 
 static void wah_jit_release_cond(wah_jit_fn_t *f, wah_jit_cond_t c) { if (!c.flags) wah_jit_free_gpr(f, c.reg); }
 
-// Stores pinned locals to their slots, or loads them back.
-// Stores pinned locals into their slots, or loads them back. Only dirty pins are stored on AArch64.
-static void wah_jit_sync_pins(wah_jit_fn_t *f, bool store) {
+// Stores pinned locals in `live` into their slots, or loads them back. Only dirty pins are stored on AArch64,
+// where pins not in `live` are left alone, as their values are not used anymore.
+static void wah_jit_sync_pins(wah_jit_fn_t *f, bool store, uint32_t live) {
 #ifdef WAH_JIT_AARCH64
-    uint32_t mask = store ? f->dirty : ~(uint32_t)0;
+    uint32_t mask = (store ? f->dirty : ~(uint32_t)0) & live;
 #else
     uint32_t mask = ~(uint32_t)0;
+    (void)live;
 #endif
     f->dirty = 0;
     for (uint32_t i = 0; i < f->npins; i++) {
@@ -2355,15 +2357,15 @@ static void wah_jit_emit_stub(wah_jit_fn_t *f, const wah_jit_stub_t *s) {
     if (s->load_err) wah_jit_load_err(f);
     if (s->poll) { // Pinned locals are kept in slots while suspended, and restored when resumed or continued
         uint32_t suspend = wah_jit_new_label(f);
-        wah_jit_sync_pins(f, true);
+        wah_jit_sync_pins(f, true, ~(uint32_t)0);
         wah_jit_call_helper(f, (uintptr_t)wah_jit_poll, (const wah_jit_arg_t[]){ { WAH_JA_CTX, 0 } }, 1, false);
         wah_jit_cbz(f, true, false, WAH_JR_RET, suspend);
-        wah_jit_sync_pins(f, false);
+        wah_jit_sync_pins(f, false, ~(uint32_t)0);
         wah_jit_b(f, s->cont);
         if (f->npins > 0) {
             resume = wah_jit_new_label(f);
             wah_jit_bind(f, resume);
-            wah_jit_sync_pins(f, false);
+            wah_jit_sync_pins(f, false, ~(uint32_t)0);
             wah_jit_b(f, s->resume);
         }
         wah_jit_bind(f, suspend);
@@ -4040,15 +4042,15 @@ static void wah_jit_emit_stub(wah_jit_fn_t *f, const wah_jit_stub_t *s) {
     if (s->load_err) wah_jit_load_err(f);
     if (s->poll) { // Pinned locals are kept in slots while suspended, and restored when resumed or continued
         uint32_t suspend = wah_jit_new_label(f);
-        wah_jit_sync_pins(f, true);
+        wah_jit_sync_pins(f, true, ~(uint32_t)0);
         wah_jit_call_helper(f, (uintptr_t)wah_jit_poll, (const wah_jit_arg_t[]){ { WAH_JA_CTX, 0 } }, 1, false);
         wah_jit_cbz(f, true, false, WAH_JR_RET, suspend);
-        wah_jit_sync_pins(f, false);
+        wah_jit_sync_pins(f, false, ~(uint32_t)0);
         wah_jit_b(f, s->cont);
         if (f->npins > 0) {
             resume = wah_jit_new_label(f);
             wah_jit_bind(f, resume);
-            wah_jit_sync_pins(f, false);
+            wah_jit_sync_pins(f, false, ~(uint32_t)0);
             wah_jit_b(f, s->resume);
         }
         wah_jit_bind(f, suspend);
@@ -4908,6 +4910,85 @@ static uint32_t wah_jit_loop_writes(const wah_jit_fn_t *f) {
     return mask;
 }
 
+// Bit of the pin of local idx, 0 if not pinned
+static uint32_t wah_jit_pin_bit(const wah_jit_fn_t *f, uint32_t idx) {
+    if (!f->pin_of || f->pin_of[idx] < 0) return 0;
+    for (uint32_t k = 0; k < f->npins; k++) {
+        if (f->pins[k].idx == idx) return 1u << k;
+    }
+    return 0;
+}
+
+// Pins that may be read after the instruction being compiled before being set
+static uint32_t wah_jit_live_out(const wah_jit_fn_t *f) { return f->live ? f->live[f->instr_idx + 1] : ~(uint32_t)0; }
+
+// Computes f->live by backward dataflow over the structured control flow, which is iterated for loops.
+// Leaves it NULL (all pins live) if out of memory or not converging quickly.
+static void wah_jit_pin_liveness(wah_jit_fn_t *f) {
+    uint32_t n = f->ninstrs;
+    if (f->npins == 0) return;
+    void *p = NULL;
+    if (wah_malloc(f->alloc, (size_t)n * 3 + 1, sizeof(uint32_t), &p) != WAH_OK) return;
+    uint32_t *live = (uint32_t *)p, *match = live + n + 1, *up = match + n; // up: innermost enclosing block, loop or if
+    uint32_t stack[WAH_MAX_CONTROL_DEPTH + 1], sp = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint16_t op = f->instrs[i].opcode;
+        live[i] = 0;
+        match[i] = UINT32_MAX;
+        up[i] = sp > 0 ? stack[sp - 1] : UINT32_MAX;
+        if (op == WAH_OP_BLOCK || op == WAH_OP_LOOP || op == WAH_OP_IF) {
+            if (sp > WAH_MAX_CONTROL_DEPTH) goto fail;
+            stack[sp++] = i;
+        } else if (op == WAH_OP_ELSE && sp > 0) {
+            match[stack[sp - 1]] = i; // The if is matched to its else until its end, which the else is matched to
+        } else if (op == WAH_OP_END && sp > 0) {
+            uint32_t o = stack[--sp];
+            if (match[o] != UINT32_MAX) match[match[o]] = i;
+            else match[o] = i;
+        }
+    }
+    live[n] = 0;
+    for (int pass = 0, changed = 1; changed; pass++) {
+        if (pass == 64) goto fail;
+        changed = 0;
+        for (uint32_t i = n; i-- > 0;) {
+            const wah_decoded_instr_t *in = &f->instrs[i];
+            uint32_t m = live[i + 1], targets[WAH_MAX_CONTROL_DEPTH + 1], nt = 0;
+            switch (in->opcode) {
+                case WAH_OP_LOCAL_GET: m |= wah_jit_pin_bit(f, in->imm.u32); break;
+                case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE: m &= ~wah_jit_pin_bit(f, in->imm.u32); break;
+                case WAH_OP_IF: // The false edge goes past the else, or to the end
+                    if (f->instrs[match[i]].opcode == WAH_OP_ELSE) m |= live[match[i] + 1];
+                    else m |= live[match[i]];
+                    break;
+                case WAH_OP_ELSE: m = live[match[i]]; break;
+                case WAH_OP_RETURN: case WAH_OP_UNREACHABLE: m = 0; break;
+                case WAH_OP_BR: m = 0; targets[nt++] = in->imm.branch.label_idx; break;
+                case WAH_OP_BR_IF: targets[nt++] = in->imm.branch.label_idx; break;
+                case WAH_OP_BR_TABLE: {
+                    wah_br_table_imm_t *bt = in->imm.br_table;
+                    const uint32_t *symbols = wah_br_table_symbols(bt);
+                    m = 0;
+                    for (uint32_t r = 0; r < bt->record_count && nt <= WAH_MAX_CONTROL_DEPTH; r++) targets[nt++] = symbols[r];
+                    break;
+                }
+                default: break;
+            }
+            for (uint32_t t = 0; t < nt; t++) {
+                uint32_t o = up[i];
+                for (uint32_t d = targets[t]; d > 0 && o != UINT32_MAX; d--) o = up[o];
+                if (o == UINT32_MAX) continue; // The function, which returns
+                m |= f->instrs[o].opcode == WAH_OP_LOOP ? live[o + 1] : live[match[o]];
+            }
+            if (m != live[i]) { live[i] = m; changed = 1; }
+        }
+    }
+    f->live = live;
+    return;
+fail:
+    wah_free(f->alloc, live);
+}
+
 static void wah_jit_end(wah_jit_fn_t *f) {
     wah_jit_ctl_t t = f->ctl[--f->nctl];
     if (t.opcode == WAH_OP_LOOP) return; // Only reached by falling through
@@ -5049,7 +5130,7 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             uint32_t idx = in->imm.u32;
             const wah_func_type_t *ft = wah_resolve_func_type(f->module, idx);
             wah_jit_flush(f);
-            wah_jit_sync_pins(f, true);
+            wah_jit_sync_pins(f, true, wah_jit_live_out(f));
             uint32_t args = f->h - ft->param_count;
             if (idx < f->module->import_function_count) {
                 uint32_t start = wah_jit_new_label(f);
@@ -5061,7 +5142,7 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
                 wah_jit_call_wasm(f, wah_jit_slot_off(f, args), idx - f->module->import_function_count);
             }
             wah_jit_reload_memory(f);
-            wah_jit_sync_pins(f, false);
+            wah_jit_sync_pins(f, false, wah_jit_live_out(f));
             wah_jit_reset(f, args + ft->result_count);
             break;
         }
@@ -5069,7 +5150,7 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             const wah_func_type_t *ft = &f->module->types[in->imm.u32_u32.a];
             bool table64 = wah_table_type(f->module, in->imm.u32_u32.b)->addr_type == WAH_TYPE_I64;
             wah_jit_flush(f);
-            wah_jit_sync_pins(f, true);
+            wah_jit_sync_pins(f, true, wah_jit_live_out(f));
             uint32_t start = wah_jit_new_label(f);
             wah_jit_bind(f, start); // Retried here if a host function suspends, like direct calls
             f->h--;
@@ -5083,7 +5164,7 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             wah_jit_call_code(f, wah_jit_slot_off(f, args), done);
             wah_jit_bind(f, done);
             wah_jit_reload_memory(f);
-            wah_jit_sync_pins(f, false);
+            wah_jit_sync_pins(f, false, wah_jit_live_out(f));
             wah_jit_reset(f, args + ft->result_count);
             break;
         }
@@ -5220,19 +5301,19 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
         case WAH_OP_MEMORY_SIZE: wah_jit_memory_size(f, in->imm.u32); break;
         case WAH_OP_MEMORY_GROW: {
             wah_jit_flush(f);
-            wah_jit_sync_pins(f, true);
+            wah_jit_sync_pins(f, true, wah_jit_live_out(f));
             const wah_jit_arg_t a[] = { { WAH_JA_CTX, 0 }, { WAH_JA_IMM, in->imm.u32 }, { WAH_JA_SLOT, f->h - 1 } };
             wah_jit_call_helper(f, (uintptr_t)wah_jit_memory_grow, a, 3, false);
             wah_jit_cbz(f, true, false, WAH_JR_RET, f->l_err);
             wah_jit_reload_memory(f);
-            wah_jit_sync_pins(f, false);
+            wah_jit_sync_pins(f, false, wah_jit_live_out(f));
             wah_jit_reset(f, f->h); // The result replaces the operand in its slot
             break;
         }
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
         case WAH_OP_MEMORY_FILL: case WAH_OP_MEMORY_COPY: case WAH_OP_MEMORY_INIT: {
             wah_jit_flush(f);
-            wah_jit_sync_pins(f, true);
+            wah_jit_sync_pins(f, true, wah_jit_live_out(f));
             uint32_t start = wah_jit_new_label(f);
             wah_jit_bind(f, start); // Resumes here with operands and pinned locals in slots
             wah_jit_arg_t a[4] = { { WAH_JA_CTX, 0 } };
@@ -5251,16 +5332,16 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             wah_jit_call_helper(f, fn, a, nargs, false);
             wah_jit_check_status(f, start);
             wah_jit_reload_memory(f);
-            wah_jit_sync_pins(f, false);
+            wah_jit_sync_pins(f, false, wah_jit_live_out(f));
             wah_jit_reset(f, f->h - 3);
             break;
         }
         case WAH_OP_DATA_DROP: {
             wah_jit_flush(f);
-            wah_jit_sync_pins(f, true);
+            wah_jit_sync_pins(f, true, wah_jit_live_out(f));
             const wah_jit_arg_t a[] = { { WAH_JA_CTX, 0 }, { WAH_JA_IMM, in->imm.u32 } };
             wah_jit_call_helper(f, (uintptr_t)wah_jit_data_drop, a, 2, false);
-            wah_jit_sync_pins(f, false);
+            wah_jit_sync_pins(f, false, wah_jit_live_out(f));
             wah_jit_reset(f, f->h);
             break;
         }
@@ -5468,6 +5549,7 @@ fail:
 
 static void wah_jit_free_fn(wah_jit_fn_t *f) {
     wah_free(f->alloc, f->pin_of);
+    wah_free(f->alloc, f->live);
     wah_free(f->alloc, f->vals);
     wah_free(f->alloc, f->ctl);
     wah_free(f->alloc, f->labels);
@@ -5547,6 +5629,7 @@ static void wah_jit_compile_body(wah_jit_fn_t *f, uint32_t local_idx, const wah_
     f->instrs = ac->instrs;
     f->ninstrs = ac->instr_count;
     wah_jit_choose_pins(f, body, ac);
+    wah_jit_pin_liveness(f);
     wah_jit_reset(f, 0);
     f->l_trap = wah_jit_new_label(f);
     f->l_oob = wah_jit_new_label(f);
