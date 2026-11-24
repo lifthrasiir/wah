@@ -1744,6 +1744,8 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 #endif
 
 #define WAH_TYPE_BOT -99 // Placeholder for bottom type in type checking
+#define WAH_TYPE_BOT_REF -98 // (ref bot) in type checking: a reference of an unknown type, from unreachable code
+#define WAH_TYPE_IS_UNKNOWN(t) ((t) == WAH_TYPE_BOT || (t) == WAH_TYPE_BOT_REF) // Unknown heap types
 
 ////////////////////////////////////////////////////////////////////////////////
 // Feature configuration ///////////////////////////////////////////////////////
@@ -5107,6 +5109,7 @@ static inline wah_comp_type_kind_t wah_type_def_kind(const wah_module_t *m, wah_
 
 static inline bool wah_type_is_subtype(wah_type_t sub, wah_type_t sup, const wah_module_t *module) {
     if (sub == sup || sub == WAH_TYPE_BOT) return true;
+    if (sub == WAH_TYPE_BOT_REF) return WAH_TYPE_IS_REF(sup);
     if (WAH_TYPE_IS_NULLABLE(sub) && !WAH_TYPE_IS_NULLABLE(sup)) return false;
     sub = WAH_TYPE_AS_NON_NULL(sub);
     sup = WAH_TYPE_AS_NON_NULL(sup);
@@ -7494,7 +7497,7 @@ cleanup_block:
 
         case WAH_OP_REF_IS_NULL: {
             wah_type_t ref_type; POP_INTO(&ref_type);
-            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || WAH_TYPE_IS_UNKNOWN(ref_type), WAH_ERROR_VALIDATION_FAILED);
             PUSH(I32);
             EMIT_SIMPLE();
             break;
@@ -7727,8 +7730,8 @@ cleanup_block:
             // Otherwise unchecked when the operand is unreachable
             WAH_CHECK(wah_require_type_features(vctx->module, WAH_TYPE_AS_NULLABLE(heap_type)));
             wah_type_t ref_type; POP_INTO(&ref_type);
-            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
-            if (ref_type != WAH_TYPE_BOT) {
+            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || WAH_TYPE_IS_UNKNOWN(ref_type), WAH_ERROR_VALIDATION_FAILED);
+            if (!WAH_TYPE_IS_UNKNOWN(ref_type)) {
                 wah_type_t src_top = wah_type_hierarchy_top(ref_type, vctx->module);
                 wah_type_t tgt_top = wah_type_hierarchy_top(heap_type, vctx->module);
                 WAH_ENSURE(src_top != WAH_TYPE_BOT && src_top == tgt_top, WAH_ERROR_VALIDATION_FAILED);
@@ -7807,7 +7810,7 @@ cleanup_block:
 
         case WAH_OP_ANY_CONVERT_EXTERN: {
             wah_type_t ref_type; POP_INTO(&ref_type);
-            WAH_ENSURE(ref_type == WAH_TYPE_BOT ||
+            WAH_ENSURE(WAH_TYPE_IS_UNKNOWN(ref_type) ||
                        wah_type_hierarchy_top(ref_type, vctx->module) == WAH_TYPE_EXTERN,
                        WAH_ERROR_VALIDATION_FAILED);
             PUSH(_(WAH_TYPE_IS_NULLABLE(ref_type) ? WAH_TYPE_ANYREF : WAH_TYPE_ANY));
@@ -7815,7 +7818,7 @@ cleanup_block:
         }
         case WAH_OP_EXTERN_CONVERT_ANY: {
             wah_type_t ref_type; POP_INTO(&ref_type);
-            WAH_ENSURE(ref_type == WAH_TYPE_BOT ||
+            WAH_ENSURE(WAH_TYPE_IS_UNKNOWN(ref_type) ||
                        wah_type_hierarchy_top(ref_type, vctx->module) == WAH_TYPE_ANY,
                        WAH_ERROR_VALIDATION_FAILED);
             PUSH(_(WAH_TYPE_IS_NULLABLE(ref_type) ? WAH_TYPE_EXTERNREF : WAH_TYPE_EXTERN));
@@ -7839,8 +7842,8 @@ cleanup_block:
         // Typed funcrefs, which don't depend on GC
         case WAH_OP_REF_AS_NON_NULL: {
             wah_type_t ref_type; POP_INTO(&ref_type);
-            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
-            PUSH(_(ref_type == WAH_TYPE_BOT ? WAH_TYPE_BOT : WAH_TYPE_AS_NON_NULL(ref_type)));
+            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || WAH_TYPE_IS_UNKNOWN(ref_type), WAH_ERROR_VALIDATION_FAILED);
+            PUSH(_(WAH_TYPE_IS_UNKNOWN(ref_type) ? WAH_TYPE_BOT_REF : WAH_TYPE_AS_NON_NULL(ref_type)));
             EMIT_SIMPLE();
             break;
         }
@@ -7849,7 +7852,8 @@ cleanup_block:
             WAH_CHECK(wah_decode_uleb128(code_ptr, code_end, &label_idx));
             WAH_ENSURE(label_idx <= vctx->control_sp, WAH_ERROR_VALIDATION_FAILED);
             wah_type_t ref_type; POP_INTO(&ref_type);
-            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
+            WAH_ENSURE(WAH_TYPE_IS_REF(ref_type) || WAH_TYPE_IS_UNKNOWN(ref_type), WAH_ERROR_VALIDATION_FAILED);
+            wah_type_t non_null_ref_type = WAH_TYPE_IS_UNKNOWN(ref_type) ? WAH_TYPE_BOT_REF : WAH_TYPE_AS_NON_NULL(ref_type);
 
             uint32_t br_result_count;
             const wah_type_t *br_result_types;
@@ -7860,7 +7864,6 @@ cleanup_block:
             uint32_t prefix_result_count = br_result_count;
             if (opcode_val == WAH_OP_BR_ON_NON_NULL) {
                 WAH_ENSURE(br_result_count >= 1, WAH_ERROR_VALIDATION_FAILED);
-                wah_type_t non_null_ref_type = (ref_type == WAH_TYPE_BOT) ? WAH_TYPE_BOT : WAH_TYPE_AS_NON_NULL(ref_type);
                 WAH_ENSURE(wah_type_is_subtype(non_null_ref_type, br_result_types[br_result_count - 1], vctx->module),
                            WAH_ERROR_VALIDATION_FAILED);
                 prefix_result_count--;
@@ -7875,9 +7878,7 @@ cleanup_block:
 
             for (int32_t i = (int32_t)prefix_result_count - 1; i >= 0; --i) POP(_(br_result_types[i]));
             for (uint32_t i = 0; i < prefix_result_count; ++i) PUSH(_(br_result_types[i]));
-            if (opcode_val == WAH_OP_BR_ON_NULL) {
-                PUSH(_(ref_type == WAH_TYPE_BOT ? WAH_TYPE_BOT : WAH_TYPE_AS_NON_NULL(ref_type)));
-            }
+            if (opcode_val == WAH_OP_BR_ON_NULL) PUSH(_(non_null_ref_type));
             EMIT_INSTR_EX(opcode_val,
                 _di->imm.branch.label_idx = label_idx; _di->imm.branch.target_symbol = 0;
                 _di->imm.branch.keep = adj_keep; _di->imm.branch.drop = adj_drop);
@@ -7905,7 +7906,7 @@ cleanup_block:
             wah_type_t ref_type; POP_INTO(&ref_type);
             WAH_ENSURE(WAH_TYPE_AS_NON_NULL(ref_type) == WAH_TYPE_EXN ||
                        WAH_TYPE_AS_NON_NULL(ref_type) == WAH_TYPE_NOEXN ||
-                       ref_type == WAH_TYPE_BOT, WAH_ERROR_VALIDATION_FAILED);
+                       WAH_TYPE_IS_UNKNOWN(ref_type), WAH_ERROR_VALIDATION_FAILED);
             wah_validation_mark_unreachable(vctx);
             EMIT_SIMPLE();
             break;

@@ -720,6 +720,46 @@ static void test_br_on_cast_prefix() {
     wah_free_module(&bad);
 }
 
+// References of an unknown heap type in unreachable code are still references, (ref bot) in the spec, as found by
+// comparing with the reference interpreter (make spec-diff).
+static void test_unknown_refs_unreachable() {
+    printf("Testing references of unknown types in unreachable code...\n");
+
+    static const char *bad[] = {
+        // ref.as_non_null makes a reference, which isn't an i32
+        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} code {[ {[] unreachable ref.as_non_null i32.eqz drop end } ]}",
+        // Nor are references valid operands of untyped select
+        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} code {[ {[] \
+            unreachable ref.as_non_null ref.as_non_null i32.const 0 select drop end } ]}",
+        // br_on_null leaves a reference
+        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} code {[ {[] \
+            block void unreachable br_on_null 0 i32.eqz drop end end } ]}",
+        // br_on_non_null needs a reference type at the end of the label
+        "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} code {[ {[] unreachable br_on_non_null 0 unreachable end } ]}",
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); ++i) {
+        wah_module_t module = {0};
+        assert_err(wah_parse_module_from_spec(&module, bad[i]), WAH_ERROR_VALIDATION_FAILED);
+        wah_free_module(&module);
+    }
+
+    static const char *good[] = {
+        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} code {[ {[] unreachable ref.as_non_null ref.is_null drop end } ]}",
+        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} code {[ {[] \
+            unreachable ref.as_non_null any.convert_extern drop end } ]}",
+        "wasm types {[ fn [] [] ]} funcs {[ 0 ]} code {[ {[] \
+            unreachable ref.as_non_null ref.test anyref drop end } ]}",
+        "wasm types {[ fn [] [funcref] ]} funcs {[ 0 ]} code {[ {[] unreachable ref.as_non_null end } ]}",
+        "wasm types {[ fn [] [i32] ]} funcs {[ 0 ]} code {[ {[] unreachable br_on_null 0 drop end } ]}",
+        "wasm types {[ fn [] [anyref] ]} funcs {[ 0 ]} code {[ {[] unreachable br_on_non_null 0 ref.null anyref end } ]}",
+    };
+    for (size_t i = 0; i < sizeof(good) / sizeof(good[0]); ++i) {
+        wah_module_t module = {0};
+        assert_ok(wah_parse_module_from_spec(&module, good[i]));
+        wah_free_module(&module);
+    }
+}
+
 int main() {
     test_typed_select_i32();
     test_typed_select_funcref();
@@ -742,6 +782,7 @@ int main() {
     test_br_on_cast_oob_heap_type();
     test_br_on_cast_prefix();
     test_br_on_cast_bad_flags();
+    test_unknown_refs_unreachable();
     printf("All references_validation tests passed!\n");
     return 0;
 }
