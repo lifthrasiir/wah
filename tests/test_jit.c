@@ -488,6 +488,74 @@ static void host_trap(wah_call_context_t *call, void *userdata) {
     wah_result_i32(call, 0, wah_param_i32(call, 0));
 }
 
+static void test_folded_operands(void) {
+    printf("Testing shifted operands, multiply-adds, shifted immediates and zero operands...\n");
+    // Results of shifts and multiplications by the next instruction, from pinned locals and temporaries alike
+    const char *s32 = "wasm types {[ fn [i32, i32, i32] [i32, i32, i32, i32, i32, i32], \
+        fn [i32, i32, i32] [i32, i32, i32, i32, i32] ]} funcs {[ 0, 1 ]} code {[ {[] \
+        local.get 0 local.get 1 i32.const 2 i32.shl i32.add \
+        local.get 0 local.get 1 i32.const 33 i32.shl i32.sub \
+        local.get 2 local.get 0 i32.const 7 i32.add i32.const 31 i32.shl i32.or \
+        local.get 0 i32.const 3 i32.xor local.get 1 i32.const 9 i32.shl i32.and \
+        local.get 0 local.get 1 i32.const 32 i32.shl i32.xor \
+        local.get 2 local.get 0 local.get 1 i32.mul i32.add end}, {[1 i32] \
+        local.get 2 local.get 1 local.get 1 i32.mul i32.sub \
+        local.get 0 i32.const 3 i32.add local.get 1 i32.const 5 i32.add local.get 2 i32.const 1 i32.or i32.mul i32.sub \
+        i32.const 0 local.get 0 i32.sub local.get 1 i32.const 4 i32.shl i32.add \
+        i32.const 0 local.get 0 local.get 2 i32.mul i32.add local.set 3 local.get 3 \
+        local.get 1 local.get 3 local.get 0 i32.const 3 i32.shl i32.sub local.set 3 local.get 3 i32.add end} ]}";
+    const char *s64 = "wasm types {[ fn [i64, i64, i32] [i64, i64, i64, i64, i64, i64] ]} funcs {[ 0 ]} code {[ {[1 i64] \
+        local.get 0 local.get 1 i64.const 3 i64.shl i64.add \
+        local.get 1 local.get 0 i64.const 63 i64.shl i64.sub \
+        local.get 0 local.get 1 i64.const 67 i64.shl i64.or \
+        local.get 0 local.get 1 local.get 0 i64.mul i64.add \
+        local.get 1 local.get 0 i64.const 9 i64.add local.get 1 i64.mul i64.sub \
+        i64.const 0 local.get 0 i64.sub local.get 1 local.get 1 i64.mul i64.sub local.set 3 local.get 3 end} ]}";
+    // Immediates shifted by 12 and others close to them, in comparisons and additions
+    static const int64_t imms[] = { 0x1000, 0x7000, 0x800000, 0xfff000, 0x1000000, 0xfff001, 0x2000, 0xfff,
+                                    -0x1000, -0x5000, -0xfff000, -0x1001000, 0x7ffff000, (int32_t)0x80000000 };
+    char spec[1024];
+    for (size_t k = 0; k < COUNT(imms); k++) {
+        for (int is64 = 0; is64 < 2; is64++) {
+            const char *t = is64 ? "i64" : "i32";
+            snprintf(spec, sizeof(spec), "wasm types {[ fn [%s] [i32, i32, i32, %s, %s] ]} funcs {[ 0 ]} code {[ {[] "
+                "local.get 0 %s.const %lld %s.lt_u local.get 0 %s.const %lld %s.ge_s "
+                "local.get 0 %s.const %lld %s.eq local.get 0 %s.const %lld %s.add local.get 0 %s.const %lld %s.sub end} ]}",
+                t, t, t, t, (long long)imms[k], t, t, (long long)imms[k], t, t, (long long)imms[k], t,
+                t, (long long)imms[k], t, t, (long long)imms[k], t);
+            static const int64_t samples[] = { 0, 0xfff, 0x1000, 0x6fff, 0x7000, 0x800000, 0xfff000, -0x5000, -0x1000,
+                                               -1, 0x123456789LL, INT64_MIN, 0x7ffff000 };
+            for (size_t i = 0; i < COUNT(samples); i++) {
+                wah_value_t p;
+                if (is64) p.i64 = samples[i];
+                else p.i32 = (int32_t)samples[i];
+                check_call(spec, NULL, 0, &p, 1, 5);
+            }
+        }
+    }
+    // A long chain in a block, which runs out of registers if any operand is not freed
+    char chain[4096];
+    int n = snprintf(chain, sizeof(chain), "wasm types {[ fn [i32, i32, i32] [i32] ]} funcs {[ 0 ]} code {[ {[] local.get 0");
+    for (int k = 0; k < 24; k++) {
+        n += snprintf(chain + n, sizeof(chain) - (size_t)n, " local.get 1 i32.const %d i32.add local.get 2 i32.const %d "
+                      "i32.xor i32.mul %s local.get 1 i32.const %d i32.add i32.const %d i32.shl i32.add", k, k * 3,
+                      k % 2 ? "i32.sub" : "i32.add", k, k % 31 + 1);
+    }
+    snprintf(chain + n, sizeof(chain) - (size_t)n, " end} ]}");
+    for (size_t i = 0; i < COUNT(I32_SAMPLES); i++) {
+        wah_value_t p[3] = { { .i32 = I32_SAMPLES[i] }, { .i32 = I32_SAMPLES[(i * 5 + 3) % COUNT(I32_SAMPLES)] },
+                             { .i32 = I32_SAMPLES[(i * 7 + 1) % COUNT(I32_SAMPLES)] } };
+        check_call(chain, NULL, 0, p, 3, 1);
+        check_call(s32, NULL, 0, p, 3, 6);
+        check_call(s32, NULL, 1, p, 3, 5);
+    }
+    for (size_t i = 0; i < COUNT(I64_SAMPLES); i++) {
+        wah_value_t p[3] = { { .i64 = I64_SAMPLES[i] }, { .i64 = I64_SAMPLES[(i * 5 + 3) % COUNT(I64_SAMPLES)] },
+                             { .i32 = 0 } };
+        check_call(s64, NULL, 0, p, 3, 6);
+    }
+}
+
 static void test_calls(void) {
     printf("Testing host and indirect calls...\n");
     wah_module_t env;
@@ -1488,6 +1556,7 @@ int main(void) {
     test_local_get_cache();
     test_result_hints();
     test_peepholes();
+    test_folded_operands();
     test_i32_upper_bits();
     test_simd_binary();
     test_simd_unary();

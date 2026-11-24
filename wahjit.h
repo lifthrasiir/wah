@@ -135,8 +135,10 @@ static struct wah_jit_activation_s *wah_jit_outer_activation(const struct wah_ji
 
 // A value on the operand stack being compiled. LGPR, LFPR and LVEC are values of locals pinned to registers,
 // read from them until the local is set. FPR and LFPR only have 64 bits; v128 values are in VEC or LVEC instead,
-// which use all 128 bits of FP registers.
-enum { WAH_JV_SLOT, WAH_JV_GPR, WAH_JV_FPR, WAH_JV_CONST, WAH_JV_FLAGS, WAH_JV_LGPR, WAH_JV_LFPR, WAH_JV_VEC, WAH_JV_LVEC };
+// which use all 128 bits of FP registers. On AArch64, SHL (reg shifted left by imm) and MUL (reg times register imm)
+// are results left to the next instruction, which takes them right away as operands of its own.
+enum { WAH_JV_SLOT, WAH_JV_GPR, WAH_JV_FPR, WAH_JV_CONST, WAH_JV_FLAGS, WAH_JV_LGPR, WAH_JV_LFPR, WAH_JV_VEC, WAH_JV_LVEC,
+       WAH_JV_SHL, WAH_JV_MUL };
 typedef struct {
     uint8_t kind;
     uint8_t reg; // Register for GPR, FPR, VEC, LGPR, LFPR and LVEC, condition code for FLAGS
@@ -1113,6 +1115,7 @@ static void wah_jit_copy_val(wah_jit_fn_t *f, uint32_t i, uint32_t off) {
                 wah_jit_vldst(f, true, WAH_JR_VT1, WAH_JR_FP, off);
             }
             break;
+        default: WAH_JIT_FAIL(f, "lazy value not taken"); break;
     }
 }
 
@@ -3376,14 +3379,23 @@ static void wah_jit_simd(wah_jit_fn_t *f, const wah_decoded_instr_t *in, bool fu
 // Wasm calls are BL, whose callees save x30 into their link slots. FPCR is set to the default NaN mode,
 // which makes every NaN result canonical.
 
-// Whether the top of the stack is a constant usable as a 12-bit immediate, possibly negated.
-static bool wah_a64_top_imm12(const wah_jit_fn_t *f, bool sf, uint32_t *imm, bool *negated) {
+// Whether the top of the stack is a constant usable as a 12-bit immediate, possibly negated and shifted by 12.
+static bool wah_a64_top_imm12(const wah_jit_fn_t *f, bool sf, uint32_t *imm, bool *negated, bool *lsl12) {
     const wah_jit_val_t *v = &f->vals[f->h - 1];
     if (v->kind != WAH_JV_CONST) return false;
     uint64_t c = sf ? (uint64_t)v->imm : (uint32_t)v->imm;
     uint64_t nc = sf ? (uint64_t)0 - c : (uint32_t)(0u - (uint32_t)c);
-    if (c < 4096) { *imm = (uint32_t)c; *negated = false; return true; }
-    if (nc < 4096) { *imm = (uint32_t)nc; *negated = true; return true; }
+    for (int k = 0; k < 4; k++) {
+        uint64_t x = k & 1 ? nc : c;
+        if (k >= 2 && (x & 0xfff) != 0) continue;
+        x >>= k >= 2 ? 12 : 0;
+        if (x < 4096) {
+            *imm = (uint32_t)x;
+            *negated = k & 1;
+            *lsl12 = k >= 2;
+            return true;
+        }
+    }
     return false;
 }
 
@@ -3505,13 +3517,13 @@ static void wah_jit_fconst(wah_jit_fn_t *f, int d, uint64_t bits) {
 // Integer comparison producing flags.
 static void wah_jit_icmp(wah_jit_fn_t *f, bool sf, int cond, bool fuse) {
     uint32_t imm;
-    bool neg;
+    bool neg, lsl12;
     int a;
     int b = -1;
-    if (wah_a64_top_imm12(f, sf, &imm, &neg)) {
+    if (wah_a64_top_imm12(f, sf, &imm, &neg, &lsl12)) {
         f->h--;
         a = wah_jit_pop_gpr_ro(f);
-        wah_a64_addsub_imm(f, neg ? WAH_A64_ADDSI : WAH_A64_SUBSI, sf, WAH_A64_ZR, a, imm, false);
+        wah_a64_addsub_imm(f, neg ? WAH_A64_ADDSI : WAH_A64_SUBSI, sf, WAH_A64_ZR, a, imm, lsl12);
     } else {
         b = wah_jit_pop_gpr_ro(f);
         a = wah_jit_pop_gpr_ro(f);
@@ -3566,14 +3578,71 @@ static bool wah_a64_logical_imm(bool sf, uint64_t v, uint32_t *enc) {
     return false;
 }
 
+// Pops an integer only to be read, as the zero register if it is a constant zero.
+static int wah_a64_pop_gpr_zr(wah_jit_fn_t *f) {
+    const wah_jit_val_t *v = &f->vals[f->h - 1];
+    if (v->kind == WAH_JV_CONST && v->imm == 0) {
+        f->h--;
+        return WAH_A64_ZR;
+    }
+    return wah_jit_pop_gpr_ro(f);
+}
+
+// Whether the next instruction is an integer operation of a kind in `kinds` (bits of WAH_JI_*) with the width.
+static bool wah_a64_next_takes(const wah_jit_fn_t *f, bool sf, uint32_t kinds) {
+    static const uint16_t ops[2][6] = {
+        { WAH_OP_I32_ADD, WAH_OP_I32_SUB, WAH_OP_I32_MUL, WAH_OP_I32_AND, WAH_OP_I32_OR, WAH_OP_I32_XOR },
+        { WAH_OP_I64_ADD, WAH_OP_I64_SUB, WAH_OP_I64_MUL, WAH_OP_I64_AND, WAH_OP_I64_OR, WAH_OP_I64_XOR },
+    };
+    if (f->instr_idx + 1 >= f->ninstrs) return false;
+    uint16_t next = f->instrs[f->instr_idx + 1].opcode;
+    for (int k = 0; k < 6; k++) {
+        if ((kinds >> k & 1) && ops[sf][k] == next) return true;
+    }
+    return false;
+}
+
+// Like wah_jit_dest for up to three integer operands, which may be the zero register (or -1 if none).
+static int wah_a64_dest3(wah_jit_fn_t *f, int a, int b, int c) {
+    if (f->hint >= 0) return f->hint;
+    const int ops[] = { a, b, c };
+    for (int k = 0; k < 3; k++) {
+        if (ops[k] >= 0 && ops[k] != WAH_A64_ZR && f->gpr[ops[k]] == WAH_JO_TEMP) return ops[k];
+    }
+    return wah_jit_alloc(f, false);
+}
+
+// Pushes a lazy value of the kind, whose registers (temporaries or pinned) stay as they are until taken.
+static void wah_a64_push_lazy(wah_jit_fn_t *f, uint8_t kind, int r, int64_t imm) {
+    f->vals[f->h++] = (wah_jit_val_t){ .kind = kind, .reg = (uint8_t)r, .imm = imm };
+}
+
 static void wah_jit_ibinop(wah_jit_fn_t *f, bool sf, int kind) {
     static const uint32_t ops[] = { WAH_A64_ADD, WAH_A64_SUB, WAH_A64_MUL, WAH_A64_AND, WAH_A64_ORR, WAH_A64_EOR };
     uint32_t imm;
-    bool neg;
-    if ((kind == WAH_JI_ADD || kind == WAH_JI_SUB) && wah_a64_top_imm12(f, sf, &imm, &neg)) {
+    bool neg, lsl12;
+    uint8_t top_kind = f->vals[f->h - 1].kind;
+    if (top_kind == WAH_JV_SHL || top_kind == WAH_JV_MUL) {
+        // a op (x << s) as a shifted register operand, and a +/- x * y as MADD/MSUB
+        wah_jit_val_t v = f->vals[--f->h];
+        int x = v.reg, y = top_kind == WAH_JV_MUL ? (int)v.imm : -1;
+        int a = wah_a64_pop_gpr_zr(f), d = wah_a64_dest3(f, a, x, y);
+        if (y >= 0) {
+            wah_a64(f, (kind == WAH_JI_SUB ? 0x1B008000u : 0x1B000000u) | WAH_A64_SF(sf) | (uint32_t)y << 16 |
+                       (uint32_t)a << 10 | (uint32_t)x << 5 | (uint32_t)d);
+            if (y != d) wah_jit_free_gpr(f, y);
+        } else {
+            wah_a64(f, ops[kind] | WAH_A64_SF(sf) | (uint32_t)x << 16 | (uint32_t)v.imm << 10 | (uint32_t)a << 5 |
+                       (uint32_t)d);
+        }
+        if (a != WAH_A64_ZR && a != d) wah_jit_free_gpr(f, a);
+        wah_jit_finish_gpr(f, d, x, -1);
+        return;
+    }
+    if ((kind == WAH_JI_ADD || kind == WAH_JI_SUB) && wah_a64_top_imm12(f, sf, &imm, &neg, &lsl12)) {
         f->h--;
         int a = wah_jit_pop_gpr_ro(f), d = wah_jit_dest(f, false, a, -1);
-        wah_a64_addsub_imm(f, (kind == WAH_JI_SUB) != neg ? WAH_A64_SUBI : WAH_A64_ADDI, sf, d, a, imm, false);
+        wah_a64_addsub_imm(f, (kind == WAH_JI_SUB) != neg ? WAH_A64_SUBI : WAH_A64_ADDI, sf, d, a, imm, lsl12);
         wah_jit_finish_gpr(f, d, a, -1);
         return;
     }
@@ -3592,9 +3661,16 @@ static void wah_jit_ibinop(wah_jit_fn_t *f, bool sf, int kind) {
             return;
         }
     }
-    int b = wah_jit_pop_gpr_ro(f), a = wah_jit_pop_gpr_ro(f), d = wah_jit_dest(f, false, a, b);
+    if ((kind == WAH_JI_MUL && wah_a64_next_takes(f, sf, 1u << WAH_JI_ADD | 1u << WAH_JI_SUB))) {
+        int b = wah_jit_pop_gpr_ro(f), a = wah_jit_pop_gpr_ro(f);
+        wah_a64_push_lazy(f, WAH_JV_MUL, a, b);
+        return;
+    }
+    int b = wah_a64_pop_gpr_zr(f), a = wah_a64_pop_gpr_zr(f), d = wah_a64_dest3(f, a, b, -1);
     wah_a64_rrr(f, ops[kind], sf, d, a, b);
-    wah_jit_finish_gpr(f, d, a, b);
+    if (a != WAH_A64_ZR && a != d) wah_jit_free_gpr(f, a);
+    if (b != WAH_A64_ZR && b != d) wah_jit_free_gpr(f, b);
+    wah_jit_push_gpr(f, d);
 }
 
 static void wah_jit_iunop(wah_jit_fn_t *f, bool sf, int kind) {
@@ -3621,6 +3697,11 @@ static void wah_jit_shift(wah_jit_fn_t *f, bool sf, int kind) {
     if (top->kind == WAH_JV_CONST) {
         uint32_t s = (uint32_t)top->imm & (bits - 1);
         f->h--;
+        if (kind == WAH_JS_SHL && s != 0 && wah_a64_next_takes(f, sf, 1u << WAH_JI_ADD | 1u << WAH_JI_SUB |
+                                                              1u << WAH_JI_AND | 1u << WAH_JI_OR | 1u << WAH_JI_XOR)) {
+            wah_a64_push_lazy(f, WAH_JV_SHL, wah_jit_pop_gpr_ro(f), s);
+            return;
+        }
         int a = wah_jit_pop_gpr_ro(f), d = wah_jit_dest(f, false, a, -1);
         switch (s == 0 ? -1 : kind) {
             case -1: if (d != a) wah_jit_mov64(f, d, a); break;
@@ -3903,16 +3984,6 @@ static void wah_jit_store(wah_jit_fn_t *f, const wah_memarg_t *m, uint32_t size_
     if (ad.base != WAH_JR_MEM) wah_jit_free_gpr(f, ad.base);
     if (fp) wah_jit_free_fpr(f, r);
     else if (r != WAH_A64_ZR) wah_jit_free_gpr(f, r);
-}
-
-// Pops an integer only to be read, as the zero register if it is a constant zero.
-static int wah_a64_pop_gpr_zr(wah_jit_fn_t *f) {
-    const wah_jit_val_t *v = &f->vals[f->h - 1];
-    if (v->kind == WAH_JV_CONST && v->imm == 0) {
-        f->h--;
-        return WAH_A64_ZR;
-    }
-    return wah_jit_pop_gpr_ro(f);
 }
 
 static void wah_jit_select(wah_jit_fn_t *f) {
