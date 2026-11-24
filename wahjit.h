@@ -126,7 +126,12 @@ typedef struct wah_jit_ctx_s {
     const void *resume_pc;      // Where a suspended native activation continues, NULL if not suspended
     wah_value_t *resume_fp;
     wah_error_t err;            // Error from a helper returning a pointer
+    struct wah_jit_activation_s *act; // Of the running native activation if guarded, for wah_jit_host
 } wah_jit_ctx_t;
+
+// Sets the innermost guarded activation of this thread (wah_jit_activation)
+static void wah_jit_set_activation(struct wah_jit_activation_s *act);
+static struct wah_jit_activation_s *wah_jit_outer_activation(const struct wah_jit_activation_s *act);
 
 // A value on the operand stack being compiled. LGPR, LFPR and LVEC are values of locals pinned to registers,
 // read from them until the local is set. FPR and LFPR only have 64 bits; v128 values are in VEC or LVEC instead,
@@ -1432,7 +1437,12 @@ static wah_error_t wah_jit_host(wah_exec_context_t *ctx, const wah_function_t *f
     WAH_ENSURE((uint8_t *)(results + nresults) <= (uint8_t *)ctx->frame_ptr, WAH_ERROR_STACK_OVERFLOW);
     memset(results, 0, sizeof(wah_value_t) * nresults);
     ctx->sp = results;
-    WAH_CHECK(wah_call_host_function_internal(ctx, fn, args, (uint32_t)nparams, results));
+    // Host code isn't in the activation, which is left as if it returned, in case the host escapes it e.g. by longjmp
+    struct wah_jit_activation_s *act = ctx->jit->act;
+    if (act) wah_jit_set_activation(wah_jit_outer_activation(act));
+    wah_error_t err = wah_call_host_function_internal(ctx, fn, args, (uint32_t)nparams, results);
+    if (act) wah_jit_set_activation(act);
+    WAH_CHECK(err);
     if (nresults > 0) memmove(args, results, sizeof(wah_value_t) * nresults);
     return WAH_OK;
 }
@@ -5367,6 +5377,8 @@ typedef struct wah_jit_activation_s {
     struct wah_jit_activation_s *prev;
 } wah_jit_activation_t;
 static WAH_JIT_THREAD_LOCAL wah_jit_activation_t *wah_jit_activation;
+static void wah_jit_set_activation(wah_jit_activation_t *act) { wah_jit_activation = act; }
+static wah_jit_activation_t *wah_jit_outer_activation(const wah_jit_activation_t *act) { return act->prev; }
 
 static uint8_t *wah_jit_reserve_memory(uint64_t size, uint32_t defined_idx) {
     if (!wah_jit_guard_enabled() || defined_idx >= WAH_JIT_GUARDED_MEMORIES_PER_INSTANCE) return NULL;
@@ -5843,9 +5855,10 @@ static bool wah_jit_run(wah_exec_context_t *ctx, wah_error_t *out) {
         }
     }
     wah_jit_activation_t act = { .jm = jm, .ctx = ctx, .prev = wah_jit_activation };
-    if (jm->guarded) wah_jit_activation = &act;
+    if (jm->guarded) wah_jit_activation = jc->act = &act;
     wah_error_t err = ((wah_jit_entry_t)(uintptr_t)jm->code)(ctx, code, resume, fp);
     wah_jit_activation = act.prev;
+    jc->act = NULL;
     if (err == WAH_OK) { // Pop the frame like the interpreter, leaving results at its locals
         ctx->sp = frame->locals + frame->result_count;
         ctx->call_depth--;

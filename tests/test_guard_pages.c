@@ -284,12 +284,44 @@ static void test_guard_limits(void) {
     inst_free(&many);
 }
 
+#ifndef _WIN32
+static jmp_buf escape;
+static void escape_call(wah_call_context_t *ctx, void *userdata) {
+    (void)ctx, (void)userdata;
+    longjmp(escape, 1);
+}
+
+// Unsupported, but a later fault in host code shouldn't be taken as one of the abandoned native code
+static void test_escaping_host(void) {
+    printf("Testing a host function escaping from native code...\n");
+    wah_module_t host;
+    assert_ok(wah_new_module(&host, NULL));
+    assert_ok(wah_export_func(&host, "inner", "(i32) -> i32", escape_call, NULL, NULL));
+    inst_t outer;
+    inst_new(&outer, OUTER_SPEC, "env", &host, NULL);
+    assert_true(guarded_natively(&outer));
+    assert_true(wah_jit_activation == NULL);
+    if (setjmp(escape) == 0) {
+        wah_value_t r;
+        call1(&outer, 1, 0, &r);
+        assert_true(false);
+    }
+    assert_true(wah_jit_activation == NULL);
+    outer.ctx.lifecycle.state = WAH_EXEC_TRAPPED; // Only to free it
+    inst_free(&outer);
+    wah_free_module(&host);
+}
+#endif
+
 int main(void) {
     inst_t early;
     test_before_enabling(&early);
     test_host_handles_fault(&early);
     test_wah_handles_fault();
     test_guard_limits();
+#ifndef _WIN32
+    test_escaping_host();
+#endif
     inst_free(&early);
     printf("All guard page tests passed.\n");
     return 0;
