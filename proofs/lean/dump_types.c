@@ -4,6 +4,10 @@
 //   T <start> <size> <kind> <final> <supertype or -1> <count1> <count2> <field count> (<wah_type_t> <mutable>)*
 //   C <canonical type>*
 //   S <1 if type i is a subtype of type j, else 0, for i, j in order>
+// and after the modules of each file, for every pair of them (with each module also against itself),
+//   X <module a> <module b> <1 if the same module> <1 if type i of a is equivalent to type j of b, else 0, in order>
+//     <1 if type i of a is a subtype of type j of b, else 0, in order>
+// where modules are numbered backwards from the last module printed (0), so that dumps can be concatenated.
 // where functions have their params and results as immutable fields and counts, as `TD` in Lean.
 // With DUMP_COLLIDE, all rec groups have the same hash, so that every pair of them is compared structurally.
 #include <inttypes.h>
@@ -47,13 +51,51 @@ static void dump_module(const wah_module_t *m) {
     printf("\n");
 }
 
+// Modules of the current file, kept for comparing them pairwise
+#define MAX_FILE_MODULES 256
+static wah_module_t file_modules[MAX_FILE_MODULES];
+static uint32_t file_module_ids[MAX_FILE_MODULES], file_module_count, module_count;
+
 static void dump_binary(const uint8_t *bytes, size_t len) {
     static const uint8_t empty = 0;
     wah_module_t m = {0};
-    if (wah_parse_module(&m, len ? bytes : &empty, len, NULL) == WAH_OK) {
-        dump_module(&m);
+    if (wah_parse_module(&m, len ? bytes : &empty, len, NULL) != WAH_OK) return;
+    if (m.type_count == 0) { wah_free_module(&m); return; }
+    dump_module(&m);
+    if (file_module_count < MAX_FILE_MODULES) {
+        file_module_ids[file_module_count] = module_count;
+        file_modules[file_module_count++] = m;
+    } else {
         wah_free_module(&m);
     }
+    module_count++;
+}
+
+static void dump_pairs(void) {
+    for (uint32_t a = 0; a < file_module_count; ++a) {
+        for (uint32_t b = a; b < file_module_count; ++b) {
+            const wah_module_t *ma = &file_modules[a], *mb = &file_modules[b];
+            if ((uint64_t)ma->type_count * mb->type_count > 4096) continue;
+            printf("X %" PRIu32 " %" PRIu32 " %d ", module_count - 1 - file_module_ids[a],
+                   module_count - 1 - file_module_ids[b], a == b);
+            for (uint32_t i = 0; i < ma->type_count; ++i) {
+                for (uint32_t j = 0; j < mb->type_count; ++j) {
+                    putchar(wah_cross_module_type_ref_eq(&ma->alloc, ma, WAH_TYPE_FROM_IDX(i, 0), mb,
+                                                         WAH_TYPE_FROM_IDX(j, 0)) ? '1' : '0');
+                }
+            }
+            putchar(' ');
+            for (uint32_t i = 0; i < ma->type_count; ++i) {
+                for (uint32_t j = 0; j < mb->type_count; ++j) {
+                    putchar(wah_cross_module_subtype(&ma->alloc, ma, WAH_TYPE_FROM_IDX(i, 0), mb,
+                                                     WAH_TYPE_FROM_IDX(j, 0)) ? '1' : '0');
+                }
+            }
+            printf("\n");
+        }
+    }
+    for (uint32_t a = 0; a < file_module_count; ++a) wah_free_module(&file_modules[a]);
+    file_module_count = 0;
 }
 
 int main(int argc, char **argv) {
@@ -64,6 +106,7 @@ int main(int argc, char **argv) {
         size_t n = strlen(argv[a]);
         if (n < 5 || strcmp(argv[a] + n - 5, ".wast") != 0) {
             dump_binary((const uint8_t *)data, size);
+            dump_pairs();
             free(data);
             continue;
         }
@@ -80,6 +123,7 @@ int main(int argc, char **argv) {
             }
             wast_node_free(node);
         }
+        dump_pairs();
         free(data);
     }
     return 0;

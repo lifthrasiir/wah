@@ -28,9 +28,17 @@ C code that CI checks. When you change a modeled C function, change its model an
 - WahProofs/LayoutSub.lean proves that structs lay out the fields of their declared supertypes as the supertypes do,
   as storage types of subtypes have the same size (`fieldClass`, which is checked against `wah_field_type_layout` by
   `make cbmc_layout.field_class`). So the offset check of `wah_check_layouts` always holds for valid modules.
+- WahProofs/Cross.lean models `wah_cross_module_type_ref_eq` and the functions it calls (`typeRefEq`), with the memo
+  and the depth limit, which finds types of two modules equal only when they are equivalent in the spec, and always
+  when rec groups are nested at most `WAH_MAX_TYPE_RECURSION_DEPTH` deep. WahProofs/CrossSub.lean models
+  `wah_cross_module_subtype` (`crossSub`), which is the subtyping of the spec under the same condition. Bridge:
+  `make lean-diff` compares both between all types of all pairs of modules of each spec test and corpus file. The
+  cache of `wah_cross_module_subtype_cached` is only checked by review.
 -/
 import WahProofs.Layout
 import WahProofs.Types
 import WahProofs.Subtype
 import WahProofs.SubDecl
 import WahProofs.LayoutSub
+import WahProofs.Cross
+import WahProofs.CrossSub
