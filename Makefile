@@ -199,7 +199,8 @@ CBMC_PROOFS := leb128.uleb128 leb128.uleb128_64 leb128.sleb128_32 leb128.sleb128
 	bounds.effective_addr bounds.range_in_bounds bounds.count decode.opcode decode.memarg decode.val_type \
 	decode.storage_type $(CBMC_FLOAT_PROOFS) $(patsubst %, float_boundary.%, $(CBMC_FLOAT_BOUNDARY_PROOFS)) \
 	$(foreach e, 0 1 3 16 huge, alloc.malloc_$(e) alloc.realloc_$(e)) pin.ops refs.i31 refs.gc_link \
-	fuel.bulk_limit fuel.bulk_limit_elems fuel.budget layout.place
+	fuel.bulk_limit fuel.bulk_limit_elems fuel.budget layout.place \
+	types.ref_eq types.hash_ref types.types_eq
 CBMC_UNWIND_leb128 := 12
 CBMC_UNWIND_utf8 := 9
 CBMC_UNWIND_bounds := 9
@@ -213,6 +214,7 @@ CBMC_UNWIND_pin := 8
 CBMC_UNWIND_refs := 2
 CBMC_UNWIND_fuel := 2
 CBMC_UNWIND_layout := 6
+CBMC_UNWIND_types := 6
 
 CBMC_TARGETS := $(patsubst %, cbmc_%, $(CBMC_PROOFS))
 
@@ -243,6 +245,25 @@ lean:
 		{ echo "Forbidden constructs in Lean proofs"; exit 1; }
 	@cd proofs/lean && $(LAKE) env lean Audit.lean
 	@echo "## All Lean proofs passed."
+
+# Compares canonical maps of the spec tests and the fuzz corpus with the Lean model, as a check of the loops that the
+# CBMC proofs don't cover. The second run makes all rec groups collide, so that every pair is compared structurally.
+LEAN_DIFF_DIR := proofs/lean/.lake/diff
+LEAN_DIFF_CORPUS := fuzz/corpus-24269.tar.gz
+
+.PHONY: lean-diff
+lean-diff:
+	@echo "## Comparing canonical maps with the Lean model..."
+	@cd proofs/lean && $(LAKE) build wah_types_oracle
+	@rm -rf $(LEAN_DIFF_DIR) && mkdir -p $(LEAN_DIFF_DIR)/corpus && tar -xzf $(LEAN_DIFF_CORPUS) -C $(LEAN_DIFF_DIR)/corpus
+	@$(CC) -O1 -Wall -Wno-unused-function -o $(LEAN_DIFF_DIR)/dump_types proofs/lean/dump_types.c -lm
+	@$(CC) -O1 -Wall -Wno-unused-function -DDUMP_COLLIDE -o $(LEAN_DIFF_DIR)/dump_collide proofs/lean/dump_types.c -lm
+	@for d in dump_types dump_collide; do \
+		{ $(LEAN_DIFF_DIR)/$$d tests/spectest/*.wast && \
+		  find $(LEAN_DIFF_DIR)/corpus -type f -print0 | xargs -0 $(LEAN_DIFF_DIR)/$$d; } | \
+		proofs/lean/.lake/build/bin/wah_types_oracle || exit 1; \
+	done
+	@echo "## Canonical maps agree with the Lean model."
 
 # --- Coverage ---
 

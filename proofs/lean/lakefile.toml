@@ -3,3 +3,7 @@ defaultTargets = ["WahProofs"]
 
 [[lean_lib]]
 name = "WahProofs"
+
+[[lean_exe]]
+name = "wah_types_oracle"
+root = "Oracle"

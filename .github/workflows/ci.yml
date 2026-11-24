@@ -122,3 +122,6 @@ jobs:
 
       - name: Prove with Lean
         run: make lean
+
+      - name: Compare with Lean models
+        run: make lean-diff

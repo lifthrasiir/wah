@@ -5280,12 +5280,16 @@ static bool wah_types_structurally_equal(const wah_module_t *module, uint32_t a,
 // Hash of a rec group which is equal for structurally equal groups (see wah_types_structurally_equal).
 // The mixer is bijective and inputs are small, so deliberate collisions are expensive to find.
 // References to earlier groups are hashed by their group hashes, so hashes do not depend on canonicalization.
+#ifndef WAH_REC_GROUP_HASH_MIX // Proofs replace it, as anything works for them
 static inline uint64_t wah_rec_group_hash_mix(uint64_t h, uint64_t v) {
     h += v + UINT64_C(0x9e3779b97f4a7c15);
     h = (h ^ (h >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
     h = (h ^ (h >> 27)) * UINT64_C(0x94d049bb133111eb);
     return h ^ (h >> 31);
 }
+#else
+#define wah_rec_group_hash_mix WAH_REC_GROUP_HASH_MIX
+#endif
 
 static uint64_t wah_rec_group_hash_type(const wah_module_t *module, uint64_t h, wah_type_t t,
                                         uint32_t rg_start, uint32_t rg_size, const uint64_t *group_hashes) {
