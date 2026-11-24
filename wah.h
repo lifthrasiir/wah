@@ -5505,7 +5505,7 @@ static bool wah_cross_module_type_ref_eq(const wah_alloc_t *alloc, const wah_mod
 
 static bool wah_cross_module_subtype_oom(const wah_alloc_t *alloc, const wah_module_t *sub_m, wah_type_t sub_t,
                                          const wah_module_t *sup_m, wah_type_t sup_t, bool *oom) {
-    if (sub_t == sup_t && sub_m == sup_m) return true;
+    if ((sub_t == sup_t && sub_m == sup_m) || sub_t == WAH_TYPE_BOT) return true; // Bottom has the nullable bit
     if (WAH_TYPE_IS_NULLABLE(sub_t) && !WAH_TYPE_IS_NULLABLE(sup_t)) return false;
     if (wah_cross_module_type_ref_eq_oom(alloc, sub_m, sub_t, sup_m, sup_t, oom)) return true;
     if (sub_t < 0 || sup_t < 0) return wah_type_is_subtype(sub_t, sup_t, sub_t < 0 ? sup_m : sub_m);
