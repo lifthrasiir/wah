@@ -1278,7 +1278,37 @@ static void test_cancel_does_not_free_exnref_in_global() {
     wah_free_module(&mod);
 }
 
+// Uncaught exceptions are swept after failed calls, which marks the whole link domain, so it shouldn't be every time
+static void test_uncaught_exception_sweep_pacing() {
+    printf("Testing uncaught exceptions are not swept at every failed call with a large heap...\n");
+    const char *spec = "wasm \
+        types {[ array i8 mut, fn [] [] ]} funcs {[ 1 ]} tags {[ tag.type# 1 ]} \
+        globals {[ type.ref.null 0 mut i32.const 1048576 array.new_default 0 end ]} \
+        code {[ {[] throw 0 end} ]}";
+    wah_module_t module = {0};
+    assert_ok(wah_parse_module_from_spec(&module, spec));
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &module, NULL));
+    assert_ok(wah_instantiate(&ctx));
+
+    wah_gc_heap_stats_t stats;
+    wah_gc_heap_stats(&ctx, &stats);
+    uint32_t base = stats.object_count;
+    for (int i = 0; i < 10; i++) assert_true(wah_call(&ctx, 0, NULL, 0, NULL) != WAH_OK);
+    wah_gc_heap_stats(&ctx, &stats);
+    assert_eq_u32(stats.object_count, base + 10);
+    // But they are still swept once they take a good fraction of the heap
+    for (int i = 0; i < 100000; i++) assert_true(wah_call(&ctx, 0, NULL, 0, NULL) != WAH_OK);
+    wah_gc_heap_stats(&ctx, &stats);
+    assert_true(stats.object_count < base + 100000);
+    assert_true(stats.allocated_bytes < 2 * 1048576);
+
+    wah_free_exec_context(&ctx);
+    wah_free_module(&module);
+}
+
 int main() {
+    test_uncaught_exception_sweep_pacing();
     test_try_table_catch_label_types();
     test_try_table_params_respect_block_floor();
     test_try_table_body_in_unreachable_code();

@@ -2691,6 +2691,7 @@ typedef struct wah_gc_state_s {
     wah_gc_phase_t phase;
     uint32_t object_count;
     uint32_t exception_count; // Among object_count
+    size_t exception_bytes_since_sweep; // Allocated since the last wah_gc_sweep_unreachable_exceptions
     size_t allocated_bytes;
     size_t allocation_threshold;
     size_t other_heap_bytes; // Bytes in other heaps of the domain at the last mark
@@ -12066,6 +12067,7 @@ static wah_exception_t *wah_gc_alloc_exception(wah_exec_context_t *ctx, uint32_t
     void *p = wah_gc_alloc(ctx, NULL, WAH_TYPE_EXN, (uint32_t)payload64);
     if (!p) return NULL;
     ctx->gc->exception_count++;
+    ctx->gc->exception_bytes_since_sweep += wah_gc_header(p)->size_bytes;
     return (wah_exception_t *)wah_gc_header(p);
 }
 #endif
@@ -17755,8 +17757,12 @@ cleanup:
 static void wah_gc_sweep_unreachable_exceptions(wah_exec_context_t *ctx) {
     wah_gc_state_t *gc = ctx->gc;
     if (!gc || gc->exception_count == 0) return;
+    // Marking visits the whole link domain, so it waits for new exceptions to take a quarter of the heaps.
+    // Otherwise every failed call would cost as much, while keeping a single exception alive.
+    if (gc->exception_bytes_since_sweep < (gc->allocated_bytes + gc->other_heap_bytes) / 4) return;
 
     if (!wah_gc_step_mark(ctx)) return;
+    gc->exception_bytes_since_sweep = 0;
 
     wah_gc_object_t *prev = NULL;
     wah_gc_object_t *obj = gc->all_objects;
