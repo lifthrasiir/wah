@@ -20091,7 +20091,7 @@ static wah_error_t wah_call_linked_start_functions(wah_exec_context_t *ctx) {
 
 wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     wah_error_t err = WAH_OK;
-    WAH_ENSURE(ctx, WAH_ERROR_MISUSE);
+    WAH_ENSURE(ctx && ctx->module, WAH_ERROR_MISUSE); // Never made if no module
     WAH_ENSURE(!ctx->poisoned, WAH_ERROR_MISUSE);
     WAH_ENSURE(!ctx->is_instantiated, WAH_ERROR_MISUSE);
     WAH_ENSURE(!ctx->instantiate_failed, WAH_ERROR_MISUSE);

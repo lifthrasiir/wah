@@ -15,6 +15,12 @@ static void test_exec_context_misuse(void) {
     assert_err(wah_new_exec_context(NULL, &module, NULL), WAH_ERROR_MISUSE);
     assert_err(wah_new_exec_context(&ctx, NULL, NULL), WAH_ERROR_MISUSE);
 
+    // A context that was never made, e.g. as making it failed
+    wah_value_t result;
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_MISUSE);
+    assert_err(wah_call(&ctx, 0, NULL, 0, &result), WAH_ERROR_MISUSE);
+    wah_free_exec_context(&ctx);
+
     assert_ok(wah_new_exec_context(&ctx, &module, NULL));
     assert_err(wah_set_limits(NULL, &(wah_limits_t){0}), WAH_ERROR_MISUSE);
     assert_err(wah_set_limits(&ctx, NULL), WAH_ERROR_MISUSE);
