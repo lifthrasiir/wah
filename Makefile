@@ -265,6 +265,13 @@ lean-diff:
 		proofs/lean/.lake/build/bin/wah_types_oracle || exit 1; \
 	done
 	@echo "## Canonical maps and subtyping agree with the Lean models."
+	@echo "## Comparing verdicts of the lowered code checker with the Lean model..."
+	@cd proofs/lean && $(LAKE) build wah_lowered_oracle
+	@$(CC) -O1 -Wall -Wno-unused-function -o $(LEAN_DIFF_DIR)/dump_lowered proofs/lean/dump_lowered.c -lm
+	@{ $(LEAN_DIFF_DIR)/dump_lowered tests/spectest/*.wast && \
+	   find $(LEAN_DIFF_DIR)/corpus -type f -print0 | xargs -0 $(LEAN_DIFF_DIR)/dump_lowered; } | \
+	   proofs/lean/.lake/build/bin/wah_lowered_oracle
+	@echo "## The lowered code checker agrees with the Lean model."
 
 # --- Comparison with the spec ---
 # Runs the fuzz corpus and modules from `wasm-tools smith` through WAH and checks what it did against the reference

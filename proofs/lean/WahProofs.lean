@@ -34,6 +34,13 @@ C code that CI checks. When you change a modeled C function, change its model an
   `wah_cross_module_subtype` (`crossSub`), which is the subtyping of the spec under the same condition. Bridge:
   `make lean-diff` compares both between all types of all pairs of modules of each spec test and corpus file. The
   cache of `wah_cross_module_subtype_cached` is only checked by review.
+- WahProofs/Lowered.lean models the numeric and control part of `wah_check_lowered_code` (`check`: constants,
+  numeric, memory and global accesses, locals, drop and select, branches with keep and drop, if, else, METER, POLL,
+  TICK, calls and returns) and proves that code it accepts never goes wrong in an abstract machine of the interpreter
+  (`check_sound`). Bridge: `make lean-diff` compares verdicts on the lowered functions of the spec tests and the
+  fuzz corpus whose types and instructions are in the model, with 8 mutants of each (dump_lowered.c,
+  LoweredOracle.lean). The decoding of instructions and the module-level facts that it resolves (signatures and
+  index checks) are only checked by review.
 -/
 import WahProofs.Layout
 import WahProofs.Types
@@ -42,3 +49,4 @@ import WahProofs.SubDecl
 import WahProofs.LayoutSub
 import WahProofs.Cross
 import WahProofs.CrossSub
+import WahProofs.Lowered
