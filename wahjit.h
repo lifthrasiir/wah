@@ -205,6 +205,7 @@ typedef struct {
     uint32_t h;
     int32_t gpr[32], fpr[32];
     int32_t gpr_local[32], fpr_local[32]; // Unpinned local whose value a free register still holds, -1 if none
+                                          // (or a key of another value, see wah_jit_cached_base and WAH_A64_ADDR_KEY)
     int hint;                // Pinned register for the result of the instruction, which then sets it; -1 if none
     uint32_t hint_idx;       // Local of the hint
 
@@ -675,6 +676,10 @@ enum {
 #define WAH_JR_T1 17
 #define WAH_JR_VT0 30
 #define WAH_JR_VT1 31
+
+// Key in gpr_local of a free register holding x21 + uxtw(r) for a pinned register r, until the local is set.
+// Memory 0 doesn't move with guard pages, which accesses in this form rely on.
+#define WAH_A64_ADDR_KEY(r) (INT32_MAX - (int32_t)(r))
 
 // The trampoline frame at sp, which has to be 16-byte aligned
 typedef struct { uint64_t x29, x30, x19[10], d8[8], fpcr_host, pad; } wah_a64_frame_t;
@@ -1418,6 +1423,11 @@ static void wah_jit_set_pinned(wah_jit_fn_t *f, uint32_t idx) {
     }
     int d = f->pin_of[idx] & (WAH_JIT_PIN_FP - 1);
     bool fp = (f->pin_of[idx] & WAH_JIT_PIN_FP) != 0;
+#ifdef WAH_JIT_AARCH64
+    for (int r = 0; r < 32 && !fp; r++) { // Addresses computed from the old value
+        if (f->gpr_local[r] == WAH_A64_ADDR_KEY(d)) f->gpr_local[r] = -1;
+    }
+#endif
     for (uint32_t i = 0; i + 1 < f->h; i++) { // Old values of the local are copied first
         wah_jit_val_t *v = &f->vals[i];
         if ((v->kind == WAH_JV_LGPR || v->kind == WAH_JV_LFPR || v->kind == WAH_JV_LVEC) && v->imm == (int64_t)idx) {
@@ -3834,19 +3844,20 @@ static void wah_jit_convert(wah_jit_fn_t *f, int type, bool sf, bool is_signed) 
     wah_jit_push_fpr(f, d);
 }
 
-// Effective address of an access: base + uxtw(index) if index >= 0, x16 + imm if imm_form (x16 = base + uxtw(x16_index)),
-// otherwise base + x16. base is also the register to free if it is not WAH_JR_MEM.
-typedef struct { int base, index; bool imm_form; uint32_t imm; int x16_index; } wah_a64_addr_t;
+// Effective address of an access: base + uxtw(index) if index >= 0, xreg + imm if imm_form (xreg = base + uxtw(x16_index),
+// which is x16 or a free register), otherwise base + x16. base is also the register to free if it is not WAH_JR_MEM.
+typedef struct { int base, index; bool imm_form; uint32_t imm; int x16_index, xreg; } wah_a64_addr_t;
 
 // Loads or stores rt by op (in its unsigned offset form) at the address.
 static void wah_a64_access(wah_jit_fn_t *f, uint32_t op, int rt, const wah_a64_addr_t *ad) {
     if (ad->index >= 0) {
         wah_a64(f, (op & ~0x01000000u) | 0x00204800u | (uint32_t)ad->index << 16 | (uint32_t)ad->base << 5 | (uint32_t)rt);
     } else if (ad->imm_form) {
-        wah_a64_ldst(f, op, rt, WAH_JR_T0, ad->imm);
+        wah_a64_ldst(f, op, rt, ad->xreg, ad->imm);
         // x16 stays for the next access, unless this loads a general register it was computed from: opc (bits 23-22)
         // is nonzero for loads, and V (bit 26) is set for SIMD/FP registers, which also store with opc = 2
         bool loads_gpr = (op >> 22 & 3) != 0 && !(op >> 26 & 1);
+        if (ad->xreg != WAH_JR_T0) return;
         f->addr_end = loads_gpr && (rt == WAH_JR_T0 || rt == ad->base || rt == ad->x16_index) ? 0 : wah_jit_pos(f) + 1;
         f->addr_base = ad->base;
         f->addr_index = ad->x16_index;
@@ -3915,10 +3926,22 @@ static wah_a64_addr_t wah_jit_address(wah_jit_fn_t *f, const wah_memarg_t *m, ui
     }
     if (fold && !check && m->offset % size == 0 && m->offset / size < 4096) {
         // x16 is still base + wA if nothing was emitted since the last access (other than spills by the caller,
-        // which don't touch it), and no label was bound here
+        // which don't touch it), and no label was bound here. Otherwise a free register may keep it for a pinned wA.
         uint32_t pos = wah_jit_pos(f) + 1;
+        ad.xreg = WAH_JR_T0;
         if (f->addr_end != pos || f->label_end == pos || f->addr_base != base || f->addr_index != a) {
-            wah_a64(f, 0x8B204000u | (uint32_t)a << 16 | (uint32_t)base << 5 | WAH_JR_T0); // ADD x16, base, wA, UXTW
+            bool pinned = base == WAH_JR_MEM && (f->gpr_pins >> a & 1);
+            for (int r = 31; pinned && r >= 0 && ad.xreg == WAH_JR_T0; r--) {
+                if (f->gpr[r] == WAH_JO_FREE && f->gpr_local[r] == WAH_A64_ADDR_KEY(a)) ad.xreg = r;
+            }
+            if (ad.xreg == WAH_JR_T0) {
+                int c = pinned ? wah_jit_free_reg(f, false) : -1;
+                if (c >= 0 && f->gpr_local[c] < 0) {
+                    ad.xreg = c;
+                    f->gpr_local[c] = WAH_A64_ADDR_KEY(a);
+                }
+                wah_a64(f, 0x8B204000u | (uint32_t)a << 16 | (uint32_t)base << 5 | (uint32_t)ad.xreg); // ADD xreg, base, wA, UXTW
+            }
         }
         wah_jit_free_gpr(f, a);
         ad.imm_form = true;

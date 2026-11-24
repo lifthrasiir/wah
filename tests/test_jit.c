@@ -1536,6 +1536,30 @@ static void test_shared_addresses(void) {
     }
 }
 
+// Needs guard pages, enabled by test_shared_addresses
+static void test_cached_addresses(void) {
+    printf("Testing addresses kept for pinned indices...\n");
+    const char *spec = "wasm types {[ fn [i32, i32] [i32] ]} funcs {[ 0 ]} \
+        memories {[ limits.i32/1 1, limits.i32/1 1 ]} code {[ {[2 i32] \
+        local.get 0 i32.const 0xff00 i32.and local.set 0 local.get 1 i32.const 0xff00 i32.and local.set 1 \
+        local.get 0 local.get 1 i32.store 2 4 local.get 1 local.get 0 i32.store 2 8 \
+        local.get 0 i32.const 7 i32.store 2 12 local.get 1 i32.const 9 i32.store 2 16 \
+        local.get 0 i32.const 11 i32.store 66 1 4 local.get 1 i32.const 13 i32.store 66 1 8 \
+        local.get 0 i32.load 2 4 local.get 1 i32.load 2 8 i32.add local.get 0 i32.load 66 1 4 i32.add \
+        local.get 1 i32.load 2 16 i32.add local.get 0 i32.load 2 12 i32.add local.set 2 \
+        local.get 0 i32.const 16 i32.add local.set 0 local.get 0 i32.load 2 4 local.get 1 i32.load 2 4 i32.add \
+        local.get 1 i32.load 2 8 local.set 1 local.get 1 i32.load 2 4 i32.add local.get 1 i32.load 66 1 8 i32.add \
+        local.get 0 i32.load 2 12 i32.add local.set 3 \
+        local.get 0 local.get 0 i32.load 2 8 local.tee 0 i32.load 2 4 local.get 0 i32.load 2 8 i32.add i32.store 2 20 \
+        local.get 0 i32.load 2 20 local.get 2 local.get 3 local.get 1 \
+        local.get 0 i32.const 4 i32.add i32.load 2 4 local.set 2 local.get 0 i32.const 12 i32.add i32.load 2 4 \
+        local.get 2 i32.add i32.add i32.add i32.add i32.add end} ]}";
+    for (size_t i = 0; i < COUNT(I32_SAMPLES); i++) {
+        wah_value_t p[2] = { { .i32 = I32_SAMPLES[i] }, { .i32 = I32_SAMPLES[(i * 7 + 2) % COUNT(I32_SAMPLES)] } };
+        check_call(spec, NULL, 0, p, 2, 1);
+    }
+}
+
 int main(void) {
     const char *guard = getenv("WAH_TEST_GUARD_PAGES");
     if (guard && *guard) { // Natively compiled code relies on guard pages then
@@ -1568,7 +1592,8 @@ int main(void) {
     test_fallback();
     test_parse_failure();
     test_dirty_pins();
-    test_shared_addresses(); // Last, as it enables guard pages for the rest of the process
+    test_shared_addresses(); // Enables guard pages for the rest of the process
+    test_cached_addresses();
     printf("All JIT tests passed.\n");
     return 0;
 }
