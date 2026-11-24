@@ -1,8 +1,10 @@
 // Writes what WAH does with a module as a .wast script, which the reference interpreter of the spec checks
 // (`make spec-diff`). Modules that WAH rejects become assert_malformed or assert_invalid, and modules that it accepts
-// are instantiated and their exported functions are called in order with zero arguments, each becoming
-// assert_return, assert_trap or assert_exception. Anything that depends on the limits of WAH (fuel, memory, stack)
-// ends the script, as the spec has no such limits. Traps are not distinguished, as WAH doesn't tell them apart.
+// are instantiated and their exported functions are called in order, first with zero arguments and then for some more
+// rounds with pseudo-random ones, each call becoming assert_return, assert_trap or assert_exception. Then the final
+// values of exported globals and the sizes and hashes of exported memories are checked, the latter by modules
+// importing them. Anything that depends on the limits of WAH (fuel, memory, stack) ends the script, as the spec has no
+// such limits. Traps are not distinguished, as WAH doesn't tell them apart.
 //
 // Usage: wah_to_wast <in.wasm> <out.wast>; exits with 0 if a script was written, 1 if the module was skipped.
 #include <inttypes.h>
@@ -20,6 +22,10 @@
 #define CALL_FUEL 100000
 #define MAX_BLOCK_BYTES ((size_t)512 << 20) // Linear memories and tables are single blocks
 #define MAX_VALUES 64
+#define ARG_ROUNDS 4 // The first one with zero arguments
+#define MAX_HASHED_BYTES ((uint64_t)128 << 16) // The reference interpreter hashes 100 pages a second
+#define HASH_INIT UINT64_C(0xcbf29ce484222325) // FNV-1a over 64-bit words
+#define HASH_PRIME UINT64_C(0x100000001b3)
 
 static FILE *out;
 static bool grow_refused;
@@ -34,16 +40,16 @@ static void put_string(const uint8_t *s, size_t len) {
 }
 
 static void put_module(const uint8_t *bytes, size_t len) {
-    fputs("(module binary ", out);
+    fputs("(module $M binary ", out);
     put_string(bytes, len);
     fputc(')', out);
 }
 
-static void put_f32(uint32_t bits) {
+static void put_f32(uint32_t bits, bool exact) {
     float f;
     memcpy(&f, &bits, 4);
     if ((bits & 0x7f800000) == 0x7f800000 && (bits & 0x7fffff)) {
-        if (bits & 0x400000) fputs("nan:arithmetic", out); // The spec lets any arithmetic NaN come out
+        if ((bits & 0x400000) && !exact) fputs("nan:arithmetic", out); // The spec lets any arithmetic NaN come out
         else fprintf(out, "%snan:0x%" PRIx32, bits >> 31 ? "-" : "", bits & 0x7fffff);
     } else if (isinf(f)) {
         fputs(f < 0 ? "-inf" : "inf", out);
@@ -52,11 +58,11 @@ static void put_f32(uint32_t bits) {
     }
 }
 
-static void put_f64(uint64_t bits) {
+static void put_f64(uint64_t bits, bool exact) {
     double f;
     memcpy(&f, &bits, 8);
     if ((bits & UINT64_C(0x7ff0000000000000)) == UINT64_C(0x7ff0000000000000) && (bits & UINT64_C(0xfffffffffffff))) {
-        if (bits & UINT64_C(0x8000000000000)) fputs("nan:arithmetic", out);
+        if ((bits & UINT64_C(0x8000000000000)) && !exact) fputs("nan:arithmetic", out);
         else fprintf(out, "%snan:0x%" PRIx64, bits >> 63 ? "-" : "", bits & UINT64_C(0xfffffffffffff));
     } else if (isinf(f)) {
         fputs(f < 0 ? "-inf" : "inf", out);
@@ -101,22 +107,94 @@ static const char *null_arg(const wah_module_t *m, wah_type_t t) {
     }
 }
 
-static bool put_arg(const wah_module_t *m, wah_type_t t) {
-    switch (t) {
-        case WAH_TYPE_I32: fputs(" (i32.const 0)", out); return true;
-        case WAH_TYPE_I64: fputs(" (i64.const 0)", out); return true;
-        case WAH_TYPE_F32: fputs(" (f32.const 0)", out); return true;
-        case WAH_TYPE_F64: fputs(" (f64.const 0)", out); return true;
-        case WAH_TYPE_V128: fputs(" (v128.const i64x2 0 0)", out); return true;
+static uint64_t rng_state;
+static uint64_t rng(void) { // splitmix64
+    uint64_t z = (rng_state += UINT64_C(0x9e3779b97f4a7c15));
+    z = (z ^ (z >> 30)) * UINT64_C(0xbf58476d1ce4e5b9);
+    z = (z ^ (z >> 27)) * UINT64_C(0x94d049bb133111eb);
+    return z ^ (z >> 31);
+}
+
+// Integers near edges, or random bits of random widths
+static uint64_t random_int(void) {
+    static const uint64_t edges[] = { 0, 1, 2, 7, 8, 31, 32, 33, 63, 64, 0x7f, 0x80, 0xff, 0x7fff, 0x8000, 0xffff,
+                                      0x7fffffff, 0x80000000, UINT64_C(0x7fffffffffffffff) };
+    uint64_t r = rng();
+    switch (r % 4) {
+        case 0: return edges[(r >> 8) % (sizeof(edges) / sizeof(*edges))];
+        case 1: return -edges[(r >> 8) % (sizeof(edges) / sizeof(*edges))];
+        default: return rng() >> (r >> 8) % 64;
     }
-    if (!WAH_TYPE_IS_REF(t) || !WAH_TYPE_IS_NULLABLE(t)) return false; // No values of non-nullable references
-    fprintf(out, " %s", null_arg(m, t));
+}
+
+// Floats that are not NaNs except the positive canonical one: the spec lets other NaNs come out of operations taking
+// them (in a way that the reference interpreter takes from the hardware), and WAH canonicalizes them
+static uint64_t random_f64(void) {
+    static const double edges[] = { 0.0, -0.0, 1.0, -1.0, 0.5, -0.5, 1.5, 2.5, -2.5, 1e300, -1e300, 4.9e-324,
+                                    2.2250738585072014e-308, 4294967296.0, -2147483649.0, 9.2233720368547758e18,
+                                    INFINITY, -INFINITY, NAN };
+    uint64_t r = rng(), bits;
+    double d = r % 2 ? edges[(r >> 8) % (sizeof(edges) / sizeof(*edges))] : ldexp((double)(int64_t)rng(), -(int)((r >> 8) % 64));
+    if (isnan(d)) return UINT64_C(0x7ff8000000000000);
+    memcpy(&bits, &d, 8);
+    return bits;
+}
+static uint32_t random_f32(void) {
+    double d;
+    uint64_t bits = random_f64();
+    memcpy(&d, &bits, 8);
+    float f = (float)d;
+    if (isnan(f)) return 0x7fc00000;
+    uint32_t b;
+    memcpy(&b, &f, 4);
+    return b;
+}
+
+// Arguments of round 0 are zeros (or nulls); references are always nulls, as there are no others to pass
+static bool make_arg(wah_type_t t, uint32_t round, wah_value_t *v) {
+    memset(v, 0, sizeof(*v));
+    if (WAH_TYPE_IS_REF(t)) return WAH_TYPE_IS_NULLABLE(t);
+    if (round == 0) return true;
+    switch (t) {
+        case WAH_TYPE_I32: v->i32 = (int32_t)random_int(); break;
+        case WAH_TYPE_I64: v->i64 = (int64_t)random_int(); break;
+        case WAH_TYPE_F32: { uint32_t b = random_f32(); memcpy(&v->f32, &b, 4); break; }
+        case WAH_TYPE_F64: { uint64_t b = random_f64(); memcpy(&v->f64, &b, 8); break; }
+        case WAH_TYPE_V128: {
+            uint32_t lanes[4];
+            for (int i = 0; i < 4; ++i) lanes[i] = (uint32_t)random_int() & ~UINT32_C(0x40000000); // No NaNs
+            memcpy(&v->v128, lanes, 16);
+            break;
+        }
+    }
     return true;
 }
 
-static bool zero_arg(wah_type_t t, wah_value_t *v) {
-    memset(v, 0, sizeof(*v));
-    return !WAH_TYPE_IS_REF(t) || WAH_TYPE_IS_NULLABLE(t);
+static void put_arg(const wah_module_t *m, wah_type_t t, const wah_value_t *v) {
+    switch (t) {
+        case WAH_TYPE_I32: fprintf(out, " (i32.const %" PRIu32 ")", (uint32_t)v->i32); return;
+        case WAH_TYPE_I64: fprintf(out, " (i64.const %" PRIu64 ")", (uint64_t)v->i64); return;
+        case WAH_TYPE_F32: {
+            uint32_t bits;
+            memcpy(&bits, &v->f32, 4);
+            fputs(" (f32.const ", out), put_f32(bits, true), fputc(')', out);
+            return;
+        }
+        case WAH_TYPE_F64: {
+            uint64_t bits;
+            memcpy(&bits, &v->f64, 8);
+            fputs(" (f64.const ", out), put_f64(bits, true), fputc(')', out);
+            return;
+        }
+        case WAH_TYPE_V128: {
+            uint32_t lanes[4];
+            memcpy(lanes, &v->v128, 16);
+            fprintf(out, " (v128.const i32x4 0x%" PRIx32 " 0x%" PRIx32 " 0x%" PRIx32 " 0x%" PRIx32 ")",
+                    lanes[0], lanes[1], lanes[2], lanes[3]);
+            return;
+        }
+    }
+    fprintf(out, " %s", null_arg(m, t));
 }
 
 static bool put_result(const wah_module_t *m, wah_type_t t, const wah_value_t *v) {
@@ -126,13 +204,13 @@ static bool put_result(const wah_module_t *m, wah_type_t t, const wah_value_t *v
         case WAH_TYPE_F32: {
             uint32_t bits;
             memcpy(&bits, &v->f32, 4);
-            fputs(" (f32.const ", out), put_f32(bits), fputc(')', out);
+            fputs(" (f32.const ", out), put_f32(bits, false), fputc(')', out);
             return true;
         }
         case WAH_TYPE_F64: {
             uint64_t bits;
             memcpy(&bits, &v->f64, 8);
-            fputs(" (f64.const ", out), put_f64(bits), fputc(')', out);
+            fputs(" (f64.const ", out), put_f64(bits, false), fputc(')', out);
             return true;
         }
         case WAH_TYPE_V128: {
@@ -145,7 +223,7 @@ static bool put_result(const wah_module_t *m, wah_type_t t, const wah_value_t *v
                         lanes[0], lanes[1], lanes[2], lanes[3]);
             } else { // Probably float lanes, with any NaN allowed
                 fputs(" (v128.const f32x4", out);
-                for (int i = 0; i < 4; ++i) fputc(' ', out), put_f32(lanes[i]);
+                for (int i = 0; i < 4; ++i) fputc(' ', out), put_f32(lanes[i], false);
                 fputc(')', out);
             }
             return true;
@@ -236,15 +314,18 @@ int main(int argc, char **argv) {
     fputc('\n', out);
     status = 0;
     bool stopped = false;
+    for (uint32_t round = 0; round < ARG_ROUNDS && !stopped; ++round)
     for (uint32_t i = 0; i < wah_module_export_count(&module) && !stopped; i++) {
         wah_export_desc_t entry;
         if (wah_module_export(&module, i, &entry) != WAH_OK) { stopped = true; break; }
         if (entry.kind != WAH_KIND_FUNCTION) continue;
         const wah_func_desc_t *fn = &entry.u.func;
         if (fn->param_count > MAX_VALUES || fn->result_count > MAX_VALUES) continue;
+        if (round > 0 && fn->param_count == 0) continue; // Repeating these is unlikely to be worth it
         wah_value_t params[MAX_VALUES], results[MAX_VALUES];
         bool ok = true;
-        for (uint32_t p = 0; p < fn->param_count; ++p) ok &= zero_arg(fn->param_types[p], &params[p]);
+        rng_state = (uint64_t)round << 32 | i;
+        for (uint32_t p = 0; p < fn->param_count; ++p) ok &= make_arg(fn->param_types[p], round, &params[p]);
         if (!ok) continue;
 
         grow_refused = false;
@@ -260,7 +341,7 @@ int main(int argc, char **argv) {
         out = open_memstream(&call, &call_len);
         fputs("(invoke ", out);
         put_string((const uint8_t *)entry.name, entry.name_len);
-        for (uint32_t p = 0; p < fn->param_count; ++p) put_arg(&module, fn->param_types[p]);
+        for (uint32_t p = 0; p < fn->param_count; ++p) put_arg(&module, fn->param_types[p], &params[p]);
         fputc(')', out);
         bool printable = true;
         if (err == WAH_OK) {
@@ -301,6 +382,39 @@ int main(int argc, char **argv) {
         out = saved;
         if (printable) fputs(line, out);
         free(line);
+    }
+    // Then the sizes and contents of exported memories, through modules importing them
+    bool registered = false;
+    for (uint32_t i = 0; i < wah_module_export_count(&module) && !stopped; i++) {
+        wah_export_desc_t entry;
+        uint8_t *data;
+        uint64_t size;
+        if (wah_module_export(&module, i, &entry) != WAH_OK || entry.kind != WAH_KIND_MEMORY) continue;
+        if (wah_memory_data(&ctx, entry.index, &data, &size) != WAH_OK) continue;
+        if (!registered) fputs("(register \"M\" $M)\n", out), registered = true;
+        bool m64 = entry.u.memory.addr_type == WAH_TYPE_I64;
+        const char *a = m64 ? "i64" : "i32";
+        fputs("(module (import \"M\" ", out);
+        put_string((const uint8_t *)entry.name, entry.name_len);
+        fprintf(out, " (memory %s 0))\n", a);
+        fprintf(out, "  (func (export \"size\") (result i64) (%s))\n",
+                m64 ? "memory.size" : "i64.extend_i32_u (memory.size)");
+        fprintf(out, "  (func (export \"hash\") (result i64) (local $i %s) (local $h i64)\n"
+                     "    (local.set $h (i64.const 0x%" PRIx64 "))\n"
+                     "    (block (loop (br_if 1 (%s.ge_u (local.get $i) (%s.shl (memory.size) (%s.const 16))))\n"
+                     "      (local.set $h (i64.mul (i64.xor (local.get $h) (i64.load (local.get $i))) (i64.const 0x%" PRIx64 ")))\n"
+                     "      (local.set $i (%s.add (local.get $i) (%s.const 8))) (br 0)))\n"
+                     "    (local.get $h)))\n",
+                a, HASH_INIT, a, a, a, HASH_PRIME, a, a);
+        fprintf(out, "(assert_return (invoke \"size\") (i64.const %" PRIu64 "))\n", size >> 16);
+        if (size > MAX_HASHED_BYTES) continue;
+        uint64_t h = HASH_INIT;
+        for (uint64_t off = 0; off < size; off += 8) {
+            uint64_t word = 0;
+            for (int b = 0; b < 8; ++b) word |= (uint64_t)data[off + b] << 8 * b;
+            h = (h ^ word) * HASH_PRIME;
+        }
+        fprintf(out, "(assert_return (invoke \"hash\") (i64.const %" PRIu64 "))\n", h);
     }
     fclose(out);
 

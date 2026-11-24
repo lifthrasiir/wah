@@ -270,14 +270,15 @@ lean-diff:
 # Runs the fuzz corpus and modules from `wasm-tools smith` through WAH and checks what it did against the reference
 # interpreter of the spec (interpreter/wasm of https://github.com/WebAssembly/spec, built by `make` there), given as
 # WASM_REF. Disagreements are kept in SPEC_DIFF_DIR as .wast scripts with the output of the reference interpreter.
-# Smith modules have no imports, terminate and canonicalize NaNs (except in conversions, see nan_variant.sh), and
+# Smith modules have no imports, terminate (by a fuel global shared by all calls, which traps on every call once
+# exhausted, so more is given than by default) and canonicalize NaNs (but see nan_variant.sh), and
 # don't use relaxed SIMD, which is nondeterministic, or proposals beyond Wasm 3.0.
 
 WASM_REF ?=
 WASM_TOOLS ?= wasm-tools
 SPEC_SMITH_COUNT ?= 5000
 SPEC_DIFF_DIR := proofs/spec/.out
-SPEC_SMITH_FLAGS := --max-imports 0 --min-funcs 3 --ensure-termination --canonicalize-nans true \
+SPEC_SMITH_FLAGS := --max-imports 0 --min-funcs 3 --ensure-termination --fuel 10000 --canonicalize-nans true \
 	--export-everything true --gc-enabled true --exceptions-enabled true --tail-call-enabled true \
 	--memory64-enabled true --relaxed-simd-enabled false --threads-enabled false \
 	--custom-page-sizes-enabled false --wide-arithmetic-enabled false
