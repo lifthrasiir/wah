@@ -22,7 +22,11 @@ C code that CI checks. When you change a modeled C function, change its model an
   `wah_type_is_subtype` (`wahSub`) and `wah_type_accepts_repr` (`acceptsWalk`), which agree with it for valid modules
   and canonical maps like `canonical_map`. Bridges: proofs/types.c (`make cbmc_types.is_subtype`,
   `make cbmc_types.accepts_repr`), and `make lean-diff` compares subtyping between all types of a module.
+- WahProofs/SubDecl.lean models `wah_type_matches_supertype` (`declCheck`), the check of declared supertypes, which
+  agrees with the composite type subtyping of the spec (`CompSub`). Bridge: proofs/types.c
+  (`make cbmc_types.matches_supertype`).
 -/
 import WahProofs.Layout
 import WahProofs.Types
 import WahProofs.Subtype
+import WahProofs.SubDecl

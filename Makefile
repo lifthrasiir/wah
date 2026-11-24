@@ -200,7 +200,7 @@ CBMC_PROOFS := leb128.uleb128 leb128.uleb128_64 leb128.sleb128_32 leb128.sleb128
 	decode.storage_type $(CBMC_FLOAT_PROOFS) $(patsubst %, float_boundary.%, $(CBMC_FLOAT_BOUNDARY_PROOFS)) \
 	$(foreach e, 0 1 3 16 huge, alloc.malloc_$(e) alloc.realloc_$(e)) pin.ops refs.i31 refs.gc_link \
 	fuel.bulk_limit fuel.bulk_limit_elems fuel.budget layout.place \
-	types.ref_eq types.hash_ref types.types_eq types.is_subtype types.accepts_repr
+	types.ref_eq types.hash_ref types.types_eq types.is_subtype types.accepts_repr types.matches_supertype
 CBMC_UNWIND_leb128 := 12
 CBMC_UNWIND_utf8 := 9
 CBMC_UNWIND_bounds := 9

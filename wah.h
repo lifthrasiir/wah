@@ -5760,6 +5760,49 @@ static int wah_rec_group_key_cmp(const void *a, const void *b) {
     return x->start < y->start ? -1 : x->start > y->start;
 }
 
+// Whether field j of td matches field j of its supertype super_td: mutable fields are equivalent, others covariant.
+static bool wah_field_matches_supertype(const wah_module_t *module, const wah_type_def_t *td,
+                                        const wah_type_def_t *super_td, uint32_t j) {
+    wah_type_t st = super_td->field_types[j], tt = td->field_types[j];
+    if (td->field_mutables[j] != super_td->field_mutables[j]) return false;
+    if (!super_td->field_mutables[j]) return wah_type_is_subtype(tt, st, module);
+    const uint32_t *canon = module->canonical_map;
+    return st == tt || (st >= 0 && tt >= 0 && WAH_TYPE_IS_NULLABLE(st) == WAH_TYPE_IS_NULLABLE(tt) &&
+                        canon[WAH_TYIDX(st)] == canon[WAH_TYIDX(tt)]);
+}
+
+// Whether type i is a subtype of its declared supertype by their definitions, with canonical_map built. This is
+// `declCheck` of proofs/lean/WahProofs/SubDecl.lean, which proves that it is the subtyping of the spec.
+static bool wah_type_matches_supertype(const wah_module_t *module, uint32_t i) {
+    const wah_type_def_t *td = &module->type_defs[i];
+    if (td->supertype == WAH_NO_SUPERTYPE) return true;
+    const wah_type_def_t *super_td = &module->type_defs[td->supertype];
+    switch (td->kind) {
+        case WAH_COMP_FUNC: {
+            const wah_func_type_t *ft = &module->types[i], *super_ft = &module->types[td->supertype];
+            if (ft->param_count != super_ft->param_count || ft->result_count != super_ft->result_count) return false;
+            for (uint32_t j = 0; j < ft->param_count; ++j) {
+                if (!wah_type_is_subtype(super_ft->param_types[j], ft->param_types[j], module)) return false;
+            }
+            for (uint32_t j = 0; j < ft->result_count; ++j) {
+                if (!wah_type_is_subtype(ft->result_types[j], super_ft->result_types[j], module)) return false;
+            }
+            return true;
+        }
+        case WAH_COMP_STRUCT:
+            if (td->field_count < super_td->field_count) return false;
+            for (uint32_t j = 0; j < super_td->field_count; ++j) {
+                if (!wah_field_matches_supertype(module, td, super_td, j)) return false;
+            }
+            return true;
+        case WAH_COMP_ARRAY:
+            return td->field_count == 1 && super_td->field_count == 1 &&
+                   wah_field_matches_supertype(module, td, super_td, 0);
+        default:
+            return true;
+    }
+}
+
 static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
     wah_error_t err;
     const wah_alloc_t *alloc = &module->alloc;
@@ -5825,45 +5868,7 @@ static wah_error_t wah_module_build_type_metadata(wah_module_t *module) {
     module->canonical_map = canonical_map;
     canonical_map = NULL;
     for (uint32_t i = 0; i < module->type_count; ++i) {
-        wah_type_def_t *td = &module->type_defs[i];
-        if (td->supertype == WAH_NO_SUPERTYPE) continue;
-        wah_type_def_t *super_td = &module->type_defs[td->supertype];
-        const uint32_t *canon = module->canonical_map;
-
-        if (td->kind == WAH_COMP_FUNC) {
-            wah_func_type_t *sub_ft = &module->types[i];
-            wah_func_type_t *sup_ft = &module->types[td->supertype];
-            WAH_ENSURE_GOTO(sub_ft->param_count == sup_ft->param_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-            WAH_ENSURE_GOTO(sub_ft->result_count == sup_ft->result_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-            for (uint32_t j = 0; j < sub_ft->param_count; ++j) {
-                WAH_ENSURE_GOTO(wah_type_is_subtype(sup_ft->param_types[j], sub_ft->param_types[j], module), WAH_ERROR_VALIDATION_FAILED, cleanup);
-            }
-            for (uint32_t j = 0; j < sub_ft->result_count; ++j) {
-                WAH_ENSURE_GOTO(wah_type_is_subtype(sub_ft->result_types[j], sup_ft->result_types[j], module), WAH_ERROR_VALIDATION_FAILED, cleanup);
-            }
-        } else if (td->kind == WAH_COMP_STRUCT) {
-            WAH_ENSURE_GOTO(td->field_count >= super_td->field_count, WAH_ERROR_VALIDATION_FAILED, cleanup);
-            for (uint32_t j = 0; j < super_td->field_count; ++j) {
-                if (super_td->field_mutables[j]) {
-                    WAH_ENSURE_GOTO(td->field_mutables[j], WAH_ERROR_VALIDATION_FAILED, cleanup);
-                    wah_type_t st = super_td->field_types[j], tt = td->field_types[j];
-                    WAH_ENSURE_GOTO(st == tt || (st >= 0 && tt >= 0 && WAH_TYPE_IS_NULLABLE(st) == WAH_TYPE_IS_NULLABLE(tt) && canon[WAH_TYIDX(st)] == canon[WAH_TYIDX(tt)]), WAH_ERROR_VALIDATION_FAILED, cleanup);
-                } else {
-                    WAH_ENSURE_GOTO(!td->field_mutables[j], WAH_ERROR_VALIDATION_FAILED, cleanup);
-                    WAH_ENSURE_GOTO(wah_type_is_subtype(td->field_types[j], super_td->field_types[j], module), WAH_ERROR_VALIDATION_FAILED, cleanup);
-                }
-            }
-        } else if (td->kind == WAH_COMP_ARRAY) {
-            WAH_ENSURE_GOTO(td->field_count == 1 && super_td->field_count == 1, WAH_ERROR_VALIDATION_FAILED, cleanup);
-            if (super_td->field_mutables[0]) {
-                WAH_ENSURE_GOTO(td->field_mutables[0], WAH_ERROR_VALIDATION_FAILED, cleanup);
-                wah_type_t st = super_td->field_types[0], tt = td->field_types[0];
-                WAH_ENSURE_GOTO(st == tt || (st >= 0 && tt >= 0 && WAH_TYPE_IS_NULLABLE(st) == WAH_TYPE_IS_NULLABLE(tt) && canon[WAH_TYIDX(st)] == canon[WAH_TYIDX(tt)]), WAH_ERROR_VALIDATION_FAILED, cleanup);
-            } else {
-                WAH_ENSURE_GOTO(!td->field_mutables[0], WAH_ERROR_VALIDATION_FAILED, cleanup);
-                WAH_ENSURE_GOTO(wah_type_is_subtype(td->field_types[0], super_td->field_types[0], module), WAH_ERROR_VALIDATION_FAILED, cleanup);
-            }
-        }
+        WAH_ENSURE_GOTO(wah_type_matches_supertype(module, i), WAH_ERROR_VALIDATION_FAILED, cleanup);
     }
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_GC)

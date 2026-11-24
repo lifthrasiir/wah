@@ -107,6 +107,7 @@ typedef struct {
     bool final, has_super, mut[2 * F];
     uint32_t kind, super, c1, c2, nf;
     vt_t ft[2 * F];
+    wah_type_t raw[2 * F]; // ft as wah_type_t
 } td_t;
 
 static td_t encode(uint32_t i) {
@@ -115,12 +116,13 @@ static td_t encode(uint32_t i) {
                 .super = d->supertype };
     if (d->kind == WAH_COMP_FUNC) {
         td.c1 = ftypes[i].param_count, td.c2 = ftypes[i].result_count;
-        for (uint32_t j = 0; j < td.c1; ++j) td.ft[td.nf] = decode(ftypes[i].param_types[j]), td.mut[td.nf++] = false;
-        for (uint32_t j = 0; j < td.c2; ++j) td.ft[td.nf] = decode(ftypes[i].result_types[j]), td.mut[td.nf++] = false;
+        for (uint32_t j = 0; j < td.c1; ++j) td.raw[td.nf] = ftypes[i].param_types[j], td.mut[td.nf++] = false;
+        for (uint32_t j = 0; j < td.c2; ++j) td.raw[td.nf] = ftypes[i].result_types[j], td.mut[td.nf++] = false;
     } else {
         td.c1 = d->field_count, td.c2 = 0;
-        for (uint32_t j = 0; j < td.c1; ++j) td.ft[td.nf] = decode(d->field_types[j]), td.mut[td.nf++] = d->field_mutables[j];
+        for (uint32_t j = 0; j < td.c1; ++j) td.raw[td.nf] = d->field_types[j], td.mut[td.nf++] = d->field_mutables[j];
     }
+    for (uint32_t j = 0; j < td.nf; ++j) td.ft[j] = decode(td.raw[j]);
     return td;
 }
 
@@ -293,4 +295,44 @@ void harness_accepts_repr(void) {
     bool model = repr_id >= 0 && (uint32_t)repr_id < repr_count && target < n &&
                  model_accepts(target, n, repr_store[repr_id].typeidx);
     __CPROVER_assert(wah_type_accepts_repr(&module, target, repr_id) == model, "same cast check");
+}
+
+// `declCheck` of proofs/lean/WahProofs/SubDecl.lean, which proves that it is the subtyping of the spec
+static bool model_mut_eq(int64_t st, int64_t tt) { // `mutEq`
+    return st == tt || (st >= 0 && tt >= 0 && emod2(st) == emod2(tt) && canon[st / 2] == canon[tt / 2]);
+}
+
+static bool model_field_check(uint32_t n, const td_t *a, const td_t *b, uint32_t j) { // `fieldCheck`
+    if (b->mut[j]) return a->mut[j] && model_mut_eq(b->raw[j], a->raw[j]);
+    return !a->mut[j] && model_is_subtype(n, a->raw[j], b->raw[j]);
+}
+
+static bool model_decl_check(uint32_t n, uint32_t t, uint32_t s) { // `declCheck`
+    td_t a = encode(t), b = encode(s);
+    if (a.kind == WAH_COMP_FUNC) {
+        if (a.c1 != b.c1 || a.c2 != b.c2) return false;
+        for (uint32_t j = 0; j < a.c1; ++j) if (!model_is_subtype(n, b.raw[j], a.raw[j])) return false;
+        for (uint32_t j = 0; j < a.c2; ++j) if (!model_is_subtype(n, a.raw[a.c1 + j], b.raw[a.c1 + j])) return false;
+        return true;
+    }
+    if (a.kind == WAH_COMP_STRUCT) {
+        if (b.nf > a.nf) return false;
+        for (uint32_t j = 0; j < b.nf; ++j) if (!model_field_check(n, &a, &b, j)) return false;
+        return true;
+    }
+    if (a.kind == WAH_COMP_ARRAY) return a.nf == 1 && b.nf == 1 && model_field_check(n, &a, &b, 0);
+    return true;
+}
+
+void harness_matches_supertype(void) {
+    uint32_t n = setup_module();
+    for (uint32_t i = 0; i < N; ++i) { // `SubWF`
+        __CPROVER_assume(defs[i].supertype == WAH_NO_SUPERTYPE ||
+                         (defs[i].supertype < i && defs[defs[i].supertype].kind == defs[i].kind));
+    }
+    module.canonical_map = canon;
+    uint32_t t = nondet_u32();
+    __CPROVER_assume(t < n);
+    bool model = defs[t].supertype == WAH_NO_SUPERTYPE || model_decl_check(n, t, defs[t].supertype);
+    __CPROVER_assert(wah_type_matches_supertype(&module, t) == model, "same check of the supertype");
 }
