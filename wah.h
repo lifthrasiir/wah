@@ -3224,7 +3224,7 @@ static void wah_jit_instantiate(wah_exec_context_t *ctx);
 static bool wah_jit_run(wah_exec_context_t *ctx, wah_error_t *err); // False if the activation should be interpreted
 static void wah_jit_cancel(wah_exec_context_t *ctx);
 static void wah_jit_free_context(wah_exec_context_t *ctx);
-static uint8_t *wah_jit_reserve_memory(uint64_t size); // NULL if guard pages are disabled or reservation failed
+static uint8_t *wah_jit_reserve_memory(uint64_t size, uint32_t defined_idx); // NULL if not guarded, or failed
 static bool wah_jit_commit_memory(uint8_t *data, uint64_t old_size, uint64_t new_size);
 static void wah_jit_release_memory(uint8_t *data);
 #endif
@@ -4964,16 +4964,16 @@ static bool wah_budget_check(const wah_exec_context_t *ctx, uint64_t additional)
     return additional <= ctx->max_memory_bytes - ctx->memory_bytes_committed;
 }
 
-// Allocates zeroed data of a defined memory, reserved with guard pages if enabled.
+// Allocates zeroed data of a defined memory (`defined_idx` of its module), reserved with guard pages if enabled.
 static wah_error_t wah_memory_alloc_data(const wah_alloc_t *alloc, wah_memory_inst_t *mem, wah_type_t addr_type,
-                                         uint64_t size) {
+                                         uint32_t defined_idx, uint64_t size) {
 #ifdef WAH_JIT
-    if (addr_type == WAH_TYPE_I32 && (mem->data = wah_jit_reserve_memory(size)) != NULL) {
+    if (addr_type == WAH_TYPE_I32 && (mem->data = wah_jit_reserve_memory(size, defined_idx)) != NULL) {
         mem->guarded = true;
         return WAH_OK;
     }
 #else
-    (void)addr_type;
+    (void)addr_type, (void)defined_idx;
 #endif
     if (size == 0) return WAH_OK;
     WAH_MALLOC_ARRAY(mem->data, size);
@@ -12984,7 +12984,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
             uint64_t byte_size = module->memories[i].min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
             WAH_ENSURE_GOTO(wah_budget_check(exec_ctx, byte_size), WAH_ERROR_TOO_LARGE, cleanup);
             exec_ctx->memories[slot].size = byte_size;
-            WAH_CHECK_GOTO(wah_memory_alloc_data(alloc, &exec_ctx->memories[slot], module->memories[i].addr_type,
+            WAH_CHECK_GOTO(wah_memory_alloc_data(alloc, &exec_ctx->memories[slot], module->memories[i].addr_type, i,
                                                  byte_size), cleanup);
             wah_budget_charge(exec_ctx, byte_size);
         }
@@ -19722,7 +19722,7 @@ static wah_error_t wah_create_owned_linked_contexts(wah_exec_context_t *ctx) {
                     wah_budget_charge(ctx, byte_size);
                     ictx->memories[slot].max_pages = wah_memory_max_pages(&lmod->memories[mi]);
                     ictx->memories[slot].size = byte_size;
-                    WAH_CHECK(wah_memory_alloc_data(alloc, &ictx->memories[slot], lmod->memories[mi].addr_type, byte_size));
+                    WAH_CHECK(wah_memory_alloc_data(alloc, &ictx->memories[slot], lmod->memories[mi].addr_type, mi, byte_size));
                 }
             } else {
                 ictx->memories = NULL;

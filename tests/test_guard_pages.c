@@ -250,11 +250,46 @@ static void test_wah_handles_fault(void) {
 #endif
 }
 
+static uint32_t count_guarded(const inst_t *inst) {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < inst->ctx.memory_count; i++) n += inst->ctx.memories[i].guarded;
+    return n;
+}
+
+// Each guarded memory reserves 6 GiB, so a module with many memories could exhaust the address space
+static void test_guard_limits(void) {
+    printf("Testing limits of guarded memories...\n");
+    char spec[1024] = "wasm memories {[ limits.i32/1 0";
+    for (int i = 1; i < 40; i++) strcat(spec, ", limits.i32/1 0");
+    strcat(spec, " ]}");
+    inst_t many;
+    inst_new(&many, spec, NULL, NULL, NULL);
+    assert_eq_u32(many.ctx.memory_count, 40);
+    assert_eq_u32(count_guarded(&many), WAH_JIT_GUARDED_MEMORIES_PER_INSTANCE);
+    for (uint32_t i = 0; i < WAH_JIT_GUARDED_MEMORIES_PER_INSTANCE; i++) assert_true(many.ctx.memories[i].guarded);
+    inst_free(&many);
+
+    enum { N = WAH_JIT_MAX_GUARDED_MEMORIES / WAH_JIT_GUARDED_MEMORIES_PER_INSTANCE + 2 };
+    static inst_t insts[N];
+    uint32_t total = 0;
+    for (int i = 0; i < N; i++) {
+        inst_new(&insts[i], spec, NULL, NULL, NULL);
+        total += count_guarded(&insts[i]);
+    }
+    assert_true(total <= WAH_JIT_MAX_GUARDED_MEMORIES);
+    assert_eq_u32(count_guarded(&insts[N - 1]), 0);
+    for (int i = 0; i < N; i++) inst_free(&insts[i]);
+    inst_new(&many, spec, NULL, NULL, NULL);
+    assert_eq_u32(count_guarded(&many), WAH_JIT_GUARDED_MEMORIES_PER_INSTANCE); // Released ones can be reused
+    inst_free(&many);
+}
+
 int main(void) {
     inst_t early;
     test_before_enabling(&early);
     test_host_handles_fault(&early);
     test_wah_handles_fault();
+    test_guard_limits();
     inst_free(&early);
     printf("All guard page tests passed.\n");
     return 0;

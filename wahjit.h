@@ -91,6 +91,14 @@ typedef struct { uint32_t pos, func; } wah_jit_call_fixup_t;
 // Accesses with larger offsets are still checked.
 #define WAH_JIT_GUARD_SIZE ((uint64_t)1 << 31)
 #define WAH_JIT_GUARD_RESERVE (((uint64_t)1 << 32) + WAH_JIT_GUARD_SIZE)
+// Guarded memories reserve so much address space that their number is limited, in each instance (a context or one of
+// its linked modules) and in the process. Other memories are unguarded, so activations using them are interpreted.
+#ifndef WAH_JIT_GUARDED_MEMORIES_PER_INSTANCE
+#define WAH_JIT_GUARDED_MEMORIES_PER_INSTANCE 16
+#endif
+#ifndef WAH_JIT_MAX_GUARDED_MEMORIES
+#define WAH_JIT_MAX_GUARDED_MEMORIES 1024
+#endif
 
 typedef struct wah_jit_module_s {
     uint8_t *buf;               // Code being generated; freed when finished
@@ -5339,6 +5347,8 @@ static volatile long wah_jit_guard_mode;
 static int wah_jit_guard_load(void) { return (int)_InterlockedCompareExchange(&wah_jit_guard_mode, 0, 0); }
 static void wah_jit_guard_store(int v) { _InterlockedExchange(&wah_jit_guard_mode, v); }
 static bool wah_jit_guard_cas(int old, int v) { return _InterlockedCompareExchange(&wah_jit_guard_mode, v, old) == old; }
+static volatile long wah_jit_guarded_count; // Guarded memories in the process
+static int wah_jit_guarded_add(int d) { return (int)_InterlockedExchangeAdd(&wah_jit_guarded_count, d) + d; }
 #define WAH_JIT_THREAD_LOCAL __declspec(thread)
 #else
 static int wah_jit_guard_mode;
@@ -5347,6 +5357,8 @@ static void wah_jit_guard_store(int v) { __atomic_store_n(&wah_jit_guard_mode, v
 static bool wah_jit_guard_cas(int old, int v) {
     return __atomic_compare_exchange_n(&wah_jit_guard_mode, &old, v, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE);
 }
+static int wah_jit_guarded_count; // Guarded memories in the process
+static int wah_jit_guarded_add(int d) { return __atomic_add_fetch(&wah_jit_guarded_count, d, __ATOMIC_RELAXED); }
 #define WAH_JIT_THREAD_LOCAL __thread
 #endif
 
@@ -5360,14 +5372,17 @@ typedef struct wah_jit_activation_s {
 } wah_jit_activation_t;
 static WAH_JIT_THREAD_LOCAL wah_jit_activation_t *wah_jit_activation;
 
-static uint8_t *wah_jit_reserve_memory(uint64_t size) {
-    if (!wah_jit_guard_enabled()) return NULL;
+static uint8_t *wah_jit_reserve_memory(uint64_t size, uint32_t defined_idx) {
+    if (!wah_jit_guard_enabled() || defined_idx >= WAH_JIT_GUARDED_MEMORIES_PER_INSTANCE) return NULL;
+    if (wah_jit_guarded_add(1) > WAH_JIT_MAX_GUARDED_MEMORIES) {
+        wah_jit_guarded_add(-1);
+        return NULL;
+    }
 #ifdef _WIN32
     void *p = VirtualAlloc(NULL, WAH_JIT_GUARD_RESERVE, MEM_RESERVE, PAGE_NOACCESS);
-    if (!p) return NULL;
-    if (size > 0 && !VirtualAlloc(p, (size_t)size, MEM_COMMIT, PAGE_READWRITE)) {
+    if (p && size > 0 && !VirtualAlloc(p, (size_t)size, MEM_COMMIT, PAGE_READWRITE)) {
         VirtualFree(p, 0, MEM_RELEASE);
-        return NULL;
+        p = NULL;
     }
 #else
     int flags = MAP_PRIVATE | MAP_ANONYMOUS;
@@ -5375,12 +5390,14 @@ static uint8_t *wah_jit_reserve_memory(uint64_t size) {
     flags |= MAP_NORESERVE;
 #endif
     void *p = mmap(NULL, WAH_JIT_GUARD_RESERVE, PROT_NONE, flags, -1, 0);
-    if (p == MAP_FAILED) return NULL;
-    if (size > 0 && mprotect(p, (size_t)size, PROT_READ | PROT_WRITE) != 0) {
+    if (p == MAP_FAILED) {
+        p = NULL;
+    } else if (size > 0 && mprotect(p, (size_t)size, PROT_READ | PROT_WRITE) != 0) {
         munmap(p, WAH_JIT_GUARD_RESERVE);
-        return NULL;
+        p = NULL;
     }
 #endif
+    if (!p) wah_jit_guarded_add(-1);
     return (uint8_t *)p;
 }
 
@@ -5398,6 +5415,7 @@ static void wah_jit_release_memory(uint8_t *data) {
 #else
     munmap(data, WAH_JIT_GUARD_RESERVE);
 #endif
+    wah_jit_guarded_add(-1);
 }
 
 // Whether a fault at pc accessing addr is an out-of-bounds access of the current activation, and where to resume.
