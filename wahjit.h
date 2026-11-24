@@ -4888,7 +4888,9 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             break;
         }
         case WAH_OP_GLOBAL_GET: case WAH_OP_GLOBAL_SET: {
-            uint32_t idx = in->imm.u32, off = idx * (uint32_t)sizeof(wah_value_t);
+            // 64-bit, since 2^28 or more globals would wrap around (refused by wah_jit_ldst on x86-64)
+            uint32_t idx = in->imm.u32;
+            uint64_t off = (uint64_t)idx * sizeof(wah_value_t);
             const wah_module_t *m = f->module;
             bool indirect = idx < m->import_global_count && m->global_imports[idx].is_mutable;
             wah_type_t t = idx < m->import_global_count ? m->global_imports[idx].type
