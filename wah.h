@@ -1479,6 +1479,24 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx);
 //   Returns WAH_ERROR_MISUSE if the context is not instantiated, or WAH_ERROR_NOT_FOUND for invalid indices.
 wah_error_t wah_memory_data(wah_exec_context_t *ctx, uint32_t mem_idx, uint8_t **data, uint64_t *size);
 
+// Typedef: wah_memory_grow_hook_t
+//   Called before a memory grows by `memory.grow`, for accounting it outside of the context.
+//
+//   - userdata [in, borrowed]: The `userdata` given to `wah_set_memory_grow_hook`.
+//   - mem_idx [in]: Index of the memory in the module of the context owning it, which the hook was set for.
+//   - old_bytes, new_bytes [in]: Size of the memory before and after growing, in bytes.
+//
+//   Should return WAH_OK to grow the memory, WAH_ERROR_OUT_OF_MEMORY to make `memory.grow` fail (returning -1),
+//   or any other error to trap with it. The memory can still fail to grow after WAH_OK is returned, if it can't be
+//   allocated. The hook isn't called when growing by zero pages or beyond the maximum, nor for initial sizes.
+typedef wah_error_t (*wah_memory_grow_hook_t)(void *userdata, uint32_t mem_idx, uint64_t old_bytes, uint64_t new_bytes);
+
+// Function: wah_set_memory_grow_hook
+//   Sets a hook called before any memory defined by the module of an instantiated context grows, even when it is
+//   imported and grown by other contexts. Memories of modules linked by `wah_link_module` are not included.
+//   A NULL hook removes the hook. Returns WAH_ERROR_MISUSE if the context is not instantiated.
+wah_error_t wah_set_memory_grow_hook(wah_exec_context_t *ctx, wah_memory_grow_hook_t hook, void *userdata);
+
 // --- GC Management ---
 
 // Enum: wah_gc_phase_t
@@ -2750,6 +2768,8 @@ typedef struct wah_memory_inst_s {
     bool guarded; // Reserved with guard pages by wahjit.h; only set for the owner, not for imports
     struct wah_exec_context_s *import_ctx;
     uint32_t import_idx;
+    wah_memory_grow_hook_t grow_hook; // Set by wah_set_memory_grow_hook, only for the owner
+    void *grow_hook_userdata;
 } wah_memory_inst_t;
 
 typedef struct wah_table_inst_s {
@@ -13154,6 +13174,15 @@ wah_error_t wah_memory_data(wah_exec_context_t *ctx, uint32_t mem_idx, uint8_t *
     return WAH_OK;
 }
 
+wah_error_t wah_set_memory_grow_hook(wah_exec_context_t *ctx, wah_memory_grow_hook_t hook, void *userdata) {
+    WAH_ENSURE(ctx && ctx->is_instantiated && !ctx->poisoned, WAH_ERROR_MISUSE);
+    for (uint32_t i = ctx->module->import_memory_count; i < ctx->memory_count; i++) {
+        ctx->memories[i].grow_hook = hook;
+        ctx->memories[i].grow_hook_userdata = hook ? userdata : NULL;
+    }
+    return WAH_OK;
+}
+
 wah_error_t wah_set_limits(wah_exec_context_t *exec_ctx, const wah_limits_t *limits) {
     WAH_ENSURE(exec_ctx, WAH_ERROR_MISUSE);
     WAH_ENSURE(limits, WAH_ERROR_MISUSE);
@@ -14096,38 +14125,50 @@ static wah_error_t wah_table_grow_internal(
 }
 #endif
 
-static bool wah_memory_grow_internal(
+// Sets *old_pages to UINT64_MAX if the memory couldn't grow, or returns an error to trap with.
+static wah_error_t wah_memory_grow_internal(
     wah_exec_context_t *ctx, wah_exec_context_t *fctx, uint32_t mem_idx,
     uint64_t pages_to_grow, uint64_t *old_pages
 ) {
-    *old_pages = fctx->memories[mem_idx].size / WAH_WASM_PAGE_SIZE;
-    uint64_t new_pages = *old_pages + pages_to_grow;
+    uint64_t cur_pages = fctx->memories[mem_idx].size / WAH_WASM_PAGE_SIZE;
+    uint64_t new_pages = cur_pages + pages_to_grow;
+    *old_pages = UINT64_MAX;
 
-    if (new_pages < *old_pages || new_pages > fctx->memories[mem_idx].max_pages || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
-        return false;
+    if (new_pages < cur_pages || new_pages > fctx->memories[mem_idx].max_pages || new_pages > SIZE_MAX / WAH_WASM_PAGE_SIZE) {
+        return WAH_OK;
     }
-    if (pages_to_grow == 0) return true;
+    if (pages_to_grow == 0) {
+        *old_pages = cur_pages;
+        return WAH_OK;
+    }
 
     size_t new_memory_size = (size_t)new_pages * WAH_WASM_PAGE_SIZE;
     uint64_t delta_bytes = new_memory_size - fctx->memories[mem_idx].size;
-    wah_exec_context_t *owner = (fctx->memories[mem_idx].is_imported && fctx->memories[mem_idx].import_ctx)
-        ? fctx->memories[mem_idx].import_ctx : fctx;
+    bool via_import = fctx->memories[mem_idx].is_imported && fctx->memories[mem_idx].import_ctx;
+    wah_exec_context_t *owner = via_import ? fctx->memories[mem_idx].import_ctx : fctx;
+    uint32_t owner_mem_idx = via_import ? fctx->memories[mem_idx].import_idx : mem_idx;
+    const wah_memory_inst_t *owner_mem = &owner->memories[owner_mem_idx];
     wah_exec_context_t *budget_owner = wah_budget_owner(owner);
     if (!wah_budget_check(budget_owner, delta_bytes)) {
-        return false;
+        return WAH_OK;
+    }
+    if (owner_mem->grow_hook) {
+        wah_error_t hook_err = owner_mem->grow_hook(owner_mem->grow_hook_userdata, owner_mem_idx,
+                                                    fctx->memories[mem_idx].size, new_memory_size);
+        if (hook_err == WAH_ERROR_OUT_OF_MEMORY) return WAH_OK;
+        WAH_ENSURE(hook_err <= WAH_OK, WAH_ERROR_MISUSE); // Status codes are not errors to trap with
+        WAH_CHECK(hook_err);
     }
 
 #ifdef WAH_JIT
-    const wah_memory_inst_t *owner_mem = (fctx->memories[mem_idx].is_imported && fctx->memories[mem_idx].import_ctx)
-        ? &owner->memories[fctx->memories[mem_idx].import_idx] : &fctx->memories[mem_idx];
     if (owner_mem->guarded) { // Never moves, and newly committed pages are already zeroed
-        if (!wah_jit_commit_memory(owner_mem->data, fctx->memories[mem_idx].size, new_memory_size)) return false;
+        if (!wah_jit_commit_memory(owner_mem->data, fctx->memories[mem_idx].size, new_memory_size)) return WAH_OK;
     } else
 #endif
     {
         void *memory_data = fctx->memories[mem_idx].data;
         if (wah_realloc(&owner->alloc, new_memory_size, sizeof(*fctx->memories[mem_idx].data), &memory_data) != WAH_OK) {
-            return false;
+            return WAH_OK;
         }
         fctx->memories[mem_idx].data = (uint8_t *)memory_data;
         memset(fctx->memories[mem_idx].data + fctx->memories[mem_idx].size, 0, new_memory_size - fctx->memories[mem_idx].size);
@@ -14164,7 +14205,8 @@ static bool wah_memory_grow_internal(
         fctx->memory_size = fctx->memories[0].size;
     }
 
-    return true;
+    *old_pages = cur_pages;
+    return WAH_OK;
 }
 
 // Enforce deterministic fp operations.
@@ -15909,12 +15951,10 @@ WAH_RUN(I64_TRUNC_SAT_F64_U) { sp[-1].i64 = (int64_t)wah_trunc_sat_f64_to_u64(sp
     } \
     \
     uint64_t old_pages; \
-    if (!wah_memory_grow_internal(ctx, fctx, mem_idx, (uint64_t)pages_to_grow, &old_pages)) { \
-        (*sp++).i##N = -1; \
-        WAH_NEXT(); \
-    } \
-    (*sp++).i##N = (int##N##_t)old_pages; \
+    WAH_RUN_CHECK(wah_memory_grow_internal(ctx, fctx, mem_idx, (uint64_t)pages_to_grow, &old_pages)); \
+    (*sp++).i##N = old_pages == UINT64_MAX ? -1 : (int##N##_t)old_pages; \
     WAH_NEXT(); \
+    WAH_CLEANUP(); \
 }
 
 #define WAH_MEMORY_FILL_IMPL(N) { \

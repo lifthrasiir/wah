@@ -1498,13 +1498,15 @@ static void wah_jit_set_addr(wah_value_t *v, bool mem64, uint64_t a) {
 }
 #endif
 
-// Returns the old size of the memory in pages or -1 (truncated to i32 if not memory64), growing by *pages.
-static uint64_t wah_jit_memory_grow(wah_exec_context_t *ctx, uint32_t mem_idx, const wah_value_t *pages) {
+// Replaces *pages with the old size of the memory in pages or -1 (zero-extended from i32 if not memory64),
+// growing by *pages, or returns an error to trap with.
+static wah_error_t wah_jit_memory_grow(wah_exec_context_t *ctx, uint32_t mem_idx, wah_value_t *pages) {
     bool mem64 = wah_jit_ctx_mem64(ctx, mem_idx);
     int64_t delta = mem64 ? pages->i64 : pages->i32;
-    uint64_t old_pages;
-    if (delta < 0 || !wah_memory_grow_internal(ctx, ctx, mem_idx, (uint64_t)delta, &old_pages)) old_pages = UINT64_MAX;
-    return mem64 ? old_pages : (uint32_t)old_pages;
+    uint64_t old_pages = UINT64_MAX;
+    if (delta >= 0) WAH_CHECK(wah_memory_grow_internal(ctx, ctx, mem_idx, (uint64_t)delta, &old_pages));
+    pages->i64 = (int64_t)(mem64 ? old_pages : (uint32_t)old_pages);
+    return WAH_OK;
 }
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
@@ -4977,11 +4979,10 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             wah_jit_sync_pins(f, true);
             const wah_jit_arg_t a[] = { { WAH_JA_CTX, 0 }, { WAH_JA_IMM, in->imm.u32 }, { WAH_JA_SLOT, f->h - 1 } };
             wah_jit_call_helper(f, (uintptr_t)wah_jit_memory_grow, a, 3, false);
+            wah_jit_cbz(f, true, false, WAH_JR_RET, f->l_err);
             wah_jit_reload_memory(f);
-            wah_jit_sync_pins(f, false); // Doesn't change the return register
-            wah_jit_reset(f, f->h - 1);
-            f->gpr[WAH_JR_RET] = WAH_JO_TEMP;
-            wah_jit_push_gpr(f, WAH_JR_RET); // Already zero-extended if i32
+            wah_jit_sync_pins(f, false);
+            wah_jit_reset(f, f->h); // The result replaces the operand in its slot
             break;
         }
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)

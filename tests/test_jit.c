@@ -544,6 +544,39 @@ static void test_memory64_bulk_yield(void) {
     wah_free_module(&env);
 }
 
+static wah_error_t grow_hook(void *userdata, uint32_t mem_idx, uint64_t old_bytes, uint64_t new_bytes) {
+    assert_eq_u32(mem_idx, 0);
+    assert_true(new_bytes > old_bytes);
+    return *(wah_error_t *)userdata;
+}
+
+// memory.grow checked by wah_set_memory_grow_hook, which may refuse or trap
+static void test_memory_grow_hook(void) {
+    printf("Testing memory.grow hooks...\n");
+    const char *spec = "wasm types {[ fn [i32] [i32] ]} funcs {[ 0 ]} memories {[ limits.i32/2 1 4 ]} \
+        code {[ {[] local.get 0 memory.grow 0 i32.const 1000 i32.add memory.size 0 i32.add end} ]}";
+    static const wah_error_t rets[] = { WAH_OK, WAH_ERROR_OUT_OF_MEMORY, WAH_ERROR_TOO_LARGE };
+    for (size_t i = 0; i < COUNT(rets); i++) {
+        wah_error_t errs[2];
+        int32_t results[2];
+        for (int native = 0; native < 2; native++) {
+            jit_inst_t a;
+            inst_new(&a, spec, !native, NULL);
+            wah_error_t ret = rets[i];
+            assert_ok(wah_set_memory_grow_hook(&a.ctx, grow_hook, &ret));
+            wah_value_t p = { .i32 = 2 }, r = {0};
+            errs[native] = wah_call(&a.ctx, 0, &p, 1, &r);
+            results[native] = r.i32;
+            assert_true(ran_natively(&a) == (native && EXPECT_NATIVE));
+            inst_free(&a);
+        }
+        assert_eq_i32(errs[0], errs[1]);
+        assert_eq_i32(results[0], results[1]);
+        assert_eq_i32(errs[0], i == 2 ? WAH_ERROR_TOO_LARGE : WAH_OK);
+        if (i < 2) assert_eq_i32(results[0], i == 0 ? 1 + 1000 + 3 : -1 + 1000 + 1);
+    }
+}
+
 static void test_pinned_locals(void) {
     printf("Testing pinned locals...\n");
     // Old values on the stack survive setting the local, and sets from constants, slots and other locals
@@ -1214,6 +1247,7 @@ int main(void) {
     test_calls();
     test_suspend();
     test_memory64_bulk_yield();
+    test_memory_grow_hook();
     test_pinned_locals();
     test_local_cache();
     test_result_hints();
