@@ -1416,6 +1416,14 @@ void wah_result_ref(wah_call_context_t *ctx, size_t index, void *value);
 //     WAH_ERROR_MISUSE instead unless caught by WAH_ASSERT.
 void wah_trap(wah_call_context_t *ctx, wah_error_t reason);
 
+// Function: wah_suspend
+//   Suspends the activation from a host function instead of returning from it, e.g. to wait for something.
+//   Results set by the host function are discarded, and `wah_resume` (or `wah_call` etc., which can't be
+//   resumed and cancel the activation) returns WAH_STATUS_YIELDED. The host function is called again with
+//   the same parameters when the activation is resumed, so it should keep its own state if needed.
+//   Like `wah_trap`, this can be called only once per host call, and not together with `wah_trap`.
+void wah_suspend(wah_call_context_t *ctx);
+
 // --- Linkage ---
 
 // Function: wah_link_module
@@ -2610,7 +2618,7 @@ struct wah_call_context_s {
     wah_value_t *results;
     const wah_type_t *param_types, *result_types;
 
-    wah_error_t trap_reason;
+    wah_error_t trap_reason; // Or WAH_STATUS_YIELDED by wah_suspend
 };
 
 // --- Pinned References ---
@@ -15339,6 +15347,12 @@ WAH_RUN(ELEM_DROP) {
 }
 #endif
 
+// Where a call instruction is retried if a host function suspends by wah_suspend, at the start of the handler.
+// The last POLL (or TICK) before the call describes the stack there.
+#define WAH_CALL_RETRY_POINT() \
+    const uint8_t *retry_ip = bytecode_ip - sizeof(uint16_t); \
+    wah_value_t *retry_sp = sp
+
 // Inline host call: place results above params, call, move results down.
 #define WAH_CALL_HOST_INLINE(the_fn) \
     do { \
@@ -15346,12 +15360,20 @@ WAH_RUN(ELEM_DROP) {
         size_t nresults = (the_fn)->nresults; \
         WAH_ASSERT(sp >= (wah_value_t *)ctx->stack_buffer + nparams && "validation bug"); \
         wah_value_t *param_vals = sp - nparams; \
-        wah_value_t *result_vals = sp; \
+        wah_value_t *result_vals = retry_sp; /* Above operands already popped, which are needed for retries */ \
         WAH_ENSURE_GOTO((uint8_t *)(result_vals + nresults) <= (uint8_t *)ctx->frame_ptr, WAH_ERROR_STACK_OVERFLOW, cleanup); \
         memset(result_vals, 0, sizeof(wah_value_t) * nresults); \
         frame->bytecode_ip = bytecode_ip; \
         ctx->sp = sp; \
-        WAH_RUN_CHECK(wah_call_host_function_internal(ctx, (the_fn), param_vals, (uint32_t)nparams, result_vals)); \
+        wah_error_t host_err_ = wah_call_host_function_internal(ctx, (the_fn), param_vals, (uint32_t)nparams, result_vals); \
+        if (host_err_ != WAH_OK) { \
+            if (host_err_ > 0) { /* Suspended by wah_suspend, so the call is retried when resumed */ \
+                bytecode_ip = retry_ip; \
+                sp = retry_sp; \
+            } \
+            err = host_err_; \
+            goto cleanup; \
+        } \
         if (nresults > 0) { \
             memmove(param_vals, result_vals, sizeof(wah_value_t) * nresults); \
         } \
@@ -15406,6 +15428,7 @@ WAH_RUN(ELEM_DROP) {
     }
 
 WAH_RUN(CALL) {
+    WAH_CALL_RETRY_POINT();
     uint32_t called_func_idx = wah_decode_u32_le(&bytecode_ip);
 
     WAH_ASSERT(called_func_idx < frame->frame_function_table_count && "validation didn't catch out-of-bound function index");
@@ -15426,6 +15449,7 @@ WAH_RUN(CALL) {
 }
 
 WAH_RUN(CALL_INDIRECT) {
+    WAH_CALL_RETRY_POINT();
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     uint32_t table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip));
     uint32_t func_table_idx = (uint32_t)(*--sp).i32;
@@ -15440,6 +15464,7 @@ WAH_RUN(CALL_INDIRECT) {
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
 WAH_RUN(CALL_INDIRECT_i64) {
+    WAH_CALL_RETRY_POINT();
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     uint32_t table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip));
     uint64_t func_table_idx = (uint64_t)(*--sp).i64;
@@ -15455,6 +15480,7 @@ WAH_RUN(CALL_INDIRECT_i64) {
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF)
 WAH_RUN(CALL_REF) {
+    WAH_CALL_RETRY_POINT();
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     void *_fn_ref = (*--sp).ref;
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup);
@@ -15534,6 +15560,7 @@ WAH_RUN(CALL_REF) {
     } while (0)
 
 WAH_RUN(RETURN_CALL) {
+    WAH_CALL_RETRY_POINT();
     uint32_t called_func_idx = wah_decode_u32_le(&bytecode_ip);
 
     WAH_DROP_FRAME_HANDLERS();
@@ -15556,6 +15583,7 @@ WAH_RUN(RETURN_CALL) {
 }
 
 WAH_RUN(RETURN_CALL_INDIRECT) {
+    WAH_CALL_RETRY_POINT();
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     uint32_t table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip));
     uint32_t func_table_idx = (uint32_t)(*--sp).i32;
@@ -15571,6 +15599,7 @@ WAH_RUN(RETURN_CALL_INDIRECT) {
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_MEMORY64)
 WAH_RUN(RETURN_CALL_INDIRECT_i64) {
+    WAH_CALL_RETRY_POINT();
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     uint32_t table_idx = WAH_TABLEIDX(wah_decode_u32_le(&bytecode_ip));
     uint64_t func_table_idx = (uint64_t)(*--sp).i64;
@@ -15587,6 +15616,7 @@ WAH_RUN(RETURN_CALL_INDIRECT_i64) {
 
 #if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_TYPED_FUNCREF)
 WAH_RUN(RETURN_CALL_REF) {
+    WAH_CALL_RETRY_POINT();
     uint32_t type_idx = wah_decode_u32_le(&bytecode_ip);
     void *_fn_ref = (*--sp).ref;
     WAH_ENSURE_GOTO(_fn_ref != NULL, WAH_ERROR_TRAP, cleanup);
@@ -19005,6 +19035,13 @@ void wah_trap(wah_call_context_t *ctx, wah_error_t reason) {
     WAH_ASSERT(ctx->trap_reason == WAH_OK && "Call context already has a trap reason set");
     // A status code would suspend the host call with its params where results are expected
     if (ctx->trap_reason == WAH_OK) ctx->trap_reason = reason < 0 ? reason : WAH_ERROR_MISUSE;
+}
+
+void wah_suspend(wah_call_context_t *ctx) {
+    WAH_ASSERT(ctx && "Call context is NULL");
+    WAH_ASSERT(ctx->trap_reason == WAH_OK && "Call context already has a trap reason set");
+    // Callers retry the host call when resumed
+    if (ctx->trap_reason == WAH_OK) ctx->trap_reason = WAH_STATUS_YIELDED;
 }
 
 // --- Linkage Implementation ---

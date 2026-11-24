@@ -544,6 +544,72 @@ static void test_memory64_bulk_yield(void) {
     wah_free_module(&env);
 }
 
+typedef struct { bool pending; int32_t param; int calls; } wait_state_t;
+
+// Suspends at every other call, and is retried with the same parameter
+static void host_wait(wah_call_context_t *call, void *userdata) {
+    wait_state_t *s = (wait_state_t *)userdata;
+    int32_t p = wah_param_i32(call, 0);
+    s->calls++;
+    if (!s->pending) {
+        s->pending = true;
+        s->param = p;
+        wah_result_i32(call, 0, -1); // Discarded
+        wah_suspend(call);
+        return;
+    }
+    assert_eq_i32(p, s->param);
+    s->pending = false;
+    wah_result_i32(call, 0, p * 3 + 1);
+}
+
+// Host functions suspending by wah_suspend, called directly and indirectly with values below their arguments
+static void test_host_suspend(void) {
+    printf("Testing host functions suspending...\n");
+    wait_state_t s = {0};
+    wah_module_t env;
+    assert_ok(wah_new_module(&env, NULL));
+    assert_ok(wah_export_func(&env, "wait", "(i32) -> i32", host_wait, &s, NULL));
+    const char *spec = "wasm types {[ fn [i32] [i32] ]} imports {[ {'env'} {'wait'} fn# 0 ]} \
+        funcs {[ 0 ]} tables {[ funcref limits.i32/1 1 ]} elements {[ elem.active.table#0 i32.const 0 end [0] ]} \
+        code {[ {[3 i32] \
+        loop void \
+            local.get 1 local.get 0 call 0 i32.add local.set 1 \
+            local.get 2 i32.const 7 local.get 0 i32.const 0 call_indirect 0 0 i32.add i32.add local.set 2 \
+            local.get 3 i32.const 1 i32.add local.set 3 \
+            local.get 0 i32.const 1 i32.sub local.tee 0 br_if 0 \
+        end local.get 1 local.get 2 i32.mul local.get 3 i32.add end} ]}";
+    for (int native = 0; native < 2; native++) {
+        jit_inst_t a;
+        inst_new(&a, spec, !native, &env);
+        s = (wait_state_t){0};
+        wah_value_t p = { .i32 = 10 }, r;
+        assert_ok(wah_start(&a.ctx, 1, &p, 1));
+        int yields = 0;
+        wah_error_t err;
+        while ((err = wah_resume(&a.ctx)) == WAH_STATUS_YIELDED) yields++;
+        assert_ok(err);
+        uint32_t n;
+        assert_ok(wah_finish(&a.ctx, &r, 1, &n));
+        // sum of 3i+1 and of 3i+8 for i = 1..10
+        assert_eq_i32(r.i32, 175 * 245 + 10);
+        assert_eq_i32(yields, 20);
+        assert_eq_i32(s.calls, 40);
+        assert_true(ran_natively(&a) == (native && EXPECT_NATIVE));
+        // wah_call can't be resumed
+        s = (wait_state_t){0};
+        assert_err(wah_call(&a.ctx, 1, &p, 1, &r), WAH_STATUS_YIELDED);
+        s = (wait_state_t){0};
+        assert_ok(wah_start(&a.ctx, 1, &p, 1));
+        while ((err = wah_resume(&a.ctx)) == WAH_STATUS_YIELDED) {}
+        assert_ok(err);
+        assert_ok(wah_finish(&a.ctx, &r, 1, &n));
+        assert_eq_i32(r.i32, 175 * 245 + 10);
+        inst_free(&a);
+    }
+    wah_free_module(&env);
+}
+
 static wah_error_t grow_hook(void *userdata, uint32_t mem_idx, uint64_t old_bytes, uint64_t new_bytes) {
     assert_eq_u32(mem_idx, 0);
     assert_true(new_bytes > old_bytes);
@@ -1247,6 +1313,7 @@ int main(void) {
     test_calls();
     test_suspend();
     test_memory64_bulk_yield();
+    test_host_suspend();
     test_memory_grow_hook();
     test_pinned_locals();
     test_local_cache();

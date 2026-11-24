@@ -167,8 +167,8 @@ enum { WAH_JP_TABLE, WAH_JP_X64_REL32, WAH_JP_A64_B26, WAH_JP_A64_B19, WAH_JP_A6
 typedef struct { uint32_t pos, label, base; uint8_t kind; } wah_jit_patch_t;
 
 // Out-of-line code for suspension points: a POLL calling the poll handler first,
-// or a helper call which may have returned a status in the return register
-typedef struct { uint32_t stub, resume, cont; bool poll; } wah_jit_stub_t;
+// or a helper call which may have returned a status in the return register (or in ctx->jit->err if load_err)
+typedef struct { uint32_t stub, resume, cont; bool poll, load_err; } wah_jit_stub_t;
 
 // A 16-byte constant placed after the function, loaded by a label
 typedef struct { uint8_t bytes[16]; uint32_t label; } wah_jit_vconst_t;
@@ -1014,8 +1014,8 @@ static void wah_jit_emit_stub(wah_jit_fn_t *f, const wah_jit_stub_t *s);
 
 // Stubs are emitted at the end of the function, or right here with long branches so that ADR can reach `resume`.
 // Then the code before branches here if the stub is to be run.
-static void wah_jit_add_stub(wah_jit_fn_t *f, uint32_t stub, uint32_t resume, uint32_t cont, bool poll) {
-    wah_jit_stub_t s = { .stub = stub, .resume = resume, .cont = cont, .poll = poll };
+static void wah_jit_add_stub(wah_jit_fn_t *f, uint32_t stub, uint32_t resume, uint32_t cont, bool poll, bool load_err) {
+    wah_jit_stub_t s = { .stub = stub, .resume = resume, .cont = cont, .poll = poll, .load_err = load_err };
     if (f->long_branches) {
         uint32_t skip = wah_jit_new_label(f);
         wah_jit_b(f, skip);
@@ -1437,9 +1437,10 @@ static wah_error_t wah_jit_bulk_yield(wah_exec_context_t *ctx) {
 #endif
 
 // Calls a host function with args in the value stack, where results replace them like the interpreter.
-static wah_error_t wah_jit_host(wah_exec_context_t *ctx, const wah_function_t *fn, wah_value_t *args) {
+// Results are placed at `results` first, above any operand needed when the call is retried after wah_suspend.
+static wah_error_t wah_jit_host(wah_exec_context_t *ctx, const wah_function_t *fn, wah_value_t *args,
+                                wah_value_t *results) {
     size_t nparams = fn->nparams, nresults = fn->nresults;
-    wah_value_t *results = args + nparams;
     WAH_ENSURE((uint8_t *)(results + nresults) <= (uint8_t *)ctx->frame_ptr, WAH_ERROR_STACK_OVERFLOW);
     memset(results, 0, sizeof(wah_value_t) * nresults);
     ctx->sp = results;
@@ -1454,7 +1455,8 @@ static wah_error_t wah_jit_host(wah_exec_context_t *ctx, const wah_function_t *f
 }
 
 static wah_error_t wah_jit_call_host(wah_exec_context_t *ctx, uint32_t func_idx, wah_value_t *args) {
-    return wah_jit_host(ctx, &ctx->function_table[func_idx].func, args);
+    const wah_function_t *fn = &ctx->function_table[func_idx].func;
+    return wah_jit_host(ctx, fn, args, args + fn->nparams);
 }
 
 // Returns the code of a wasm function to call, 1 if a host function was called, or 0 with ctx->jit->err on errors.
@@ -1470,7 +1472,7 @@ static uintptr_t wah_jit_call_indirect(wah_exec_context_t *ctx, uint32_t type_id
     const wah_module_t *fn_module = fn->fn_module ? fn->fn_module : ctx->module;
     if (fn->is_host) {
         if (!wah_host_func_matches(ctx, fn, fn_module, ctx->module, type_idx)) goto fail;
-        err = wah_jit_host(ctx, fn, args);
+        err = wah_jit_host(ctx, fn, args, args + fn->nparams + 1); // Above the element index
         if (err != WAH_OK) goto fail;
         return 1;
     }
@@ -1564,6 +1566,12 @@ static void wah_jit_data_drop(wah_exec_context_t *ctx, uint32_t data_idx) { wah_
 #endif
 
 #define WAH_JIT_CTX_OFF(field) ((uint32_t)offsetof(wah_exec_context_t, field))
+
+// Loads ctx->jit->err into the return register
+static void wah_jit_load_err(wah_jit_fn_t *f) {
+    wah_jit_ldst(f, false, false, true, WAH_JR_T0, WAH_JR_CTX, WAH_JIT_CTX_OFF(jit));
+    wah_jit_ldst(f, false, false, false, WAH_JR_RET, WAH_JR_T0, offsetof(wah_jit_ctx_t, err));
+}
 
 #if defined(WAH_JIT_X86_64)
 
@@ -2296,6 +2304,7 @@ static void wah_jit_select(wah_jit_fn_t *f) {
 static void wah_jit_emit_stub(wah_jit_fn_t *f, const wah_jit_stub_t *s) {
     wah_jit_bind(f, s->stub);
     uint32_t resume = s->resume;
+    if (s->load_err) wah_jit_load_err(f);
     if (s->poll) { // Pinned locals are kept in slots while suspended, and restored when resumed or continued
         uint32_t suspend = wah_jit_new_label(f);
         wah_jit_sync_pins(f, true);
@@ -3836,6 +3845,7 @@ static void wah_jit_select(wah_jit_fn_t *f) {
 static void wah_jit_emit_stub(wah_jit_fn_t *f, const wah_jit_stub_t *s) {
     wah_jit_bind(f, s->stub);
     uint32_t resume = s->resume;
+    if (s->load_err) wah_jit_load_err(f);
     if (s->poll) { // Pinned locals are kept in slots while suspended, and restored when resumed or continued
         uint32_t suspend = wah_jit_new_label(f);
         wah_jit_sync_pins(f, true);
@@ -4567,17 +4577,22 @@ static void wah_jit_poll_check(wah_jit_fn_t *f) {
     wah_jit_ldst(f, false, false, false, WAH_JR_T0, WAH_JR_CTX, WAH_JIT_CTX_OFF(poll_flag));
     wah_jit_cbz(f, true, false, WAH_JR_T0, stub);
     wah_jit_bind(f, cont);
-    wah_jit_add_stub(f, stub, check, cont, true);
+    wah_jit_add_stub(f, stub, check, cont, true, false);
 }
 
-#if ((WAH_COMPILED_FEATURES) & WAH_FEATURE_BULK_MEMORY)
 // After a helper call returning a status, which suspends at `resume` if positive.
 static void wah_jit_check_status(wah_jit_fn_t *f, uint32_t resume) {
     uint32_t stub = wah_jit_new_label(f);
     wah_jit_cbz(f, true, false, WAH_JR_RET, stub);
-    wah_jit_add_stub(f, stub, resume, 0, false);
+    wah_jit_add_stub(f, stub, resume, 0, false, false);
 }
-#endif
+
+// After a helper call returning a pointer, or 0 with a status in ctx->jit->err, which suspends at `resume` if positive.
+static void wah_jit_check_jit_err(wah_jit_fn_t *f, uint32_t resume) {
+    uint32_t stub = wah_jit_new_label(f);
+    wah_jit_cbz(f, false, true, WAH_JR_RET, stub);
+    wah_jit_add_stub(f, stub, resume, 0, false, true);
+}
 
 // Moves `keep` values on top of the stack below `drop` values and stores the rest, as a branch to a label expects.
 // The compile-time state is not changed, so this can be used in a conditional path.
@@ -4818,9 +4833,11 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             wah_jit_sync_pins(f, true);
             uint32_t args = f->h - ft->param_count;
             if (idx < f->module->import_function_count) {
+                uint32_t start = wah_jit_new_label(f);
+                wah_jit_bind(f, start); // Retried here with arguments and pinned locals in slots, if suspended
                 const wah_jit_arg_t a[] = { { WAH_JA_CTX, 0 }, { WAH_JA_IMM, idx }, { WAH_JA_SLOT, args } };
                 wah_jit_call_helper(f, (uintptr_t)wah_jit_call_host, a, 3, true);
-                wah_jit_cbz(f, true, false, WAH_JR_RET, f->l_err);
+                wah_jit_check_status(f, start);
             } else {
                 wah_jit_call_wasm(f, wah_jit_slot_off(f, args), idx - f->module->import_function_count);
             }
@@ -4834,6 +4851,8 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
             bool table64 = wah_table_type(f->module, in->imm.u32_u32.b)->addr_type == WAH_TYPE_I64;
             wah_jit_flush(f);
             wah_jit_sync_pins(f, true);
+            uint32_t start = wah_jit_new_label(f);
+            wah_jit_bind(f, start); // Retried here if a host function suspends, like direct calls
             f->h--;
             uint32_t args = f->h - ft->param_count, done = wah_jit_new_label(f);
             const wah_jit_arg_t a[] = {
@@ -4841,7 +4860,7 @@ static void wah_jit_instr(wah_jit_fn_t *f, const wah_code_body_t *body, const wa
                 { table64 ? WAH_JA_SLOT_U64 : WAH_JA_SLOT_U32, f->h }, { WAH_JA_SLOT, args },
             };
             wah_jit_call_helper(f, (uintptr_t)wah_jit_call_indirect, a, 5, true);
-            wah_jit_cbz(f, false, true, WAH_JR_RET, f->l_err_jit);
+            wah_jit_check_jit_err(f, start);
             wah_jit_call_code(f, wah_jit_slot_off(f, args), done);
             wah_jit_bind(f, done);
             wah_jit_reload_memory(f);
@@ -5171,8 +5190,7 @@ static void wah_jit_emit_stubs(wah_jit_fn_t *f) {
     wah_jit_bind(f, f->l_stack);
     wah_jit_exit_with(f, WAH_ERROR_STACK_OVERFLOW);
     wah_jit_bind(f, f->l_err_jit);
-    wah_jit_ldst(f, false, false, true, WAH_JR_T0, WAH_JR_CTX, WAH_JIT_CTX_OFF(jit));
-    wah_jit_ldst(f, false, false, false, WAH_JR_RET, WAH_JR_T0, offsetof(wah_jit_ctx_t, err));
+    wah_jit_load_err(f);
     wah_jit_bind(f, f->l_err);
     wah_jit_exit(f);
 }
