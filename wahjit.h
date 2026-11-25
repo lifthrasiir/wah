@@ -5702,7 +5702,6 @@ static void wah_jit_guard_store(int v) { _InterlockedExchange(&wah_jit_guard_mod
 static bool wah_jit_guard_cas(int old, int v) { return _InterlockedCompareExchange(&wah_jit_guard_mode, v, old) == old; }
 static volatile long wah_jit_guarded_count; // Guarded memories in the process
 static int wah_jit_guarded_add(int d) { return (int)_InterlockedExchangeAdd(&wah_jit_guarded_count, d) + d; }
-#define WAH_JIT_THREAD_LOCAL __declspec(thread)
 #else
 static int wah_jit_guard_mode;
 static int wah_jit_guard_load(void) { return __atomic_load_n(&wah_jit_guard_mode, __ATOMIC_ACQUIRE); }
@@ -5712,7 +5711,6 @@ static bool wah_jit_guard_cas(int old, int v) {
 }
 static int wah_jit_guarded_count; // Guarded memories in the process
 static int wah_jit_guarded_add(int d) { return __atomic_add_fetch(&wah_jit_guarded_count, d, __ATOMIC_RELAXED); }
-#define WAH_JIT_THREAD_LOCAL __thread
 #endif
 
 static bool wah_jit_guard_enabled(void) { return wah_jit_guard_load() >= WAH_HOST_HANDLES_FAULT; }
@@ -5723,8 +5721,31 @@ typedef struct wah_jit_activation_s {
     const wah_exec_context_t *ctx;
     struct wah_jit_activation_s *prev;
 } wah_jit_activation_t;
-static WAH_JIT_THREAD_LOCAL wah_jit_activation_t *wah_jit_activation;
+#ifdef _WIN32
+// A dynamic TLS slot, as static TLS needs the loader (or the CRT) to set it up, which embedders may not have.
+// Allocated before guard pages are enabled, so it is valid wherever guarded code runs.
+static volatile LONG wah_jit_tls_index = (LONG)TLS_OUT_OF_INDEXES;
+static bool wah_jit_alloc_tls(void) {
+    if ((DWORD)InterlockedCompareExchange(&wah_jit_tls_index, 0, 0) != TLS_OUT_OF_INDEXES) return true;
+    DWORD i = TlsAlloc();
+    if (i == TLS_OUT_OF_INDEXES) return false;
+    if (InterlockedCompareExchange(&wah_jit_tls_index, (LONG)i, (LONG)TLS_OUT_OF_INDEXES) != (LONG)TLS_OUT_OF_INDEXES) {
+        TlsFree(i); // Another thread allocated one
+    }
+    return true;
+}
+static wah_jit_activation_t *wah_jit_get_activation(void) { // TlsGetValue clears the last error, kept for the host
+    DWORD last = GetLastError();
+    wah_jit_activation_t *act = (wah_jit_activation_t *)TlsGetValue((DWORD)wah_jit_tls_index);
+    SetLastError(last);
+    return act;
+}
+static void wah_jit_set_activation(wah_jit_activation_t *act) { TlsSetValue((DWORD)wah_jit_tls_index, act); }
+#else
+static __thread wah_jit_activation_t *wah_jit_activation;
+static wah_jit_activation_t *wah_jit_get_activation(void) { return wah_jit_activation; }
 static void wah_jit_set_activation(wah_jit_activation_t *act) { wah_jit_activation = act; }
+#endif
 static wah_jit_activation_t *wah_jit_outer_activation(const wah_jit_activation_t *act) { return act->prev; }
 
 static uint8_t *wah_jit_reserve_memory(uint64_t size, uint32_t defined_idx) {
@@ -5775,7 +5796,8 @@ static void wah_jit_release_memory(uint8_t *data) {
 
 // Whether a fault at pc accessing addr is an out-of-bounds access of the current activation, and where to resume.
 static bool wah_jit_fault(uintptr_t pc, uintptr_t addr, uintptr_t *resume) {
-    const wah_jit_activation_t *a = wah_jit_activation;
+    if (!wah_jit_guard_enabled()) return false; // No activation is guarded, and the TLS slot may not be there
+    const wah_jit_activation_t *a = wah_jit_get_activation();
     if (!a || pc - (uintptr_t)a->jm->code >= a->jm->code_size) return false;
     for (uint32_t i = 0; i < a->ctx->memory_count; i++) {
         // Imported memories share the data and size of their owners, which are all guarded except for memory64
@@ -5862,6 +5884,9 @@ static wah_error_t wah_jit_install_fault_handler(void) {
 
 wah_error_t wah_enable_guard_pages(wah_fault_handling_t mode) {
     WAH_ENSURE(mode == WAH_HOST_HANDLES_FAULT || mode == WAH_HANDLES_FAULT, WAH_ERROR_MISUSE);
+#ifdef _WIN32
+    if (!wah_jit_alloc_tls()) return WAH_ERROR_UNSUPPORTED;
+#endif
     int cur;
     do { // Spins only while another thread is installing handlers
         cur = wah_jit_guard_load();
@@ -6201,10 +6226,11 @@ static bool wah_jit_run(wah_exec_context_t *ctx, wah_error_t *out) {
             }
         }
     }
-    wah_jit_activation_t act = { .jm = jm, .ctx = ctx, .prev = wah_jit_activation };
-    if (jm->guarded) wah_jit_activation = jc->act = &act;
+    // Only guarded activations are seen by the fault handler, as others never fault
+    wah_jit_activation_t act = { .jm = jm, .ctx = ctx, .prev = jm->guarded ? wah_jit_get_activation() : NULL };
+    if (jm->guarded) wah_jit_set_activation(jc->act = &act);
     wah_error_t err = ((wah_jit_entry_t)(uintptr_t)jm->code)(ctx, code, resume, fp);
-    wah_jit_activation = act.prev;
+    if (jm->guarded) wah_jit_set_activation(act.prev);
     jc->act = NULL;
     if (err == WAH_OK) { // Pop the frame like the interpreter, leaving results at its locals
         ctx->sp = frame->locals + frame->result_count;
