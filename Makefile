@@ -305,9 +305,12 @@ lean-diff:
 # WASM_REF. Disagreements are kept in SPEC_DIFF_DIR as .wast scripts with the output of the reference interpreter.
 # Smith modules have no imports, terminate (by a fuel global shared by all calls, which traps on every call once
 # exhausted, so more is given than by default) and canonicalize NaNs (but see nan_variant.sh), and
-# don't use relaxed SIMD, which is nondeterministic, or proposals beyond Wasm 3.0.
+# don't use relaxed SIMD, which is nondeterministic, or proposals beyond Wasm 3.0. With SPECTEC (the spectec directory
+# of the spec repository, with `spectec` built there), validation and instantiation are also checked against the
+# interpreter of SpecTec, which runs the spec itself (check_spectec.sh).
 
 WASM_REF ?=
+SPECTEC ?=
 WASM_TOOLS ?= wasm-tools
 SPEC_SMITH_COUNT ?= 5000
 SPEC_DIFF_DIR := proofs/spec/.out
@@ -321,6 +324,7 @@ spec-diff:
 	@[ -n "$(WASM_REF)" ] || { echo "Set WASM_REF to the reference interpreter of the spec"; exit 1; }
 	@echo "## Comparing the fuzz corpus and $(SPEC_SMITH_COUNT) smith modules with the reference interpreter..."
 	@rm -rf $(SPEC_DIFF_DIR) && mkdir -p $(SPEC_DIFF_DIR)/corpus $(SPEC_DIFF_DIR)/smith
+	@[ -z "$(SPECTEC)" ] || mkdir -p $(SPEC_DIFF_DIR)/first
 	@tar -xzf $(LEAN_DIFF_CORPUS) -C $(SPEC_DIFF_DIR)/corpus
 	@for i in $$(seq 1 $(SPEC_SMITH_COUNT)); do \
 		perl -e "srand($$i); print map chr(int rand 256), 1..16384" | \
@@ -336,6 +340,12 @@ spec-diff:
 	@awk '{ n[$$1]++ } END { for (k in n) printf "%s %d, ", k, n[k]; print "" }' $(SPEC_DIFF_DIR)/results.txt
 	@! grep '^fail' $(SPEC_DIFF_DIR)/results.txt || { echo "Disagreements are in $(SPEC_DIFF_DIR)"; exit 1; }
 	@echo "## WAH agrees with the reference interpreter."
+	@[ -z "$(SPECTEC)" ] || { \
+		echo "## Comparing validation and instantiation with the SpecTec interpreter..." && \
+		proofs/spec/check_spectec.sh $(abspath $(SPECTEC)) $(abspath $(SPEC_DIFF_DIR)) > $(SPEC_DIFF_DIR)/spectec.txt && \
+		awk '{ n[$$1]++ } END { for (k in n) printf "%s %d, ", k, n[k]; print "" }' $(SPEC_DIFF_DIR)/spectec.txt && \
+		{ ! grep '^fail' $(SPEC_DIFF_DIR)/spectec.txt || { echo "Disagreements are in $(SPEC_DIFF_DIR)/spectec"; exit 1; }; } && \
+		echo "## WAH agrees with the SpecTec interpreter."; }
 
 # --- Coverage ---
 

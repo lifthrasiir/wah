@@ -10,6 +10,7 @@
 gen=$1 nangen=$2 ref=$3 dir=$4 f=$5
 w=$dir/$(basename "$f").wast
 "$gen" "$f" "$w" || { echo "skip $f"; exit 0; }
+[ -d "$dir/first" ] && head -1 "$w" > "$dir/first/$(basename "$f").wast" # For check_spectec.sh
 perl -e 'alarm 20; exec @ARGV' "$ref" -b 100000 "$w" > "$w.out" 2>&1
 rc=$?
 if [ $rc -eq 0 ]; then
