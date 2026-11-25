@@ -2,6 +2,7 @@
 // `make cbmc-step`.
 #define WAH_FORCE_SWITCH
 #define WAH_FORCE_PORTABLE
+#define WAH_CHECK_LOWERED // For wah_check_decode
 #define WAH_IMPLEMENTATION
 #include "../wah.h"
 #include <stdio.h>
@@ -14,6 +15,20 @@ int main(void) {
     })
     WAH_OPCODES(WAH_STEP_OP)
 #undef WAH_STEP_OP
+    // Loads and stores, as wah_check_decode finds them, including the variants for memory 0 and 64-bit addresses
+    static const char *names[WAH_NUM_OPCODES];
+#define WAH_STEP_NAME(name, cls, val, feat) WAH_IF_##feat(names[WAH_OP_##name] = #name;)
+#define WAH_STEP_EXTRA_NAME(name, suffix) names[WAH_OP_##name##_##suffix] = #name "_" #suffix;
+    WAH_OPCODES(WAH_STEP_NAME)
+    WAH_EXTRA_OPCODES(WAH_STEP_EXTRA_NAME)
+#undef WAH_STEP_NAME
+#undef WAH_STEP_EXTRA_NAME
+    for (uint32_t op = 0; op < WAH_NUM_OPCODES; op++) {
+        uint8_t buf[32] = {(uint8_t)op, (uint8_t)(op >> 8)};
+        wah_check_instr_t in;
+        if (names[op] && wah_check_decode(buf, sizeof(buf), 0, &in) == WAH_OK && in.mem != WAH_CHECK_MEM_NONE)
+            printf("memory %s\n", names[op]);
+    }
     static const char *const basic[] = { "I32_CONST", "I64_CONST", "F32_CONST", "F64_CONST", "V128_CONST", "DROP",
                                          "SELECT", "SELECT_T", "LOCAL_GET", "LOCAL_SET", "LOCAL_TEE" };
     for (size_t i = 0; i < sizeof(basic) / sizeof(*basic); i++) printf("basic %s\n", basic[i]);
@@ -23,10 +38,19 @@ int main(void) {
             for (int taken = 0; taken < 2; taken++) {
                 const char *flags = "-DSTEP_TAKEN=%d -DSTEP_KEEP=%d -DSTEP_DROP=%d";
                 printf("branch BR_IF "); printf(flags, taken, k, d); printf("\n");
+                printf("branch BR_ON_NULL "); printf(flags, taken, k, d); printf("\n");
+                if (k > 0) { printf("branch BR_ON_NON_NULL "); printf(flags, taken, k, d); printf("\n"); }
                 if (taken) { printf("branch BR "); printf(flags, taken, k, d); printf("\n"); }
             }
         }
     }
     printf("branch IF -DSTEP_TAKEN=0\nbranch IF -DSTEP_TAKEN=1\nbranch ELSE -DSTEP_TAKEN=1\n");
+    // br_table for each target and beyond, with some values kept and dropped
+    for (int k = 0; k < 3; k++) {
+        for (int d = 0; d < 3; d++) {
+            for (int i = 0; i < 4; i++)
+                printf("br_table BR_TABLE -DSTEP_KEEP=%d -DSTEP_DROP=%d -DSTEP_INDEX=%d\n", k, d, i == 3 ? 7 : i);
+        }
+    }
     return 0;
 }
