@@ -3,12 +3,12 @@ resolver = "3"
 members = ["wah-sys", "wah"]
 
 [workspace.package]
-version = "2690.0.0"
+version = "2691.0.0"
 edition = "2024"
 license = "MIT-0"
 repository = "https://github.com/lifthrasiir/wah"
 rust-version = "1.85"
 
 [workspace.dependencies]
-wah-sys = { path = "wah-sys", version = "2690.0.0", default-features = false }
+wah-sys = { path = "wah-sys", version = "2691.0.0", default-features = false }
 cc = "1.2"
