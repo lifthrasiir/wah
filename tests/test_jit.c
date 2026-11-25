@@ -1602,6 +1602,101 @@ static void test_cached_addresses(void) {
     }
 }
 
+// Memories reserved by the host as asked, guarded if `guard` is set; page-sized handles keep their reservations
+typedef struct { bool guard; int creates, frees; } host_mem_state_t;
+typedef struct { uint8_t *data; uint64_t reserved; } host_mem_t;
+
+static wah_error_t host_mem_create(void *userdata, const wah_memory_request_t *req, wah_host_memory_t *out) {
+    host_mem_state_t *s = (host_mem_state_t *)userdata;
+    bool guard = s->guard && req->reserve_bytes > 0;
+    uint64_t reserved = guard ? req->reserve_bytes : 4 * 65536;
+    assert_true(req->min_bytes <= reserved);
+    host_mem_t *m = (host_mem_t *)calloc(1, sizeof(host_mem_t));
+    assert_not_null(m);
+#ifdef _WIN32
+    m->data = (uint8_t *)VirtualAlloc(NULL, (size_t)reserved, MEM_RESERVE, PAGE_NOACCESS);
+    assert_not_null(m->data);
+    if (req->min_bytes) assert_not_null(VirtualAlloc(m->data, (size_t)req->min_bytes, MEM_COMMIT, PAGE_READWRITE));
+#else
+    m->data = (uint8_t *)mmap(NULL, (size_t)reserved, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    assert_true(m->data != MAP_FAILED);
+    if (req->min_bytes) assert_eq_i32(mprotect(m->data, (size_t)req->min_bytes, PROT_READ | PROT_WRITE), 0);
+#endif
+    m->reserved = reserved;
+    s->creates++;
+    *out = (wah_host_memory_t){ .data = m->data, .handle = m, .guarded = guard };
+    return WAH_OK;
+}
+
+static wah_error_t host_mem_grow(void *userdata, void *handle, uint64_t old_bytes, uint64_t new_bytes) {
+    (void)userdata;
+    host_mem_t *m = (host_mem_t *)handle;
+    if (new_bytes > m->reserved) return WAH_ERROR_OUT_OF_MEMORY;
+#ifdef _WIN32
+    bool ok = VirtualAlloc(m->data + old_bytes, (size_t)(new_bytes - old_bytes), MEM_COMMIT, PAGE_READWRITE) != NULL;
+#else
+    bool ok = mprotect(m->data + old_bytes, (size_t)(new_bytes - old_bytes), PROT_READ | PROT_WRITE) == 0;
+#endif
+    return ok ? WAH_OK : WAH_ERROR_OUT_OF_MEMORY;
+}
+
+static void host_mem_free(void *userdata, void *handle) {
+    host_mem_state_t *s = (host_mem_state_t *)userdata;
+    host_mem_t *m = (host_mem_t *)handle;
+#ifdef _WIN32
+    VirtualFree(m->data, 0, MEM_RELEASE);
+#else
+    munmap(m->data, (size_t)m->reserved);
+#endif
+    free(m);
+    s->frees++;
+}
+
+// Needs guard pages, enabled by test_shared_addresses: host memories are guarded as the host reserves them
+static void test_host_memories(void) {
+    printf("Testing memories made by the host...\n");
+    const char *spec = "wasm types {[ fn [i32] [i32] ]} funcs {[ 0, 0 ]} memories {[ limits.i32/1 1 ]} \
+        code {[ {[] local.get 0 i32.const 7 i32.store 2 0 local.get 0 i32.load 2 0 end}, \
+                {[] local.get 0 memory.grow 0 end} ]}";
+    for (int guard = 0; guard < 2; guard++) {
+        host_mem_state_t s = { .guard = guard != 0 };
+        wah_memory_creator_t creator = { host_mem_create, host_mem_grow, host_mem_free, &s };
+        wah_exec_options_t opts = { .memory_creator = &creator };
+        jit_inst_t a;
+        assert_ok(wah_parse_module_from_spec(&a.module, spec));
+        assert_ok(wah_new_exec_context(&a.ctx, &a.module, &opts));
+        assert_ok(wah_instantiate(&a.ctx));
+        assert_eq_i32(s.creates, 1);
+        wah_value_t p = { .i32 = 65532 }, r = {0};
+        assert_ok(wah_call(&a.ctx, 0, &p, 1, &r));
+        assert_eq_i32(r.i32, 7);
+        // Unguarded memories are interpreted with code relying on guard pages
+#ifdef WAH_JIT
+        bool needs_guard = a.module.jit && a.module.jit->guarded;
+#else
+        bool needs_guard = false;
+#endif
+        bool native = ran_natively(&a);
+        assert_true(native == (EXPECT_NATIVE && (guard || !needs_guard)));
+        p.i32 = 65533;
+        assert_err(wah_call(&a.ctx, 0, &p, 1, &r), WAH_ERROR_MEMORY_OUT_OF_BOUNDS); // Faults if guarded
+        p.i32 = 1;
+        assert_ok(wah_call(&a.ctx, 1, &p, 1, &r));
+        assert_eq_i32(r.i32, 1);
+        p.i32 = 2 * 65536 - 4;
+        assert_ok(wah_call(&a.ctx, 0, &p, 1, &r));
+        assert_eq_i32(r.i32, 7);
+        p.i32 = 2 * 65536 - 3;
+        assert_err(wah_call(&a.ctx, 0, &p, 1, &r), WAH_ERROR_MEMORY_OUT_OF_BOUNDS);
+        p.i32 = 3; // Beyond the reservation of unguarded ones
+        assert_ok(wah_call(&a.ctx, 1, &p, 1, &r));
+        assert_eq_i32(r.i32, guard ? 2 : -1);
+        assert_true(ran_natively(&a) == native);
+        inst_free(&a);
+        assert_eq_i32(s.frees, 1);
+    }
+}
+
 int main(void) {
     const char *guard = getenv("WAH_TEST_GUARD_PAGES");
     if (guard && *guard) { // Natively compiled code relies on guard pages then
@@ -1637,6 +1732,7 @@ int main(void) {
     test_dirty_pins();
     test_shared_addresses(); // Enables guard pages for the rest of the process
     test_cached_addresses();
+    test_host_memories();
     printf("All JIT tests passed.\n");
     return 0;
 }

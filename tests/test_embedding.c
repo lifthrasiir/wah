@@ -313,9 +313,166 @@ static void test_host_suspend_gc(void) {
     wah_free_module(&host);
 }
 
+// Memories of up to 4 pages, made in buffers of their own, which never move
+typedef struct {
+    int creates, grows, frees;
+    uint8_t *made[4];
+    const wah_module_t *module; // Of the last request
+    uint32_t mem_idx;
+    wah_error_t create_ret, grow_ret;
+    bool fail_second; // The second creation fails
+} creator_state_t;
+
+static wah_error_t creator_create(void *userdata, const wah_memory_request_t *req, wah_host_memory_t *out) {
+    creator_state_t *s = (creator_state_t *)userdata;
+    s->module = req->module;
+    s->mem_idx = req->mem_idx;
+    assert_eq_u64(req->reserve_bytes, 0); // No guard pages
+    if (req->is_64) return WAH_OK; // Declined
+    if (s->create_ret != WAH_OK || (s->fail_second && s->creates == 1)) return WAH_ERROR_OUT_OF_MEMORY;
+    assert_true(s->creates < 4);
+    out->data = (uint8_t *)calloc(4, 65536);
+    assert_not_null(out->data);
+    memset(out->data + req->min_bytes, 0xcc, 4 * 65536 - req->min_bytes); // Zeroed only as grown
+    out->handle = &s->made[s->creates];
+    s->made[s->creates++] = out->data;
+    return WAH_OK;
+}
+
+static wah_error_t creator_grow(void *userdata, void *handle, uint64_t old_bytes, uint64_t new_bytes) {
+    creator_state_t *s = (creator_state_t *)userdata;
+    s->grows++;
+    if (s->grow_ret != WAH_OK) return s->grow_ret;
+    if (new_bytes > 4 * 65536) return WAH_ERROR_OUT_OF_MEMORY;
+    memset(*(uint8_t **)handle + old_bytes, 0, (size_t)(new_bytes - old_bytes));
+    return WAH_OK;
+}
+
+static void creator_free(void *userdata, void *handle) {
+    creator_state_t *s = (creator_state_t *)userdata;
+    s->frees++;
+    free(*(uint8_t **)handle);
+}
+
+static int userdata_tag;
+
+static void host_userdata(wah_call_context_t *cc, void *userdata) {
+    (void)userdata;
+    wah_return_i32(cc, wah_exec_userdata(cc) == &userdata_tag);
+}
+
+static void test_memory_creator(void) {
+    printf("Testing wah_memory_creator_t and wah_exec_userdata...\n");
+    creator_state_t s = {0};
+    wah_memory_creator_t creator = { creator_create, creator_grow, creator_free, &s };
+    wah_module_t host = {0};
+    assert_ok(wah_new_module(&host, NULL));
+    assert_ok(wah_export_memory(&host, "a", 1, 8));
+    assert_ok(wah_export_memory64(&host, "b", 1, 1));
+    assert_ok(wah_export_func(&host, "ud", "() -> i32", host_userdata, NULL, NULL));
+
+    // Every function of the creator is needed
+    wah_exec_context_t hctx = {0};
+    wah_memory_creator_t partial = { creator_create, NULL, creator_free, &s };
+    wah_exec_options_t opts = { .memory_creator = &partial };
+    assert_err(wah_new_exec_context(&hctx, &host, &opts), WAH_ERROR_MISUSE);
+    opts = (wah_exec_options_t){ .memory_creator = &creator, .userdata = &userdata_tag };
+    assert_ok(wah_new_exec_context(&hctx, &host, &opts));
+    assert_eq_i32(s.creates, 1);
+    assert_eq_ptr(s.module, &host);
+    assert_eq_u32(s.mem_idx, 1); // memory64 was declined, and made by WAH
+    assert_ok(wah_instantiate(&hctx));
+    uint8_t *data;
+    uint64_t size;
+    assert_ok(wah_memory_data(&hctx, 0, &data, &size));
+    assert_eq_ptr(data, s.made[0]);
+    assert_eq_u64(size, 65536);
+    assert_ok(wah_memory_data(&hctx, 1, &data, &size));
+    assert_true(data != s.made[0] && size == 65536);
+
+    // The importer has a userdata of its own, and a memory linked by wah_link_module is made by its creator
+    wah_module_t linked = {0};
+    assert_ok(wah_parse_module_from_spec(&linked, "wasm memories {[ limits.i32/1 2 ]}"));
+    wah_module_t mod = {0};
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[ fn [i32] [i32], fn [] [i32] ]} \
+        imports {[ {'h'} {'a'} mem# limits.i32/1 1, {'h'} {'ud'} fn# 1 ]} \
+        funcs {[ 0, 1 ]} \
+        exports {[ {'grow'} fn# 1, {'probe'} fn# 2 ]} \
+        code {[ {[] local.get 0 memory.grow 0 end}, \
+                {[] memory.size 0 i32.const 16 i32.shl i32.const 1 i32.sub i32.load8_u 0 0 call 0 i32.add end} ]}"));
+    int other_tag;
+    wah_exec_context_t ctx = {0};
+    opts.userdata = &other_tag;
+    assert_ok(wah_new_exec_context(&ctx, &mod, &opts));
+    assert_ok(wah_link_context(&ctx, "h", &hctx));
+    assert_ok(wah_link_module(&ctx, "l", &linked));
+    assert_ok(wah_instantiate(&ctx));
+    assert_eq_i32(s.creates, 2);
+    assert_eq_ptr(s.module, &linked);
+    assert_eq_u32(s.mem_idx, 0);
+
+    wah_value_t r, p = { .i32 = 1 };
+    assert_ok(wah_call_by_name(&ctx, "probe", NULL, 0, &r));
+    assert_eq_i32(r.i32, 1); // The last byte is zero, and the host function sees the userdata of its own context
+    assert_ok(wah_call_by_name(&ctx, "grow", &p, 1, &r));
+    assert_eq_i32(r.i32, 1);
+    assert_eq_i32(s.grows, 1);
+    assert_ok(wah_call_by_name(&ctx, "probe", NULL, 0, &r));
+    assert_eq_i32(r.i32, 1); // Zeroed as grown, in place
+    assert_ok(wah_memory_data(&hctx, 0, &data, &size));
+    assert_eq_ptr(data, s.made[0]);
+    assert_eq_u64(size, 2 * 65536);
+
+    // The host may refuse (beyond its buffer) or trap
+    p.i32 = 3;
+    assert_ok(wah_call_by_name(&ctx, "grow", &p, 1, &r));
+    assert_eq_i32(r.i32, -1);
+    s.grow_ret = WAH_ERROR_TOO_LARGE;
+    p.i32 = 1;
+    assert_err(wah_call_by_name(&ctx, "grow", &p, 1, &r), WAH_ERROR_TOO_LARGE);
+    assert_eq_i32(s.grows, 3);
+    s.grow_ret = WAH_OK;
+    assert_ok(wah_call_by_name(&ctx, "grow", &p, 1, &r));
+    assert_eq_i32(r.i32, 2);
+
+    wah_free_exec_context(&ctx);
+    assert_eq_i32(s.frees, 1);
+    wah_free_exec_context(&hctx);
+    assert_eq_i32(s.frees, 2);
+
+    // Host functions of modules linked by wah_link_module see the userdata of the linking context
+    opts.userdata = &userdata_tag;
+    assert_ok(wah_new_exec_context(&ctx, &mod, &opts));
+    assert_ok(wah_link_module(&ctx, "h", &host));
+    assert_ok(wah_link_module(&ctx, "l", &linked));
+    assert_ok(wah_instantiate(&ctx));
+    assert_eq_i32(s.creates, 4);
+    assert_ok(wah_call_by_name(&ctx, "probe", NULL, 0, &r));
+    assert_eq_i32(r.i32, 1);
+    wah_free_exec_context(&ctx);
+    assert_eq_i32(s.frees, 4);
+
+    // A failed creation fails the context, freeing those made before
+    wah_module_t two = {0};
+    assert_ok(wah_parse_module_from_spec(&two, "wasm memories {[ limits.i32/1 1, limits.i32/1 1 ]}"));
+    s = (creator_state_t){ .fail_second = true };
+    assert_err(wah_new_exec_context(&ctx, &two, &opts), WAH_ERROR_OUT_OF_MEMORY);
+    assert_eq_i32(s.creates, 1);
+    assert_eq_i32(s.frees, 1);
+    wah_free_exec_context(&ctx);
+    assert_eq_i32(s.frees, 1);
+
+    wah_free_module(&two);
+    wah_free_module(&mod);
+    wah_free_module(&linked);
+    wah_free_module(&host);
+}
+
 int main(void) {
     test_memory_data();
     test_memory_grow_hook();
+    test_memory_creator();
     test_host_suspend();
     test_host_suspend_gc();
     printf("All embedding tests passed.\n");

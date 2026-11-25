@@ -860,7 +860,7 @@ private:
     uint8_t *dropped_data_segments;
 
     wah_alloc_t alloc;
-    wah_features_t enabled_features;
+    struct wah_exec_host_s *host; // What wah_exec_options_t gives for the host, NULL if nothing
 
     // Contexts that linked this context via wah_link_context (for grow alias propagation)
     struct wah_exec_context_s **dependents;
@@ -1037,6 +1037,73 @@ typedef struct wah_limits_s {
     bool no_memory_bytes;
 } wah_limits_t;
 
+// --- Host Memories ---
+
+// Struct: wah_memory_request_t
+//   A memory that `wah_memory_creator_t::create` is asked to make.
+typedef struct {
+    // Field: module
+    //   The module defining the memory: that of the context, or one linked to it by `wah_link_module`.
+    const wah_module_t *module;
+    // Field: mem_idx
+    //   The index of the memory in the module (imported memories first).
+    uint32_t mem_idx;
+    // Field: is_64
+    //   Whether the memory has 64-bit addresses (memory64).
+    bool is_64;
+    // Field: min_bytes
+    //   The initial size of the memory, a multiple of 65536 bytes (possibly 0).
+    uint64_t min_bytes;
+    // Field: max_bytes
+    //   The most the memory may grow to by its type, or UINT64_MAX if it has no maximum.
+    uint64_t max_bytes;
+    // Field: reserve_bytes
+    //   Address space that natively compiled code wants reserved from the base, so that it can skip bounds checks
+    //   (currently 6 GiB, for 32-bit memories once `wah_enable_guard_pages` was called), or 0. See `guarded`.
+    uint64_t reserve_bytes;
+} wah_memory_request_t;
+
+// Struct: wah_host_memory_t
+//   A memory that `wah_memory_creator_t::create` made.
+typedef struct {
+    // Field: data
+    //   The base of the memory: `min_bytes` bytes readable, writable and zeroed, aligned to at least 16 bytes
+    //   (non-NULL even when `min_bytes` is 0). It never moves until the memory is freed. NULL makes WAH make the
+    //   memory itself instead.
+    uint8_t *data;
+    // Field: handle
+    //   Anything the host needs to grow and free the memory, given back as is.
+    void *handle;
+    // Field: guarded
+    //   Set this if `reserve_bytes` is non-zero and that much address space is reserved from `data`, with every byte
+    //   beyond the current size inaccessible (so that accesses fault) as long as the memory lives. Natively compiled
+    //   code relying on guard pages is interpreted with memories not guarded.
+    bool guarded;
+} wah_host_memory_t;
+
+// Struct: wah_memory_creator_t
+//   Makes memories of an exec context in place of WAH, e.g. to map their pages as the host wants.
+//   While nothing of the link domain runs, the host may change the contents of a memory, or replace its pages with
+//   other mappings at the same address and of the same accessibility.
+//   The memories are counted in `wah_limits_t::max_memory_bytes` as any other.
+typedef struct wah_memory_creator_s {
+    // Field: create
+    //   Makes the memory `req` into `*out` (zeroed by the caller), or leaves `out->data` NULL to decline it.
+    //   An error fails the creation of the exec context (or `wah_instantiate` for modules linked to it).
+    wah_error_t (*create)(void *userdata, const wah_memory_request_t *req, wah_host_memory_t *out);
+    // Field: grow
+    //   Makes the bytes from `old_bytes` to `new_bytes` of the memory readable, writable and zeroed, in place.
+    //   Called on `memory.grow`, after the hook of `wah_set_memory_grow_hook`. WAH_ERROR_OUT_OF_MEMORY makes it
+    //   return -1, and other errors trap.
+    wah_error_t (*grow)(void *userdata, void *handle, uint64_t old_bytes, uint64_t new_bytes);
+    // Field: free
+    //   Frees the memory, as the context owning it is freed.
+    void (*free)(void *userdata, void *handle);
+    // Field: userdata
+    //   Given to the functions above.
+    void *userdata;
+} wah_memory_creator_t;
+
 // Struct: wah_exec_options_t
 //   Options for running WebAssembly modules.
 typedef struct {
@@ -1047,6 +1114,13 @@ typedef struct {
     //   Custom allocator to be used for execution. The standard allocator is used if NULL is given.
     //   Note that this is distinct from `wah_parse_options_t::alloc` and should be given separately.
     const wah_alloc_t *alloc;
+    // Field: memory_creator [optional]
+    //   Makes the memories that the module, and modules linked to the context by `wah_link_module`, define.
+    //   Copied; its userdata should live as long as the context.
+    const wah_memory_creator_t *memory_creator;
+    // Field: userdata [optional]
+    //   Given to host functions of the module by `wah_exec_userdata`.
+    void *userdata;
 } wah_exec_options_t;
 
 // Function: wah_new_exec_context
@@ -1423,6 +1497,12 @@ void wah_trap(wah_call_context_t *ctx, wah_error_t reason);
 //   the same parameters when the activation is resumed, so it should keep its own state if needed.
 //   Like `wah_trap`, this can be called only once per host call, and not together with `wah_trap`.
 void wah_suspend(wah_call_context_t *ctx);
+
+// Function: wah_exec_userdata
+//   Returns `wah_exec_options_t::userdata` of the context that the host function was instantiated in (the context
+//   of its module, or the one that linked its module by `wah_link_module`), so that a module of host functions
+//   can be instantiated in many contexts. Valid only during the host function call.
+void *wah_exec_userdata(const wah_call_context_t *ctx);
 
 // --- Linkage ---
 
@@ -2619,6 +2699,7 @@ static wah_opcode_t wah_x86_64_opcode(wah_opcode_t opcode, wah_x86_64_features_t
 struct wah_call_context_s {
     struct wah_exec_context_s *exec;
     struct wah_exec_context_s *pin_ctx; // Owner of pinned references, fixed for the host function unlike exec
+    struct wah_exec_context_s *host_ctx; // Owner of the userdata for wah_exec_userdata
     const struct wah_module_s *module; // Module of the host function, which param_types and result_types refer to
 
     size_t nparams, nresults;
@@ -2781,12 +2862,19 @@ typedef struct wah_memory_inst_s {
     uint64_t size;
     uint64_t max_pages;
     bool is_imported;
-    bool guarded; // Reserved with guard pages by wahjit.h; only set for the owner, not for imports
+    bool guarded; // Reserved with guard pages by wahjit.h or the host; only set for the owner, not for imports
+    const struct wah_exec_host_s *host; // Of the creator that made it, NULL if made by WAH; only set for the owner
+    void *host_handle;
     struct wah_exec_context_s *import_ctx;
     uint32_t import_idx;
     wah_memory_grow_hook_t grow_hook; // Set by wah_set_memory_grow_hook, only for the owner
     void *grow_hook_userdata;
 } wah_memory_inst_t;
+
+typedef struct wah_exec_host_s {
+    wah_memory_creator_t creator; // Its create is NULL if not given
+    void *userdata;
+} wah_exec_host_t;
 
 typedef struct wah_table_inst_s {
     wah_value_t *entries;
@@ -2908,6 +2996,7 @@ typedef struct wah_function_s {
     uint32_t local_idx;                    // local index within fn_module->code_bodies[]
     const struct wah_module_s *fn_module;  // owning module (NULL means ctx->module)
     struct wah_exec_context_s *fn_ctx;     // owning exec context (NULL means current ctx), also set for host functions
+    struct wah_exec_context_s *host_ctx;   // instantiating a host function, for wah_exec_userdata (NULL means fn_ctx)
 } wah_function_t;
 
 typedef struct wah_function_holder_s {
@@ -3297,6 +3386,7 @@ static bool wah_jit_run(wah_exec_context_t *ctx, wah_error_t *err); // False if 
 static void wah_jit_cancel(wah_exec_context_t *ctx);
 static void wah_jit_free_context(wah_exec_context_t *ctx);
 static uint8_t *wah_jit_reserve_memory(uint64_t size, uint32_t defined_idx); // NULL if not guarded, or failed
+static uint64_t wah_jit_guard_reserve(void); // Address space a guarded memory needs, 0 if guard pages are disabled
 static bool wah_jit_commit_memory(uint8_t *data, uint64_t old_size, uint64_t new_size);
 static void wah_jit_release_memory(uint8_t *data);
 #endif
@@ -5036,9 +5126,31 @@ static bool wah_budget_check(const wah_exec_context_t *ctx, uint64_t additional)
     return additional <= ctx->max_memory_bytes - ctx->memory_bytes_committed;
 }
 
-// Allocates zeroed data of a defined memory (`defined_idx` of its module), reserved with guard pages if enabled.
-static wah_error_t wah_memory_alloc_data(const wah_alloc_t *alloc, wah_memory_inst_t *mem, wah_type_t addr_type,
-                                         uint32_t defined_idx, uint64_t size) {
+// Allocates zeroed data of a defined memory (`defined_idx` of `module`), by the creator of `host` if any, or
+// reserved with guard pages if enabled.
+static wah_error_t wah_memory_alloc_data(const wah_alloc_t *alloc, const wah_exec_host_t *host, wah_memory_inst_t *mem,
+                                         const wah_module_t *module, uint32_t defined_idx, uint64_t size) {
+    wah_type_t addr_type = module->memories[defined_idx].addr_type;
+    if (host && host->creator.create) {
+        uint64_t max_pages = wah_memory_max_pages(&module->memories[defined_idx]);
+        wah_memory_request_t req = {
+            .module = module, .mem_idx = module->import_memory_count + defined_idx, .is_64 = addr_type == WAH_TYPE_I64,
+            .min_bytes = size,
+            .max_bytes = max_pages > UINT64_MAX / WAH_WASM_PAGE_SIZE ? UINT64_MAX : max_pages * WAH_WASM_PAGE_SIZE,
+#ifdef WAH_JIT
+            .reserve_bytes = addr_type == WAH_TYPE_I32 ? wah_jit_guard_reserve() : 0,
+#endif
+        };
+        wah_host_memory_t out = {0};
+        WAH_CHECK(host->creator.create(host->creator.userdata, &req, &out));
+        if (out.data) {
+            mem->data = out.data;
+            mem->host = host;
+            mem->host_handle = out.handle;
+            mem->guarded = out.guarded && req.reserve_bytes > 0;
+            return WAH_OK;
+        }
+    }
 #ifdef WAH_JIT
     if (addr_type == WAH_TYPE_I32 && (mem->data = wah_jit_reserve_memory(size, defined_idx)) != NULL) {
         mem->guarded = true;
@@ -5054,6 +5166,7 @@ static wah_error_t wah_memory_alloc_data(const wah_alloc_t *alloc, wah_memory_in
 }
 
 static void wah_memory_free_data(const wah_alloc_t *alloc, wah_memory_inst_t *mem) {
+    if (mem->host) { mem->host->creator.free(mem->host->creator.userdata, mem->host_handle); return; }
 #ifdef WAH_JIT
     if (mem->guarded) { wah_jit_release_memory(mem->data); return; }
 #endif
@@ -10709,8 +10822,9 @@ static void wah_bind_function_import_slot(
     if (!src->is_host) {
         slot->func.local_idx = provider_local_idx;
         slot->func.fn_ctx = provider_ctx;
-    } else if (!slot->func.fn_ctx) {
-        slot->func.fn_ctx = importer_ctx;
+    } else {
+        if (!slot->func.fn_ctx) slot->func.fn_ctx = importer_ctx;
+        if (!slot->func.host_ctx) slot->func.host_ctx = provider_ctx ? provider_ctx : importer_ctx;
     }
 }
 
@@ -12982,6 +13096,13 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
     const wah_alloc_t *alloc = &exec_ctx->alloc;
 
     WAH_ENSURE(!(limits->no_memory_bytes && limits->max_memory_bytes > 0), WAH_ERROR_MISUSE);
+    const wah_memory_creator_t *creator = options ? options->memory_creator : NULL;
+    WAH_ENSURE(!creator || (creator->create && creator->grow && creator->free), WAH_ERROR_MISUSE);
+    if (creator || (options && options->userdata)) { // Nothing to clean up before this
+        WAH_MALLOC_ARRAY(exec_ctx->host, 1);
+        *exec_ctx->host = (wah_exec_host_t){ .creator = creator ? *creator : (wah_memory_creator_t){0},
+                                             .userdata = options->userdata };
+    }
     if (limits->no_memory_bytes) {
         exec_ctx->max_memory_bytes = 0;
     } else if (limits->max_memory_bytes > 0) {
@@ -13009,7 +13130,6 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
     exec_ctx->global_count = total_globals;
 
     exec_ctx->module = module;
-    exec_ctx->enabled_features = module->enabled_features;
     if (limits->fuel != 0) {
         WAH_ENSURE_GOTO(module->fuel_metering, WAH_ERROR_DISABLED_FEATURE, cleanup);
         exec_ctx->fuel = limits->fuel <= INT64_MAX ? (int64_t)limits->fuel : INT64_MAX;
@@ -13040,8 +13160,8 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
             uint64_t byte_size = module->memories[i].min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
             WAH_ENSURE_GOTO(wah_budget_check(exec_ctx, byte_size), WAH_ERROR_TOO_LARGE, cleanup);
             exec_ctx->memories[slot].size = byte_size;
-            WAH_CHECK_GOTO(wah_memory_alloc_data(alloc, &exec_ctx->memories[slot], module->memories[i].addr_type, i,
-                                                 byte_size), cleanup);
+            WAH_CHECK_GOTO(wah_memory_alloc_data(alloc, exec_ctx->host, &exec_ctx->memories[slot], module, i, byte_size),
+                           cleanup);
             wah_budget_charge(exec_ctx, byte_size);
         }
         if (exec_ctx->memory_count > 0) {
@@ -13117,6 +13237,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
         for (uint32_t i = 0; i < module->local_function_count; i++) {
             exec_ctx->function_table[import_count + i] = module->functions[i];
             exec_ctx->function_table[import_count + i].func.fn_ctx = exec_ctx;
+            exec_ctx->function_table[import_count + i].func.host_ctx = exec_ctx;
         }
     }
 
@@ -13355,6 +13476,7 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
     }
 
     WAH_IF_GC(wah_gc_end(exec_ctx);)
+    wah_free(alloc, exec_ctx->host); // After every memory it made
 
     *exec_ctx = (wah_exec_context_t){0};
 }
@@ -13710,6 +13832,7 @@ static wah_error_t wah_call_host_function_internal(
     // Owned contexts pin into their primary, which the host knows
     wah_call_context_t call_ctx = {
         .exec = exec_ctx, .pin_ctx = fn->fn_ctx ? wah_budget_owner(fn->fn_ctx) : exec_ctx,
+        .host_ctx = wah_budget_owner(fn->host_ctx ? fn->host_ctx : fn->fn_ctx ? fn->fn_ctx : exec_ctx),
         .module = fn->fn_module ? fn->fn_module : exec_ctx->module,
         .nparams = param_count, .params = params,
         .nresults = fn->nresults, .results = results,
@@ -14140,6 +14263,13 @@ static wah_error_t wah_memory_grow_internal(
         WAH_CHECK(hook_err);
     }
 
+    if (owner_mem->host) { // Never moves, and the host zeroes new pages
+        const wah_memory_creator_t *c = &owner_mem->host->creator;
+        wah_error_t grow_err = c->grow(c->userdata, owner_mem->host_handle, fctx->memories[mem_idx].size, new_memory_size);
+        if (grow_err == WAH_ERROR_OUT_OF_MEMORY) return WAH_OK;
+        WAH_ENSURE(grow_err <= WAH_OK, WAH_ERROR_MISUSE);
+        WAH_CHECK(grow_err);
+    } else
 #ifdef WAH_JIT
     if (owner_mem->guarded) { // Never moves, and newly committed pages are already zeroed
         if (!wah_jit_commit_memory(owner_mem->data, fctx->memories[mem_idx].size, new_memory_size)) return WAH_OK;
@@ -18878,6 +19008,11 @@ static void wah_call_misuse(wah_call_context_t *ctx) {
     if (ctx->trap_reason == WAH_OK) ctx->trap_reason = WAH_ERROR_MISUSE;
 }
 
+void *wah_exec_userdata(const wah_call_context_t *ctx) {
+    if (!ctx) return NULL;
+    return ctx->host_ctx->host ? ctx->host_ctx->host->userdata : NULL;
+}
+
 size_t wah_param_count(const wah_call_context_t *ctx) {
     WAH_ASSERT(ctx && "Call context is NULL");
     return ctx->nparams;
@@ -19051,7 +19186,7 @@ wah_error_t wah_link_module(wah_exec_context_t *ctx, const char *name, const wah
     }
 
     WAH_CHECK(wah_check_linked_module(ctx, mod, NULL));
-    WAH_ENSURE((mod->required_features & ~ctx->enabled_features) == 0, WAH_ERROR_DISABLED_FEATURE);
+    WAH_ENSURE((mod->required_features & ~ctx->module->enabled_features) == 0, WAH_ERROR_DISABLED_FEATURE);
 
     WAH_ENSURE_CAP(ctx->linked_modules, ctx->linked_module_count + 1);
 
@@ -19081,7 +19216,7 @@ wah_error_t wah_link_context(wah_exec_context_t *ctx, const char *name, wah_exec
     }
 
     WAH_CHECK(wah_check_linked_module(ctx, linked_ctx->module, linked_ctx));
-    WAH_ENSURE((linked_ctx->module->required_features & ~ctx->enabled_features) == 0, WAH_ERROR_DISABLED_FEATURE);
+    WAH_ENSURE((linked_ctx->module->required_features & ~ctx->module->enabled_features) == 0, WAH_ERROR_DISABLED_FEATURE);
 
     WAH_ENSURE_CAP(ctx->linked_modules, ctx->linked_module_count + 1);
 
@@ -19920,7 +20055,7 @@ static wah_error_t wah_create_owned_linked_contexts(wah_exec_context_t *ctx) {
                     wah_budget_charge(ctx, byte_size);
                     ictx->memories[slot].max_pages = wah_memory_max_pages(&lmod->memories[mi]);
                     ictx->memories[slot].size = byte_size;
-                    WAH_CHECK(wah_memory_alloc_data(alloc, &ictx->memories[slot], lmod->memories[mi].addr_type, mi, byte_size));
+                    WAH_CHECK(wah_memory_alloc_data(alloc, ctx->host, &ictx->memories[slot], lmod, mi, byte_size));
                 }
             } else {
                 ictx->memories = NULL;
@@ -20111,7 +20246,7 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx) {
     wah_recompute_poll_flag(ctx);
 
     const wah_module_t *module = ctx->module;
-    WAH_ENSURE((module->required_features & ~ctx->enabled_features) == 0, WAH_ERROR_DISABLED_FEATURE);
+    WAH_ENSURE((module->required_features & ~ctx->module->enabled_features) == 0, WAH_ERROR_DISABLED_FEATURE);
 
     WAH_IF_GC(if (!ctx->gc) WAH_CHECK_GOTO(wah_gc_start(ctx), cleanup);) // Linked globals may allocate GC objects
     // Function references are resolved before any const expr is evaluated

@@ -5748,6 +5748,8 @@ static void wah_jit_set_activation(wah_jit_activation_t *act) { wah_jit_activati
 #endif
 static wah_jit_activation_t *wah_jit_outer_activation(const wah_jit_activation_t *act) { return act->prev; }
 
+static uint64_t wah_jit_guard_reserve(void) { return wah_jit_guard_enabled() ? WAH_JIT_GUARD_RESERVE : 0; }
+
 static uint8_t *wah_jit_reserve_memory(uint64_t size, uint32_t defined_idx) {
     if (!wah_jit_guard_enabled() || defined_idx >= WAH_JIT_GUARDED_MEMORIES_PER_INSTANCE) return NULL;
     if (wah_jit_guarded_add(1) > WAH_JIT_MAX_GUARDED_MEMORIES) {
