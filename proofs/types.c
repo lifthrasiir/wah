@@ -60,7 +60,8 @@ static uint64_t model_hash_ref(const uint64_t *gh, uint32_t s, uint32_t gs, uint
 
 static wah_type_t nondet_type(uint32_t n) { // Any type, referring to types of the module
     wah_type_t t = nondet_i32();
-    __CPROVER_assume(t < 0 || WAH_TYIDX(t) < n);
+    // WAH_TYPE_BOT_REF only comes from unreachable code in validation, never from types of modules
+    __CPROVER_assume((t < 0 && t != WAH_TYPE_BOT_REF) || WAH_TYIDX(t) < n);
     return t;
 }
 
