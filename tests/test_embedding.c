@@ -1,5 +1,5 @@
 // Tests for APIs used to embed WAH as a sandbox: memory access from the host, host-defined memory64,
-// hooks on memory growth, and host functions suspending their activations.
+// limiters of memories and tables, and host functions suspending their activations.
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -68,35 +68,86 @@ static void test_memory_data(void) {
 }
 
 typedef struct {
-    wah_error_t ret;
-    int calls;
-    uint32_t mem_idx;
-    uint64_t old_bytes, new_bytes;
-} grow_state_t;
+    wah_error_t ret; // What grow returns
+    int refuse_from; // The first call refused by WAH_ERROR_OUT_OF_MEMORY, if not 0
+    int grows, fails, releases;
+    const wah_module_t *module;
+    uint32_t index;
+    uint64_t old_size, new_size;
+    int64_t total; // Let be, less what failed and what was released
+} limit_state_t;
 
-static wah_error_t grow_hook(void *userdata, uint32_t mem_idx, uint64_t old_bytes, uint64_t new_bytes) {
-    grow_state_t *s = (grow_state_t *)userdata;
-    s->calls++;
-    s->mem_idx = mem_idx;
-    s->old_bytes = old_bytes;
-    s->new_bytes = new_bytes;
-    return s->ret;
+static wah_error_t limit_grow(void *userdata, const wah_module_t *module, uint32_t index, uint64_t old_size,
+                              uint64_t new_size) {
+    limit_state_t *s = (limit_state_t *)userdata;
+    assert_true(new_size > old_size);
+    s->grows++;
+    s->module = module;
+    s->index = index;
+    s->old_size = old_size;
+    s->new_size = new_size;
+    wah_error_t ret = s->refuse_from && s->grows >= s->refuse_from ? WAH_ERROR_OUT_OF_MEMORY : s->ret;
+    if (ret == WAH_OK) s->total += (int64_t)(new_size - old_size);
+    return ret;
 }
 
-static void test_memory_grow_hook(void) {
-    printf("Testing wah_set_memory_grow_hook...\n");
+static void limit_fail(void *userdata, const wah_module_t *module, uint32_t index, uint64_t old_size,
+                       uint64_t new_size) {
+    limit_state_t *s = (limit_state_t *)userdata;
+    assert_eq_ptr(module, s->module); // Of the last grow
+    assert_eq_u32(index, s->index);
+    assert_eq_u64(old_size, s->old_size);
+    assert_eq_u64(new_size, s->new_size);
+    s->fails++;
+    s->total -= (int64_t)(new_size - old_size);
+}
+
+static void limit_release(void *userdata, const wah_module_t *module, uint32_t index, uint64_t size) {
+    limit_state_t *s = (limit_state_t *)userdata;
+    (void)module, (void)index;
+    assert_true(size > 0);
+    s->releases++;
+    s->total -= (int64_t)size;
+}
+
+static wah_limiter_t limiter_of(limit_state_t *s) {
+    return (wah_limiter_t){ .grow = limit_grow, .fail = limit_fail, .release = limit_release, .userdata = s };
+}
+
+static void test_memory_limiter(void) {
+    printf("Testing wah_exec_options_t::memory_limiter...\n");
     wah_module_t host = {0};
     assert_ok(wah_new_module(&host, NULL));
     assert_ok(wah_export_memory(&host, "a", 1, 1));
     assert_ok(wah_export_memory(&host, "b", 1, 4));
-    wah_exec_context_t hctx = {0};
-    assert_ok(wah_new_exec_context(&hctx, &host, NULL));
-    grow_state_t s = { .ret = WAH_OK };
-    assert_err(wah_set_memory_grow_hook(&hctx, grow_hook, &s), WAH_ERROR_MISUSE); // Not instantiated
-    assert_ok(wah_instantiate(&hctx));
-    assert_ok(wah_set_memory_grow_hook(&hctx, grow_hook, &s));
 
-    // Memory 0 imports "b" (memory 1 of the owner), memory 1 is defined with its own hook
+    // Asked before the memories are made: refusing fails the creation, releasing what was made
+    limit_state_t s = { .ret = WAH_ERROR_OUT_OF_MEMORY };
+    wah_limiter_t limiter = limiter_of(&s);
+    wah_exec_options_t opts = { .memory_limiter = &limiter };
+    wah_exec_context_t hctx = {0};
+    assert_err(wah_new_exec_context(&hctx, &host, &opts), WAH_ERROR_OUT_OF_MEMORY);
+    assert_eq_i32(s.grows, 1);
+    assert_eq_ptr(s.module, &host);
+    assert_eq_u32(s.index, 0);
+    assert_eq_u64(s.old_size, 0);
+    assert_eq_u64(s.new_size, 65536);
+    s = (limit_state_t){ .ret = WAH_ERROR_TOO_LARGE };
+    assert_err(wah_new_exec_context(&hctx, &host, &opts), WAH_ERROR_TOO_LARGE);
+    s = (limit_state_t){ .refuse_from = 2 };
+    assert_err(wah_new_exec_context(&hctx, &host, &opts), WAH_ERROR_OUT_OF_MEMORY);
+    assert_eq_i32(s.grows, 2);
+    assert_eq_i32(s.releases, 1);
+    assert_eq_i64(s.total, 0);
+
+    s = (limit_state_t){ .ret = WAH_OK };
+    assert_ok(wah_new_exec_context(&hctx, &host, &opts));
+    assert_eq_i32(s.grows, 2);
+    assert_eq_u32(s.index, 1);
+    assert_eq_i64(s.total, 2 * 65536);
+    assert_ok(wah_instantiate(&hctx));
+
+    // Memory 0 imports "b" (memory 1 of the owner), memory 1 is defined, of the importer's own limiter
     wah_module_t mod = {0};
     assert_ok(wah_parse_module_from_spec(&mod, "wasm \
         types {[ fn [i32] [i32], fn [] [i32] ]} \
@@ -104,64 +155,222 @@ static void test_memory_grow_hook(void) {
         funcs {[ 0, 1, 0 ]} memories {[ limits.i32/2 0 2 ]} \
         exports {[ {'grow'} fn# 0, {'size'} fn# 1, {'grow1'} fn# 2 ]} \
         code {[ {[] local.get 0 memory.grow 0 end}, {[] memory.size 0 end}, {[] local.get 0 memory.grow 1 end} ]}"));
+    limit_state_t s2 = { .ret = WAH_OK };
+    wah_limiter_t limiter2 = limiter_of(&s2);
+    wah_exec_options_t opts2 = { .memory_limiter = &limiter2 };
     wah_exec_context_t ctx = {0};
-    assert_ok(wah_new_exec_context(&ctx, &mod, NULL));
+    assert_ok(wah_new_exec_context(&ctx, &mod, &opts2));
+    assert_eq_i32(s2.grows, 0); // (of no size)
     assert_ok(wah_link_context(&ctx, "h", &hctx));
     assert_ok(wah_instantiate(&ctx));
 
     wah_value_t r, p = { .i32 = 1 };
     assert_ok(wah_call_by_name(&ctx, "grow", &p, 1, &r));
     assert_eq_i32(r.i32, 1);
-    assert_eq_i32(s.calls, 1);
-    assert_eq_u32(s.mem_idx, 1); // Of the owner
-    assert_eq_u64(s.old_bytes, 65536);
-    assert_eq_u64(s.new_bytes, 2 * 65536);
+    assert_eq_i32(s.grows, 3);
+    assert_eq_ptr(s.module, &host); // Of the owner
+    assert_eq_u32(s.index, 1);
+    assert_eq_u64(s.old_size, 65536);
+    assert_eq_u64(s.new_size, 2 * 65536);
+    assert_eq_i32(s2.grows, 0);
 
-    // Growing by nothing, or beyond the maximum, doesn't call the hook
+    // Growing by nothing, or beyond the maximum, doesn't ask
     p.i32 = 0;
     assert_ok(wah_call_by_name(&ctx, "grow", &p, 1, &r));
     assert_eq_i32(r.i32, 2);
     p.i32 = 3;
     assert_ok(wah_call_by_name(&ctx, "grow", &p, 1, &r));
     assert_eq_i32(r.i32, -1);
-    assert_eq_i32(s.calls, 1);
+    assert_eq_i32(s.grows, 3);
 
     // WAH_ERROR_OUT_OF_MEMORY refuses to grow
     s.ret = WAH_ERROR_OUT_OF_MEMORY;
     p.i32 = 1;
     assert_ok(wah_call_by_name(&ctx, "grow", &p, 1, &r));
     assert_eq_i32(r.i32, -1);
-    assert_eq_i32(s.calls, 2);
+    assert_eq_i32(s.grows, 4);
     assert_ok(wah_call_by_name(&ctx, "size", NULL, 0, &r));
     assert_eq_i32(r.i32, 2);
 
-    // Other errors trap
+    // Other errors trap; status codes are misuse
     s.ret = WAH_ERROR_TOO_LARGE;
     assert_err(wah_call_by_name(&ctx, "grow", &p, 1, &r), WAH_ERROR_TOO_LARGE);
-    assert_eq_i32(s.calls, 3);
+    assert_eq_i32(s.grows, 5);
     assert_ok(wah_call_by_name(&ctx, "size", NULL, 0, &r));
     assert_eq_i32(r.i32, 2);
+    s.ret = WAH_STATUS_YIELDED;
+    assert_err(wah_call_by_name(&ctx, "grow", &p, 1, &r), WAH_ERROR_MISUSE);
 
-    // Memories defined by the importer are not the owner's; NULL removes the hook
+    // The importer's own memory, of its own limiter
     assert_ok(wah_call_by_name(&ctx, "grow1", &p, 1, &r));
     assert_eq_i32(r.i32, 0);
-    assert_eq_i32(s.calls, 3);
-    grow_state_t s2 = { .ret = WAH_ERROR_TRAP };
-    assert_ok(wah_set_memory_grow_hook(&ctx, grow_hook, &s2));
+    assert_eq_i32(s2.grows, 1);
+    assert_eq_ptr(s2.module, &mod);
+    assert_eq_u32(s2.index, 1);
+    assert_eq_u64(s2.old_size, 0);
+    assert_eq_u64(s2.new_size, 65536);
+    s2.ret = WAH_ERROR_TRAP;
     assert_err(wah_call_by_name(&ctx, "grow1", &p, 1, &r), WAH_ERROR_TRAP);
-    assert_eq_i32(s2.calls, 1);
-    assert_eq_u32(s2.mem_idx, 1);
-    assert_eq_u64(s2.old_bytes, 65536);
-    assert_ok(wah_set_memory_grow_hook(&hctx, NULL, NULL));
-    s.ret = WAH_ERROR_TRAP;
-    assert_ok(wah_call_by_name(&ctx, "grow", &p, 1, &r));
-    assert_eq_i32(r.i32, 2);
-    assert_eq_i32(s.calls, 3);
+    assert_eq_i32(s2.grows, 2);
+    assert_eq_i32(s.grows, 6);
 
+    // Everything let be is released as the contexts are freed
     wah_free_exec_context(&ctx);
     wah_free_exec_context(&hctx);
+    assert_eq_i32(s.fails + s2.fails, 0);
+    assert_eq_i32(s.releases, 2);
+    assert_eq_i32(s2.releases, 1);
+    assert_eq_i64(s.total, 0);
+    assert_eq_i64(s2.total, 0);
     wah_free_module(&mod);
     wah_free_module(&host);
+}
+
+static void test_table_limiter(void) {
+    printf("Testing wah_exec_options_t::table_limiter...\n");
+    wah_module_t mod = {0};
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[ fn [i32] [i32], fn [] [i32] ]} funcs {[ 0, 1 ]} \
+        tables {[ funcref limits.i32/2 2 10 ]} \
+        exports {[ {'grow'} fn# 0, {'size'} fn# 1 ]} \
+        code {[ {[] ref.null funcref local.get 0 table.grow 0 end}, {[] table.size 0 end} ]}"));
+    limit_state_t s = { .ret = WAH_ERROR_OUT_OF_MEMORY }, sm = { .ret = WAH_OK };
+    wah_limiter_t limiter = limiter_of(&s), mem_limiter = limiter_of(&sm);
+    wah_exec_options_t opts = { .table_limiter = &limiter, .memory_limiter = &mem_limiter };
+    wah_exec_context_t ctx = {0};
+    assert_err(wah_new_exec_context(&ctx, &mod, &opts), WAH_ERROR_OUT_OF_MEMORY);
+    assert_eq_i32(s.grows, 1);
+    assert_eq_ptr(s.module, &mod);
+    assert_eq_u32(s.index, 0);
+    assert_eq_u64(s.new_size, 2); // In elements
+
+    s = (limit_state_t){ .ret = WAH_OK };
+    assert_ok(wah_new_exec_context(&ctx, &mod, &opts));
+    assert_ok(wah_instantiate(&ctx));
+    wah_value_t r, p = { .i32 = 3 };
+    assert_ok(wah_call_by_name(&ctx, "grow", &p, 1, &r));
+    assert_eq_i32(r.i32, 2);
+    assert_eq_i32(s.grows, 2);
+    assert_eq_u64(s.old_size, 2);
+    assert_eq_u64(s.new_size, 5);
+    p.i32 = 6; // Beyond the maximum
+    assert_ok(wah_call_by_name(&ctx, "grow", &p, 1, &r));
+    assert_eq_i32(r.i32, -1);
+    assert_eq_i32(s.grows, 2);
+    s.ret = WAH_ERROR_OUT_OF_MEMORY;
+    p.i32 = 1;
+    assert_ok(wah_call_by_name(&ctx, "grow", &p, 1, &r));
+    assert_eq_i32(r.i32, -1);
+    s.ret = WAH_ERROR_TOO_LARGE;
+    assert_err(wah_call_by_name(&ctx, "grow", &p, 1, &r), WAH_ERROR_TOO_LARGE);
+    assert_ok(wah_call_by_name(&ctx, "size", NULL, 0, &r));
+    assert_eq_i32(r.i32, 5);
+    wah_free_exec_context(&ctx);
+    assert_eq_i32(s.releases, 1);
+    assert_eq_i64(s.total, 0);
+    assert_eq_i32(sm.grows, 0); // (no memory)
+    wah_free_module(&mod);
+}
+
+// Fails blocks over 4 MiB
+static void *small_malloc(size_t size, void *userdata) { (void)userdata; return size > (4u << 20) ? NULL : malloc(size); }
+static void *small_realloc(void *ptr, size_t size, void *userdata) {
+    (void)userdata;
+    return size > (4u << 20) ? NULL : realloc(ptr, size);
+}
+static void small_free(void *ptr, void *userdata) { (void)userdata; free(ptr); }
+
+static void test_limiter_fail(void) {
+    printf("Testing wah_limiter_t::fail...\n");
+    wah_alloc_t alloc = { small_malloc, small_realloc, small_free, NULL, 0 };
+    wah_module_t mod = {0};
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[ fn [i32] [i32], fn [i64] [i64] ]} funcs {[ 0, 1 ]} \
+        tables {[ funcref limits.i32/2 1 1000000 ]} memories {[ limits.i64/2 1 1000 ]} \
+        exports {[ {'grow'} fn# 0, {'grow_mem'} fn# 1 ]} \
+        code {[ {[] ref.null funcref local.get 0 table.grow 0 end}, {[] local.get 0 memory.grow 0 end} ]}"));
+    limit_state_t s = { .ret = WAH_OK }, sm = { .ret = WAH_OK };
+    wah_limiter_t limiter = limiter_of(&s), mem_limiter = limiter_of(&sm);
+    wah_exec_options_t opts = { .alloc = &alloc, .table_limiter = &limiter, .memory_limiter = &mem_limiter };
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, &opts));
+    assert_ok(wah_instantiate(&ctx));
+    // A table of 5 MiB or so can't be allocated: told, and table.grow returns -1
+    wah_value_t r, p = { .i32 = 400000 };
+    assert_ok(wah_call_by_name(&ctx, "grow", &p, 1, &r));
+    assert_eq_i32(r.i32, -1);
+    assert_eq_i32(s.grows, 2);
+    assert_eq_i32(s.fails, 1);
+    assert_eq_i64(s.total, 1);
+    // A 64-bit memory of 8 MiB neither
+    wah_value_t p64 = { .i64 = 127 };
+    assert_ok(wah_call_by_name(&ctx, "grow_mem", &p64, 1, &r));
+    assert_eq_i64(r.i64, -1);
+    assert_eq_i32(sm.grows, 2);
+    assert_eq_i32(sm.fails, 1);
+    assert_eq_i64(sm.total, 65536);
+    wah_free_exec_context(&ctx);
+    assert_eq_i64(s.total, 0);
+    assert_eq_i64(sm.total, 0);
+
+    // Nor initially
+    wah_module_t big = {0};
+    assert_ok(wah_parse_module_from_spec(&big, "wasm memories {[ limits.i64/1 128 ]}"));
+    sm = (limit_state_t){ .ret = WAH_OK };
+    assert_err(wah_new_exec_context(&ctx, &big, &opts), WAH_ERROR_OUT_OF_MEMORY);
+    assert_eq_i32(sm.grows, 1);
+    assert_eq_i32(sm.fails, 1);
+    assert_eq_i32(sm.releases, 0);
+    assert_eq_i64(sm.total, 0);
+    wah_free_module(&big);
+    wah_free_module(&mod);
+}
+
+// Memories and tables of modules linked by wah_link_module are the primary's to account
+static void test_limiter_linked(void) {
+    printf("Testing limiters of linked modules...\n");
+    wah_module_t lib = {0};
+    assert_ok(wah_parse_module_from_spec(&lib, "wasm \
+        tables {[ funcref limits.i32/1 3 ]} memories {[ limits.i32/1 1 ]} exports {[ {'m'} mem# 0 ]}"));
+    wah_module_t mod = {0};
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[ fn [i32] [i32] ]} imports {[ {'lib'} {'m'} mem# limits.i32/1 1 ]} funcs {[ 0 ]} \
+        exports {[ {'grow'} fn# 0 ]} code {[ {[] local.get 0 memory.grow 0 end} ]}"));
+    limit_state_t sm = { .ret = WAH_OK }, st = { .ret = WAH_OK };
+    wah_limiter_t mem_limiter = limiter_of(&sm), table_limiter = limiter_of(&st);
+    wah_exec_options_t opts = { .memory_limiter = &mem_limiter, .table_limiter = &table_limiter };
+    wah_exec_context_t ctx = {0};
+    assert_ok(wah_new_exec_context(&ctx, &mod, &opts));
+    assert_ok(wah_link_module(&ctx, "lib", &lib));
+    assert_ok(wah_instantiate(&ctx));
+    assert_eq_i32(sm.grows, 1);
+    assert_eq_ptr(sm.module, &lib);
+    assert_eq_u32(sm.index, 0);
+    assert_eq_u64(sm.new_size, 65536);
+    assert_eq_i32(st.grows, 1);
+    assert_eq_ptr(st.module, &lib);
+    assert_eq_u64(st.new_size, 3);
+    wah_value_t r, p = { .i32 = 2 };
+    assert_ok(wah_call_by_name(&ctx, "grow", &p, 1, &r));
+    assert_eq_i32(r.i32, 1);
+    assert_eq_i32(sm.grows, 2);
+    assert_eq_ptr(sm.module, &lib); // Of the owner
+    assert_eq_u64(sm.old_size, 65536);
+    assert_eq_u64(sm.new_size, 3 * 65536);
+    wah_free_exec_context(&ctx);
+    assert_eq_i32(sm.releases + st.releases, 2);
+    assert_eq_i64(sm.total, 0);
+    assert_eq_i64(st.total, 0);
+
+    // Refused as it is instantiated
+    sm = (limit_state_t){ .ret = WAH_ERROR_OUT_OF_MEMORY };
+    assert_ok(wah_new_exec_context(&ctx, &mod, &opts));
+    assert_ok(wah_link_module(&ctx, "lib", &lib));
+    assert_err(wah_instantiate(&ctx), WAH_ERROR_OUT_OF_MEMORY);
+    wah_free_exec_context(&ctx);
+    assert_eq_i64(st.total, 0);
+    wah_free_module(&mod);
+    wah_free_module(&lib);
 }
 
 typedef struct {
@@ -471,7 +680,10 @@ static void test_memory_creator(void) {
 
 int main(void) {
     test_memory_data();
-    test_memory_grow_hook();
+    test_memory_limiter();
+    test_table_limiter();
+    test_limiter_fail();
+    test_limiter_linked();
     test_memory_creator();
     test_host_suspend();
     test_host_suspend_gc();

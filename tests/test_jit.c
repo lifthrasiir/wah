@@ -14,14 +14,19 @@ typedef struct {
     wah_exec_context_t ctx;
 } jit_inst_t;
 
-static void inst_new(jit_inst_t *inst, const char *spec, bool disable_jit, wah_module_t *env) {
+static void inst_new_with(jit_inst_t *inst, const char *spec, bool disable_jit, wah_module_t *env,
+                          const wah_exec_options_t *exec_opts) {
     wah_parse_options_t opts = { .disable_jit = disable_jit };
     wah_error_t err = wah_parse_module_from_spec_ex(&inst->module, &opts, spec);
     if (err != WAH_OK) printf("  spec: %s\n", spec);
     assert_ok(err);
-    assert_ok(wah_new_exec_context(&inst->ctx, &inst->module, NULL));
+    assert_ok(wah_new_exec_context(&inst->ctx, &inst->module, exec_opts));
     if (env) assert_ok(wah_link_module(&inst->ctx, "env", env));
     assert_ok(wah_instantiate(&inst->ctx));
+}
+
+static void inst_new(jit_inst_t *inst, const char *spec, bool disable_jit, wah_module_t *env) {
+    inst_new_with(inst, spec, disable_jit, env, NULL);
 }
 
 static void inst_free(jit_inst_t *inst) {
@@ -742,15 +747,17 @@ static void test_host_suspend(void) {
     wah_free_module(&env);
 }
 
-static wah_error_t grow_hook(void *userdata, uint32_t mem_idx, uint64_t old_bytes, uint64_t new_bytes) {
-    assert_eq_u32(mem_idx, 0);
-    assert_true(new_bytes > old_bytes);
-    return *(wah_error_t *)userdata;
+static wah_error_t limit_grow(void *userdata, const wah_module_t *module, uint32_t index, uint64_t old_size,
+                              uint64_t new_size) {
+    (void)module;
+    assert_eq_u32(index, 0);
+    assert_true(new_size > old_size);
+    return old_size == 0 ? WAH_OK : *(wah_error_t *)userdata; // (made as it is instantiated)
 }
 
-// memory.grow checked by wah_set_memory_grow_hook, which may refuse or trap
-static void test_memory_grow_hook(void) {
-    printf("Testing memory.grow hooks...\n");
+// memory.grow checked by the memory limiter, which may refuse or trap
+static void test_memory_limiter(void) {
+    printf("Testing memory limiters...\n");
     const char *spec = "wasm types {[ fn [i32] [i32] ]} funcs {[ 0 ]} memories {[ limits.i32/2 1 4 ]} \
         code {[ {[] local.get 0 memory.grow 0 i32.const 1000 i32.add memory.size 0 i32.add end} ]}";
     static const wah_error_t rets[] = { WAH_OK, WAH_ERROR_OUT_OF_MEMORY, WAH_ERROR_TOO_LARGE };
@@ -759,9 +766,10 @@ static void test_memory_grow_hook(void) {
         int32_t results[2];
         for (int native = 0; native < 2; native++) {
             jit_inst_t a;
-            inst_new(&a, spec, !native, NULL);
             wah_error_t ret = rets[i];
-            assert_ok(wah_set_memory_grow_hook(&a.ctx, grow_hook, &ret));
+            wah_limiter_t limiter = { .grow = limit_grow, .userdata = &ret };
+            wah_exec_options_t opts = { .memory_limiter = &limiter };
+            inst_new_with(&a, spec, !native, NULL, &opts);
             wah_value_t p = { .i32 = 2 }, r = {0};
             errs[native] = wah_call(&a.ctx, 0, &p, 1, &r);
             results[native] = r.i32;
@@ -1711,7 +1719,7 @@ int main(void) {
     test_suspend();
     test_memory64_bulk_yield();
     test_host_suspend();
-    test_memory_grow_hook();
+    test_memory_limiter();
     test_pinned_locals();
     test_local_cache();
     test_local_get_cache();

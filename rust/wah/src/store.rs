@@ -14,7 +14,7 @@ use crate::error::{Code, Error, Result, Thrown, check};
 use crate::instance::{Instance, Memory};
 use crate::memory::{CreatorData, MemoryCreator};
 use crate::module::Module;
-use crate::types::{ExternType, PAGE_SIZE};
+use crate::types::PAGE_SIZE;
 
 /// Limits the growth of memories, as [`Store::limiter`] gives it.
 pub trait ResourceLimiter {
@@ -29,11 +29,6 @@ type Limiter<T> = Box<dyn Send + FnMut(&mut T) -> &mut dyn ResourceLimiter>;
 /// The function a host function runs, which may wait (`Poll::Pending`) for its `Context`'s waker: the activation is
 /// suspended then, and the function called again with the same parameters once resumed.
 pub(crate) type HostFn<T> = dyn Fn(Caller<'_, T>, &mut Context<'_>) -> Poll<Result<()>> + Send + Sync;
-
-struct HookData<T: 'static> {
-    store: *mut StoreCtx<T>,
-    ctx: u32,
-}
 
 /// An exec context of a store, freed with it, and what it is of.
 struct Ctx {
@@ -73,7 +68,6 @@ pub struct StoreCtx<T: 'static> {
     contexts: Vec<Ctx>,
     /// The contexts linkable by name.
     names: Vec<(String, u32)>,
-    hooks: Vec<NonNull<HookData<T>>>,
     /// The memory creator of contexts made from now on, of the last of `creators` (which outlive the contexts).
     creator: Option<sys::wah_memory_creator_t>,
     creators: Vec<NonNull<CreatorData>>,
@@ -108,7 +102,6 @@ impl<T: 'static> Store<T> {
             fuel: None,
             contexts: Vec::new(),
             names: Vec::new(),
-            hooks: Vec::new(),
             creator: None,
             creators: Vec::new(),
             cx: null_mut(),
@@ -224,16 +217,13 @@ impl<T: 'static> Drop for Store<T> {
 impl<T: 'static> Drop for StoreCtx<T> {
     fn drop(&mut self) {
         // SAFETY: the contexts are freed first (in any order, as a link domain), then the modules they use (as
-        // `Module`s); the data of hooks and creators last, which they point to
+        // `Module`s); the data of creators last, which they point to
         unsafe {
             for c in &self.contexts {
                 sys::wah_free_exec_context(c.raw.as_ref().get());
             }
             for c in self.contexts.drain(..) {
                 drop(Box::from_raw(c.raw.as_ptr()));
-            }
-            for h in self.hooks.drain(..) {
-                drop(Box::from_raw(h.as_ptr()));
             }
             for c in self.creators.drain(..) {
                 drop(Box::from_raw(c.as_ptr()));
@@ -292,29 +282,6 @@ impl<T: 'static> StoreCtx<T> {
         self.fuel = Some(fuel);
     }
 
-    /// The maximum of memory `index` of the module of `ctx`, in bytes.
-    fn memory_max(&self, ctx: u32, index: u32) -> Option<u64> {
-        // SAFETY: the module is the store's
-        unsafe {
-            let mut d = std::mem::zeroed::<sys::wah_memory_desc_t>();
-            if sys::wah_module_memory(self.module_ptr(ctx), index, &mut d) != sys::WAH_OK || d.max_pages == u64::MAX {
-                return None;
-            }
-            d.max_pages.checked_mul(PAGE_SIZE)
-        }
-    }
-
-    /// Asks the limiter for memory `index` of `ctx` of `minimum` pages to be created.
-    fn account_initial(&mut self, ctx: u32, index: u32, minimum: u64) -> Result<()> {
-        let max = self.memory_max(ctx, index);
-        let Some(limiter) = self.limiter.as_mut() else { return Ok(()) };
-        let bytes = minimum.checked_mul(PAGE_SIZE).ok_or_else(|| Error::code(Code::TooLarge))?;
-        match limiter(&mut self.data).memory_growing(0, bytes, max)? {
-            true => Ok(()),
-            false => Err(Error::with_context(Code::OutOfMemory, "memory not created (limiter)")),
-        }
-    }
-
     /// The pointer and size of memory `m`.
     pub(crate) fn memory(&self, m: &Memory) -> (*mut u8, usize) {
         self.check(m.store);
@@ -346,11 +313,16 @@ unsafe fn new_ctx<T: 'static>(s: *mut StoreCtx<T>, module: CtxModule, instance: 
             deadline_us: if instance { st.deadline_us } else { 0 },
             ..Default::default()
         };
+        // (copied by WAH; the store outlives its contexts)
+        let memory_limiter =
+            sys::wah_limiter_t { grow: Some(memory_grow::<T>), fail: None, release: None, userdata: s.cast() };
         let opts = sys::wah_exec_options_t {
             limits,
             alloc: std::ptr::null(),
             memory_creator: st.creator.as_ref().map_or(std::ptr::null(), |c| c),
             userdata: s.cast(),
+            memory_limiter: &memory_limiter,
+            table_limiter: std::ptr::null(),
         };
         st.thrown = None;
         // (the context is zeroed and stays where it is until the store frees it, after which the module)
@@ -375,13 +347,6 @@ pub(crate) unsafe fn new_host<T: 'static>(s: *mut StoreCtx<T>, name: &str, modul
             return Err(Error::misuse(format!("{name} defined twice in the store")));
         }
         let ctx = new_ctx(s, CtxModule::Host(module.clone()), false)?;
-        let st = &mut *s;
-        let mp = module.raw();
-        for i in 0..sys::wah_module_memory_count(mp) {
-            let mut d = std::mem::zeroed::<sys::wah_memory_desc_t>();
-            check(sys::wah_module_memory(mp, i, &mut d))?;
-            st.account_initial(ctx, i, d.min_pages)?;
-        }
         instantiate(s, ctx)?;
         (*s).names.push((name.to_owned(), ctx));
         Ok(())
@@ -396,12 +361,10 @@ pub(crate) unsafe fn new_instance<T: 'static>(s: *mut StoreCtx<T>, module: &Modu
     unsafe {
         let st = &mut *s;
         let mut names: Vec<&str> = Vec::new();
-        let mut imported_memories = 0;
         for i in module.imports() {
             if !names.contains(&&*i.module) {
                 names.push(&i.module);
             }
-            imported_memories += matches!(i.ty, ExternType::Memory(_)) as u32;
         }
         let mut linked = Vec::with_capacity(names.len());
         for &n in &names {
@@ -419,18 +382,12 @@ pub(crate) unsafe fn new_instance<T: 'static>(s: *mut StoreCtx<T>, module: &Modu
                 Error::with_context(e.wah_code().unwrap(), format!("{} not linked", n.to_string_lossy()))
             })?;
         }
-        let mp = module.raw();
-        for i in imported_memories..sys::wah_module_memory_count(mp) {
-            let mut d = std::mem::zeroed::<sys::wah_memory_desc_t>();
-            check(sys::wah_module_memory(mp, i, &mut d))?;
-            st.account_initial(ctx, i, d.min_pages)?;
-        }
         instantiate(s, ctx)?;
         Ok(ctx)
     }
 }
 
-/// Instantiates `ctx` of the store `s` (running start functions), and sets the hook of the limiter on it.
+/// Instantiates `ctx` of the store `s` (running start functions).
 ///
 /// # Safety
 /// `s` should be the store's own pointer, with nothing of the store borrowed.
@@ -451,9 +408,7 @@ unsafe fn instantiate<T: 'static>(s: *mut StoreCtx<T>, ctx: u32) -> Result<()> {
                 });
             }
         }
-        let hook = NonNull::from(Box::leak(Box::new(HookData { store: s, ctx })));
-        (*s).hooks.push(hook);
-        check(sys::wah_set_memory_grow_hook(p, Some(grow_hook::<T>), hook.as_ptr().cast()))
+        Ok(())
     }
 }
 
@@ -497,16 +452,31 @@ pub(crate) unsafe fn failure<T: 'static>(s: *mut StoreCtx<T>, r: sys::wah_error_
     }
 }
 
-unsafe extern "C" fn grow_hook<T: 'static>(
+/// The maximum of memory `index` of `module`, in bytes.
+///
+/// # Safety
+/// `module` should be a module of the store.
+unsafe fn memory_max(module: *const sys::wah_module_t, index: u32) -> Option<u64> {
+    unsafe {
+        let mut d = std::mem::zeroed::<sys::wah_memory_desc_t>();
+        if sys::wah_module_memory(module, index, &mut d) != sys::WAH_OK || d.max_pages == u64::MAX {
+            return None;
+        }
+        d.max_pages.checked_mul(PAGE_SIZE)
+    }
+}
+
+/// The `grow` of the memory limiter of the store `userdata`, asking its limiter.
+unsafe extern "C" fn memory_grow<T: 'static>(
     userdata: *mut c_void,
-    mem_idx: u32,
+    module: *const sys::wah_module_t,
+    index: u32,
     old_bytes: u64,
     new_bytes: u64,
 ) -> sys::wah_error_t {
-    // SAFETY: WAH calls this while running for the store, which nothing else borrows then
-    let h = unsafe { &*userdata.cast::<HookData<T>>() };
-    let s = unsafe { &mut *h.store };
-    let max = s.memory_max(h.ctx, mem_idx);
+    // SAFETY: WAH calls this as it makes or grows a memory for the store, which nothing else borrows then
+    let s = unsafe { &mut *userdata.cast::<StoreCtx<T>>() };
+    let max = unsafe { memory_max(module, index) };
     let Some(limiter) = s.limiter.as_mut() else { return sys::WAH_OK };
     let data = &mut s.data;
     let r = catch_unwind(AssertUnwindSafe(|| limiter(data).memory_growing(old_bytes, new_bytes, max)));

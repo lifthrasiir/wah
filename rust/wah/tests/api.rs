@@ -609,6 +609,27 @@ fn memory_creator() {
     }
 }
 
+/// A memory over the limit is refused before anything makes it (the creator, or WAH: no allocation of its size).
+#[cfg(feature = "multi-memory")]
+#[test]
+fn limiter_before_creation() {
+    for c in configs() {
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut linker = Linker::<Budget>::new();
+        linker.memory("aqr", "big", MemoryType::new(2, None)).unwrap();
+        let mut store = Store::new(Budget { total: 0, limit: PAGE_SIZE, deny: true });
+        store.limiter(|b| b);
+        store.set_memory_creator(Arc::new(Buffers { log: log.clone(), capacity: 4 << 16, fail: false }));
+        let e = linker.instantiate_hosts(&mut store).unwrap_err();
+        assert_eq!(e.wah_code(), Some(Code::OutOfMemory));
+        let defined = module(&c, r#"(module (memory 2))"#);
+        assert_eq!(Instance::new(&mut store, &defined).unwrap_err().wah_code(), Some(Code::OutOfMemory));
+        assert_eq!(store.data().total, 0);
+        drop(store);
+        assert_eq!(*log.lock().unwrap(), Vec::<String>::new());
+    }
+}
+
 #[test]
 fn shared_host_modules() {
     for c in configs() {

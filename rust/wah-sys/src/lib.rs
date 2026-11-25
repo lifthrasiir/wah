@@ -16,7 +16,7 @@ use core::ffi::{c_char, c_int, c_void};
 use core::marker::{PhantomData, PhantomPinned};
 
 /// The version of the WAH API this crate was written for (`WAH_VERSION`).
-pub const WAH_VERSION: i32 = 2690;
+pub const WAH_VERSION: i32 = -2690;
 
 pub type wah_error_t = c_int;
 pub const WAH_OK: wah_error_t = 0;
@@ -367,6 +367,8 @@ pub struct wah_exec_options_t {
     pub alloc: *const wah_alloc_t,
     pub memory_creator: *const wah_memory_creator_t,
     pub userdata: *mut c_void,
+    pub memory_limiter: *const wah_limiter_t,
+    pub table_limiter: *const wah_limiter_t,
 }
 
 #[repr(C)]
@@ -405,8 +407,31 @@ pub struct wah_memory_creator_t {
     pub userdata: *mut c_void,
 }
 
-pub type wah_memory_grow_hook_t =
-    Option<unsafe extern "C" fn(userdata: *mut c_void, mem_idx: u32, old_bytes: u64, new_bytes: u64) -> wah_error_t>;
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct wah_limiter_t {
+    pub grow: Option<
+        unsafe extern "C" fn(
+            userdata: *mut c_void,
+            module: *const wah_module_t,
+            index: u32,
+            old_size: u64,
+            new_size: u64,
+        ) -> wah_error_t,
+    >,
+    pub fail: Option<
+        unsafe extern "C" fn(
+            userdata: *mut c_void,
+            module: *const wah_module_t,
+            index: u32,
+            old_size: u64,
+            new_size: u64,
+        ),
+    >,
+    pub release:
+        Option<unsafe extern "C" fn(userdata: *mut c_void, module: *const wah_module_t, index: u32, size: u64)>,
+    pub userdata: *mut c_void,
+}
 
 pub type wah_gc_phase_t = c_int;
 pub const WAH_GC_PHASE_IDLE: wah_gc_phase_t = 0;
@@ -646,11 +671,6 @@ unsafe extern "C" {
         data: *mut *mut u8,
         size: *mut u64,
     ) -> wah_error_t;
-    pub fn wah_set_memory_grow_hook(
-        ctx: *mut wah_exec_context_t,
-        hook: wah_memory_grow_hook_t,
-        userdata: *mut c_void,
-    ) -> wah_error_t;
 
     pub fn wah_gc_start(ctx: *mut wah_exec_context_t) -> wah_error_t;
     pub fn wah_gc_heap_stats(ctx: *const wah_exec_context_t, stats: *mut wah_gc_heap_stats_t);
@@ -717,12 +737,18 @@ mod tests {
             &layout!(wah_limits_t),
             &[offset_of!(wah_limits_t, no_memory_bytes)],
             &layout!(wah_exec_options_t),
-            &[offset_of!(wah_exec_options_t, memory_creator), offset_of!(wah_exec_options_t, userdata)],
+            &[
+                offset_of!(wah_exec_options_t, memory_creator),
+                offset_of!(wah_exec_options_t, userdata),
+                offset_of!(wah_exec_options_t, table_limiter),
+            ],
             &layout!(wah_memory_request_t),
             &[offset_of!(wah_memory_request_t, is_64), offset_of!(wah_memory_request_t, reserve_bytes)],
             &layout!(wah_host_memory_t),
             &[offset_of!(wah_host_memory_t, guarded)],
             &layout!(wah_memory_creator_t),
+            &layout!(wah_limiter_t),
+            &[offset_of!(wah_limiter_t, release), offset_of!(wah_limiter_t, userdata)],
             &layout!(wah_gc_heap_stats_t),
             &[offset_of!(wah_gc_heap_stats_t, total_polls)],
             &[size_of::<wah_error_t>(), size_of::<wah_exec_state_t>(), size_of::<wah_comp_type_kind_t>()],

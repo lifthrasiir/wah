@@ -76,7 +76,7 @@ wah_link_module(&ctx, "env", &host);  // satisfies (import "env" "print" ...)
 wah_instantiate(&ctx);
 ```
 
-Host functions can also suspend their activation with `wah_suspend` (the call is retried with the same parameters on `wah_resume`), reach per-context state with `wah_exec_userdata`, and read or write the memories of the instantiated context with `wah_memory_data`. Memories may be supplied by the host through `wah_exec_options_t::memory_creator`, and their growth accounted by `wah_set_memory_grow_hook`. A host module can be shared by many exec contexts.
+Host functions can also suspend their activation with `wah_suspend` (the call is retried with the same parameters on `wah_resume`), reach per-context state with `wah_exec_userdata`, and read or write the memories of the instantiated context with `wah_memory_data`. Memories may be supplied by the host through `wah_exec_options_t::memory_creator`, and memories and tables accounted as they are made, grow and are freed by `wah_exec_options_t::memory_limiter` and `table_limiter`. A host module can be shared by many exec contexts.
 
 See `tests/test_export_api.c`, `tests/test_linkage.c` and `tests/test_embedding.c` for fuller examples.
 

@@ -23,7 +23,7 @@ extern "C" {
 // Macro: WAH_VERSION
 //   The version of the WAH API. Incremented on any change to the API, including bug fixes.
 //   Based on (fractional Gregorian year - 2000) * (dev version ? -100 : 100), with a liberal rounding.
-#define WAH_VERSION 2690
+#define WAH_VERSION -2690
 
 // Macro: WAH_FORCE_PORTABLE [user-definable]
 //   If defined, forces the interpreter to use portable C implementations
@@ -1089,12 +1089,13 @@ typedef struct {
 typedef struct wah_memory_creator_s {
     // Field: create
     //   Makes the memory `req` into `*out` (zeroed by the caller), or leaves `out->data` NULL to decline it.
-    //   An error fails the creation of the exec context (or `wah_instantiate` for modules linked to it).
+    //   Called after `wah_exec_options_t::memory_limiter` let it be. An error fails the creation of the exec context
+    //   (or `wah_instantiate` for modules linked to it).
     wah_error_t (*create)(void *userdata, const wah_memory_request_t *req, wah_host_memory_t *out);
     // Field: grow
     //   Makes the bytes from `old_bytes` to `new_bytes` of the memory readable, writable and zeroed, in place.
-    //   Called on `memory.grow`, after the hook of `wah_set_memory_grow_hook`. WAH_ERROR_OUT_OF_MEMORY makes it
-    //   return -1, and other errors trap.
+    //   Called on `memory.grow`, after `wah_exec_options_t::memory_limiter` let it be. WAH_ERROR_OUT_OF_MEMORY
+    //   makes it return -1, and other errors trap.
     wah_error_t (*grow)(void *userdata, void *handle, uint64_t old_bytes, uint64_t new_bytes);
     // Field: free
     //   Frees the memory, as the context owning it is freed.
@@ -1103,6 +1104,32 @@ typedef struct wah_memory_creator_s {
     //   Given to the functions above.
     void *userdata;
 } wah_memory_creator_t;
+
+// Struct: wah_limiter_t
+//   Accounts the memories or the tables of an exec context outside of it (`wah_exec_options_t::memory_limiter`,
+//   `table_limiter`): those that its module defines and those of modules linked to it by `wah_link_module`, even
+//   when they are imported and grown by other contexts. Sizes are in bytes for memories and in elements for tables;
+//   `module` and `index` (in the index space of `module`, imports included) tell which memory or table it is.
+//   Any function may be NULL. They must not run anything of the link domain of the context.
+typedef struct wah_limiter_s {
+    // Field: grow
+    //   Called before a memory or a table is made (`old_size` = 0) or grows to `new_size`, once that is within
+    //   its maximum and `wah_limits_t::max_memory_bytes`; not for a size of 0 nor a growth by nothing.
+    //   WAH_OK lets it be allocated. WAH_ERROR_OUT_OF_MEMORY refuses it: `memory.grow` and `table.grow` return -1,
+    //   and the creation (by `wah_new_exec_context`, or `wah_instantiate` for linked modules) fails with it.
+    //   Other errors trap, or fail the creation.
+    wah_error_t (*grow)(void *userdata, const wah_module_t *module, uint32_t index, uint64_t old_size,
+                        uint64_t new_size);
+    // Field: fail
+    //   Called when what `grow` let be couldn't be allocated, its size staying `old_size`.
+    void (*fail)(void *userdata, const wah_module_t *module, uint32_t index, uint64_t old_size, uint64_t new_size);
+    // Field: release
+    //   Called as the memory or table is freed with the context owning it, of the `size` it has (never 0).
+    void (*release)(void *userdata, const wah_module_t *module, uint32_t index, uint64_t size);
+    // Field: userdata
+    //   Given to the functions above.
+    void *userdata;
+} wah_limiter_t;
 
 // Struct: wah_exec_options_t
 //   Options for running WebAssembly modules.
@@ -1121,6 +1148,11 @@ typedef struct {
     // Field: userdata [optional]
     //   Given to host functions of the module by `wah_exec_userdata`.
     void *userdata;
+    // Field: memory_limiter, table_limiter [optional]
+    //   Account the memories and the tables (see `wah_limiter_t`). Copied; their userdata should live as long as
+    //   the context.
+    const wah_limiter_t *memory_limiter;
+    const wah_limiter_t *table_limiter;
 } wah_exec_options_t;
 
 // Function: wah_new_exec_context
@@ -1566,24 +1598,6 @@ wah_error_t wah_instantiate(wah_exec_context_t *ctx);
 //
 //   Returns WAH_ERROR_MISUSE if the context is not instantiated, or WAH_ERROR_NOT_FOUND for invalid indices.
 wah_error_t wah_memory_data(wah_exec_context_t *ctx, uint32_t mem_idx, uint8_t **data, uint64_t *size);
-
-// Typedef: wah_memory_grow_hook_t
-//   Called before a memory grows by `memory.grow`, for accounting it outside of the context.
-//
-//   - userdata [in, borrowed]: The `userdata` given to `wah_set_memory_grow_hook`.
-//   - mem_idx [in]: Index of the memory in the module of the context owning it, which the hook was set for.
-//   - old_bytes, new_bytes [in]: Size of the memory before and after growing, in bytes.
-//
-//   Should return WAH_OK to grow the memory, WAH_ERROR_OUT_OF_MEMORY to make `memory.grow` fail (returning -1),
-//   or any other error to trap with it. The memory can still fail to grow after WAH_OK is returned, if it can't be
-//   allocated. The hook isn't called when growing by zero pages or beyond the maximum, nor for initial sizes.
-typedef wah_error_t (*wah_memory_grow_hook_t)(void *userdata, uint32_t mem_idx, uint64_t old_bytes, uint64_t new_bytes);
-
-// Function: wah_set_memory_grow_hook
-//   Sets a hook called before any memory defined by the module of an instantiated context grows, even when it is
-//   imported and grown by other contexts. Memories of modules linked by `wah_link_module` are not included.
-//   A NULL hook removes the hook. Returns WAH_ERROR_MISUSE if the context is not instantiated.
-wah_error_t wah_set_memory_grow_hook(wah_exec_context_t *ctx, wah_memory_grow_hook_t hook, void *userdata);
 
 // --- GC Management ---
 
@@ -2859,7 +2873,7 @@ typedef struct wah_gc_state_s {
 
 typedef struct wah_memory_inst_s {
     uint8_t *data;
-    uint64_t size;
+    uint64_t size; // Of the owner, as allocated (and let be by the memory limiter)
     uint64_t max_pages;
     bool is_imported;
     bool guarded; // Reserved with guard pages by wahjit.h or the host; only set for the owner, not for imports
@@ -2867,13 +2881,12 @@ typedef struct wah_memory_inst_s {
     void *host_handle;
     struct wah_exec_context_s *import_ctx;
     uint32_t import_idx;
-    wah_memory_grow_hook_t grow_hook; // Set by wah_set_memory_grow_hook, only for the owner
-    void *grow_hook_userdata;
 } wah_memory_inst_t;
 
 typedef struct wah_exec_host_s {
     wah_memory_creator_t creator; // Its create is NULL if not given
     void *userdata;
+    wah_limiter_t limiters[2]; // Of memories and of tables, zeroed if not given
 } wah_exec_host_t;
 
 typedef struct wah_table_inst_s {
@@ -5200,6 +5213,78 @@ static inline wah_exec_context_t *wah_budget_owner(wah_exec_context_t *ctx) {
 static inline void wah_budget_release(wah_exec_context_t *ctx, uint64_t bytes) {
     WAH_ASSERT(ctx->memory_bytes_committed >= bytes);
     ctx->memory_bytes_committed -= bytes;
+}
+
+// The limiter of the memories (or the tables) that `ctx` owns, as given to the context accounting them; NULL if none.
+static inline const wah_limiter_t *wah_limiter_of(wah_exec_context_t *ctx, bool table) {
+    const wah_exec_host_t *host = wah_budget_owner(ctx)->host;
+    return host ? &host->limiters[table] : NULL;
+}
+
+// Asks the limiter of `ctx` before memory (or table) `index` of `module`, owned by `ctx`, is made or grows.
+static wah_error_t wah_limit_grow(wah_exec_context_t *ctx, bool table, const wah_module_t *module, uint32_t index,
+                                  uint64_t old_size, uint64_t new_size) {
+    const wah_limiter_t *l = wah_limiter_of(ctx, table);
+    if (!l || !l->grow) return WAH_OK;
+    wah_error_t err = l->grow(l->userdata, module, index, old_size, new_size);
+    WAH_ENSURE(err <= WAH_OK, WAH_ERROR_MISUSE); // Status codes are not errors to fail with
+    return err;
+}
+
+// Tells the limiter of `ctx` that what `wah_limit_grow` let be couldn't be allocated.
+static void wah_limit_fail(wah_exec_context_t *ctx, bool table, const wah_module_t *module, uint32_t index,
+                           uint64_t old_size, uint64_t new_size) {
+    const wah_limiter_t *l = wah_limiter_of(ctx, table);
+    if (l && l->fail) l->fail(l->userdata, module, index, old_size, new_size);
+}
+
+// Tells the limiter of `ctx` that memory (or table) `index` of `module` of `size` is freed.
+static void wah_limit_release(wah_exec_context_t *ctx, bool table, const wah_module_t *module, uint32_t index,
+                              uint64_t size) {
+    const wah_limiter_t *l = wah_limiter_of(ctx, table);
+    if (size > 0 && l && l->release) l->release(l->userdata, module, index, size);
+}
+
+// Makes `*mem`, the defined memory `defined_idx` of `module`, of its minimum size: as `budget` (the context
+// accounting it) has room and its limiter lets it be. Its size is set only once allocated.
+static wah_error_t wah_memory_make(wah_exec_context_t *budget, wah_memory_inst_t *mem, const wah_module_t *module,
+                                   uint32_t defined_idx) {
+    uint64_t min_pages = module->memories[defined_idx].min_pages;
+    WAH_ENSURE(min_pages <= SIZE_MAX / WAH_WASM_PAGE_SIZE, WAH_ERROR_TOO_LARGE);
+    uint64_t size = min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
+    uint32_t index = module->import_memory_count + defined_idx;
+    WAH_ENSURE(wah_budget_check(budget, size), WAH_ERROR_TOO_LARGE);
+    if (size > 0) WAH_CHECK(wah_limit_grow(budget, false, module, index, 0, size));
+    wah_error_t err = wah_memory_alloc_data(&budget->alloc, budget->host, mem, module, defined_idx, size);
+    if (err != WAH_OK) {
+        if (size > 0) wah_limit_fail(budget, false, module, index, 0, size);
+        return err;
+    }
+    mem->size = size;
+    wah_budget_charge(budget, size);
+    return WAH_OK;
+}
+
+// Makes `*table`, the defined table `defined_idx` of `module`, as `wah_memory_make` does a memory.
+static wah_error_t wah_table_make(wah_exec_context_t *budget, wah_table_inst_t *table, const wah_module_t *module,
+                                  uint32_t defined_idx) {
+    uint64_t min_elements = module->tables[defined_idx].min_elements, bytes = 0;
+    WAH_CHECK(wah_table_byte_size(min_elements, &bytes));
+    WAH_ENSURE(wah_budget_check(budget, bytes), WAH_ERROR_TOO_LARGE);
+    *table = (wah_table_inst_t){ .max_size = wah_table_max_size(&module->tables[defined_idx]) };
+    if (min_elements > 0) {
+        uint32_t index = module->import_table_count + defined_idx;
+        WAH_CHECK(wah_limit_grow(budget, true, module, index, 0, min_elements));
+        wah_error_t err = wah_malloc(&budget->alloc, (size_t)min_elements, sizeof(wah_value_t), (void **)&table->entries);
+        if (err != WAH_OK) {
+            wah_limit_fail(budget, true, module, index, 0, min_elements);
+            return err;
+        }
+        memset(table->entries, 0, (size_t)bytes);
+        table->size = min_elements;
+    }
+    wah_budget_charge(budget, bytes);
+    return WAH_OK;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -13098,10 +13183,16 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
     WAH_ENSURE(!(limits->no_memory_bytes && limits->max_memory_bytes > 0), WAH_ERROR_MISUSE);
     const wah_memory_creator_t *creator = options ? options->memory_creator : NULL;
     WAH_ENSURE(!creator || (creator->create && creator->grow && creator->free), WAH_ERROR_MISUSE);
-    if (creator || (options && options->userdata)) { // Nothing to clean up before this
+    const wah_limiter_t *mem_limiter = options ? options->memory_limiter : NULL;
+    const wah_limiter_t *table_limiter = options ? options->table_limiter : NULL;
+    if (creator || mem_limiter || table_limiter || (options && options->userdata)) { // Nothing to clean up before this
         WAH_MALLOC_ARRAY(exec_ctx->host, 1);
-        *exec_ctx->host = (wah_exec_host_t){ .creator = creator ? *creator : (wah_memory_creator_t){0},
-                                             .userdata = options->userdata };
+        *exec_ctx->host = (wah_exec_host_t){
+            .creator = creator ? *creator : (wah_memory_creator_t){0},
+            .userdata = options->userdata,
+            .limiters = { mem_limiter ? *mem_limiter : (wah_limiter_t){0},
+                          table_limiter ? *table_limiter : (wah_limiter_t){0} },
+        };
     }
     if (limits->no_memory_bytes) {
         exec_ctx->max_memory_bytes = 0;
@@ -13155,14 +13246,8 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
         // Import memory slots are left zero-initialized; wah_instantiate() fills them in.
         // Only allocate local memories (starting at offset import_memory_count).
         for (uint32_t i = 0; i < module->memory_count; ++i) {
-            uint32_t slot = module->import_memory_count + i;
-            WAH_ENSURE_GOTO(module->memories[i].min_pages <= SIZE_MAX / WAH_WASM_PAGE_SIZE, WAH_ERROR_TOO_LARGE, cleanup);
-            uint64_t byte_size = module->memories[i].min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
-            WAH_ENSURE_GOTO(wah_budget_check(exec_ctx, byte_size), WAH_ERROR_TOO_LARGE, cleanup);
-            exec_ctx->memories[slot].size = byte_size;
-            WAH_CHECK_GOTO(wah_memory_alloc_data(alloc, exec_ctx->host, &exec_ctx->memories[slot], module, i, byte_size),
+            WAH_CHECK_GOTO(wah_memory_make(exec_ctx, &exec_ctx->memories[module->import_memory_count + i], module, i),
                            cleanup);
-            wah_budget_charge(exec_ctx, byte_size);
         }
         if (exec_ctx->memory_count > 0) {
             exec_ctx->memory_base = exec_ctx->memories[0].data;
@@ -13182,17 +13267,7 @@ wah_error_t wah_new_exec_context(wah_exec_context_t *exec_ctx, const wah_module_
         }
         // Only allocate local tables (starting at offset import_table_count).
         for (uint32_t i = 0; i < module->table_count; ++i) {
-            uint32_t slot = exec_ctx->table_count;
-            uint64_t min_elements = module->tables[i].min_elements;
-            uint64_t table_bytes = 0;
-            WAH_CHECK_GOTO(wah_table_byte_size(min_elements, &table_bytes), cleanup);
-            WAH_ENSURE_GOTO(wah_budget_check(exec_ctx, table_bytes), WAH_ERROR_TOO_LARGE, cleanup);
-            exec_ctx->tables[slot] = (wah_table_inst_t){ .size = min_elements, .max_size = wah_table_max_size(&module->tables[i]) };
-            if (min_elements > 0) {
-                WAH_MALLOC_ARRAY_GOTO(exec_ctx->tables[slot].entries, min_elements, cleanup);
-                memset(exec_ctx->tables[slot].entries, 0, (size_t)table_bytes);
-            }
-            wah_budget_charge(exec_ctx, table_bytes);
+            WAH_CHECK_GOTO(wah_table_make(exec_ctx, &exec_ctx->tables[exec_ctx->table_count], module, i), cleanup);
             exec_ctx->table_count++;
         }
     }
@@ -13272,15 +13347,6 @@ wah_error_t wah_memory_data(wah_exec_context_t *ctx, uint32_t mem_idx, uint8_t *
     WAH_ENSURE(mem_idx < ctx->memory_count, WAH_ERROR_NOT_FOUND);
     *data = ctx->memories[mem_idx].data;
     *size = ctx->memories[mem_idx].size;
-    return WAH_OK;
-}
-
-wah_error_t wah_set_memory_grow_hook(wah_exec_context_t *ctx, wah_memory_grow_hook_t hook, void *userdata) {
-    WAH_ENSURE(ctx && ctx->is_instantiated && !ctx->poisoned, WAH_ERROR_MISUSE);
-    for (uint32_t i = ctx->module->import_memory_count; i < ctx->memory_count; i++) {
-        ctx->memories[i].grow_hook = hook;
-        ctx->memories[i].grow_hook_userdata = hook ? userdata : NULL;
-    }
     return WAH_OK;
 }
 
@@ -13389,16 +13455,18 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
 
     if (exec_ctx->memories) {
         for (uint32_t i = 0; i < exec_ctx->memory_count; ++i) {
-            if (!exec_ctx->memories[i].is_imported) wah_memory_free_data(alloc, &exec_ctx->memories[i]);
+            if (exec_ctx->memories[i].is_imported) continue;
+            wah_limit_release(exec_ctx, false, exec_ctx->module, i, exec_ctx->memories[i].size);
+            wah_memory_free_data(alloc, &exec_ctx->memories[i]);
         }
         wah_free(alloc, exec_ctx->memories);
     }
     wah_free(alloc, exec_ctx->function_table);
     if (exec_ctx->tables) {
         for (uint32_t i = 0; i < exec_ctx->table_count; ++i) {
-            if (!exec_ctx->tables[i].is_imported) {
-                wah_free(alloc, exec_ctx->tables[i].entries);
-            }
+            if (exec_ctx->tables[i].is_imported) continue;
+            wah_limit_release(exec_ctx, true, exec_ctx->module, i, exec_ctx->tables[i].size);
+            wah_free(alloc, exec_ctx->tables[i].entries);
         }
         wah_free(alloc, exec_ctx->tables);
     }
@@ -13453,14 +13521,17 @@ void wah_free_exec_context(wah_exec_context_t *exec_ctx) {
                 wah_exec_context_t *ictx = exec_ctx->linked_modules[i].ctx;
                 if (ictx->memories) {
                     for (uint32_t m = 0; m < ictx->memory_count; ++m) {
-                        if (!ictx->memories[m].is_imported) wah_memory_free_data(alloc, &ictx->memories[m]);
+                        if (ictx->memories[m].is_imported) continue;
+                        wah_limit_release(exec_ctx, false, ictx->module, m, ictx->memories[m].size);
+                        wah_memory_free_data(alloc, &ictx->memories[m]);
                     }
                     wah_free(alloc, ictx->memories);
                 }
                 if (ictx->tables) {
                     for (uint32_t t = 0; t < ictx->table_count; ++t) {
-                        if (!ictx->tables[t].is_imported)
-                            wah_free(alloc, ictx->tables[t].entries);
+                        if (ictx->tables[t].is_imported) continue;
+                        wah_limit_release(exec_ctx, true, ictx->module, t, ictx->tables[t].size);
+                        wah_free(alloc, ictx->tables[t].entries);
                     }
                     wah_free(alloc, ictx->tables);
                 }
@@ -14043,19 +14114,8 @@ static uint64_t wah_memory_copy_internal(wah_exec_context_t *ctx,
 // Allocations are charged to `budget_ctx`.
 static wah_error_t wah_init_local_tables(wah_table_inst_t *tables, const wah_module_t *lmod,
                                          uint32_t total_tables, wah_exec_context_t *budget_ctx) {
-    const wah_alloc_t *alloc = &budget_ctx->alloc;
     for (uint32_t ti = lmod->import_table_count; ti < total_tables; ti++) {
-        uint32_t li = ti - lmod->import_table_count;
-        uint64_t min_elements = lmod->tables[li].min_elements;
-        uint64_t table_bytes = 0;
-        WAH_CHECK(wah_table_byte_size(min_elements, &table_bytes));
-        WAH_ENSURE(wah_budget_check(budget_ctx, table_bytes), WAH_ERROR_TOO_LARGE);
-        wah_budget_charge(budget_ctx, table_bytes);
-        tables[ti] = (wah_table_inst_t){ .size = min_elements, .max_size = wah_table_max_size(&lmod->tables[li]) };
-        if (min_elements > 0) {
-            WAH_MALLOC_ARRAY(tables[ti].entries, min_elements);
-            memset(tables[ti].entries, 0, (size_t)table_bytes);
-        }
+        WAH_CHECK(wah_table_make(budget_ctx, &tables[ti], lmod, ti - lmod->import_table_count));
     }
     return WAH_OK;
 }
@@ -14179,17 +14239,23 @@ static wah_error_t wah_table_grow_internal(
         return WAH_OK;
     }
     uint64_t delta_bytes = delta * sizeof(wah_value_t);
-    wah_exec_context_t *owner = (fctx->tables[table_idx].is_imported && fctx->tables[table_idx].import_ctx)
-        ? fctx->tables[table_idx].import_ctx : fctx;
+    bool via_import = fctx->tables[table_idx].is_imported && fctx->tables[table_idx].import_ctx;
+    wah_exec_context_t *owner = via_import ? fctx->tables[table_idx].import_ctx : fctx;
+    uint32_t owner_table_idx = via_import ? fctx->tables[table_idx].import_idx : table_idx;
     wah_exec_context_t *budget_owner = wah_budget_owner(owner);
     if (!wah_budget_check(budget_owner, delta_bytes)) {
         return WAH_OK;
     }
+    wah_error_t err = wah_limit_grow(owner, true, owner->module, owner_table_idx, *old_size, new_size);
+    if (err == WAH_ERROR_OUT_OF_MEMORY) return WAH_OK;
+    WAH_CHECK(err);
 
     const wah_alloc_t *grow_alloc = &owner->alloc;
     wah_value_t *new_table = NULL;
-    wah_error_t err = wah_malloc(grow_alloc, (size_t)new_size, sizeof(wah_value_t), (void **)&new_table);
-    if (err != WAH_OK) return WAH_OK;
+    if (wah_malloc(grow_alloc, (size_t)new_size, sizeof(wah_value_t), (void **)&new_table) != WAH_OK) {
+        wah_limit_fail(owner, true, owner->module, owner_table_idx, *old_size, new_size);
+        return WAH_OK;
+    }
 
     if (*old_size > 0) {
         memcpy(new_table, fctx->tables[table_idx].entries, sizeof(wah_value_t) * *old_size);
@@ -14255,33 +14321,34 @@ static wah_error_t wah_memory_grow_internal(
     if (!wah_budget_check(budget_owner, delta_bytes)) {
         return WAH_OK;
     }
-    if (owner_mem->grow_hook) {
-        wah_error_t hook_err = owner_mem->grow_hook(owner_mem->grow_hook_userdata, owner_mem_idx,
-                                                    fctx->memories[mem_idx].size, new_memory_size);
-        if (hook_err == WAH_ERROR_OUT_OF_MEMORY) return WAH_OK;
-        WAH_ENSURE(hook_err <= WAH_OK, WAH_ERROR_MISUSE); // Status codes are not errors to trap with
-        WAH_CHECK(hook_err);
-    }
+    uint64_t old_size = fctx->memories[mem_idx].size;
+    wah_error_t err = wah_limit_grow(owner, false, owner->module, owner_mem_idx, old_size, new_memory_size);
+    if (err == WAH_ERROR_OUT_OF_MEMORY) return WAH_OK;
+    WAH_CHECK(err);
 
+    // From here on WAH_ERROR_OUT_OF_MEMORY makes memory.grow return -1, and other errors trap
     if (owner_mem->host) { // Never moves, and the host zeroes new pages
         const wah_memory_creator_t *c = &owner_mem->host->creator;
-        wah_error_t grow_err = c->grow(c->userdata, owner_mem->host_handle, fctx->memories[mem_idx].size, new_memory_size);
-        if (grow_err == WAH_ERROR_OUT_OF_MEMORY) return WAH_OK;
-        WAH_ENSURE(grow_err <= WAH_OK, WAH_ERROR_MISUSE);
-        WAH_CHECK(grow_err);
+        err = c->grow(c->userdata, owner_mem->host_handle, old_size, new_memory_size);
+        if (err > WAH_OK) err = WAH_ERROR_MISUSE; // Status codes are not errors to trap with
     } else
 #ifdef WAH_JIT
     if (owner_mem->guarded) { // Never moves, and newly committed pages are already zeroed
-        if (!wah_jit_commit_memory(owner_mem->data, fctx->memories[mem_idx].size, new_memory_size)) return WAH_OK;
+        if (!wah_jit_commit_memory(owner_mem->data, old_size, new_memory_size)) err = WAH_ERROR_OUT_OF_MEMORY;
     } else
 #endif
     {
         void *memory_data = fctx->memories[mem_idx].data;
         if (wah_realloc(&owner->alloc, new_memory_size, sizeof(*fctx->memories[mem_idx].data), &memory_data) != WAH_OK) {
-            return WAH_OK;
+            err = WAH_ERROR_OUT_OF_MEMORY;
+        } else {
+            fctx->memories[mem_idx].data = (uint8_t *)memory_data;
+            memset(fctx->memories[mem_idx].data + old_size, 0, new_memory_size - old_size);
         }
-        fctx->memories[mem_idx].data = (uint8_t *)memory_data;
-        memset(fctx->memories[mem_idx].data + fctx->memories[mem_idx].size, 0, new_memory_size - fctx->memories[mem_idx].size);
+    }
+    if (err != WAH_OK) {
+        wah_limit_fail(owner, false, owner->module, owner_mem_idx, old_size, new_memory_size);
+        return err == WAH_ERROR_OUT_OF_MEMORY ? WAH_OK : err;
     }
     wah_bulk_fuel_charge(ctx, delta_bytes);
 
@@ -20048,14 +20115,8 @@ static wah_error_t wah_create_owned_linked_contexts(wah_exec_context_t *ctx) {
                 ictx->memory_count = lmod_total_memories;
                 for (uint32_t mi = 0; mi < lmod->memory_count; mi++) {
                     uint32_t slot = lmod->import_memory_count + mi;
-                    uint64_t min_pages = lmod->memories[mi].min_pages;
-                    WAH_ENSURE(min_pages <= SIZE_MAX / WAH_WASM_PAGE_SIZE, WAH_ERROR_TOO_LARGE);
-                    uint64_t byte_size = min_pages * (uint64_t)WAH_WASM_PAGE_SIZE;
-                    WAH_ENSURE(wah_budget_check(ctx, byte_size), WAH_ERROR_TOO_LARGE);
-                    wah_budget_charge(ctx, byte_size);
                     ictx->memories[slot].max_pages = wah_memory_max_pages(&lmod->memories[mi]);
-                    ictx->memories[slot].size = byte_size;
-                    WAH_CHECK(wah_memory_alloc_data(alloc, ctx->host, &ictx->memories[slot], lmod, mi, byte_size));
+                    WAH_CHECK(wah_memory_make(ctx, &ictx->memories[slot], lmod, mi));
                 }
             } else {
                 ictx->memories = NULL;
