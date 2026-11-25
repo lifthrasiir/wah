@@ -7,6 +7,9 @@
 #include "../wah.h"
 #include "common.h"
 #include "wah_impl.h"
+#ifndef _WIN32
+#include <sys/resource.h>
+#endif
 
 static void test_memory_data(void) {
     printf("Testing wah_memory_data and wah_export_memory64...\n");
@@ -678,7 +681,47 @@ static void test_memory_creator(void) {
     wah_free_module(&host);
 }
 
+#ifndef _WIN32
+// The peak resident memory of the process, in bytes
+static uint64_t peak_rss(void) {
+    struct rusage u;
+    getrusage(RUSAGE_SELF, &u);
+#ifdef __APPLE__
+    return (uint64_t)u.ru_maxrss;
+#else
+    return (uint64_t)u.ru_maxrss * 1024;
+#endif
+}
+#endif
+
+// Memories are zeroed as the system hands out pages (calloc of the standard allocator), not written all over
+static void test_memory_zeroed_lazily(void) {
+#ifndef _WIN32
+    printf("Testing memories zeroed lazily...\n");
+    wah_module_t mod = {0};
+    assert_ok(wah_parse_module_from_spec(&mod, "wasm \
+        types {[ fn [i64] [i32] ]} funcs {[ 0 ]} memories {[ limits.i64/1 16384 ]} exports {[ {'peek'} fn# 0 ]} \
+        code {[ {[] local.get 0 i32.load8_u align=1 0 end} ]}"));
+    uint64_t before = peak_rss();
+    wah_exec_context_t ctx = {0};
+    wah_error_t err = wah_new_exec_context(&ctx, &mod, NULL);
+    if (err == WAH_ERROR_OUT_OF_MEMORY) { // (1 GiB not given at all)
+        printf("  skipped: no 1 GiB to allocate\n");
+    } else {
+        assert_ok(err);
+        assert_ok(wah_instantiate(&ctx));
+        wah_value_t r, p = { .i64 = (1 << 30) - 1 };
+        assert_ok(wah_call_by_name(&ctx, "peek", &p, 1, &r));
+        assert_eq_i32(r.i32, 0);
+        assert_true(peak_rss() - before < (256u << 20));
+        wah_free_exec_context(&ctx);
+    }
+    wah_free_module(&mod);
+#endif
+}
+
 int main(void) {
+    test_memory_zeroed_lazily(); // (first, before the peak grows)
     test_memory_data();
     test_memory_limiter();
     test_table_limiter();

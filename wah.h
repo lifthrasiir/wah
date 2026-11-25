@@ -3614,6 +3614,29 @@ static inline wah_error_t wah_malloc(const wah_alloc_t *a, size_t count, size_t 
     return *out_ptr ? WAH_OK : WAH_ERROR_OUT_OF_MEMORY;
 }
 
+// wah_malloc of zeroed elements. The standard allocator's calloc hands out large blocks as fresh pages of the
+// system, zeroed as they are first touched, so that memories and tables are not written all over when made.
+static inline wah_error_t wah_malloc_zeroed(const wah_alloc_t *a, size_t count, size_t elemsize, void** out_ptr) {
+    if (a->malloc != wah_stdc_malloc) {
+        wah_error_t err = wah_malloc(a, count, elemsize, out_ptr);
+        if (err == WAH_OK && *out_ptr) memset(*out_ptr, 0, count * elemsize);
+        return err;
+    }
+    *out_ptr = NULL;
+    if (count == 0 || elemsize == 0) return WAH_OK;
+    if (count > SIZE_MAX / elemsize) return WAH_ERROR_OUT_OF_MEMORY;
+    size_t size = count * elemsize;
+    if (wah_alloc_padded(a)) {
+        if (size > SIZE_MAX - WAH_BLOCK_ALIGN) return WAH_ERROR_OUT_OF_MEMORY;
+        void *raw = calloc(size + WAH_BLOCK_ALIGN, 1);
+        if (!raw) return WAH_ERROR_OUT_OF_MEMORY;
+        *out_ptr = wah_alloc_pad(raw);
+        return WAH_OK;
+    }
+    *out_ptr = calloc(size, 1);
+    return *out_ptr ? WAH_OK : WAH_ERROR_OUT_OF_MEMORY;
+}
+
 static inline wah_error_t wah_realloc(const wah_alloc_t *a, size_t count, size_t elemsize, void** p_ptr) {
     if (count == 0 || elemsize == 0) {
         wah_free(a, *p_ptr);
@@ -5173,9 +5196,7 @@ static wah_error_t wah_memory_alloc_data(const wah_alloc_t *alloc, const wah_exe
     (void)addr_type, (void)defined_idx;
 #endif
     if (size == 0) return WAH_OK;
-    WAH_MALLOC_ARRAY(mem->data, size);
-    memset(mem->data, 0, (size_t)size);
-    return WAH_OK;
+    return wah_malloc_zeroed(alloc, (size_t)size, 1, (void **)&mem->data);
 }
 
 static void wah_memory_free_data(const wah_alloc_t *alloc, wah_memory_inst_t *mem) {
@@ -5275,12 +5296,12 @@ static wah_error_t wah_table_make(wah_exec_context_t *budget, wah_table_inst_t *
     if (min_elements > 0) {
         uint32_t index = module->import_table_count + defined_idx;
         WAH_CHECK(wah_limit_grow(budget, true, module, index, 0, min_elements));
-        wah_error_t err = wah_malloc(&budget->alloc, (size_t)min_elements, sizeof(wah_value_t), (void **)&table->entries);
+        wah_error_t err = wah_malloc_zeroed(&budget->alloc, (size_t)min_elements, sizeof(wah_value_t),
+                                            (void **)&table->entries);
         if (err != WAH_OK) {
             wah_limit_fail(budget, true, module, index, 0, min_elements);
             return err;
         }
-        memset(table->entries, 0, (size_t)bytes);
         table->size = min_elements;
     }
     wah_budget_charge(budget, bytes);
