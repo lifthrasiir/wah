@@ -21,7 +21,7 @@ Both crates select the proposals compiled in (`WAH_COMPILED_FEATURES`) by featur
 | `Engine` + `Config` | `Config` alone, given to `Module::new` |
 | `Module::new(&engine, wasm)` | `Module::new(&config, wasm)`: `Send + Sync`, cheap to clone |
 | `Store::new(&engine, data)` | `Store::new(data)` |
-| `store.limiter(\|s\| s)`, `ResourceLimiter::memory_growing` | the same (also asked as memories are created, `current` = 0); no `table_growing` |
+| `store.limiter(\|s\| s)`, `ResourceLimiter::memory_growing`, `table_growing` | the same (also asked as memories and tables are made, `current` = 0, before anything is allocated); `memory_grow_failed` and `table_grow_failed` are told the sizes and return nothing |
 | `Memory::new(&mut store, ty)` + `Instance::new(&mut store, &module, &externs)` | `Linker::memory` / `func_wrap` by import names, `linker.instantiate_hosts(&mut store)`, `store.get_memory(module, name)` to write it, then `Instance::new(&mut store, &module)` (or `linker.instantiate` at once) |
 | `Func::wrap(&mut store, \|c: Caller<'_, T>, ...\| ...)` | `linker.func_wrap(module, name, \|c: Caller<'_, T>, ...\| ...)` |
 | `InstancePre` (host functions resolved once) | host modules are built once for their items and shared by every store (and clone of the linker); a store only makes their memories and globals |

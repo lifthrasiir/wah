@@ -16,12 +16,26 @@ use crate::memory::{CreatorData, MemoryCreator};
 use crate::module::Module;
 use crate::types::PAGE_SIZE;
 
-/// Limits the growth of memories, as [`Store::limiter`] gives it.
+/// Limits memories and tables, as [`Store::limiter`] gives it.
 pub trait ResourceLimiter {
     /// Called before a memory grows from `current` to `desired` bytes (`maximum`: the most its type allows), and
     /// before a memory is created (`current` = 0) as a host module defines it or a module is instantiated.
     /// `Ok(false)` makes `memory.grow` fail (returning -1) and the creation fail; an error traps with it.
     fn memory_growing(&mut self, current: u64, desired: u64, maximum: Option<u64>) -> Result<bool>;
+
+    /// [`memory_growing`](Self::memory_growing) for tables, in elements.
+    fn table_growing(&mut self, current: usize, desired: usize, maximum: Option<usize>) -> Result<bool>;
+
+    /// Called when what [`memory_growing`](Self::memory_growing) let be couldn't be allocated: the memory stays of
+    /// `current` bytes. (Unlike Wasmtime's, it is told the sizes and can't fail; a panic aborts.)
+    fn memory_grow_failed(&mut self, current: u64, desired: u64) {
+        let _ = (current, desired);
+    }
+
+    /// [`memory_grow_failed`](Self::memory_grow_failed) for tables, in elements.
+    fn table_grow_failed(&mut self, current: usize, desired: usize) {
+        let _ = (current, desired);
+    }
 }
 
 type Limiter<T> = Box<dyn Send + FnMut(&mut T) -> &mut dyn ResourceLimiter>;
@@ -314,15 +328,25 @@ unsafe fn new_ctx<T: 'static>(s: *mut StoreCtx<T>, module: CtxModule, instance: 
             ..Default::default()
         };
         // (copied by WAH; the store outlives its contexts)
-        let memory_limiter =
-            sys::wah_limiter_t { grow: Some(memory_grow::<T>), fail: None, release: None, userdata: s.cast() };
+        let memory_limiter = sys::wah_limiter_t {
+            grow: Some(limit_grow::<T, false>),
+            fail: Some(limit_fail::<T, false>),
+            release: None,
+            userdata: s.cast(),
+        };
+        let table_limiter = sys::wah_limiter_t {
+            grow: Some(limit_grow::<T, true>),
+            fail: Some(limit_fail::<T, true>),
+            release: None,
+            userdata: s.cast(),
+        };
         let opts = sys::wah_exec_options_t {
             limits,
             alloc: std::ptr::null(),
             memory_creator: st.creator.as_ref().map_or(std::ptr::null(), |c| c),
             userdata: s.cast(),
             memory_limiter: &memory_limiter,
-            table_limiter: std::ptr::null(),
+            table_limiter: &table_limiter,
         };
         st.thrown = None;
         // (the context is zeroed and stays where it is until the store frees it, after which the module)
@@ -452,34 +476,49 @@ pub(crate) unsafe fn failure<T: 'static>(s: *mut StoreCtx<T>, r: sys::wah_error_
     }
 }
 
-/// The maximum of memory `index` of `module`, in bytes.
+/// The maximum of memory (or table) `index` of `module`, in bytes (or elements).
 ///
 /// # Safety
 /// `module` should be a module of the store.
-unsafe fn memory_max(module: *const sys::wah_module_t, index: u32) -> Option<u64> {
+unsafe fn maximum<const TABLE: bool>(module: *const sys::wah_module_t, index: u32) -> Option<u64> {
     unsafe {
-        let mut d = std::mem::zeroed::<sys::wah_memory_desc_t>();
-        if sys::wah_module_memory(module, index, &mut d) != sys::WAH_OK || d.max_pages == u64::MAX {
-            return None;
+        if TABLE {
+            let mut d = std::mem::zeroed::<sys::wah_table_desc_t>();
+            let r = sys::wah_module_table(module, index, &mut d);
+            (r == sys::WAH_OK && d.max_elements != u64::MAX).then_some(d.max_elements)
+        } else {
+            let mut d = std::mem::zeroed::<sys::wah_memory_desc_t>();
+            let r = sys::wah_module_memory(module, index, &mut d);
+            (r == sys::WAH_OK && d.max_pages != u64::MAX).then(|| d.max_pages.checked_mul(PAGE_SIZE)).flatten()
         }
-        d.max_pages.checked_mul(PAGE_SIZE)
     }
 }
 
-/// The `grow` of the memory limiter of the store `userdata`, asking its limiter.
-unsafe extern "C" fn memory_grow<T: 'static>(
+/// A size of a table in elements, which fits in the address space as it is allocated.
+fn elements(n: u64) -> usize {
+    usize::try_from(n).unwrap_or(usize::MAX)
+}
+
+/// The `grow` of the memory (or table) limiter of the store `userdata`, asking its limiter.
+unsafe extern "C" fn limit_grow<T: 'static, const TABLE: bool>(
     userdata: *mut c_void,
     module: *const sys::wah_module_t,
     index: u32,
-    old_bytes: u64,
-    new_bytes: u64,
+    old_size: u64,
+    new_size: u64,
 ) -> sys::wah_error_t {
-    // SAFETY: WAH calls this as it makes or grows a memory for the store, which nothing else borrows then
+    // SAFETY: WAH calls this as it makes or grows a memory or table for the store, which nothing else borrows then
     let s = unsafe { &mut *userdata.cast::<StoreCtx<T>>() };
-    let max = unsafe { memory_max(module, index) };
+    let max = unsafe { maximum::<TABLE>(module, index) };
     let Some(limiter) = s.limiter.as_mut() else { return sys::WAH_OK };
     let data = &mut s.data;
-    let r = catch_unwind(AssertUnwindSafe(|| limiter(data).memory_growing(old_bytes, new_bytes, max)));
+    let r = catch_unwind(AssertUnwindSafe(|| {
+        let l = limiter(data);
+        match TABLE {
+            false => l.memory_growing(old_size, new_size, max),
+            true => l.table_growing(elements(old_size), elements(new_size), max.map(elements)),
+        }
+    }));
     match r {
         Ok(Ok(true)) => sys::WAH_OK,
         Ok(Ok(false)) => sys::WAH_ERROR_OUT_OF_MEMORY,
@@ -491,6 +530,24 @@ unsafe extern "C" fn memory_grow<T: 'static>(
             s.thrown = Some(Thrown::Panic(p));
             sys::WAH_ERROR_TRAP
         }
+    }
+}
+
+/// The `fail` of the memory (or table) limiter of the store `userdata`. (A panic aborts: WAH can't fail then.)
+unsafe extern "C" fn limit_fail<T: 'static, const TABLE: bool>(
+    userdata: *mut c_void,
+    _module: *const sys::wah_module_t,
+    _index: u32,
+    old_size: u64,
+    new_size: u64,
+) {
+    // SAFETY: as `limit_grow`
+    let s = unsafe { &mut *userdata.cast::<StoreCtx<T>>() };
+    let Some(limiter) = s.limiter.as_mut() else { return };
+    let l = limiter(&mut s.data);
+    match TABLE {
+        false => l.memory_grow_failed(old_size, new_size),
+        true => l.table_grow_failed(elements(old_size), elements(new_size)),
     }
 }
 

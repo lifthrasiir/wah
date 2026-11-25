@@ -204,22 +204,50 @@ fn link_failures() {
 }
 
 #[cfg(feature = "multi-memory")]
-/// Counts the bytes of memories (wasmtime's `ResourceLimiter`, as Aqueous's `State` is one).
+/// Counts the bytes of memories and of tables, 16 bytes an element (wasmtime's `ResourceLimiter`, as Aqueous's
+/// `State` is one).
 struct Budget {
     total: u64,
     limit: u64,
     deny: bool,
+    /// Growths that failed once let be.
+    failed: u32,
 }
 
 #[cfg(feature = "multi-memory")]
-impl ResourceLimiter for Budget {
-    fn memory_growing(&mut self, current: u64, desired: u64, _: Option<u64>) -> Result<bool> {
+impl Budget {
+    fn new(limit: u64, deny: bool) -> Budget {
+        Budget { total: 0, limit, deny, failed: 0 }
+    }
+
+    fn growing(&mut self, current: u64, desired: u64) -> Result<bool> {
         let total = self.total - current + desired;
         if total > self.limit {
             return if self.deny { Ok(false) } else { Err(Error::new(Violation("over the limit".into()))) };
         }
         self.total = total;
         Ok(true)
+    }
+}
+
+#[cfg(feature = "multi-memory")]
+impl ResourceLimiter for Budget {
+    fn memory_growing(&mut self, current: u64, desired: u64, _: Option<u64>) -> Result<bool> {
+        self.growing(current, desired)
+    }
+
+    fn table_growing(&mut self, current: usize, desired: usize, _: Option<usize>) -> Result<bool> {
+        self.growing(current as u64 * 16, desired as u64 * 16)
+    }
+
+    fn memory_grow_failed(&mut self, current: u64, desired: u64) {
+        self.failed += 1;
+        self.total -= desired - current;
+    }
+
+    fn table_grow_failed(&mut self, current: usize, desired: usize) {
+        self.failed += 1;
+        self.total -= (desired - current) as u64 * 16;
     }
 }
 
@@ -236,7 +264,7 @@ fn limiter() {
         );
         let mut linker = Linker::<Budget>::new();
         linker.memory("aqr", "aqr_memory", MemoryType::new(1, None)).unwrap();
-        let mut store = Store::new(Budget { total: 0, limit: 5 * PAGE_SIZE, deny: true });
+        let mut store = Store::new(Budget::new(5 * PAGE_SIZE, true));
         store.limiter(|b| b);
         let i = linker.instantiate(&mut store, &m).unwrap();
         // (both memories created: the host's and the module's own)
@@ -250,10 +278,67 @@ fn limiter() {
         assert_eq!(e.downcast_ref::<Violation>().unwrap().0, "over the limit");
 
         // a creation over the limit
-        let mut store = Store::new(Budget { total: 0, limit: 2 * PAGE_SIZE, deny: false });
+        let mut store = Store::new(Budget::new(2 * PAGE_SIZE, false));
         store.limiter(|b| b);
         let e = linker.instantiate(&mut store, &m).unwrap_err();
         assert!(e.is::<Violation>());
+    }
+}
+
+/// Tables are asked as they are made and grow, in elements.
+#[cfg(feature = "multi-memory")]
+#[test]
+fn table_limiter() {
+    for c in configs() {
+        let m = module(
+            &c,
+            r#"(module
+                (table 2 100 funcref)
+                (func (export "grow") (param i32) (result i32) (table.grow (ref.null func) (local.get 0))))"#,
+        );
+        let mut store = Store::new(Budget::new(10 * 16, true));
+        store.limiter(|b| b);
+        let i = Instance::new(&mut store, &m).unwrap();
+        assert_eq!(store.data().total, 2 * 16);
+        let grow = i.get_typed_func::<i32, i32>(&store, "grow").unwrap();
+        assert_eq!(grow.call(&mut store, 8).unwrap(), 2);
+        assert_eq!(store.data().total, 10 * 16);
+        assert_eq!(grow.call(&mut store, 1).unwrap(), -1);
+        store.data_mut().deny = false;
+        let e = grow.call(&mut store, 1).unwrap_err();
+        assert_eq!(e.downcast_ref::<Violation>().unwrap().0, "over the limit");
+
+        // a creation over the limit
+        let mut store = Store::new(Budget::new(16, true));
+        store.limiter(|b| b);
+        assert_eq!(Instance::new(&mut store, &m).unwrap_err().wah_code(), Some(Code::OutOfMemory));
+        assert_eq!(store.data().total, 0);
+    }
+}
+
+/// What was let be but couldn't be allocated is told: a memory grown past its creator's capacity.
+#[cfg(feature = "multi-memory")]
+#[test]
+fn limiter_grow_failed() {
+    for c in configs() {
+        let m = module(
+            &c,
+            r#"(module
+                (import "aqr" "mem" (memory 1))
+                (func (export "grow") (param i32) (result i32) (memory.grow (local.get 0))))"#,
+        );
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut linker = Linker::<Budget>::new();
+        linker.memory("aqr", "mem", MemoryType::new(1, None)).unwrap();
+        let mut store = Store::new(Budget::new(100 * PAGE_SIZE, true));
+        store.limiter(|b| b);
+        store.set_memory_creator(Arc::new(Buffers { log, capacity: 2 << 16, fail: false }));
+        let i = linker.instantiate(&mut store, &m).unwrap();
+        let grow = i.get_typed_func::<i32, i32>(&store, "grow").unwrap();
+        assert_eq!(grow.call(&mut store, 4).unwrap(), -1);
+        assert_eq!((store.data().failed, store.data().total), (1, PAGE_SIZE));
+        assert_eq!(grow.call(&mut store, 1).unwrap(), 1);
+        assert_eq!((store.data().failed, store.data().total), (1, 2 * PAGE_SIZE));
     }
 }
 
@@ -617,7 +702,7 @@ fn limiter_before_creation() {
         let log = Arc::new(Mutex::new(Vec::new()));
         let mut linker = Linker::<Budget>::new();
         linker.memory("aqr", "big", MemoryType::new(2, None)).unwrap();
-        let mut store = Store::new(Budget { total: 0, limit: PAGE_SIZE, deny: true });
+        let mut store = Store::new(Budget::new(PAGE_SIZE, true));
         store.limiter(|b| b);
         store.set_memory_creator(Arc::new(Buffers { log: log.clone(), capacity: 4 << 16, fail: false }));
         let e = linker.instantiate_hosts(&mut store).unwrap_err();
