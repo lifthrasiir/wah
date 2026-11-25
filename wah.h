@@ -1692,6 +1692,12 @@ bool wah_is_interrupted(const wah_exec_context_t *ctx);
 // Feature detection by compiler version
 // Note: These indicate whether the compiler has the intrinsic/inline asm capability,
 // not whether the target CPU supports it (that's checked at runtime).
+
+// Macro: WAH_HAS_GNU_ASM
+//   Defined if GNU-style inline assembly is available, including clang-cl which doesn't define __GNUC__.
+#if defined(__GNUC__) || defined(__clang__)
+#define WAH_HAS_GNU_ASM 1
+#endif
 #ifdef __GNUC__
 #define WAH_GCC_VER (__GNUC__ * 100 + __GNUC_MINOR__)
 #else
@@ -2314,7 +2320,7 @@ static const uint8_t wah_opcode_features[WAH_FE] = {
 #endif
 
 // SSE2/SSSE3/SSE4.1 inline assembly wrappers for GCC/Clang (must be declared before use)
-#ifdef __GNUC__
+#ifdef WAH_HAS_GNU_ASM
 #define WAH_ASM_UNARY_M128I(intrin, insn) \
     static WAH_ALWAYS_INLINE __m128i wah##intrin(__m128i a) { __m128i res; __asm__(insn " %1, %0" : "=x"(res) : "x"(a)); return res; }
 #define WAH_ASM_UNARY_M128(intrin, insn) \
@@ -2418,7 +2424,7 @@ WAH_IF_SSE41(
 )
 
 // SSE4.1 wrapper with implicit xmm0 operand (pblendvb, blendvps)
-#ifdef __GNUC__
+#ifdef WAH_HAS_GNU_ASM
 WAH_IF_SSE41(
     static WAH_ALWAYS_INLINE __m128i wah_mm_blendv_epi8(__m128i a, __m128i b, __m128i mask) {
         __m128i res = a;
@@ -2465,7 +2471,7 @@ WAH_IF_AVX512(
 
 // AVX-512F+VL ternary logic wrapper (vpternlogd)
 // Specialized for V128_BITSELECT: (a & c) | (b & ~c), imm8 = 0xE4
-#ifdef __GNUC__
+#ifdef WAH_HAS_GNU_ASM
 WAH_IF_AVX512(
     static WAH_ALWAYS_INLINE __m128i wah_mm_ternarylogic_epi32_bitselect(__m128i a, __m128i b, __m128i c) {
         __m128i res = a;
@@ -4588,7 +4594,7 @@ WAH_IF_AVX512(
 // AVX-512BW+VL unsigned byte comparison (vpcmpub -> k -> vpmovm2b)
 // SSE2 lacks unsigned byte comparison, so this is genuinely useful unlike
 // signed eq/gt which SSE2 already handles with pcmpeqb/pcmpgtb.
-#if defined(__GNUC__)
+#ifdef WAH_HAS_GNU_ASM
 WAH_IF_AVX512(
     // GCC rejects explicit k-register operands/clobbers for non-AVX-512 targets even when
     // the instruction itself is only reached via runtime dispatch. We therefore keep the

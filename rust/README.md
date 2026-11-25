@@ -3,7 +3,8 @@
 - `wah-sys`: raw FFI of `wah.h`, building the implementation from `../wah.h` (or `wahjit.h`, feature `jit`, default)
   with the `cc` crate; `WAH_SRC_DIR` points elsewhere. The build fails where `WAH_VERSION` of the header differs from
   that of the bindings (`src/lib.rs`), which then need updating for the API changed. The C is always built with at least `-O2`. On MSVC targets
-  `cl.exe` gives the switch dispatch of the interpreter; `CC=clang-cl` gives the faster tail-call dispatch.
+  `cl.exe` gives the switch dispatch of the interpreter; `CC=clang-cl` interprets about 20% faster (the JIT is the
+  same either way).
   `cargo test -p wah-sys` checks the Rust layouts against the C ones.
 - `wah`: a safe API close to Wasmtime's, for Aqueous (`crates/aqr-wasmrt`) to run on.
 
