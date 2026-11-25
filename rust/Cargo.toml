@@ -10,5 +10,5 @@ repository = "https://github.com/lifthrasiir/wah"
 rust-version = "1.85"
 
 [workspace.dependencies]
-wah-sys = { path = "wah-sys", version = "0.1.0" }
+wah-sys = { path = "wah-sys", version = "0.1.0", default-features = false }
 cc = "1.2"

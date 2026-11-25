@@ -36,7 +36,7 @@ extended-const = ["wah-sys/extended-const"]
 multi-memory = ["wah-sys/multi-memory"]
 
 [dependencies]
-wah-sys = { workspace = true, default-features = false }
+wah-sys = { workspace = true }
 
 [dev-dependencies]
 wat = "1"
