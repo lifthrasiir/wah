@@ -30,7 +30,10 @@ int main(void) {
             printf("memory %s\n", names[op]);
     }
     static const char *const basic[] = { "I32_CONST", "I64_CONST", "F32_CONST", "F64_CONST", "V128_CONST", "DROP",
-                                         "SELECT", "SELECT_T", "LOCAL_GET", "LOCAL_SET", "LOCAL_TEE" };
+                                         "SELECT", "SELECT_T", "LOCAL_GET", "LOCAL_SET", "LOCAL_TEE", "GLOBAL_GET",
+                                         "GLOBAL_SET", "GLOBAL_GET_INDIRECT", "GLOBAL_SET_INDIRECT", "REF_NULL",
+                                         "REF_IS_NULL", "REF_AS_NON_NULL", "REF_EQ", "REF_I31", "I31_GET_S",
+                                         "I31_GET_U" };
     for (size_t i = 0; i < sizeof(basic) / sizeof(*basic); i++) printf("basic %s\n", basic[i]);
     // Branches for both ways and some values kept and dropped, which are constant (see harness_branch)
     for (int k = 0; k < 3; k++) {

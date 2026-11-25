@@ -104,11 +104,13 @@ void harness_numeric(void) {
     }
 }
 
-// Constants, drop, select and locals: pops and pushes as the abstract machine, accessing only the local it names
+// Constants, drop, select, locals, globals and reference instructions: pop and push as the abstract machine,
+// accessing only the local or global that they name, or trap where they may
 void harness_basic(void) {
     uint16_t op = STEP_OP;
     put16(code, op);
-    uint32_t pop = 0, push = 0, imm = 0, nl = 0, idx = 0;
+    uint32_t pop = 0, push = 0, imm = 0, nl = 0, ng = 0, idx = 0;
+    bool may_trap = false, named = false;
     switch (op) {
         case WAH_OP_I32_CONST: case WAH_OP_F32_CONST: imm = 4; push = 1; break;
         case WAH_OP_I64_CONST: case WAH_OP_F64_CONST: imm = 8; push = 1; break;
@@ -117,34 +119,63 @@ void harness_basic(void) {
         case WAH_OP_SELECT: pop = 3; push = 1; break;
         case WAH_OP_SELECT_T: imm = 4; pop = 3; push = 1; break;
         case WAH_OP_LOCAL_GET: case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE:
-            imm = 4; nl = nondet_u32() % 4 + 1; idx = nondet_u32();
-            __CPROVER_assume(idx < nl); // Checked by wah_check_lowered_code
-            put32(code + 2, idx);
+            imm = 4; nl = nondet_u32() % 4 + 1; named = true;
             pop = op == WAH_OP_LOCAL_GET ? 0 : 1;
             push = op == WAH_OP_LOCAL_SET ? 0 : 1;
             break;
+        case WAH_OP_GLOBAL_GET: case WAH_OP_GLOBAL_SET: case WAH_OP_GLOBAL_GET_INDIRECT: case WAH_OP_GLOBAL_SET_INDIRECT:
+            imm = 4; ng = nondet_u32() % 4 + 1; named = true;
+            pop = op == WAH_OP_GLOBAL_SET || op == WAH_OP_GLOBAL_SET_INDIRECT;
+            push = !pop;
+            break;
+        case WAH_OP_REF_NULL: imm = 4; push = 1; break;
+        case WAH_OP_REF_IS_NULL: case WAH_OP_REF_I31: pop = 1; push = 1; break;
+        case WAH_OP_REF_AS_NON_NULL: case WAH_OP_I31_GET_S: case WAH_OP_I31_GET_U: pop = 1; push = 1; may_trap = true; break;
+        case WAH_OP_REF_EQ: pop = 2; push = 1; break;
         default: __CPROVER_assert(false, "a basic instruction"); return;
     }
-    for (uint32_t i = 0; i < imm && op != WAH_OP_LOCAL_GET && op != WAH_OP_LOCAL_SET && op != WAH_OP_LOCAL_TEE; i++)
-        code[2 + i] = (uint8_t)nondet_u32();
+    if (named) {
+        idx = nondet_u32();
+        __CPROVER_assume(idx < (nl ? nl : ng)); // Checked by wah_check_lowered_code
+        put32(code + 2, idx);
+    } else {
+        for (uint32_t i = 0; i < imm; i++) code[2 + i] = (uint8_t)nondet_u32();
+    }
     uint32_t len = 2 + imm;
     setup_code(len);
     __CPROVER_assert(decoded_len() == len, "decoded as long as it runs");
     wah_value_t *locals = new_stack(nl);
     frame.locals = locals;
+    // Globals, which imported mutable ones refer to by pointers to their cells
+    bool indirect = op == WAH_OP_GLOBAL_GET_INDIRECT || op == WAH_OP_GLOBAL_SET_INDIRECT;
+    wah_value_t *globals = new_stack(ng), *cell = new_stack(1);
+    if (indirect) globals[idx].ref = cell;
+    frame.frame_globals = globals;
     uint32_t n = pop > push ? pop : push;
     wah_value_t *stack = new_stack(n);
     wah_value_t top = pop ? stack[pop - 1] : nondet_value(), cond = stack[pop ? pop - 1 : 0];
-    wah_value_t a = stack[0], b = stack[pop > 1 ? 1 : 0], old = nl ? locals[idx] : top;
+    wah_value_t a = stack[0], b = stack[pop > 1 ? 1 : 0];
+    wah_value_t old = nl ? locals[idx] : ng ? (indirect ? *cell : globals[idx]) : top;
     ctx.sp = stack + pop;
     wah_error_t err = wah_run_interpreter(&ctx);
-    __CPROVER_assert(err == WAH_ERROR_TRAP && frame.bytecode_ip == code + len + 2, "falls through");
+    __CPROVER_assert(err == WAH_ERROR_TRAP, "only traps");
+    if (frame.bytecode_ip != code + len + 2) {
+        __CPROVER_assert(may_trap && frame.bytecode_ip == code + len, "traps where it may");
+        return;
+    }
     __CPROVER_assert(ctx.sp == stack + push, "pops and pushes as the abstract machine");
     if (op == WAH_OP_SELECT || op == WAH_OP_SELECT_T)
         __CPROVER_assert(memcmp(&stack[0], cond.i32 ? &a : &b, sizeof(wah_value_t)) == 0, "selects");
-    if (op == WAH_OP_LOCAL_GET) __CPROVER_assert(memcmp(&stack[0], &old, sizeof(wah_value_t)) == 0, "gets");
+    if (op == WAH_OP_LOCAL_GET || op == WAH_OP_GLOBAL_GET || op == WAH_OP_GLOBAL_GET_INDIRECT)
+        __CPROVER_assert(memcmp(&stack[0], &old, sizeof(wah_value_t)) == 0, "gets");
     if (op == WAH_OP_LOCAL_SET || op == WAH_OP_LOCAL_TEE)
         __CPROVER_assert(memcmp(&locals[idx], &top, sizeof(wah_value_t)) == 0, "sets");
+    if (op == WAH_OP_GLOBAL_SET || op == WAH_OP_GLOBAL_SET_INDIRECT)
+        __CPROVER_assert(memcmp(indirect ? cell : &globals[idx], &top, sizeof(wah_value_t)) == 0, "sets");
+    if (op == WAH_OP_REF_NULL) __CPROVER_assert(stack[0].ref == NULL, "pushes null");
+    if (op == WAH_OP_REF_IS_NULL) __CPROVER_assert(stack[0].i32 == (top.ref == NULL), "tests null");
+    if (op == WAH_OP_REF_EQ) __CPROVER_assert(stack[0].i32 == (a.ref == b.ref), "compares");
+    if (op == WAH_OP_REF_AS_NON_NULL) __CPROVER_assert(stack[0].ref == top.ref && top.ref != NULL, "keeps non-null");
 }
 
 // Branches: jump to their targets keeping the top `keep` values and dropping `drop` below them, or fall through.
