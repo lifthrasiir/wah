@@ -48,6 +48,22 @@ int main(void) {
         }
     }
     printf("branch IF -DSTEP_TAKEN=0\nbranch IF -DSTEP_TAKEN=1\nbranch ELSE -DSTEP_TAKEN=1\n");
+    // Calls with room for the callee or not (one value below the arguments, 8 values in all), and returns
+    for (int p = 0; p < 3; p++) {
+        for (int r = 0; r < 3; r++) {
+            for (int l = 0; l < 3; l++) {
+                int room = 8 - 1 - p - l;
+                printf("call CALL -DSTEP_PARAMS=%d -DSTEP_RESULTS=%d -DSTEP_LOCALS=%d -DSTEP_SLACK=%d\n", p, r, l, room);
+                printf("call CALL -DSTEP_PARAMS=%d -DSTEP_RESULTS=%d -DSTEP_LOCALS=%d -DSTEP_SLACK=%d\n", p, r, l, room + 1);
+            }
+        }
+    }
+    for (int r = 0; r < 3; r++) {
+        for (int d = 0; d < 3; d++) {
+            printf("return RETURN -DSTEP_RESULTS=%d -DSTEP_DROP=%d\n", r, d);
+            printf("return END -DSTEP_RESULTS=%d -DSTEP_DROP=%d\n", r, d);
+        }
+    }
     // br_table for each target and beyond, with some values kept and dropped
     for (int k = 0; k < 3; k++) {
         for (int d = 0; d < 3; d++) {

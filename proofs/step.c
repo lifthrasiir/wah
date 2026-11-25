@@ -329,3 +329,118 @@ void harness_br_table(void) {
     for (uint32_t i = 0; i < keep; i++)
         __CPROVER_assert(memcmp(&stack[i], &kept[i], sizeof(wah_value_t)) == 0, "keeps the top values");
 }
+
+#ifndef STEP_PARAMS // Only for harness_call and harness_return
+#define STEP_PARAMS 0
+#endif
+#ifndef STEP_RESULTS
+#define STEP_RESULTS 0
+#endif
+#ifndef STEP_LOCALS
+#define STEP_LOCALS 0
+#endif
+#ifndef STEP_SLACK // Operands of the callee beyond its locals, constant as the stack overflows or not
+#define STEP_SLACK 0
+#endif
+
+// The unified stack: values grow upward from vals, frames downward from the end, one for the caller already there.
+// Values beyond vals run into the frames, which the interpreter checks before pushing a frame.
+typedef struct { wah_value_t vals[8]; wah_call_frame_t frames[2]; } step_stack_t;
+static wah_module_t mod;
+static uint8_t callee_code[8];
+
+// Calls of a wasm function of STEP_PARAMS params, STEP_RESULTS results and STEP_LOCALS locals: the params become the
+// first locals of a new frame, followed by zeroed locals, which starts at the beginning of the callee with the return
+// address stored in the caller; or the stack overflows when the callee may not have room for its locals and operands
+void harness_call(void) {
+    put16(code, WAH_OP_CALL);
+    put32(code + 2, 0);
+    uint32_t len = 6;
+    setup_code(len);
+    __CPROVER_assert(decoded_len() == len, "decoded as long as it runs");
+    for (uint32_t off = 0; off < sizeof(callee_code); off += 2) put16(callee_code + off, WAH_OP_UNREACHABLE);
+    static wah_func_type_t type;
+    static uint32_t type_idx;
+    static wah_code_body_t callee;
+    static wah_function_holder_t fn;
+    type.param_count = STEP_PARAMS;
+    type.result_count = STEP_RESULTS;
+    uint32_t slack = STEP_SLACK;
+    callee.local_count = STEP_LOCALS;
+    callee.max_frame_slots = STEP_LOCALS + slack;
+    callee.parsed_code.bytecode = callee_code;
+    callee.parsed_code.bytecode_size = sizeof(callee_code);
+    mod.types = &type;
+    mod.function_type_indices = &type_idx;
+    mod.code_bodies = &callee;
+    fn.func.is_host = false;
+    fn.func.local_idx = 0;
+    ctx.module = &mod;
+    ctx.function_table = &fn;
+    ctx.function_table_count = 1;
+    static step_stack_t st_; // Static, since CBMC loses frame pointers stored in dynamic objects
+    step_stack_t *st = &st_;
+    for (uint32_t i = 0; i < 8; i++) st->vals[i] = nondet_value();
+    wah_value_t args[STEP_PARAMS + 1];
+    for (uint32_t i = 0; i < STEP_PARAMS; i++) args[i] = st->vals[1 + i];
+    wah_call_frame_t *caller = &st->frames[1];
+    *caller = frame;
+    caller->module = &mod;
+    caller->frame_function_table = &fn;
+    caller->frame_function_table_count = 1;
+    ctx.frame_ptr = caller;
+    ctx.sp = st->vals + 1 + STEP_PARAMS; // One value of the caller below the arguments
+    wah_error_t err = wah_run_interpreter(&ctx);
+    if (1 + STEP_PARAMS + STEP_LOCALS + slack > 8) {
+        __CPROVER_assert(err == WAH_ERROR_STACK_OVERFLOW, "overflows without room");
+        __CPROVER_assert(ctx.call_depth == 1 && ctx.frame_ptr == caller, "pushes no frame");
+        return;
+    }
+    __CPROVER_assert(err == WAH_ERROR_TRAP, "stops at unreachable");
+    __CPROVER_assert(ctx.call_depth == 2 && ctx.frame_ptr == &st->frames[0], "pushes a frame");
+    wah_call_frame_t *f = &st->frames[0];
+    __CPROVER_assert(caller->bytecode_ip == code + len, "stores the return address");
+    __CPROVER_assert(f->bytecode_ip == callee_code + 2, "starts at the callee");
+    __CPROVER_assert(f->locals == st->vals + 1 && f->result_count == STEP_RESULTS, "takes the arguments as locals");
+    __CPROVER_assert(f->code == &callee && f->frame_ctx == &ctx && f->frame_function_table == &fn, "binds the callee");
+    __CPROVER_assert(ctx.sp == f->locals + STEP_PARAMS + STEP_LOCALS, "pushes the locals");
+    for (uint32_t i = 0; i < STEP_PARAMS; i++)
+        __CPROVER_assert(memcmp(&f->locals[i], &args[i], sizeof(wah_value_t)) == 0, "keeps the arguments");
+    wah_value_t zero;
+    memset(&zero, 0, sizeof(zero));
+    for (uint32_t i = STEP_PARAMS; i < STEP_PARAMS + STEP_LOCALS; i++)
+        __CPROVER_assert(memcmp(&f->locals[i], &zero, sizeof(wah_value_t)) == 0, "zeroes the other locals");
+}
+
+// return and the end of a function: move STEP_RESULTS results from the top of the stack to the locals of the frame,
+// dropping STEP_DROP values below them, pop the frame and continue at the return address of the caller
+void harness_return(void) {
+    uint16_t op = STEP_OP;
+    put16(code, op);
+    uint32_t len = 2;
+    setup_code(len);
+    __CPROVER_assert(decoded_len() == len, "decoded as long as it runs");
+    for (uint32_t off = 0; off < sizeof(callee_code); off += 2) put16(callee_code + off, WAH_OP_UNREACHABLE);
+    step_stack_t *st = malloc(sizeof(step_stack_t));
+    __CPROVER_assume(st != NULL);
+    for (uint32_t i = 0; i < 8; i++) st->vals[i] = nondet_value();
+    wah_value_t below = st->vals[0], results[STEP_RESULTS + 1];
+    for (uint32_t i = 0; i < STEP_RESULTS; i++) results[i] = st->vals[1 + STEP_DROP + i];
+    wah_call_frame_t *caller = &st->frames[1], *f = &st->frames[0];
+    *caller = frame;
+    caller->bytecode_ip = callee_code; // The return address
+    *f = frame;
+    f->locals = st->vals + 1;
+    f->result_count = STEP_RESULTS;
+    ctx.frame_ptr = f;
+    ctx.call_depth = 2;
+    ctx.sp = st->vals + 1 + STEP_DROP + STEP_RESULTS;
+    wah_error_t err = wah_run_interpreter(&ctx);
+    __CPROVER_assert(err == WAH_ERROR_TRAP, "stops at unreachable");
+    __CPROVER_assert(ctx.call_depth == 1 && ctx.frame_ptr == caller, "pops the frame");
+    __CPROVER_assert(caller->bytecode_ip == callee_code + 2, "continues at the return address");
+    __CPROVER_assert(ctx.sp == st->vals + 1 + STEP_RESULTS, "leaves the results in place of the locals");
+    __CPROVER_assert(memcmp(&st->vals[0], &below, sizeof(wah_value_t)) == 0, "keeps the caller's values");
+    for (uint32_t i = 0; i < STEP_RESULTS; i++)
+        __CPROVER_assert(memcmp(&st->vals[1 + i], &results[i], sizeof(wah_value_t)) == 0, "moves the results");
+}
