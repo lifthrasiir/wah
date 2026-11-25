@@ -16,7 +16,7 @@ use core::ffi::{c_char, c_int, c_void};
 use core::marker::{PhantomData, PhantomPinned};
 
 /// The version of the WAH API this crate was written for (`WAH_VERSION`).
-pub const WAH_VERSION: i32 = -2675;
+pub const WAH_VERSION: i32 = 2690;
 
 pub type wah_error_t = c_int;
 pub const WAH_OK: wah_error_t = 0;
