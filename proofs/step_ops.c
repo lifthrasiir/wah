@@ -93,6 +93,18 @@ int main(void) {
     printf("gc ARRAY_LEN\n");
     printf("internal POLL\ninternal METER -DSTEP_TAKEN=0\ninternal METER -DSTEP_TAKEN=1\n"
            "internal TICK -DSTEP_INDEX=0\ninternal TICK -DSTEP_INDEX=1\ninternal TICK -DSTEP_INDEX=2\n");
+    // Casts of null and i31 references against heap types that i31s have or not
+    static const char *heaps[] = {"WAH_TYPE_ANY", "WAH_TYPE_I31", "WAH_TYPE_STRUCT"};
+    static const char *casts[] = {"REF_TEST", "REF_TEST_NULL", "REF_CAST", "REF_CAST_NULL"};
+    for (int r = 0; r < 2; r++) {
+        for (int h = 0; h < 3; h++) {
+            for (int c = 0; c < 4; c++) printf("cast %s -DSTEP_REF=%d -DSTEP_HEAP=%s\n", casts[c], r, heaps[h]);
+            for (int f = 0; f < 2; f++) {
+                printf("cast BR_ON_CAST -DSTEP_REF=%d -DSTEP_HEAP=%s -DSTEP_TAKEN=%d -DSTEP_DROP=1\n", r, heaps[h], f);
+                printf("cast BR_ON_CAST_FAIL -DSTEP_REF=%d -DSTEP_HEAP=%s -DSTEP_TAKEN=%d -DSTEP_DROP=1\n", r, heaps[h], f);
+            }
+        }
+    }
     // br_table for each target and beyond, with some values kept and dropped
     for (int k = 0; k < 3; k++) {
         for (int d = 0; d < 3; d++) {

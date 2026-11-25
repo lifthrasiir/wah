@@ -633,3 +633,56 @@ void harness_internal(void) {
         else __CPROVER_assert(ctx.fuel == fuel - (op == WAH_OP_METER ? 5 : 1), "charges fuel");
     }
 }
+
+#ifndef STEP_REF // Only for harness_cast: the reference is null (0) or an i31 (1)
+#define STEP_REF 0
+#endif
+#ifndef STEP_HEAP // Only for harness_cast: the heap type to test against
+#define STEP_HEAP WAH_TYPE_ANY
+#endif
+
+// ref.test, ref.cast and br_on_cast(_fail) (with STEP_TAKEN for the null flag): push whether the reference has the
+// heap type (as wah_ref_test_heap_type says, or null when allowed), keep it or trap, or take the branch with the
+// reference kept as the abstract machine does. References and heap types are constant, so that outcomes are.
+void harness_cast(void) {
+    uint16_t op = STEP_OP;
+    put16(code, op);
+    bool br = op == WAH_OP_BR_ON_CAST || op == WAH_OP_BR_ON_CAST_FAIL;
+    bool test = op == WAH_OP_REF_TEST || op == WAH_OP_REF_TEST_NULL;
+    bool nullable = op == WAH_OP_REF_TEST_NULL || op == WAH_OP_REF_CAST_NULL || (br && STEP_TAKEN);
+    __CPROVER_assert(br || test || op == WAH_OP_REF_CAST || op == WAH_OP_REF_CAST_NULL, "a cast");
+    uint32_t len, t = 0, keep = 1, drop = STEP_DROP;
+    if (br) {
+        len = 19; t = target_after(len);
+        code[2] = STEP_TAKEN ? 0x02 : 0; // The null flag of the target type
+        put32(code + 3, t); put32(code + 7, (uint32_t)STEP_HEAP); put32(code + 11, keep); put32(code + 15, drop);
+    } else {
+        len = 6;
+        put32(code + 2, (uint32_t)STEP_HEAP);
+    }
+    setup_code(len);
+    __CPROVER_assert(decoded_len() == len, "decoded as long as it runs");
+    uint32_t n = br ? drop + keep : 1;
+    wah_value_t *stack = new_stack(n);
+    void *ref = STEP_REF ? wah_ref_make_i31(7) : NULL;
+    stack[n - 1] = (wah_value_t){.ref = ref};
+    wah_value_t below = stack[0];
+    bool has = ref ? wah_ref_test_heap_type(&ctx, stack[n - 1], STEP_HEAP) : nullable;
+    ctx.sp = stack + n;
+    wah_error_t err = wah_run_interpreter(&ctx);
+    __CPROVER_assert(err == WAH_ERROR_TRAP, "only traps");
+    if (test) {
+        __CPROVER_assert(frame.bytecode_ip == code + len + 2 && ctx.sp == stack + 1, "pops and pushes");
+        __CPROVER_assert(stack[0].i32 == has, "pushes the test");
+    } else if (!br) {
+        if (!has) { __CPROVER_assert(frame.bytecode_ip == code + len, "traps without the type"); return; }
+        __CPROVER_assert(frame.bytecode_ip == code + len + 2 && ctx.sp == stack + 1 && stack[0].ref == ref, "keeps it");
+    } else if (has == (op == WAH_OP_BR_ON_CAST)) {
+        __CPROVER_assert(frame.bytecode_ip == code + t + 2, "jumps to the target");
+        __CPROVER_assert(ctx.sp == stack + keep && stack[0].ref == ref, "keeps the reference");
+    } else {
+        __CPROVER_assert(frame.bytecode_ip == code + len + 2, "falls through");
+        __CPROVER_assert(ctx.sp == stack + n && stack[n - 1].ref == ref, "keeps the stack");
+        if (n > 1) __CPROVER_assert(memcmp(&stack[0], &below, sizeof(wah_value_t)) == 0, "keeps the values below");
+    }
+}
