@@ -235,15 +235,24 @@ $(CBMC_TARGETS): cbmc_%: FORCE
 CBMC_STEP_DIR := proofs/.step
 
 .PHONY: cbmc-step
+# Each run is killed beyond CBMC_STEP_SECS seconds or CBMC_STEP_MB megabytes (by proofs/guard.pl), as runs that go
+# wrong can take all memory and hang the machine (runs take under 800 MB). CBMC_STEP_JOBS runs at once, by default
+# as many as cores and two thirds of the memory allow.
+CBMC_STEP_SECS ?= 300
+CBMC_STEP_MB ?= 1500
+CBMC_STEP_RAM_MB := $(shell (sysctl -n hw.memsize 2>/dev/null || awk '/MemTotal/ {print $$2 * 1024}' /proc/meminfo) | \
+	awk '{print int($$1 / 1048576)}')
+CBMC_STEP_JOBS ?= $(shell n=$$(getconf _NPROCESSORS_ONLN); m=$$(( $(CBMC_STEP_RAM_MB) * 2 / 3 / $(CBMC_STEP_MB) )); \
+	[ $$m -lt 1 ] && m=1; [ $$m -lt $$n ] && n=$$m; echo $$n)
 cbmc-step:
 	@echo "## Proving interpreter handlers against the abstract machine..."
 	@mkdir -p $(CBMC_STEP_DIR)
 	@$(CC) -O1 -w -o $(CBMC_STEP_DIR)/ops proofs/step_ops.c -lm
-	@$(CBMC_STEP_DIR)/ops | xargs -P $$(getconf _NPROCESSORS_ONLN) -L 1 sh -c \
+	@$(CBMC_STEP_DIR)/ops | xargs -P $(CBMC_STEP_JOBS) -L 1 sh -c \
 		'h=$$0; op=$$1; name=$$(echo "$$*" | tr " =" "__"); shift; \
-		perl -e "alarm 300; exec @ARGV" $(CBMC) proofs/step.c -DSTEP_OP=WAH_OP_$$op "$$@" --function harness_$$h \
-			--unwind 17 $(CBMC_FLAGS) \
-			> $(CBMC_STEP_DIR)/$$name.log 2>&1 || { echo "harness_$$h for $$op $$*:"; grep FAILURE $(CBMC_STEP_DIR)/$$name.log; exit 1; }'
+		proofs/guard.pl $(CBMC_STEP_SECS) $(CBMC_STEP_MB) $(CBMC) proofs/step.c -DSTEP_OP=WAH_OP_$$op "$$@" \
+			--function harness_$$h --unwind 17 $(CBMC_FLAGS) > $(CBMC_STEP_DIR)/$$name.log 2>&1 || \
+			{ echo "harness_$$h for $$op $$*:"; grep -E "FAILURE|^guard:" $(CBMC_STEP_DIR)/$$name.log; exit 1; }'
 	@echo "## All $$($(CBMC_STEP_DIR)/ops | wc -l | tr -d ' ') runs of handlers move as the abstract machine does."
 
 # --- Lean proofs ---

@@ -119,17 +119,17 @@ void harness_basic(void) {
         case WAH_OP_SELECT: pop = 3; push = 1; break;
         case WAH_OP_SELECT_T: imm = 4; pop = 3; push = 1; break;
         case WAH_OP_LOCAL_GET: case WAH_OP_LOCAL_SET: case WAH_OP_LOCAL_TEE:
-            imm = 4; nl = nondet_u32() % 4 + 1; named = true;
+            imm = 4; nl = 4; named = true; // Nondet counts take gigabytes
             pop = op == WAH_OP_LOCAL_GET ? 0 : 1;
             push = op == WAH_OP_LOCAL_SET ? 0 : 1;
             break;
         case WAH_OP_GLOBAL_GET: case WAH_OP_GLOBAL_SET: case WAH_OP_GLOBAL_GET_INDIRECT: case WAH_OP_GLOBAL_SET_INDIRECT:
-            imm = 4; ng = nondet_u32() % 4 + 1; named = true;
+            imm = 4; ng = 4; named = true;
             pop = op == WAH_OP_GLOBAL_SET || op == WAH_OP_GLOBAL_SET_INDIRECT;
             push = !pop;
             break;
         case WAH_OP_REF_NULL: imm = 4; push = 1; break;
-        case WAH_OP_REF_FUNC: imm = 4; nf = nondet_u32() % 4 + 1; named = true; push = 1; break;
+        case WAH_OP_REF_FUNC: imm = 4; nf = 4; named = true; push = 1; break;
         case WAH_OP_REF_IS_NULL: case WAH_OP_REF_I31: pop = 1; push = 1; break;
         case WAH_OP_REF_AS_NON_NULL: case WAH_OP_I31_GET_S: case WAH_OP_I31_GET_U: pop = 1; push = 1; may_trap = true; break;
         case WAH_OP_REF_EQ: pop = 2; push = 1; break;
@@ -273,7 +273,7 @@ void harness_memory(void) {
                      "a memory instruction");
     bool mem0 = in.mem == WAH_CHECK_MEM_I32_MEM0 || in.mem == WAH_CHECK_MEM_I64_MEM0, lane_load;
     uint32_t lanes = mem_lanes(in.base, &lane_load), len = in.len;
-    uint32_t count = nondet_u32() % 2 + 1, memidx = mem0 ? 0 : nondet_u32() % count;
+    uint32_t count = mem0 ? 1 : 2, memidx = mem0 ? 0 : nondet_u32() % count; // A nondet count takes gigabytes
     uint32_t p = 2;
     if (!mem0) { put32(code + p, memidx); p += 4; }
     for (uint32_t i = 0; i < 8; i++) code[p + i] = (uint8_t)nondet_u32();
@@ -460,7 +460,7 @@ void harness_table(void) {
     bool set = op == WAH_OP_TABLE_SET || op == WAH_OP_TABLE_SET_i64;
     bool i64 = op == WAH_OP_TABLE_GET_i64 || op == WAH_OP_TABLE_SET_i64 || op == WAH_OP_TABLE_SIZE_i64;
     __CPROVER_assert(get || set || op == WAH_OP_TABLE_SIZE || op == WAH_OP_TABLE_SIZE_i64, "a table instruction");
-    uint32_t count = nondet_u32() % 2 + 1, tidx = nondet_u32() % count, len = 6;
+    uint32_t count = 2, tidx = nondet_u32() % count, len = 6; // A nondet count takes gigabytes
     put32(code + 2, tidx);
     setup_code(len);
     __CPROVER_assert(decoded_len() == len, "decoded as long as it runs");
@@ -684,5 +684,178 @@ void harness_cast(void) {
         __CPROVER_assert(frame.bytecode_ip == code + len + 2, "falls through");
         __CPROVER_assert(ctx.sp == stack + n && stack[n - 1].ref == ref, "keeps the stack");
         if (n > 1) __CPROVER_assert(memcmp(&stack[0], &below, sizeof(wah_value_t)) == 0, "keeps the values below");
+    }
+}
+
+#ifndef STEP_DST // Only for harness_fill: the range to fill, in or out of the 4 items there
+#define STEP_DST 0
+#endif
+#ifndef STEP_COUNT
+#define STEP_COUNT 0
+#endif
+
+// table.fill and memory.fill (of 32- and 64-bit tables and memories) of STEP_COUNT items from STEP_DST in 4 items:
+// fill the range or trap out of bounds without filling anything; with STEP_TAKEN, under fuel metering with no fuel
+// left (built with WAH_BULK_ITEMS_PER_FUEL=1, so that one item is affordable), fill a prefix and suspend at the
+// instruction with its ref map and its operands for the rest, so that retrying it fills the range. The range is
+// constant, since symbolic ones unroll the loops of the fill into formulas of gigabytes.
+void harness_fill(void) {
+    uint16_t op = STEP_OP;
+    put16(code, op);
+    bool table = op == WAH_OP_TABLE_FILL || op == WAH_OP_TABLE_FILL_i64;
+    bool i64 = op == WAH_OP_TABLE_FILL_i64 || op == WAH_OP_MEMORY_FILL_i64;
+    __CPROVER_assert(table || op == WAH_OP_MEMORY_FILL || op == WAH_OP_MEMORY_FILL_i64, "a fill");
+    uint32_t map = nondet_u32(), len = 10;
+    put32(code + 2, 0);
+    put32(code + 6, map);
+    setup_code(len);
+    __CPROVER_assert(decoded_len() == len, "decoded as long as it runs");
+    ctx.module = &mod;
+    mod.fuel_metering = STEP_TAKEN;
+    ctx.fuel = 0;
+    enum { SIZE = 4 };
+    static wah_value_t entries[SIZE], orig_entries[SIZE];
+    static uint8_t bytes[SIZE], orig_bytes[SIZE];
+    for (uint32_t i = 0; i < SIZE; i++) {
+        entries[i] = orig_entries[i] = nondet_value();
+        bytes[i] = orig_bytes[i] = (uint8_t)nondet_u32();
+    }
+    static wah_table_inst_t tab;
+    static wah_memory_inst_t mem;
+    tab.entries = entries; tab.size = SIZE;
+    mem.data = bytes; mem.size = SIZE;
+    ctx.tables = &tab; ctx.table_count = 1;
+    ctx.memories = &mem; ctx.memory_count = 1; ctx.memory_base = bytes; ctx.memory_size = SIZE;
+    wah_value_t *stack = new_stack(3);
+    uint64_t dst = STEP_DST, n = STEP_COUNT;
+    if (i64) { stack[0] = (wah_value_t){.i64 = (int64_t)dst}; stack[2] = (wah_value_t){.i64 = (int64_t)n}; }
+    else { stack[0] = (wah_value_t){.i32 = (int32_t)dst}; stack[2] = (wah_value_t){.i32 = (int32_t)n}; }
+    wah_value_t val = stack[1];
+    uint8_t byte = (uint8_t)val.i32;
+    bool in = dst <= SIZE && n <= SIZE - dst;
+    ctx.sp = stack + 3;
+    wah_error_t err = wah_run_interpreter(&ctx);
+    if (!in) {
+        __CPROVER_assert(err == (table ? WAH_ERROR_TRAP : WAH_ERROR_MEMORY_OUT_OF_BOUNDS), "traps out of bounds");
+        for (uint32_t i = 0; i < SIZE; i++) {
+            __CPROVER_assert(memcmp(&entries[i], &orig_entries[i], sizeof(wah_value_t)) == 0 &&
+                             bytes[i] == orig_bytes[i], "fills nothing");
+        }
+        return;
+    }
+    // The items filled: all of them, or those before the operands pushed back for the rest
+    uint64_t done = n;
+    if (err != WAH_ERROR_TRAP) {
+        __CPROVER_assert(STEP_TAKEN && err == WAH_STATUS_FUEL_EXHAUSTED, "suspends only without fuel");
+        __CPROVER_assert(frame.bytecode_ip == code && frame.poll_idx == map, "to retry it with its ref map");
+        __CPROVER_assert(ctx.sp == stack + 3, "with its operands");
+        uint64_t rest = i64 ? (uint64_t)stack[2].i64 : (uint32_t)stack[2].i32;
+        uint64_t at = i64 ? (uint64_t)stack[0].i64 : (uint32_t)stack[0].i32;
+        __CPROVER_assert(rest > 0 && rest < n && at == dst + (n - rest), "for the rest");
+        __CPROVER_assert(table ? memcmp(&stack[1], &val, sizeof(val)) == 0 : (uint8_t)stack[1].i32 == byte,
+                         "of the same value");
+        done = n - rest;
+    } else {
+        __CPROVER_assert(frame.bytecode_ip == code + len + 2 && ctx.sp == stack, "pops the operands");
+    }
+    for (uint32_t i = 0; i < SIZE; i++) {
+        bool filled = i >= dst && i < dst + done;
+        if (table) {
+            __CPROVER_assert(memcmp(&entries[i], filled ? &val : &orig_entries[i], sizeof(wah_value_t)) == 0,
+                             "fills only the range");
+        } else {
+            __CPROVER_assert(bytes[i] == (filled ? byte : orig_bytes[i]), "fills only the range");
+        }
+    }
+}
+
+#ifndef STEP_SRC // Only for harness_copy, with STEP_DST and STEP_COUNT
+#define STEP_SRC 0
+#endif
+
+static wah_value_t step_int(bool i64, uint64_t v) {
+    return i64 ? (wah_value_t){.i64 = (int64_t)v} : (wah_value_t){.i32 = (int32_t)v};
+}
+static uint64_t step_uint(bool i64, wah_value_t v) { return i64 ? (uint64_t)v.i64 : (uint32_t)v.i32; }
+
+// table.copy and memory.copy (of all address kinds) of STEP_COUNT items from STEP_SRC to STEP_DST within 4 items
+// (overlapping ranges included): copy as if through a buffer or trap out of bounds without copying anything; with
+// STEP_TAKEN (and WAH_BULK_ITEMS_PER_FUEL=1, as for harness_fill), copy a part (the prefix, or the suffix when
+// copying backward for overlaps) and suspend at the instruction with its ref map and its operands for the rest
+void harness_copy(void) {
+    uint16_t op = STEP_OP;
+    put16(code, op);
+    bool table = op == WAH_OP_TABLE_COPY || op == WAH_OP_TABLE_COPY_i32_to_i64 || op == WAH_OP_TABLE_COPY_i64_to_i32 ||
+                 op == WAH_OP_TABLE_COPY_i64_to_i64;
+    bool src64 = op == WAH_OP_TABLE_COPY_i64_to_i32 || op == WAH_OP_TABLE_COPY_i64_to_i64 ||
+                 op == WAH_OP_MEMORY_COPY_i64_to_i32 || op == WAH_OP_MEMORY_COPY_i64_to_i64;
+    bool dst64 = op == WAH_OP_TABLE_COPY_i32_to_i64 || op == WAH_OP_TABLE_COPY_i64_to_i64 ||
+                 op == WAH_OP_MEMORY_COPY_i32_to_i64 || op == WAH_OP_MEMORY_COPY_i64_to_i64;
+    bool n64 = src64 && dst64;
+    __CPROVER_assert(table || op == WAH_OP_MEMORY_COPY || op == WAH_OP_MEMORY_COPY_i32_to_i64 ||
+                     op == WAH_OP_MEMORY_COPY_i64_to_i32 || op == WAH_OP_MEMORY_COPY_i64_to_i64, "a copy");
+    uint32_t map = nondet_u32(), len = 14;
+    put32(code + 2, 0);
+    put32(code + 6, 0);
+    put32(code + 10, map);
+    setup_code(len);
+    __CPROVER_assert(decoded_len() == len, "decoded as long as it runs");
+    ctx.module = &mod;
+    mod.fuel_metering = STEP_TAKEN;
+    ctx.fuel = 0;
+    enum { SIZE = 4 };
+    static wah_value_t entries[SIZE], orig_entries[SIZE];
+    static uint8_t bytes[SIZE], orig_bytes[SIZE];
+    for (uint32_t i = 0; i < SIZE; i++) {
+        entries[i] = orig_entries[i] = nondet_value();
+        bytes[i] = orig_bytes[i] = (uint8_t)nondet_u32();
+    }
+    static wah_table_inst_t tab;
+    static wah_memory_inst_t mem;
+    tab.entries = entries; tab.size = SIZE;
+    mem.data = bytes; mem.size = SIZE;
+    ctx.tables = &tab; ctx.table_count = 1;
+    ctx.memories = &mem; ctx.memory_count = 1; ctx.memory_base = bytes; ctx.memory_size = SIZE;
+    wah_value_t *stack = new_stack(3);
+    uint64_t dst = STEP_DST, src = STEP_SRC, n = STEP_COUNT;
+    stack[0] = step_int(dst64, dst); stack[1] = step_int(src64, src); stack[2] = step_int(n64, n);
+    bool in = dst <= SIZE && n <= SIZE - dst && src <= SIZE && n <= SIZE - src;
+    ctx.sp = stack + 3;
+    wah_error_t err = wah_run_interpreter(&ctx);
+    if (!in) {
+        __CPROVER_assert(err == (table ? WAH_ERROR_TRAP : WAH_ERROR_MEMORY_OUT_OF_BOUNDS), "traps out of bounds");
+        for (uint32_t i = 0; i < SIZE; i++) {
+            __CPROVER_assert(memcmp(&entries[i], &orig_entries[i], sizeof(wah_value_t)) == 0 &&
+                             bytes[i] == orig_bytes[i], "copies nothing");
+        }
+        return;
+    }
+    // The items copied: all of them, or a prefix (a suffix backward) beside the operands pushed back for the rest
+    bool backward = dst > src && dst < src + n;
+    uint64_t lo = 0, hi = n;
+    if (err != WAH_ERROR_TRAP) {
+        __CPROVER_assert(STEP_TAKEN && err == WAH_STATUS_FUEL_EXHAUSTED, "suspends only without fuel");
+        __CPROVER_assert(frame.bytecode_ip == code && frame.poll_idx == map, "to retry it with its ref map");
+        __CPROVER_assert(ctx.sp == stack + 3, "with its operands");
+        uint64_t rest = step_uint(n64, stack[2]), at = step_uint(dst64, stack[0]), from = step_uint(src64, stack[1]);
+        __CPROVER_assert(rest > 0 && rest < n, "for the rest");
+        if (backward) {
+            __CPROVER_assert(at == dst && from == src, "of the prefix");
+            lo = rest;
+        } else {
+            __CPROVER_assert(at == dst + (n - rest) && from == src + (n - rest), "of the suffix");
+            hi = n - rest;
+        }
+    } else {
+        __CPROVER_assert(frame.bytecode_ip == code + len + 2 && ctx.sp == stack, "pops the operands");
+    }
+    for (uint32_t i = 0; i < SIZE; i++) {
+        bool copied = i >= dst + lo && i < dst + hi;
+        uint32_t from = copied ? (uint32_t)(src + (i - dst)) : i;
+        if (table) {
+            __CPROVER_assert(memcmp(&entries[i], &orig_entries[from], sizeof(wah_value_t)) == 0, "copies the range");
+        } else {
+            __CPROVER_assert(bytes[i] == orig_bytes[from], "copies the range");
+        }
     }
 }

@@ -105,6 +105,29 @@ int main(void) {
             }
         }
     }
+    // Fills in and out of 4 items, to the end or suspended by fuel with one item affordable
+    static const char *fills[] = {"TABLE_FILL", "TABLE_FILL_i64", "MEMORY_FILL", "MEMORY_FILL_i64"};
+    static const int ranges[][2] = {{0, 0}, {1, 2}, {0, 4}, {4, 0}, {3, 2}, {5, 0}};
+    for (int f = 0; f < 4; f++) {
+        for (int r = 0; r < 6; r++) {
+            printf("fill %s -DSTEP_DST=%d -DSTEP_COUNT=%d -DSTEP_TAKEN=0\n", fills[f], ranges[r][0], ranges[r][1]);
+            printf("fill %s -DSTEP_DST=%d -DSTEP_COUNT=%d -DSTEP_TAKEN=1 -DWAH_BULK_ITEMS_PER_FUEL=1\n", fills[f],
+                   ranges[r][0], ranges[r][1]);
+        }
+    }
+    // Copies within 4 items, overlapping forward and backward or out of bounds, to the end or suspended
+    static const char *copies[] = {"TABLE_COPY", "TABLE_COPY_i32_to_i64", "TABLE_COPY_i64_to_i32",
+                                   "TABLE_COPY_i64_to_i64", "MEMORY_COPY", "MEMORY_COPY_i32_to_i64",
+                                   "MEMORY_COPY_i64_to_i32", "MEMORY_COPY_i64_to_i64"};
+    static const int cranges[][3] = {{0, 1, 3}, {1, 0, 3}, {0, 0, 4}, {2, 0, 2}, {3, 0, 2}, {0, 3, 2}};
+    for (int c = 0; c < 8; c++) {
+        for (int r = 0; r < 6; r++) {
+            printf("copy %s -DSTEP_DST=%d -DSTEP_SRC=%d -DSTEP_COUNT=%d -DSTEP_TAKEN=0\n", copies[c],
+                   cranges[r][0], cranges[r][1], cranges[r][2]);
+            printf("copy %s -DSTEP_DST=%d -DSTEP_SRC=%d -DSTEP_COUNT=%d -DSTEP_TAKEN=1 -DWAH_BULK_ITEMS_PER_FUEL=1\n",
+                   copies[c], cranges[r][0], cranges[r][1], cranges[r][2]);
+        }
+    }
     // br_table for each target and beyond, with some values kept and dropped
     for (int k = 0; k < 3; k++) {
         for (int d = 0; d < 3; d++) {
