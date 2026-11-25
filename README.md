@@ -2,7 +2,9 @@
 
 This is **WAH**, a [WebAssembly](https://webassembly.org/) interpreter implemented in a single C header file. It implements the WebAssembly 3.0 [deterministic profile](https://webassembly.github.io/spec/core/appendix/profiles.html#deterministic-profile-small-mathrm-det) -- GC, exception handling, relaxed SIMD, multi-memory, memory64/table64, tail calls, extended const, and everything else in the WASM 2.0/3.0 lineup -- and is designed to run untrusted modules in production with predictable resource bounds.
 
-WAH is a single C99 header (~19k lines). The public API is also C++11-compatible. There are no external dependencies beyond the standard library.
+WAH is a single C99 header (~20k lines). The public API is also C++11-compatible. There are no external dependencies beyond the standard library. An optional second header, `wahjit.h`, adds an experimental baseline JIT compiler for x86-64 and AArch64 without changing the API, and `rust/` provides Rust bindings.
+
+Much of WAH is formally checked as well: CBMC proofs cover the decoders, allocation wrappers, resource accounting and every interpreter handler, and Lean 4 proofs show the type system and the checker of the internal bytecode sound against the spec (see [Verification](#verification)).
 
 ## Quick Start
 
@@ -74,7 +76,9 @@ wah_link_module(&ctx, "env", &host);  // satisfies (import "env" "print" ...)
 wah_instantiate(&ctx);
 ```
 
-See `tests/test_export_api.c` and `tests/test_linkage.c` for fuller examples.
+Host functions can also suspend their activation with `wah_suspend` (the call is retried with the same parameters on `wah_resume`), reach per-context state with `wah_exec_userdata`, and read or write the memories of the instantiated context with `wah_memory_data`. Memories may be supplied by the host through `wah_exec_options_t::memory_creator`, and their growth accounted by `wah_set_memory_grow_hook`. A host module can be shared by many exec contexts.
+
+See `tests/test_export_api.c`, `tests/test_linkage.c` and `tests/test_embedding.c` for fuller examples.
 
 ### Sandboxing untrusted modules
 
@@ -106,7 +110,19 @@ Fuel exhaustion and deadline expiration surface as `WAH_STATUS_FUEL_EXHAUSTED` /
 
 CI exercises all eight configurations on every push. Define `WAH_FORCE_PORTABLE` for a scalar-only build that runs anywhere with a C99 compiler.
 
-The interpreter automatically picks the fastest available dispatch strategy: musttail tail calls (Clang 13+, GCC 15+), then computed goto (GCC/Clang), then a portable `switch` (default on MSVC). Override with `WAH_FORCE_MUSTTAIL` / `WAH_FORCE_COMPUTED_GOTO` / `WAH_FORCE_SWITCH`.
+The interpreter automatically picks the fastest available dispatch strategy: musttail tail calls with the `preserve_none` calling convention (Clang 19+ and GCC 16+ on x86-64 and AArch64, except GCC on Windows), then computed goto (GCC/Clang), then a portable `switch` (default on MSVC). Override with `WAH_FORCE_MUSTTAIL` / `WAH_FORCE_COMPUTED_GOTO` / `WAH_FORCE_SWITCH`.
+
+## Optional JIT
+
+Include `wahjit.h` instead of `wah.h` in the file defining `WAH_IMPLEMENTATION` to enable an experimental baseline JIT compiler; other files keep including `wah.h`. It supports x86-64 on Windows, macOS and Linux (SSE4.1 and POPCNT required, SSE4.2 for SIMD) and AArch64 on macOS and Linux. Elsewhere, or with `WAH_NO_JIT`, it is the same as `wah.h`.
+
+The JIT compiles modules without fuel metering that use WASM 2.0 instructions plus relaxed SIMD, multi-memory and memory64, except reference types and table instructions other than `call_indirect`; other modules, or activations involving linked wasm modules, tables or reference globals, are transparently interpreted. Native execution differs from the interpreter only in resource usage and polling behavior, so results, traps and the resumable API stay identical. Set `wah_parse_options_t::disable_jit` to opt out per module.
+
+`wah_enable_guard_pages` lets native code skip bounds checks of 32-bit memories by reserving 6 GiB of address space per memory, either with signal / vectored exception handlers that WAH installs (`WAH_HANDLES_FAULT`) or with the host forwarding faults to `wah_handle_fault` (`WAH_HOST_HANDLES_FAULT`).
+
+## Rust Bindings
+
+`rust/` is a Cargo workspace of `wah-sys` (raw FFI, building `wah.h` or `wahjit.h` with the `cc` crate) and `wah` (a safe API close to Wasmtime's, including async host functions built on `wah_suspend`). Cargo features select the proposals compiled in. See [`rust/README.md`](./rust/README.md) for how the APIs map to Wasmtime's.
 
 ## Build Footprint
 
@@ -124,9 +140,18 @@ Under the deterministic profile, all `[!DET]`-excluded nondeterminism is elimina
 
 Beyond the spec corpus, WAH carries an extensive battery of unit tests covering every major feature, the resumable / fuel / deadline / memory-limit surfaces, OOM injection, GC root marking, cross-module linkage, and host-function lifecycle. The codebase is regularly run under ASAN, UBSAN, and LSAN, and is fuzzed with both libFuzzer and AFL harnesses (`fuzz/`).
 
+## Verification
+
+WAH validates modules and then lowers them into an internal bytecode that the interpreter trusts. Beyond testing, the following are checked (CI runs all but `make cbmc-step`, `make lean-spectec` and `make spec-diff`, which need minutes or external tools):
+
+- **Lowered code checker:** with `WAH_CHECK_LOWERED` (always on in tests and fuzzing), every lowered function is re-checked independently of the validator: instruction boundaries, branch targets, operand types, GC reference maps at suspension points, object layouts and exception handlers.
+- **CBMC proofs** (`make cbmc`, `proofs/*.c`) check C functions for all inputs within loop bounds: LEB128, UTF-8, opcode and type decoders, range checks, float min/max, rounding and truncations, allocation wrappers, fuel and memory budget accounting, the pin table, i31 references and struct layouts. `make cbmc-step` checks that every interpreter handler moves the value stack, frames and instruction pointer as the abstract machine of the Lean model does.
+- **Lean 4 proofs** (`make lean`, `proofs/lean`, no Mathlib) model parts of `wah.h` and prove their properties: struct layouts, type canonicalization, same- and cross-module subtyping and casts following the subtyping of the spec, and the soundness of the lowered code checker (accepted code never goes wrong in the abstract machine). Each model has a bridge to the C code, either a CBMC harness or a differential comparison (`make lean-diff`) on the spec tests and the fuzz corpus. `make lean-spectec` further proves the subtyping of the model sound and complete for the Lean model that [SpecTec](https://github.com/WebAssembly/spec/tree/main/spectec) generates from the spec itself.
+- **Spec oracle:** `make spec-diff` compares WAH with the reference interpreter of the spec on the fuzz corpus and on modules generated by `wasm-tools smith`, calling exports with random arguments, and optionally checks validation and instantiation against the SpecTec interpreter.
+
 ## Versioning
 
-The `WAH_VERSION` macro identifies the API revision, incremented on any change to the public surface including bug fixes. Public type sizes and alignments are pinned by static asserts so that a bumped `WAH_VERSION` never silently breaks ABI on consumers that link against a precompiled `WAH_IMPLEMENTATION` translation unit.
+The `WAH_VERSION` macro identifies the API revision, incremented on any change to the public surface including bug fixes. It is based on the fractional year since 2000 times 100, negated for development versions after the release of the same number (e.g. `-2675` is the development after `2675`). Public type sizes and alignments are pinned by static asserts so that a bumped `WAH_VERSION` never silently breaks ABI on consumers that link against a precompiled `WAH_IMPLEMENTATION` translation unit.
 
 ## License
 

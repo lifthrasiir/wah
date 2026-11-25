@@ -4,7 +4,8 @@ This project implements a WebAssembly (WASM) interpreter entirely within a singl
 
 ## File Structure
 
-- `wah.h` (~17,000 lines): The entire interpreter. Lines 1-1345 are the public API (before `#ifdef WAH_IMPLEMENTATION` on line 1345). Everything after is implementation. The public portion is C++11-compatible. `WAH_VERSION` exposes the API version.
+- `wah.h` (~20,500 lines): The entire interpreter. Lines 1-1704 are the public API (before `#ifdef WAH_IMPLEMENTATION` on line 1704). Everything after is implementation. The public portion is C++11-compatible. `WAH_VERSION` exposes the API version.
+- `wahjit.h` (~6,300 lines): Optional experimental baseline JIT for x86-64 and AArch64, included instead of `wah.h` where `WAH_IMPLEMENTATION` is defined. It hooks into `wah.h` via `WAH_JIT`; tests run natively with `make JIT=1` / `./test.ps1 -jit`.
 - `tests/common.c` / `tests/common.h`: DSL-based test utility for constructing WASM modules from spec strings (see "Test DSL" below).
 - `tests/test_*.c`: Individual test files, each is a standalone program that includes `common.c` (which includes `wah.h`). `test_cpp.cpp` exercises the C++ surface.
 - `tests/spectest.c` / `tests/wast.c`: WebAssembly spec test runner infrastructure.
@@ -38,7 +39,7 @@ The WAH interpreter employs a multi-phase approach for efficient WebAssembly mod
 5. **Execution:** `wah_run_interpreter()` executes the preparsed bytecode using one of three dispatch strategies:
    - **Switch-based:** Traditional `while (1) { switch (opcode) { ... } }` (default on MSVC)
    - **Computed Goto:** GCC/Clang `goto *labels[opcode]` (`WAH_USE_COMPUTED_GOTO`)
-   - **Musttail:** Tail-call dispatch with `__attribute__((musttail))` (`WAH_USE_MUSTTAIL`, Clang 13+ / GCC 15+)
+   - **Musttail:** Tail-call dispatch with `__attribute__((musttail))` and `preserve_none` (`WAH_USE_MUSTTAIL`, Clang 19+ / GCC 16+ except on Windows)
 
    All three use the same opcode handler code via macros: `WAH_RUN(opcode)`, `WAH_NEXT()`, `WAH_CLEANUP()`.
 
