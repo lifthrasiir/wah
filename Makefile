@@ -230,6 +230,22 @@ $(CBMC_TARGETS): cbmc_%: FORCE
 		grep -v ': SUCCESS$$' proofs/$*.log.tmp > proofs/$*.log; rm -f proofs/$*.log.tmp; \
 		[ $$status -eq 0 ] || { grep -E 'FAILURE|ERROR|error' proofs/$*.log; exit 1; }
 
+# Proofs that interpreter handlers move the stack and the instruction pointer as the abstract machine of the Lean model
+# of the lowered code checker does (proofs/step.c), one CBMC run for each opcode that proofs/step_ops.c lists.
+CBMC_STEP_DIR := proofs/.step
+
+.PHONY: cbmc-step
+cbmc-step:
+	@echo "## Proving interpreter handlers against the abstract machine..."
+	@mkdir -p $(CBMC_STEP_DIR)
+	@$(CC) -O1 -w -o $(CBMC_STEP_DIR)/ops proofs/step_ops.c -lm
+	@$(CBMC_STEP_DIR)/ops | xargs -P $$(getconf _NPROCESSORS_ONLN) -L 1 sh -c \
+		'h=$$0; op=$$1; name=$$(echo "$$*" | tr " =" "__"); shift; \
+		perl -e "alarm 300; exec @ARGV" $(CBMC) proofs/step.c -DSTEP_OP=WAH_OP_$$op "$$@" --function harness_$$h \
+			--unwind 17 $(CBMC_FLAGS) \
+			> $(CBMC_STEP_DIR)/$$name.log 2>&1 || { echo "harness_$$h for $$op $$*:"; grep FAILURE $(CBMC_STEP_DIR)/$$name.log; exit 1; }'
+	@echo "## All $$($(CBMC_STEP_DIR)/ops | wc -l | tr -d ' ') runs of handlers move as the abstract machine does."
+
 # --- Lean proofs ---
 # Builds proofs/lean, rejects unproven or unsound constructs, and checks that every theorem only uses the standard
 # axioms. Proofs must not rely on code generation (native_decide etc.) either.

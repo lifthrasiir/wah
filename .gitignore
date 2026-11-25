@@ -25,5 +25,6 @@ coverage_report
 .claude
 tests/.build_mode
 proofs/*.log
+proofs/.step
 proofs/lean/.lake
 proofs/spec/.out
