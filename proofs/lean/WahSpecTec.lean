@@ -25,9 +25,15 @@ audits axioms like `make lean`. They are not part of `make lean`, as the model i
 - WahSpecTec/Context.lean: between types of a module, heap subtyping implies `Heaptype_sub` of the spec between their
   type indices in contexts with the types of the module (`idx_hsub_sound`), as the spec checks instructions.
   Supertype chains go through the rolled types of the context and end with `Deftype_sub.refl` on closed forms.
+- WahSpecTec/ContextComplete.lean: the converse in such contexts without recursive types, so that the two agree
+  (`idx_hsub_iff`), for modules with the shapes of `wah_type_def_t` (`ShapeM`). Heap types of the context close to
+  closed types (type indices to the closed forms of `dtOf`, defined types by substituting those for type indices),
+  subtyping in the context implies the algorithmic subtyping of SubtypeComplete.lean between them, and the closed
+  forms of the valid middle types of transitivity are good, as closing commutes with taking supertypes.
 -/
 import WahSpecTec.Subtype
 import WahSpecTec.SubtypeComplete
 import WahSpecTec.Valtype
 import WahSpecTec.Closed
 import WahSpecTec.Context
+import WahSpecTec.ContextComplete
