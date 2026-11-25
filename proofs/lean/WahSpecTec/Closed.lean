@@ -433,32 +433,33 @@ theorem trG_closeGroup (m : Types.M) (s : Nat) :
       .REC (.mk_list ((List.range (m.gsize s)).map fun j => trS A none (closeSub m s (s + j)))) := by
   simp [trG, trSs_eq, closeGroup_eq, List.map_map, Function.comp]
 
-/-- Closing the subtypes of the group of `k` with the closed types before `k` gives the closed group. -/
-theorem close_subs {m : Types.M} (hw : WF m) {k : Nat} (hk : k < m.n) :
-    ((List.range (m.gsize (m.start k))).map fun j =>
+/-- Closing the subtypes of the group of `t` with the closed types before `k`, which include those before the group,
+gives the closed group. -/
+theorem close_subs {m : Types.M} (hw : WF m) {t k : Nat} (ht : t < m.n) (hk : m.start t ≤ k) :
+    ((List.range (m.gsize (m.start t))).map fun j =>
       fS A (look ((List.range k).map fun i => (._IDX ⟨i⟩ : typevar)) ((closedTypes A m k).map typeuse_deftype) ∘
-        g1 (m.start k) (m.gsize (m.start k))) (m.d (m.start k + j))) =
-      (List.range (m.gsize (m.start k))).map fun j => trS A none (closeSub m (m.start k) (m.start k + j)) := by
+        g1 (m.start t) (m.gsize (m.start t))) (m.d (m.start t + j))) =
+      (List.range (m.gsize (m.start t))).map fun j => trS A none (closeSub m (m.start t) (m.start t + j)) := by
   apply List.map_congr_left
   intro j hj
   rw [List.mem_range] at hj
-  have hg := hw.group k hk
-  have hsg := gsize_start m hw k hk
-  have ht : m.start k + j < m.n := by omega
-  have hst : m.start (m.start k + j) = m.start k := (hw.same k hk _ (by omega) (by omega)).1
-  have := trS_closeSub (A := A) hw ht
+  have hg := hw.group t ht
+  have hsg := gsize_start m hw t ht
+  have htj : m.start t + j < m.n := by omega
+  have hst : m.start (m.start t + j) = m.start t := (hw.same t ht _ (by omega) (by omega)).1
+  have := trS_closeSub (A := A) hw htj
   rw [hst] at this
   rw [this]
   apply fS_congr
   intro y hy
-  have hv := ref_valid hw ht hy
+  have hv := ref_valid hw htj hy
   rw [hst] at hv
   simp only [Function.comp, g1, gcl, look]
   rcases hv with h | ⟨h1, _, hyn⟩
   · rw [if_pos h, if_pos h]
     simp only [tvOf]
     exact lookup_rec_idx _ _ _ (by simp [closedTypes])
-  · have hn : ¬ (m.start k ≤ y ∧ y < m.start k + m.gsize (m.start k)) := by omega
+  · have hn : ¬ (m.start t ≤ y ∧ y < m.start t + m.gsize (m.start t)) := by omega
     rw [if_neg hn, if_neg hn]
     simp only [tvOf]
     have hyk : y < k := by omega
@@ -573,25 +574,26 @@ theorem close_step_det (hAd : AtomsDet A) (hMR : MinusRecs) {m : Types.M} (hw : 
         (l := List.range (m.gsize (m.start vn)))
         (fun j _ r hr => subst_fS_det hAd (g1_var _ _) (by simp [closedTypes]) hr)
         (by simpa using l0) F0
-      rw [this, close_subs hw hk]
+      rw [this, close_subs hw hk (hw.group vn hk).1]
       simp only [tD, dtOf, trG_closeGroup]
 
 theorem close_step_ex (hA : AtomsOK A) (hMR : MinusRecs) {m : Types.M} (hw : WF m) (hn : m.n < 2 ^ 32)
-    (hf : ∀ t < m.n, (m.d t).fields.length < 2 ^ 32) {k : Nat} (hk : k < m.n) :
-    fun_subst_all_deftype (._DEF (rolledG A m (m.start k)) (k - m.start k))
-      ((closedTypes A m k).map typeuse_deftype) (tD A (dtOf m k)) := by
-  have hg := okG_closeGroup hw hn hf k hk
-  have hwt : wf_rectype (trG A (closeGroup m (m.start k))) := wf_trG hA _ hg
-  have F := forall2_map (List.range (m.gsize (m.start k)))
-    (fun j => fS A (g1 (m.start k) (m.gsize (m.start k))) (m.d (m.start k + j)))
+    (hf : ∀ t < m.n, (m.d t).fields.length < 2 ^ 32) {t k : Nat} (ht : t < m.n) (hk : m.start t ≤ k)
+    (hkn : k ≤ m.n) :
+    fun_subst_all_deftype (._DEF (rolledG A m (m.start t)) (t - m.start t))
+      ((closedTypes A m k).map typeuse_deftype) (tD A (dtOf m t)) := by
+  have hg := okG_closeGroup hw hn hf t ht
+  have hwt : wf_rectype (trG A (closeGroup m (m.start t))) := wf_trG hA _ hg
+  have F := forall2_map (List.range (m.gsize (m.start t)))
+    (fun j => fS A (g1 (m.start t) (m.gsize (m.start t))) (m.d (m.start t + j)))
     (fun j => fS A (look ((List.range k).map fun i => (._IDX ⟨i⟩ : typevar))
-      ((closedTypes A m k).map typeuse_deftype) ∘ g1 (m.start k) (m.gsize (m.start k))) (m.d (m.start k + j)))
+      ((closedTypes A m k).map typeuse_deftype) ∘ g1 (m.start t) (m.gsize (m.start t))) (m.d (m.start t + j)))
     (fun v st => fun_subst_subtype st ((List.range k).map fun i => (._IDX ⟨i⟩ : typevar))
       ((closedTypes A m k).map typeuse_deftype) v)
     (fun j _ => subst_fS_ex hA (g1_var _ _) (by simp [closedTypes]) _)
-  rw [close_subs hw hk] at F
-  have hR : fun_subst_rectype (rolledG A m (m.start k)) ((List.range k).map fun i => (._IDX ⟨i⟩ : typevar))
-      ((closedTypes A m k).map typeuse_deftype) (trG A (closeGroup m (m.start k))) := by
+  rw [close_subs hw ht hk] at F
+  have hR : fun_subst_rectype (rolledG A m (m.start t)) ((List.range k).map fun i => (._IDX ⟨i⟩ : typevar))
+      ((closedTypes A m k).map typeuse_deftype) (trG A (closeGroup m (m.start t))) := by
     rw [trG_closeGroup]
     rw [trG_closeGroup] at hwt
     refine .fun_subst_rectype_case_0 _ _ _ _ _ _ _ F F (by rw [minus_idx hMR _ _ (closedTypes_len m k)]) ?_ ?_
@@ -603,12 +605,12 @@ theorem close_step_ex (hA : AtomsOK A) (hMR : MinusRecs) {m : Types.M} (hw : WF 
     · rw [minus_idx hMR _ _ (closedTypes_len m k)]
       intro tu htu
       obtain ⟨d, hd, rfl⟩ := List.mem_map.mp htu
-      obtain ⟨t, ht, rfl⟩ := List.mem_map.mp hd
-      rw [List.mem_range] at ht
-      exact .typeuse_case_1 _ _ (wf_trG hA _ (okG_closeGroup hw hn hf t (by omega)))
-  have hD : fun_subst_deftype (._DEF (rolledG A m (m.start k)) (k - m.start k))
+      obtain ⟨u, hu, rfl⟩ := List.mem_map.mp hd
+      rw [List.mem_range] at hu
+      exact .typeuse_case_1 _ _ (wf_trG hA _ (okG_closeGroup hw hn hf u (by omega)))
+  have hD : fun_subst_deftype (._DEF (rolledG A m (m.start t)) (t - m.start t))
       ((List.range k).map fun i => (._IDX ⟨i⟩ : typevar)) ((closedTypes A m k).map typeuse_deftype)
-      (tD A (dtOf m k)) := .fun_subst_deftype_case_0 _ _ _ _ _ _ hR hR (.deftype_case_0 _ _ hwt)
+      (tD A (dtOf m t)) := .fun_subst_deftype_case_0 _ _ _ _ _ _ hR hR (.deftype_case_0 _ _ hwt)
   exact .fun_subst_all_deftype_case_0 _ k _ 0 _ _ hD hD (.deftype_case_0 _ _ hwt)
     (fun i hi => .typevar_case_0 _ (wf_uN32 (by omega))) (closedTypes_len m k).symm
 
@@ -650,7 +652,7 @@ theorem clos_ex (hA : AtomsOK A) (hMR : MinusRecs) {m : Types.M} (hw : WF m) (hn
   | k + 1, hk => by
     rw [specTypes_succ, closedTypes_succ]
     have ih := clos_ex hA hMR hw hn hf k (by omega)
-    have st := close_step_ex hA hMR hw hn hf (k := k) (by omega)
+    have st := close_step_ex hA hMR hw hn hf (t := k) (k := k) (by omega) (hw.group k (by omega)).1 (by omega)
     exact .fun_clos_deftypes_case_1 _ _ _ _ _ _ _ ih st ih st rfl
       (.deftype_case_0 _ _ (wf_trG hA _ (okG_closeGroup hw hn hf k (by omega)))) (wf_closedTypes hA hw hn hf (by omega))
 

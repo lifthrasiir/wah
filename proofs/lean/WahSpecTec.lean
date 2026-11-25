@@ -22,8 +22,12 @@ audits axioms like `make lean`. They are not part of `make lean`, as the model i
   groups rolled to the translations of `dtOf`, uniquely (`dtOf_spec`). Closed groups of valid modules translate to
   well-formed types (`okG_closeGroup`), so the subtyping theorems apply to them. The generated `fun_rolldt` lacks the
   length of its result, so the theorems go through `fun_rollrt` and the definition of `$rolldt` instead.
+- WahSpecTec/Context.lean: between types of a module, heap subtyping implies `Heaptype_sub` of the spec between their
+  type indices in contexts with the types of the module (`idx_hsub_sound`), as the spec checks instructions.
+  Supertype chains go through the rolled types of the context and end with `Deftype_sub.refl` on closed forms.
 -/
 import WahSpecTec.Subtype
 import WahSpecTec.SubtypeComplete
 import WahSpecTec.Valtype
 import WahSpecTec.Closed
+import WahSpecTec.Context
