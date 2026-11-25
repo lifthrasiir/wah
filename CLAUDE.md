@@ -10,6 +10,7 @@ This project implements a WebAssembly (WASM) interpreter entirely within a singl
 - `tests/spectest.c` / `tests/wast.c`: WebAssembly spec test runner infrastructure.
 - `tests/spectest/`: Directory containing `.wast` spec test files.
 - `fuzz/fuzz_libfuzzer.c`, `fuzz/fuzz_afl.c`: Fuzzing harnesses with corpora under `fuzz/corpus*` and `fuzz/min_corpus`.
+- `rust/`: Cargo workspace of `wah-sys` (raw FFI, builds `wah.h`/`wahjit.h` with `cc`) and `wah` (safe API close to Wasmtime's, for Aqueous). `cargo test` there; `rust/README.md` maps the APIs.
 - `test.ps1`: Windows test runner with compiler selection (`-clang`, `-gcc`, `-msvc`). `Makefile`: POSIX test runner.
 
 ## Public API Surface

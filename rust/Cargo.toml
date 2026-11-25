@@ -1,0 +1,14 @@
+[workspace]
+resolver = "3"
+members = ["wah-sys", "wah"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT-0"
+repository = "https://github.com/lifthrasiir/wah"
+rust-version = "1.85"
+
+[workspace.dependencies]
+wah-sys = { path = "wah-sys", version = "0.1.0" }
+cc = "1.2"

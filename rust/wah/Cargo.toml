@@ -1,0 +1,42 @@
+[package]
+name = "wah"
+description = "Safe bindings to WAH, a WebAssembly interpreter in a single C header"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# (LICENSE.txt and vendor/ are copied by ../vendor.py, and ignored by git)
+include = ["/src/", "/tests/", "/examples/", "/LICENSE.txt"]
+
+[features]
+default = ["jit", "wasm3"]
+jit = ["wah-sys/jit"]
+debug = ["wah-sys/debug"]
+# The WebAssembly proposals compiled in, as those of wah-sys (`Features::COMPILED`).
+wasm2 = ["multi-value", "mutable-globals", "sign-ext", "nontrapping-f2i", "bulk-memory", "ref-types", "simd"]
+wasm3 = [
+    "wasm2", "tail-call", "exception", "gc", "typed-funcref", "memory64", "relaxed-simd", "extended-const",
+    "multi-memory",
+]
+multi-value = ["wah-sys/multi-value"]
+mutable-globals = ["wah-sys/mutable-globals"]
+sign-ext = ["wah-sys/sign-ext"]
+nontrapping-f2i = ["wah-sys/nontrapping-f2i"]
+bulk-memory = ["wah-sys/bulk-memory"]
+ref-types = ["wah-sys/ref-types"]
+simd = ["wah-sys/simd"]
+tail-call = ["wah-sys/tail-call"]
+exception = ["gc", "wah-sys/exception"]
+gc = ["ref-types", "wah-sys/gc"]
+typed-funcref = ["ref-types", "wah-sys/typed-funcref"]
+memory64 = ["wah-sys/memory64"]
+relaxed-simd = ["simd", "wah-sys/relaxed-simd"]
+extended-const = ["wah-sys/extended-const"]
+multi-memory = ["wah-sys/multi-memory"]
+
+[dependencies]
+wah-sys = { workspace = true, default-features = false }
+
+[dev-dependencies]
+wat = "1"

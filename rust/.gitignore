@@ -1,0 +1,5 @@
+/target
+# Copied by vendor.py for packaging
+/wah-sys/vendor/
+/wah-sys/LICENSE.txt
+/wah/LICENSE.txt

@@ -1,0 +1,47 @@
+[package]
+name = "wah-sys"
+description = "Raw FFI bindings to WAH, a WebAssembly interpreter in a single C header"
+links = "wah"
+build = "build.rs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+# (LICENSE.txt and vendor/ are copied by ../vendor.py, and ignored by git)
+include = ["/build.rs", "/src/", "/vendor/wah.h", "/vendor/wahjit.h", "/LICENSE.txt"]
+
+[features]
+default = ["jit", "wasm3"]
+# Builds the implementation from wahjit.h, which compiles eligible modules to native code on supported
+# platforms (x86-64 Windows/macOS/Linux, AArch64 macOS/Linux) and is the same as wah.h elsewhere.
+jit = []
+# Defines WAH_DEBUG: internal assertions and logging to stderr.
+debug = []
+
+# The WebAssembly proposals compiled in (WAH_COMPILED_FEATURES): code for the others is left out, and modules using
+# them are rejected (WAH_ERROR_DISABLED_FEATURE). Without any, only WebAssembly 1.0 (the MVP) is.
+wasm2 = ["multi-value", "mutable-globals", "sign-ext", "nontrapping-f2i", "bulk-memory", "ref-types", "simd"]
+wasm3 = [
+    "wasm2", "tail-call", "exception", "gc", "typed-funcref", "memory64", "relaxed-simd", "extended-const",
+    "multi-memory",
+]
+multi-value = []
+mutable-globals = []
+sign-ext = []
+nontrapping-f2i = []
+bulk-memory = []
+ref-types = []
+simd = []
+tail-call = []
+# (exception objects are managed by the GC)
+exception = ["gc"]
+gc = ["ref-types"]
+typed-funcref = ["ref-types"]
+memory64 = []
+relaxed-simd = ["simd"]
+extended-const = []
+multi-memory = []
+
+[build-dependencies]
+cc.workspace = true
