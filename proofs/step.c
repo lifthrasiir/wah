@@ -109,7 +109,7 @@ void harness_numeric(void) {
 void harness_basic(void) {
     uint16_t op = STEP_OP;
     put16(code, op);
-    uint32_t pop = 0, push = 0, imm = 0, nl = 0, ng = 0, idx = 0;
+    uint32_t pop = 0, push = 0, imm = 0, nl = 0, ng = 0, nf = 0, idx = 0;
     bool may_trap = false, named = false;
     switch (op) {
         case WAH_OP_I32_CONST: case WAH_OP_F32_CONST: imm = 4; push = 1; break;
@@ -129,6 +129,7 @@ void harness_basic(void) {
             push = !pop;
             break;
         case WAH_OP_REF_NULL: imm = 4; push = 1; break;
+        case WAH_OP_REF_FUNC: imm = 4; nf = nondet_u32() % 4 + 1; named = true; push = 1; break;
         case WAH_OP_REF_IS_NULL: case WAH_OP_REF_I31: pop = 1; push = 1; break;
         case WAH_OP_REF_AS_NON_NULL: case WAH_OP_I31_GET_S: case WAH_OP_I31_GET_U: pop = 1; push = 1; may_trap = true; break;
         case WAH_OP_REF_EQ: pop = 2; push = 1; break;
@@ -136,7 +137,7 @@ void harness_basic(void) {
     }
     if (named) {
         idx = nondet_u32();
-        __CPROVER_assume(idx < (nl ? nl : ng)); // Checked by wah_check_lowered_code
+        __CPROVER_assume(idx < (nl ? nl : ng ? ng : nf)); // Checked by wah_check_lowered_code
         put32(code + 2, idx);
     } else {
         for (uint32_t i = 0; i < imm; i++) code[2 + i] = (uint8_t)nondet_u32();
@@ -151,6 +152,10 @@ void harness_basic(void) {
     wah_value_t *globals = new_stack(ng), *cell = new_stack(1);
     if (indirect) globals[idx].ref = cell;
     frame.frame_globals = globals;
+    wah_function_holder_t *funcs = malloc((nf ? nf : 1) * sizeof(wah_function_holder_t));
+    __CPROVER_assume(funcs != NULL);
+    frame.frame_function_table = funcs;
+    frame.frame_function_table_count = nf;
     uint32_t n = pop > push ? pop : push;
     wah_value_t *stack = new_stack(n);
     wah_value_t top = pop ? stack[pop - 1] : nondet_value(), cond = stack[pop ? pop - 1 : 0];
@@ -173,6 +178,7 @@ void harness_basic(void) {
     if (op == WAH_OP_GLOBAL_SET || op == WAH_OP_GLOBAL_SET_INDIRECT)
         __CPROVER_assert(memcmp(indirect ? cell : &globals[idx], &top, sizeof(wah_value_t)) == 0, "sets");
     if (op == WAH_OP_REF_NULL) __CPROVER_assert(stack[0].ref == NULL, "pushes null");
+    if (op == WAH_OP_REF_FUNC) __CPROVER_assert(stack[0].ref == wah_func_to_ref(&funcs[idx].func), "pushes the function");
     if (op == WAH_OP_REF_IS_NULL) __CPROVER_assert(stack[0].i32 == (top.ref == NULL), "tests null");
     if (op == WAH_OP_REF_EQ) __CPROVER_assert(stack[0].i32 == (a.ref == b.ref), "compares");
     if (op == WAH_OP_REF_AS_NON_NULL) __CPROVER_assert(stack[0].ref == top.ref && top.ref != NULL, "keeps non-null");
@@ -443,4 +449,48 @@ void harness_return(void) {
     __CPROVER_assert(memcmp(&st->vals[0], &below, sizeof(wah_value_t)) == 0, "keeps the caller's values");
     for (uint32_t i = 0; i < STEP_RESULTS; i++)
         __CPROVER_assert(memcmp(&st->vals[1 + i], &results[i], sizeof(wah_value_t)) == 0, "moves the results");
+}
+
+// table.get, table.set and table.size (of 32- and 64-bit tables): access only the table that they name, within its
+// size, or trap
+void harness_table(void) {
+    uint16_t op = STEP_OP;
+    put16(code, op);
+    bool get = op == WAH_OP_TABLE_GET || op == WAH_OP_TABLE_GET_i64;
+    bool set = op == WAH_OP_TABLE_SET || op == WAH_OP_TABLE_SET_i64;
+    bool i64 = op == WAH_OP_TABLE_GET_i64 || op == WAH_OP_TABLE_SET_i64 || op == WAH_OP_TABLE_SIZE_i64;
+    __CPROVER_assert(get || set || op == WAH_OP_TABLE_SIZE || op == WAH_OP_TABLE_SIZE_i64, "a table instruction");
+    uint32_t count = nondet_u32() % 2 + 1, tidx = nondet_u32() % count, len = 6;
+    put32(code + 2, tidx);
+    setup_code(len);
+    __CPROVER_assert(decoded_len() == len, "decoded as long as it runs");
+    wah_table_inst_t *tables = malloc(count * sizeof(wah_table_inst_t));
+    __CPROVER_assume(tables != NULL);
+    for (uint32_t i = 0; i < count; i++) {
+        tables[i].size = nondet_u32() % 5;
+        tables[i].entries = malloc(tables[i].size ? tables[i].size * sizeof(wah_value_t) : 1);
+        __CPROVER_assume(tables[i].entries != NULL);
+    }
+    ctx.tables = tables;
+    ctx.table_count = count;
+    uint32_t pop = get ? 1 : set ? 2 : 0, push = set ? 0 : 1, n = pop > push ? pop : push;
+    wah_value_t *stack = new_stack(n);
+    wah_value_t val = stack[set ? 1 : 0];
+    uint64_t elem = i64 ? (uint64_t)stack[0].i64 : (uint32_t)stack[0].i32;
+    wah_value_t old = elem < tables[tidx].size ? tables[tidx].entries[elem] : val;
+    ctx.sp = stack + pop;
+    wah_error_t err = wah_run_interpreter(&ctx);
+    __CPROVER_assert(err == WAH_ERROR_TRAP, "only traps");
+    if (frame.bytecode_ip != code + len + 2) {
+        __CPROVER_assert((get || set) && elem >= tables[tidx].size && frame.bytecode_ip == code + len,
+                         "traps out of bounds");
+        return;
+    }
+    __CPROVER_assert(ctx.sp == stack + push, "pops and pushes as the abstract machine");
+    if (get) __CPROVER_assert(memcmp(&stack[0], &old, sizeof(wah_value_t)) == 0, "gets the element");
+    if (set) __CPROVER_assert(memcmp(&tables[tidx].entries[elem], &val, sizeof(wah_value_t)) == 0, "sets the element");
+    if (!get && !set) {
+        if (i64) __CPROVER_assert((uint64_t)stack[0].i64 == tables[tidx].size, "pushes the size");
+        else __CPROVER_assert((uint32_t)stack[0].i32 == tables[tidx].size, "pushes the size");
+    }
 }

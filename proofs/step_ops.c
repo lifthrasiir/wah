@@ -33,7 +33,7 @@ int main(void) {
                                          "SELECT", "SELECT_T", "LOCAL_GET", "LOCAL_SET", "LOCAL_TEE", "GLOBAL_GET",
                                          "GLOBAL_SET", "GLOBAL_GET_INDIRECT", "GLOBAL_SET_INDIRECT", "REF_NULL",
                                          "REF_IS_NULL", "REF_AS_NON_NULL", "REF_EQ", "REF_I31", "I31_GET_S",
-                                         "I31_GET_U" };
+                                         "I31_GET_U", "REF_FUNC" };
     for (size_t i = 0; i < sizeof(basic) / sizeof(*basic); i++) printf("basic %s\n", basic[i]);
     // Branches for both ways and some values kept and dropped, which are constant (see harness_branch)
     for (int k = 0; k < 3; k++) {
@@ -64,6 +64,8 @@ int main(void) {
             printf("return END -DSTEP_RESULTS=%d -DSTEP_DROP=%d\n", r, d);
         }
     }
+    printf("table TABLE_GET\ntable TABLE_SET\ntable TABLE_SIZE\ntable TABLE_GET_i64\ntable TABLE_SET_i64\n"
+           "table TABLE_SIZE_i64\n");
     // br_table for each target and beyond, with some values kept and dropped
     for (int k = 0; k < 3; k++) {
         for (int d = 0; d < 3; d++) {
