@@ -6,7 +6,7 @@
 //! - A [`Module`] is parsed and validated once ([`Config`] gives the proposals enabled), and instantiated by any
 //!   number of stores, from any thread.
 //! - A [`Store`] holds the data of the host functions (`T`) and every instance and host module made in it.
-//!   Its memories are limited by a [`ResourceLimiter`] (also asked as memories are created).
+//!   Its memories and tables are limited by a [`ResourceLimiter`] (asked before they are made or grow).
 //! - A [`Linker`] defines host modules: memories, globals and host functions under module names, instantiated in a
 //!   store before the instances that import from them. Instances import from the store by module names: so memories
 //!   that a host makes are written before instantiation by [`Linker::instantiate_hosts`], [`Store::get_memory`] and

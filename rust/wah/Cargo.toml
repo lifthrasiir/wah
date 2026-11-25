@@ -7,7 +7,8 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 # (LICENSE.txt and vendor/ are copied by ../vendor.py, and ignored by git)
-include = ["/src/", "/tests/", "/examples/", "/LICENSE.txt"]
+readme = "README.md"
+include = ["/src/", "/tests/", "/examples/", "/README.md", "/LICENSE.txt"]
 
 [features]
 default = ["jit", "wasm3"]
