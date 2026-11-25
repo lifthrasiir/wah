@@ -7,6 +7,9 @@
 #undef _FORTIFY_SOURCE
 #define _FORTIFY_SOURCE 0
 
+// GCC atomics rather than C11 ones, whose builtins (__c11_atomic_*) CBMC doesn't know and makes nondeterministic
+#define __STDC_NO_ATOMICS__ 1
+
 // Neither computed gotos, musttail nor inline assembly, which CBMC doesn't model
 #define WAH_FORCE_SWITCH
 #define WAH_FORCE_PORTABLE

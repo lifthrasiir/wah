@@ -588,3 +588,48 @@ void harness_gc(void) {
         __CPROVER_assert(memcmp(&stored, &want, sizeof(wah_value_t)) == 0, "stores the storage");
     }
 }
+
+// POLL with no pending request, METER with enough fuel or not (STEP_TAKEN: going to the slow island), and TICK
+// continuing, running out of fuel or interrupted (STEP_INDEX 0, 1 or 2), which suspends at the TICK to retry it, with
+// its ref map stored for the GC; none moves the value stack
+void harness_internal(void) {
+    uint16_t op = STEP_OP;
+    put16(code, op);
+    uint32_t len, target = 0, map = nondet_u32();
+    switch (op) {
+        case WAH_OP_POLL: put32(code + 2, map); len = 6; break;
+        case WAH_OP_TICK: put32(code + 2, map); len = 6; break;
+        case WAH_OP_METER:
+            put16(code + 2, 5); len = 8; target = target_after(len);
+            put32(code + 4, target);
+            break;
+        default: __CPROVER_assert(false, "an internal instruction"); return;
+    }
+    setup_code(len);
+    __CPROVER_assert(decoded_len() == len, "decoded as long as it runs");
+    ctx.module = &mod;
+    int64_t fuel = op == WAH_OP_METER ? (STEP_TAKEN ? 4 : 5) : op == WAH_OP_TICK && STEP_INDEX == 1 ? 0 : 1;
+    ctx.fuel = fuel;
+    WAH_POLL_FLAG_STORE(ctx.poll_flag, 0);
+    WAH_POLL_FLAG_STORE(ctx.interrupt_flag, op == WAH_OP_TICK && STEP_INDEX == 2);
+    uint32_t n = nondet_u32() % 3;
+    wah_value_t *stack = new_stack(n);
+    ctx.sp = stack + n;
+    wah_error_t err = wah_run_interpreter(&ctx);
+    __CPROVER_assert(ctx.sp == stack + n, "keeps the stack");
+    if (op == WAH_OP_TICK && STEP_INDEX != 0) {
+        __CPROVER_assert(err == (STEP_INDEX == 1 ? WAH_STATUS_FUEL_EXHAUSTED : WAH_STATUS_YIELDED), "suspends");
+        __CPROVER_assert(frame.bytecode_ip == code && frame.poll_idx == map, "to retry the TICK with its ref map");
+        __CPROVER_assert(ctx.fuel == (STEP_INDEX == 1 ? -1 : 1), "charges only what it runs");
+        __CPROVER_assert(WAH_POLL_FLAG_LOAD(ctx.interrupt_flag) == 0, "takes the interrupt");
+        return;
+    }
+    __CPROVER_assert(err == WAH_ERROR_TRAP, "stops at unreachable");
+    if (op == WAH_OP_METER && STEP_TAKEN) {
+        __CPROVER_assert(frame.bytecode_ip == code + target + 2 && ctx.fuel == fuel, "goes to the slow island");
+    } else {
+        __CPROVER_assert(frame.bytecode_ip == code + len + 2, "falls through");
+        if (op == WAH_OP_POLL) __CPROVER_assert(frame.poll_idx == map, "stores its ref map");
+        else __CPROVER_assert(ctx.fuel == fuel - (op == WAH_OP_METER ? 5 : 1), "charges fuel");
+    }
+}

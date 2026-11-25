@@ -91,6 +91,8 @@ int main(void) {
     printf("gc ARRAY_SET_64\n");
     printf("gc ARRAY_SET_128\n");
     printf("gc ARRAY_LEN\n");
+    printf("internal POLL\ninternal METER -DSTEP_TAKEN=0\ninternal METER -DSTEP_TAKEN=1\n"
+           "internal TICK -DSTEP_INDEX=0\ninternal TICK -DSTEP_INDEX=1\ninternal TICK -DSTEP_INDEX=2\n");
     // br_table for each target and beyond, with some values kept and dropped
     for (int k = 0; k < 3; k++) {
         for (int d = 0; d < 3; d++) {
