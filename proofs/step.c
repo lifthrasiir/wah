@@ -494,3 +494,97 @@ void harness_table(void) {
         else __CPROVER_assert((uint32_t)stack[0].i32 == tables[tidx].size, "pushes the size");
     }
 }
+
+// Accesses of GC objects by their specialized opcodes: the storage (in bytes) and how loads extend it
+static uint32_t gc_access(uint16_t op, bool *array, bool *set, int *ext) {
+    *array = false; *set = false; *ext = 0; // 1 for sign extension, 0 for zero extension
+    switch (op) {
+        case WAH_OP_STRUCT_GET_S8: *ext = 1; return 1;
+        case WAH_OP_STRUCT_GET_U8: return 1;
+        case WAH_OP_STRUCT_GET_S16: *ext = 1; return 2;
+        case WAH_OP_STRUCT_GET_U16: return 2;
+        case WAH_OP_STRUCT_GET_32: return 4;
+        case WAH_OP_STRUCT_GET_64: return 8;
+        case WAH_OP_STRUCT_GET_128: return 16;
+        case WAH_OP_STRUCT_SET_8: *set = true; return 1;
+        case WAH_OP_STRUCT_SET_16: *set = true; return 2;
+        case WAH_OP_STRUCT_SET_32: *set = true; return 4;
+        case WAH_OP_STRUCT_SET_64: *set = true; return 8;
+        case WAH_OP_STRUCT_SET_128: *set = true; return 16;
+        case WAH_OP_ARRAY_GET_S8: *array = true; *ext = 1; return 1;
+        case WAH_OP_ARRAY_GET_U8: *array = true; return 1;
+        case WAH_OP_ARRAY_GET_S16: *array = true; *ext = 1; return 2;
+        case WAH_OP_ARRAY_GET_U16: *array = true; return 2;
+        case WAH_OP_ARRAY_GET_32: *array = true; return 4;
+        case WAH_OP_ARRAY_GET_64: *array = true; return 8;
+        case WAH_OP_ARRAY_GET_128: *array = true; return 16;
+        case WAH_OP_ARRAY_SET_8: *array = true; *set = true; return 1;
+        case WAH_OP_ARRAY_SET_16: *array = true; *set = true; return 2;
+        case WAH_OP_ARRAY_SET_32: *array = true; *set = true; return 4;
+        case WAH_OP_ARRAY_SET_64: *array = true; *set = true; return 8;
+        case WAH_OP_ARRAY_SET_128: *array = true; *set = true; return 16;
+        default: return 0;
+    }
+}
+
+// The value of storage of n bytes at p, as loads extend it (ext) or stores keep it
+static wah_value_t gc_load(const uint8_t *p, uint32_t n, int ext) {
+    wah_value_t v;
+    memset(&v, 0, sizeof(v));
+    switch (n) {
+        case 1: v.i32 = ext ? (int32_t)(int8_t)p[0] : (int32_t)p[0]; break;
+        case 2: { uint16_t x; memcpy(&x, p, 2); v.i32 = ext ? (int32_t)(int16_t)x : (int32_t)x; break; }
+        case 4: memcpy(&v.i32, p, 4); break;
+        case 8: memcpy(&v.i64, p, 8); break;
+        default: memcpy(&v, p, 16); break;
+    }
+    return v;
+}
+
+// struct.get/set and array.get/set/len: access the storage of the field (at its offset, which layouts keep within
+// the object) or of the element (within the length, or trap), and trap on null
+void harness_gc(void) {
+    uint16_t op = STEP_OP;
+    put16(code, op);
+    bool array, set, len_op = op == WAH_OP_ARRAY_LEN;
+    int ext;
+    uint32_t n = gc_access(op, &array, &set, &ext);
+    __CPROVER_assert(n || len_op, "a GC access");
+    if (len_op) array = true;
+    uint32_t len = array ? 2 : 6, size = 24, offset = 0, length = nondet_u32() % 4;
+    if (!array) {
+        offset = nondet_u32();
+        __CPROVER_assume(offset <= size - n); // Fields are within the object as layouts have them
+        put32(code + 2, offset);
+    }
+    setup_code(len);
+    __CPROVER_assert(decoded_len() == len, "decoded as long as it runs");
+    uint32_t bytes = array ? (uint32_t)sizeof(wah_gc_array_body_t) + length * (n ? n : 1) : size;
+    uint8_t *obj = malloc(bytes);
+    __CPROVER_assume(obj != NULL);
+    if (array) ((wah_gc_array_body_t *)obj)->length = length;
+    uint32_t pop = len_op ? 1 : (array ? 2 : 1) + set, push = set ? 0 : 1, depth = pop > push ? pop : push;
+    wah_value_t *stack = new_stack(depth);
+    bool null = nondet_u32() % 2;
+    stack[0].ref = null ? NULL : obj;
+    wah_value_t val = stack[pop - 1];
+    uint32_t idx = array && !len_op ? (uint32_t)stack[1].i32 : 0;
+    bool in = !null && (!array || len_op || idx < length);
+    uint32_t at = array ? (uint32_t)sizeof(wah_gc_array_body_t) + (in && !len_op ? idx : 0) * n : offset;
+    wah_value_t old = in && n ? gc_load(obj + at, n, ext) : val;
+    ctx.sp = stack + pop;
+    wah_error_t err = wah_run_interpreter(&ctx);
+    __CPROVER_assert(err == WAH_ERROR_TRAP, "only traps");
+    if (frame.bytecode_ip != code + len + 2) {
+        __CPROVER_assert(!in && frame.bytecode_ip == code + len, "traps on null or out of bounds");
+        return;
+    }
+    __CPROVER_assert(in, "accesses only within the object");
+    __CPROVER_assert(ctx.sp == stack + push, "pops and pushes as the abstract machine");
+    if (len_op) __CPROVER_assert(stack[0].i32 == (int32_t)length, "pushes the length");
+    else if (!set) __CPROVER_assert(memcmp(&stack[0], &old, sizeof(wah_value_t)) == 0, "loads the storage");
+    else {
+        wah_value_t stored = gc_load(obj + at, n, 0), want = gc_load((const uint8_t *)&val, n, 0);
+        __CPROVER_assert(memcmp(&stored, &want, sizeof(wah_value_t)) == 0, "stores the storage");
+    }
+}

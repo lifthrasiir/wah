@@ -66,6 +66,31 @@ int main(void) {
     }
     printf("table TABLE_GET\ntable TABLE_SET\ntable TABLE_SIZE\ntable TABLE_GET_i64\ntable TABLE_SET_i64\n"
            "table TABLE_SIZE_i64\n");
+    printf("gc STRUCT_GET_S8\n");
+    printf("gc STRUCT_GET_U8\n");
+    printf("gc STRUCT_GET_S16\n");
+    printf("gc STRUCT_GET_U16\n");
+    printf("gc STRUCT_GET_32\n");
+    printf("gc STRUCT_GET_64\n");
+    printf("gc STRUCT_GET_128\n");
+    printf("gc STRUCT_SET_8\n");
+    printf("gc STRUCT_SET_16\n");
+    printf("gc STRUCT_SET_32\n");
+    printf("gc STRUCT_SET_64\n");
+    printf("gc STRUCT_SET_128\n");
+    printf("gc ARRAY_GET_S8\n");
+    printf("gc ARRAY_GET_U8\n");
+    printf("gc ARRAY_GET_S16\n");
+    printf("gc ARRAY_GET_U16\n");
+    printf("gc ARRAY_GET_32\n");
+    printf("gc ARRAY_GET_64\n");
+    printf("gc ARRAY_GET_128\n");
+    printf("gc ARRAY_SET_8\n");
+    printf("gc ARRAY_SET_16\n");
+    printf("gc ARRAY_SET_32\n");
+    printf("gc ARRAY_SET_64\n");
+    printf("gc ARRAY_SET_128\n");
+    printf("gc ARRAY_LEN\n");
     // br_table for each target and beyond, with some values kept and dropped
     for (int k = 0; k < 3; k++) {
         for (int d = 0; d < 3; d++) {
