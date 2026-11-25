@@ -168,6 +168,37 @@ pub(crate) unsafe fn string(p: *const std::ffi::c_char, len: usize) -> String {
     String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(p.cast::<u8>(), len) }).into_owned()
 }
 
+/// The imports and exports of `m`.
+///
+/// # Safety
+/// `m` should be a valid module.
+unsafe fn describe(m: *const sys::wah_module_t) -> Result<(Vec<ImportType>, Vec<ExportType>)> {
+    // SAFETY: the descriptions are copied before the next call
+    unsafe {
+        let mut imports = Vec::new();
+        for i in 0..sys::wah_module_import_count(m) {
+            let mut d = std::mem::zeroed::<sys::wah_import_desc_t>();
+            check(sys::wah_module_import(m, i, &mut d))?;
+            imports.push(ImportType {
+                module: string(d.module, d.module_len),
+                name: string(d.name, d.name_len),
+                ty: ExternType::from_raw(d.kind, &d.u),
+            });
+        }
+        let mut exports = Vec::new();
+        for i in 0..sys::wah_module_export_count(m) {
+            let mut d = std::mem::zeroed::<sys::wah_export_desc_t>();
+            check(sys::wah_module_export(m, i as usize, &mut d))?;
+            exports.push(ExportType {
+                name: string(d.name, d.name_len),
+                ty: ExternType::from_raw(d.kind, &d.u),
+                index: d.index,
+            });
+        }
+        Ok((imports, exports))
+    }
+}
+
 impl Module {
     /// Parses and validates `binary`.
     pub fn new(config: &Config, binary: &[u8]) -> Result<Module> {
@@ -178,38 +209,25 @@ impl Module {
             alloc: std::ptr::null(),
             disable_jit: !config.jit,
         };
-        let inner = |raw: &UnsafeCell<sys::wah_module_t>| -> Result<(Vec<ImportType>, Vec<ExportType>)> {
-            let m = raw.get();
-            // SAFETY: the module is ours, and the descriptions are copied before the next call
-            unsafe {
-                check(sys::wah_parse_module(m, binary.as_ptr(), binary.len(), &opts))?;
-                let mut imports = Vec::new();
-                for i in 0..sys::wah_module_import_count(m) {
-                    let mut d = std::mem::zeroed::<sys::wah_import_desc_t>();
-                    check(sys::wah_module_import(m, i, &mut d))?;
-                    imports.push(ImportType {
-                        module: string(d.module, d.module_len),
-                        name: string(d.name, d.name_len),
-                        ty: ExternType::from_raw(d.kind, &d.u),
-                    });
-                }
-                let mut exports = Vec::new();
-                for i in 0..sys::wah_module_export_count(m) {
-                    let mut d = std::mem::zeroed::<sys::wah_export_desc_t>();
-                    check(sys::wah_module_export(m, i as usize, &mut d))?;
-                    exports.push(ExportType {
-                        name: string(d.name, d.name_len),
-                        ty: ExternType::from_raw(d.kind, &d.u),
-                        index: d.index,
-                    });
-                }
-                Ok((imports, exports))
-            }
-        };
         // (freed by its drop on failure too, as WAH allows)
         let mut module =
             ModuleInner { raw, frozen: Once::new(), imports: Vec::new(), exports: Vec::new(), fuel: config.fuel };
-        (module.imports, module.exports) = inner(&module.raw)?;
+        // SAFETY: the module is ours
+        unsafe {
+            check(sys::wah_parse_module(module.raw.get(), binary.as_ptr(), binary.len(), &opts))?;
+            (module.imports, module.exports) = describe(module.raw.get())?;
+        }
+        Ok(Module(Arc::new(module)))
+    }
+
+    /// A module that the host built (`wah_new_module`), which its drop frees.
+    ///
+    /// # Safety
+    /// `raw` should be a module built, and not changed any more.
+    pub(crate) unsafe fn from_built(raw: Box<UnsafeCell<sys::wah_module_t>>) -> Result<Module> {
+        let mut module =
+            ModuleInner { raw, frozen: Once::new(), imports: Vec::new(), exports: Vec::new(), fuel: false };
+        (module.imports, module.exports) = unsafe { describe(module.raw.get())? };
         Ok(Module(Arc::new(module)))
     }
 

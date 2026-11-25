@@ -24,13 +24,14 @@ Both crates select the proposals compiled in (`WAH_COMPILED_FEATURES`) by featur
 | `store.limiter(\|s\| s)`, `ResourceLimiter::memory_growing` | the same (also asked as memories are created, `current` = 0); no `table_growing` |
 | `Memory::new(&mut store, ty)` + `Instance::new(&mut store, &module, &externs)` | `Linker::memory` / `func_wrap` by import names, `linker.instantiate_hosts(&mut store)`, `store.get_memory(module, name)` to write it, then `Instance::new(&mut store, &module)` (or `linker.instantiate` at once) |
 | `Func::wrap(&mut store, \|c: Caller<'_, T>, ...\| ...)` | `linker.func_wrap(module, name, \|c: Caller<'_, T>, ...\| ...)` |
+| `InstancePre` (host functions resolved once) | host modules are built once for their items and shared by every store (and clone of the linker); a store only makes their memories and globals |
+| `Config::with_host_memory(Arc<dyn MemoryCreator>)` | `store.set_memory_creator(Arc<dyn MemoryCreator>)`, for memories made from then on; `LinearMemory` never moves (`reserved` given only with guard pages) |
 | `Func::wrap_async` (fibers) | `linker.func_wrap_poll(module, name, \|c, cx: &mut Context<'_>, ...\| -> Poll<_>)`: `Pending` suspends the activation in WAH, and the function is called again with the same parameters when polled again (no fiber, no state kept across the wait) |
 | `func.call_async(&mut store, ...)` | the same; `call` waits in its thread |
 | `memory.data_and_store_mut(&mut caller)` | the same |
 | `wasmtime::Error::new(e)`, `downcast_ref` | `wah::Error::new(e)`, `downcast_ref`; `wah_code()` gives traps (`Code::StackOverflow` etc.) |
 
-Not yet: reference values across the boundary, globals' values from the host, growing memories from the host, a
-custom memory creator (Aqueous's copy-on-write working memories).
+Not yet: reference values across the boundary, globals' values from the host, growing memories from the host.
 
 ## Publishing
 

@@ -10,7 +10,8 @@
 //! - A [`Linker`] defines host modules: memories, globals and host functions under module names, instantiated in a
 //!   store before the instances that import from them. Instances import from the store by module names: so memories
 //!   that a host makes are written before instantiation by [`Linker::instantiate_hosts`], [`Store::get_memory`] and
-//!   then [`Instance::new`].
+//!   then [`Instance::new`]. Host modules are built once for every store (see [`Linker`]).
+//! - Memories may be made by the host ([`Store::set_memory_creator`]), e.g. to map their pages copied on write.
 //! - Host functions may wait: one of [`Linker::func_wrap_poll`] returns `Poll::Pending` (having arranged for the
 //!   waker to be woken), which suspends the activation in WAH (`wah_suspend`) and makes the future of
 //!   [`Func::call_async`] pending, without a fiber; the host function is called again with the same parameters once
@@ -23,6 +24,7 @@ mod error;
 mod func;
 mod instance;
 mod linker;
+mod memory;
 mod module;
 mod store;
 mod types;
@@ -31,6 +33,7 @@ pub use error::{Code, Error, Result};
 pub use func::{IntoFunc, IntoPollFunc, WasmParams, WasmResults, WasmRet, WasmTy};
 pub use instance::{Func, Instance, Memory, TypedFunc};
 pub use linker::Linker;
+pub use memory::{LinearMemory, MemoryCreator};
 pub use module::{Config, Features, Module};
 pub use store::{AsContext, AsContextMut, Caller, ResourceLimiter, Store, StoreCtx};
 pub use types::{

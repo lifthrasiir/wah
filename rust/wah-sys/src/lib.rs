@@ -365,6 +365,44 @@ pub struct wah_limits_t {
 pub struct wah_exec_options_t {
     pub limits: wah_limits_t,
     pub alloc: *const wah_alloc_t,
+    pub memory_creator: *const wah_memory_creator_t,
+    pub userdata: *mut c_void,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct wah_memory_request_t {
+    pub module: *const wah_module_t,
+    pub mem_idx: u32,
+    pub is_64: bool,
+    pub min_bytes: u64,
+    pub max_bytes: u64,
+    pub reserve_bytes: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct wah_host_memory_t {
+    pub data: *mut u8,
+    pub handle: *mut c_void,
+    pub guarded: bool,
+}
+
+#[repr(C)]
+#[derive(Debug, Clone, Copy)]
+pub struct wah_memory_creator_t {
+    pub create: Option<
+        unsafe extern "C" fn(
+            userdata: *mut c_void,
+            req: *const wah_memory_request_t,
+            out: *mut wah_host_memory_t,
+        ) -> wah_error_t,
+    >,
+    pub grow: Option<
+        unsafe extern "C" fn(userdata: *mut c_void, handle: *mut c_void, old_bytes: u64, new_bytes: u64) -> wah_error_t,
+    >,
+    pub free: Option<unsafe extern "C" fn(userdata: *mut c_void, handle: *mut c_void)>,
+    pub userdata: *mut c_void,
 }
 
 pub type wah_memory_grow_hook_t =
@@ -588,6 +626,7 @@ unsafe extern "C" {
 
     pub fn wah_trap(ctx: *mut wah_call_context_t, reason: wah_error_t);
     pub fn wah_suspend(ctx: *mut wah_call_context_t);
+    pub fn wah_exec_userdata(ctx: *const wah_call_context_t) -> *mut c_void;
 
     pub fn wah_link_module(
         ctx: *mut wah_exec_context_t,
@@ -678,6 +717,12 @@ mod tests {
             &layout!(wah_limits_t),
             &[offset_of!(wah_limits_t, no_memory_bytes)],
             &layout!(wah_exec_options_t),
+            &[offset_of!(wah_exec_options_t, memory_creator), offset_of!(wah_exec_options_t, userdata)],
+            &layout!(wah_memory_request_t),
+            &[offset_of!(wah_memory_request_t, is_64), offset_of!(wah_memory_request_t, reserve_bytes)],
+            &layout!(wah_host_memory_t),
+            &[offset_of!(wah_host_memory_t, guarded)],
+            &layout!(wah_memory_creator_t),
             &layout!(wah_gc_heap_stats_t),
             &[offset_of!(wah_gc_heap_stats_t, total_polls)],
             &[size_of::<wah_error_t>(), size_of::<wah_exec_state_t>(), size_of::<wah_comp_type_kind_t>()],

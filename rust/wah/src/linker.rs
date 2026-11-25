@@ -1,6 +1,6 @@
+use std::cell::UnsafeCell;
 use std::ffi::{CString, c_void};
-use std::ptr::NonNull;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
 use wah_sys as sys;
@@ -9,7 +9,7 @@ use crate::error::{Error, Result, check};
 use crate::func::{IntoFunc, IntoPollFunc};
 use crate::instance::Instance;
 use crate::module::Module;
-use crate::store::{self, Caller, HostFn, HostFuncData, Store};
+use crate::store::{self, Caller, HostFn, Store};
 use crate::types::{FuncType, MemoryType, Val};
 
 enum Item<T: 'static> {
@@ -31,9 +31,102 @@ impl<T: 'static> Clone for Item<T> {
 /// Host modules to instantiate in stores: memories, globals and host functions under module names.
 ///
 /// Each module name becomes a host module of its own in a store (an exec context of WAH that the instances link
-/// to), whose memories are counted by the store's limiter. Cloning a linker is cheap for its functions.
+/// to), whose memories are counted by the store's limiter. The module is built once for the items it has, and
+/// shared by every store it is instantiated in (and by clones of the linker, which are cheap): so stores are cheap to
+/// make with a linker cloned and given memories of other types, where most host modules are built already.
 pub struct Linker<T: 'static> {
     modules: Vec<(String, Items<T>)>,
+    /// Host modules built, shared by clones of the linker.
+    cache: Arc<Mutex<Vec<Cached>>>,
+}
+
+/// How many host modules a linker (and its clones) keeps built, the least recently used dropped first.
+const CACHED_HOST_MODULES: usize = 32;
+
+/// A host module built, of the items of `key`.
+struct Cached {
+    name: String,
+    key: Vec<(String, Key)>,
+    module: Module,
+}
+
+/// What a host module is built of, by an item: functions by their identity (which the module keeps alive).
+#[derive(PartialEq)]
+enum Key {
+    Memory(MemoryType),
+    Global(Val, bool),
+    Func(usize),
+}
+
+impl<T: 'static> Item<T> {
+    fn key(&self) -> Key {
+        match self {
+            &Item::Memory(ty) => Key::Memory(ty),
+            &Item::Global(v, m) => Key::Global(v, m),
+            Item::Func(_, f) => Key::Func(Arc::as_ptr(f).cast::<()>() as usize),
+        }
+    }
+}
+
+/// Builds the host module `module` of `items`.
+fn build<T: 'static>(module: &str, items: &Items<T>) -> Result<Module> {
+    let raw = Box::new(UnsafeCell::new(sys::wah_module_t::ZERO));
+    let m = raw.get();
+    // SAFETY: the module is ours, freed by its drop as a `Module` (or here before it is one)
+    unsafe {
+        if let Err(e) =
+            check(sys::wah_new_module(m, std::ptr::null())).and_then(|()| define_items::<T>(m, module, items))
+        {
+            sys::wah_free_module(m);
+            return Err(e);
+        }
+        Module::from_built(raw)
+    }
+}
+
+/// Defines `items` in the module `m` being built.
+///
+/// # Safety
+/// `m` should be a module being built.
+unsafe fn define_items<T: 'static>(m: *mut sys::wah_module_t, module: &str, items: &Items<T>) -> Result<()> {
+    for (name, item) in items {
+        let n = CString::new(name.as_str()).map_err(|_| Error::misuse("a name with a null byte"))?;
+        let n = n.as_ptr();
+        // SAFETY: the module is being built; the data of functions is the module's once defined
+        let r = unsafe {
+            match item {
+                Item::Memory(ty) => {
+                    let max = ty.maximum().unwrap_or(u64::MAX);
+                    match ty.is_64() {
+                        false => sys::wah_export_memory(m, n, ty.minimum(), max),
+                        true => sys::wah_export_memory64(m, n, ty.minimum(), max),
+                    }
+                }
+                &Item::Global(v, mutable) => match v {
+                    Val::I32(x) => sys::wah_export_global_i32(m, n, mutable, x),
+                    Val::I64(x) => sys::wah_export_global_i64(m, n, mutable, x),
+                    Val::F32(x) => sys::wah_export_global_f32(m, n, mutable, f32::from_bits(x)),
+                    Val::F64(x) => sys::wah_export_global_f64(m, n, mutable, f64::from_bits(x)),
+                    Val::V128(x) => {
+                        let v = sys::wah_v128_t { u8: x.to_le_bytes() };
+                        sys::wah_export_global_v128(m, n, mutable, &v)
+                    }
+                },
+                Item::Func(ty, f) => {
+                    let spec = CString::new(ty.spec()?).unwrap();
+                    let data = store::host_fn(f.clone());
+                    let fin = Some(store::drop_host_fn::<T> as unsafe extern "C" fn(*mut c_void));
+                    let r = sys::wah_export_func(m, n, spec.as_ptr(), Some(store::trampoline::<T>), data, fin);
+                    if r != sys::WAH_OK {
+                        store::drop_host_fn::<T>(data); // (still ours)
+                    }
+                    r
+                }
+            }
+        };
+        check(r).map_err(|e| Error::with_context(e.wah_code().unwrap(), format!("{module}.{name} not defined")))?;
+    }
+    Ok(())
 }
 
 /// The items of a host module, by name.
@@ -41,7 +134,7 @@ type Items<T> = Vec<(String, Item<T>)>;
 
 impl<T: 'static> Clone for Linker<T> {
     fn clone(&self) -> Self {
-        Linker { modules: self.modules.clone() }
+        Linker { modules: self.modules.clone(), cache: self.cache.clone() }
     }
 }
 
@@ -53,7 +146,7 @@ impl<T: 'static> Default for Linker<T> {
 
 impl<T: 'static> Linker<T> {
     pub fn new() -> Linker<T> {
-        Linker { modules: Vec::new() }
+        Linker { modules: Vec::new(), cache: Arc::default() }
     }
 
     fn define(&mut self, module: &str, name: &str, item: Item<T>) -> Result<&mut Self> {
@@ -178,51 +271,33 @@ impl<T: 'static> Linker<T> {
 
     fn instantiate_host(&self, store: &mut Store<T>, module: &str) -> Result<()> {
         let Some((_, items)) = self.modules.iter().find(|(m, _)| m == module) else { return Ok(()) };
-        let s = store.raw();
-        let build = |m: *mut sys::wah_module_t,
-                     funcs: &mut Vec<NonNull<HostFuncData<T>>>,
-                     s: *mut store::StoreCtx<T>|
-         -> Result<()> {
-            for (name, item) in items {
-                let n = CString::new(name.as_str()).map_err(|_| Error::misuse("a name with a null byte"))?;
-                let n = n.as_ptr();
-                // SAFETY: the module is being built, and the data of functions lives as long as the store
-                let r = unsafe {
-                    match item {
-                        Item::Memory(ty) => {
-                            let max = ty.maximum().unwrap_or(u64::MAX);
-                            match ty.is_64() {
-                                false => sys::wah_export_memory(m, n, ty.minimum(), max),
-                                true => sys::wah_export_memory64(m, n, ty.minimum(), max),
-                            }
-                        }
-                        &Item::Global(v, mutable) => match v {
-                            Val::I32(x) => sys::wah_export_global_i32(m, n, mutable, x),
-                            Val::I64(x) => sys::wah_export_global_i64(m, n, mutable, x),
-                            Val::F32(x) => sys::wah_export_global_f32(m, n, mutable, f32::from_bits(x)),
-                            Val::F64(x) => sys::wah_export_global_f64(m, n, mutable, f64::from_bits(x)),
-                            Val::V128(x) => {
-                                let v = sys::wah_v128_t { u8: x.to_le_bytes() };
-                                sys::wah_export_global_v128(m, n, mutable, &v)
-                            }
-                        },
-                        Item::Func(ty, f) => {
-                            let spec = CString::new(ty.spec()?).unwrap();
-                            let data = NonNull::from(Box::leak(Box::new(HostFuncData { store: s, f: f.clone() })));
-                            funcs.push(data);
-                            let trampoline = store::trampoline::<T>;
-                            let ud = data.as_ptr().cast::<c_void>();
-                            sys::wah_export_func(m, n, spec.as_ptr(), Some(trampoline), ud, None)
-                        }
-                    }
-                };
-                check(r)
-                    .map_err(|e| Error::with_context(e.wah_code().unwrap(), format!("{module}.{name} not defined")))?;
-            }
-            Ok(())
-        };
-        // SAFETY: `s` is the store's, which nothing borrows
-        unsafe { store::new_host(s, module, build) }
+        let m = self.host_module(module, items)?;
+        // SAFETY: the store's pointer, which nothing borrows; the module is of a linker of `T`
+        unsafe { store::new_host(store.raw(), module, &m) }
+    }
+
+    /// The host module `module` of `items`, built once for every store (and clone of the linker).
+    fn host_module(&self, module: &str, items: &Items<T>) -> Result<Module> {
+        let key: Vec<(&str, Key)> = items.iter().map(|(n, i)| (n.as_str(), i.key())).collect();
+        let mut cache = self.cache.lock().unwrap_or_else(|e| e.into_inner());
+        let found = cache.iter().position(|c| {
+            c.name == module
+                && c.key.len() == key.len()
+                && c.key.iter().zip(&key).all(|((n, k), (m, l))| n == m && k == l)
+        });
+        if let Some(i) = found {
+            let c = cache.remove(i);
+            let m = c.module.clone();
+            cache.push(c); // (the most recent last)
+            return Ok(m);
+        }
+        let m = build::<T>(module, items)?;
+        if cache.len() >= CACHED_HOST_MODULES {
+            cache.remove(0);
+        }
+        let key = key.into_iter().map(|(n, k)| (n.to_owned(), k)).collect();
+        cache.push(Cached { name: module.to_owned(), key, module: m.clone() });
+        Ok(m)
     }
 
     /// Instantiates `module` in `store` ([`Instance::new`]), with the host modules it imports from instantiated
@@ -237,5 +312,32 @@ impl<T: 'static> Linker<T> {
             }
         }
         Instance::new(store, module)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Host modules are built once for their items, also by clones.
+    #[test]
+    fn built_once() {
+        let mut linker = Linker::<()>::new();
+        linker.func_wrap("env", "f", |_: Caller<'_, ()>| {}).unwrap();
+        let built = |l: &Linker<()>| l.cache.lock().unwrap().len();
+        for _ in 0..2 {
+            linker.instantiate_hosts(&mut Store::new(())).unwrap();
+        }
+        assert_eq!(built(&linker), 1);
+        for pages in [1, 2, 1] {
+            let mut l = linker.clone();
+            l.memory("env", "m", MemoryType::new(pages, None)).unwrap();
+            l.instantiate_hosts(&mut Store::new(())).unwrap();
+        }
+        assert_eq!(built(&linker), 3);
+        let mut other = linker.clone();
+        other.func_wrap("env", "g", |_: Caller<'_, ()>| {}).unwrap();
+        other.instantiate_hosts(&mut Store::new(())).unwrap();
+        assert_eq!(built(&linker), 4);
     }
 }

@@ -12,6 +12,7 @@ use wah_sys as sys;
 
 use crate::error::{Code, Error, Result, Thrown, check};
 use crate::instance::{Instance, Memory};
+use crate::memory::{CreatorData, MemoryCreator};
 use crate::module::Module;
 use crate::types::{ExternType, PAGE_SIZE};
 
@@ -29,11 +30,6 @@ type Limiter<T> = Box<dyn Send + FnMut(&mut T) -> &mut dyn ResourceLimiter>;
 /// suspended then, and the function called again with the same parameters once resumed.
 pub(crate) type HostFn<T> = dyn Fn(Caller<'_, T>, &mut Context<'_>) -> Poll<Result<()>> + Send + Sync;
 
-pub(crate) struct HostFuncData<T: 'static> {
-    pub store: *mut StoreCtx<T>,
-    pub f: Arc<HostFn<T>>,
-}
-
 struct HookData<T: 'static> {
     store: *mut StoreCtx<T>,
     ctx: u32,
@@ -49,8 +45,16 @@ struct Ctx {
 
 enum CtxModule {
     Wasm(Module),
-    /// A module of host functions and memories, made by a `Linker`.
-    Host(NonNull<UnsafeCell<sys::wah_module_t>>),
+    /// A module of host functions and memories, built by a `Linker`.
+    Host(Module),
+}
+
+impl CtxModule {
+    fn module(&self) -> &Module {
+        match self {
+            CtxModule::Wasm(m) | CtxModule::Host(m) => m,
+        }
+    }
 }
 
 fn boxed<T>(v: T) -> NonNull<UnsafeCell<T>> {
@@ -69,8 +73,10 @@ pub struct StoreCtx<T: 'static> {
     contexts: Vec<Ctx>,
     /// The contexts linkable by name.
     names: Vec<(String, u32)>,
-    host_funcs: Vec<NonNull<HostFuncData<T>>>,
     hooks: Vec<NonNull<HookData<T>>>,
+    /// The memory creator of contexts made from now on, of the last of `creators` (which outlive the contexts).
+    creator: Option<sys::wah_memory_creator_t>,
+    creators: Vec<NonNull<CreatorData>>,
     /// While WAH runs: the context of the poll, whether a host function waits, and what to propagate.
     cx: *mut Context<'static>,
     host_pending: bool,
@@ -102,8 +108,9 @@ impl<T: 'static> Store<T> {
             fuel: None,
             contexts: Vec::new(),
             names: Vec::new(),
-            host_funcs: Vec::new(),
             hooks: Vec::new(),
+            creator: None,
+            creators: Vec::new(),
             cx: null_mut(),
             host_pending: false,
             thrown: None,
@@ -126,6 +133,17 @@ impl<T: 'static> Store<T> {
     /// Sets what limits the memories of the store: `f` gives the limiter out of the data.
     pub fn limiter(&mut self, f: impl Send + 'static + FnMut(&mut T) -> &mut dyn ResourceLimiter) {
         self.as_context_mut().limiter = Some(Box::new(f));
+    }
+
+    /// Makes the memories of instances and host modules made from now on by `creator`, in place of WAH.
+    pub fn set_memory_creator(&mut self, creator: Arc<dyn MemoryCreator>) {
+        let s = self.ptr.as_ptr();
+        // SAFETY: the store is ours; `thrown` stays where it is as long as the store
+        unsafe {
+            let data = NonNull::from(Box::leak(Box::new(CreatorData { creator, thrown: &raw mut (*s).thrown })));
+            (*s).creators.push(data);
+            (*s).creator = Some(CreatorData::raw(data.as_ptr()));
+        }
     }
 
     /// Bounds the stack (values and call frames) of each instance and host module made from now on, in bytes.
@@ -166,10 +184,9 @@ impl<T: 'static> Store<T> {
     pub fn get_memory(&self, module: &str, name: &str) -> Option<Memory> {
         let s = self.as_context();
         let &(_, ctx) = s.names.iter().find(|(n, _)| n == module)?;
-        let c = &s.contexts[ctx as usize];
-        let CtxModule::Host(m) = c.module else { return None };
+        let CtxModule::Host(m) = &s.contexts[ctx as usize].module else { return None };
         // SAFETY: the module is the store's
-        let index = unsafe { export_memory(m.as_ref().get(), name)? };
+        let index = unsafe { export_memory(m.raw(), name)? };
         Some(Memory { store: s.id, ctx, index })
     }
 
@@ -206,24 +223,20 @@ impl<T: 'static> Drop for Store<T> {
 
 impl<T: 'static> Drop for StoreCtx<T> {
     fn drop(&mut self) {
-        // SAFETY: the contexts are freed first (in any order, as a link domain), then the modules they use; the data
-        // of host functions and hooks last, which they point to
+        // SAFETY: the contexts are freed first (in any order, as a link domain), then the modules they use (as
+        // `Module`s); the data of hooks and creators last, which they point to
         unsafe {
             for c in &self.contexts {
                 sys::wah_free_exec_context(c.raw.as_ref().get());
             }
             for c in self.contexts.drain(..) {
-                if let CtxModule::Host(m) = c.module {
-                    sys::wah_free_module(m.as_ref().get());
-                    drop(Box::from_raw(m.as_ptr()));
-                }
                 drop(Box::from_raw(c.raw.as_ptr()));
-            }
-            for f in self.host_funcs.drain(..) {
-                drop(Box::from_raw(f.as_ptr()));
             }
             for h in self.hooks.drain(..) {
                 drop(Box::from_raw(h.as_ptr()));
+            }
+            for c in self.creators.drain(..) {
+                drop(Box::from_raw(c.as_ptr()));
             }
         }
     }
@@ -253,11 +266,7 @@ impl<T: 'static> StoreCtx<T> {
     }
 
     pub(crate) fn module_ptr(&self, ctx: u32) -> *const sys::wah_module_t {
-        match &self.contexts[ctx as usize].module {
-            CtxModule::Wasm(m) => m.raw(),
-            // SAFETY: the module lives as long as the store
-            CtxModule::Host(m) => unsafe { m.as_ref().get() },
-        }
+        self.contexts[ctx as usize].module.module().raw()
     }
 
     pub(crate) fn wasm_module(&self, ctx: u32) -> Option<&Module> {
@@ -318,52 +327,56 @@ impl<T: 'static> StoreCtx<T> {
         }
         (data, usize::try_from(size).expect("a memory within the address space"))
     }
-
-    /// A new exec context of `module`, kept by the store (freed with it).
-    fn new_ctx(&mut self, module: CtxModule, instance: bool) -> Result<u32> {
-        let raw = boxed(sys::wah_exec_context_t::ZERO);
-        let ctx = self.contexts.len() as u32;
-        self.contexts.push(Ctx { raw, module, instance });
-        let limits = sys::wah_limits_t {
-            max_stack_bytes: self.max_stack_bytes,
-            deadline_us: if instance { self.deadline_us } else { 0 },
-            ..Default::default()
-        };
-        let opts = sys::wah_exec_options_t { limits, alloc: std::ptr::null() };
-        // SAFETY: the context is zeroed and stays where it is until the store frees it, after which the module
-        let p = unsafe { raw.as_ref().get() };
-        match &self.contexts[ctx as usize].module {
-            CtxModule::Wasm(m) => unsafe { m.new_exec_context(p, &opts)? },
-            CtxModule::Host(m) => check(unsafe { sys::wah_new_exec_context(p, m.as_ref().get(), &opts) })?,
-        }
-        Ok(ctx)
-    }
 }
 
-/// Makes a host module in the store `s`: `build` fills the module (given the store's pointer for host functions).
+/// A new exec context of `module` in the store `s`, kept by it (freed with it), whose host functions find the store
+/// by its userdata.
 ///
 /// # Safety
 /// `s` should be the store's own pointer, with nothing of the store borrowed.
-pub(crate) unsafe fn new_host<T: 'static>(
-    s: *mut StoreCtx<T>,
-    name: &str,
-    build: impl FnOnce(*mut sys::wah_module_t, &mut Vec<NonNull<HostFuncData<T>>>, *mut StoreCtx<T>) -> Result<()>,
-) -> Result<()> {
+unsafe fn new_ctx<T: 'static>(s: *mut StoreCtx<T>, module: CtxModule, instance: bool) -> Result<u32> {
     unsafe {
         let st = &mut *s;
-        if st.has_name(name) {
+        let raw = boxed(sys::wah_exec_context_t::ZERO);
+        let ctx = st.contexts.len() as u32;
+        let m = module.module().clone();
+        st.contexts.push(Ctx { raw, module, instance });
+        let limits = sys::wah_limits_t {
+            max_stack_bytes: st.max_stack_bytes,
+            deadline_us: if instance { st.deadline_us } else { 0 },
+            ..Default::default()
+        };
+        let opts = sys::wah_exec_options_t {
+            limits,
+            alloc: std::ptr::null(),
+            memory_creator: st.creator.as_ref().map_or(std::ptr::null(), |c| c),
+            userdata: s.cast(),
+        };
+        st.thrown = None;
+        // (the context is zeroed and stays where it is until the store frees it, after which the module)
+        match m.new_exec_context(raw.as_ref().get(), &opts) {
+            Ok(()) => Ok(ctx),
+            Err(e) => Err(match (*s).thrown.take() {
+                Some(Thrown::Panic(p)) => std::panic::resume_unwind(p),
+                Some(Thrown::Error(e)) => e,
+                None => e,
+            }),
+        }
+    }
+}
+
+/// Instantiates a host module `module` (built by a linker of `T`, for stores of `T`) in the store `s` as `name`.
+///
+/// # Safety
+/// `s` should be the store's own pointer, with nothing of the store borrowed.
+pub(crate) unsafe fn new_host<T: 'static>(s: *mut StoreCtx<T>, name: &str, module: &Module) -> Result<()> {
+    unsafe {
+        if (*s).has_name(name) {
             return Err(Error::misuse(format!("{name} defined twice in the store")));
         }
-        let m = boxed(sys::wah_module_t::ZERO);
-        let mp = m.as_ref().get();
-        let built = check(sys::wah_new_module(mp, std::ptr::null())).and_then(|()| build(mp, &mut st.host_funcs, s));
-        if let Err(e) = built {
-            sys::wah_free_module(mp);
-            drop(Box::from_raw(m.as_ptr()));
-            return Err(e);
-        }
-        // (the module freed by the store from now on, once its context is)
-        let ctx = st.new_ctx(CtxModule::Host(m), false)?;
+        let ctx = new_ctx(s, CtxModule::Host(module.clone()), false)?;
+        let st = &mut *s;
+        let mp = module.raw();
         for i in 0..sys::wah_module_memory_count(mp) {
             let mut d = std::mem::zeroed::<sys::wah_memory_desc_t>();
             check(sys::wah_module_memory(mp, i, &mut d))?;
@@ -397,7 +410,8 @@ pub(crate) unsafe fn new_instance<T: 'static>(s: *mut StoreCtx<T>, module: &Modu
             };
             linked.push((CString::new(n).map_err(|_| Error::misuse("a name with a null byte"))?, c));
         }
-        let ctx = st.new_ctx(CtxModule::Wasm(module.clone()), true)?;
+        let ctx = new_ctx(s, CtxModule::Wasm(module.clone()), true)?;
+        let st = &mut *s;
         for (n, c) in &linked {
             // (both contexts are the store's, and live as long as it)
             let r = sys::wah_link_context(st.ctx_ptr(ctx), n.as_ptr(), st.ctx_ptr(*c));
@@ -510,11 +524,28 @@ unsafe extern "C" fn grow_hook<T: 'static>(
     }
 }
 
+/// The userdata of a host function: what it runs, dropped with its module (by `drop_host_fn`).
+pub(crate) fn host_fn<T: 'static>(f: Arc<HostFn<T>>) -> *mut c_void {
+    Box::into_raw(Box::new(f)).cast()
+}
+
+/// Drops the userdata of `host_fn`.
+///
+/// # Safety
+/// Only once, by WAH.
+pub(crate) unsafe extern "C" fn drop_host_fn<T: 'static>(userdata: *mut c_void) {
+    drop(unsafe { Box::from_raw(userdata.cast::<Arc<HostFn<T>>>()) });
+}
+
+/// Calls the host function `userdata` (of `host_fn`) for the store of its context.
+///
+/// # Safety
+/// Only for WAH, with host functions of modules that linkers of `T` built, instantiated only in stores of `T`.
 pub(crate) unsafe extern "C" fn trampoline<T: 'static>(cctx: *mut sys::wah_call_context_t, userdata: *mut c_void) {
     // SAFETY: WAH calls this while running for the store (`run`), which nothing else borrows then
-    let d = unsafe { &*userdata.cast::<HostFuncData<T>>() };
-    let s = d.store;
-    let cx = unsafe { (*s).cx };
+    let f = unsafe { &*userdata.cast::<Arc<HostFn<T>>>() };
+    let s = unsafe { sys::wah_exec_userdata(cctx).cast::<StoreCtx<T>>() };
+    let cx = if s.is_null() { null_mut() } else { unsafe { (*s).cx } };
     if cx.is_null() {
         // (not through `run`: not expected)
         unsafe { sys::wah_trap(cctx, sys::WAH_ERROR_MISUSE) };
@@ -522,7 +553,7 @@ pub(crate) unsafe extern "C" fn trampoline<T: 'static>(cctx: *mut sys::wah_call_
     }
     let r = catch_unwind(AssertUnwindSafe(|| {
         let caller = Caller { store: unsafe { &mut *s }, cctx };
-        (d.f)(caller, unsafe { &mut *cx })
+        f(caller, unsafe { &mut *cx })
     }));
     let s = unsafe { &mut *s };
     match r {
@@ -560,9 +591,9 @@ impl<T: 'static> Caller<'_, T> {
     /// A memory that a host module of the store defines (see [`Store::get_memory`]).
     pub fn get_memory(&self, module: &str, name: &str) -> Option<Memory> {
         let &(_, ctx) = self.store.names.iter().find(|(n, _)| n == module)?;
-        let CtxModule::Host(m) = self.store.contexts[ctx as usize].module else { return None };
+        let CtxModule::Host(m) = &self.store.contexts[ctx as usize].module else { return None };
         // SAFETY: the module is the store's
-        let index = unsafe { export_memory(m.as_ref().get(), name)? };
+        let index = unsafe { export_memory(m.raw(), name)? };
         Some(Memory { store: self.store.id, ctx, index })
     }
 }

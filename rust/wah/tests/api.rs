@@ -477,3 +477,170 @@ fn fuel_and_deadline() {
         assert_eq!(spin.call(&mut store, ()).unwrap_err().wah_code(), Some(Code::Interrupted));
     }
 }
+
+/// Memories of a fixed capacity, made by the global allocator, logging what is done with them.
+struct Buffers {
+    log: Arc<Mutex<Vec<String>>>,
+    capacity: usize,
+    fail: bool,
+}
+
+struct Buffer {
+    ptr: *mut u8,
+    capacity: usize,
+    size: usize,
+    log: Arc<Mutex<Vec<String>>>,
+}
+
+// SAFETY: the buffer is only reached through the memory
+unsafe impl Send for Buffer {}
+unsafe impl Sync for Buffer {}
+
+impl Buffer {
+    fn layout(capacity: usize) -> std::alloc::Layout {
+        std::alloc::Layout::from_size_align(capacity, 1 << 16).unwrap()
+    }
+}
+
+impl Drop for Buffer {
+    fn drop(&mut self) {
+        self.log.lock().unwrap().push(format!("free {}", self.size));
+        // SAFETY: of `new_memory`
+        unsafe { std::alloc::dealloc(self.ptr, Buffer::layout(self.capacity)) };
+    }
+}
+
+// SAFETY: zeroed buffers that never move
+unsafe impl LinearMemory for Buffer {
+    fn byte_size(&self) -> usize {
+        self.size
+    }
+
+    fn byte_capacity(&self) -> usize {
+        self.capacity
+    }
+
+    fn grow_to(&mut self, new_size: usize) -> Result<()> {
+        if new_size == 3 << 16 {
+            panic!("grown to 3 pages");
+        }
+        self.log.lock().unwrap().push(format!("grow {} {new_size}", self.size));
+        self.size = new_size;
+        Ok(())
+    }
+
+    fn as_ptr(&self) -> *mut u8 {
+        self.ptr
+    }
+}
+
+// SAFETY: as `Buffer`
+unsafe impl MemoryCreator for Buffers {
+    fn new_memory(
+        &self,
+        ty: MemoryType,
+        minimum: usize,
+        maximum: Option<usize>,
+        reserved: Option<usize>,
+        guard: usize,
+    ) -> std::result::Result<Box<dyn LinearMemory>, String> {
+        assert_eq!((reserved, guard), (None, 0)); // (no guard pages)
+        self.log.lock().unwrap().push(format!("new {} {minimum} {maximum:?}", ty.minimum()));
+        if self.fail {
+            return Err("no memory for you".into());
+        }
+        // SAFETY: of a nonzero size
+        let ptr = unsafe { std::alloc::alloc_zeroed(Buffer::layout(self.capacity)) };
+        Ok(Box::new(Buffer { ptr, capacity: self.capacity, size: minimum, log: self.log.clone() }))
+    }
+}
+
+#[test]
+fn memory_creator() {
+    for c in configs() {
+        let imported = module(
+            &c,
+            r#"(module
+                (import "aqr" "mem" (memory 1))
+                (func (export "grow") (param i32) (result i32) (memory.grow (local.get 0)))
+                (func (export "peek") (param i32) (result i32) (i32.load8_u (local.get 0))))"#,
+        );
+        let defined = module(&c, r#"(module (memory (export "own") 2 8) (data (i32.const 5) "\07"))"#);
+        let log = Arc::new(Mutex::new(Vec::new()));
+        let mut linker = Linker::<()>::new();
+        linker.memory("aqr", "mem", MemoryType::new(1, Some(5))).unwrap();
+        let mut store = Store::new(());
+        store.set_memory_creator(Arc::new(Buffers { log: log.clone(), capacity: 4 << 16, fail: false }));
+        linker.instantiate_hosts(&mut store).unwrap();
+        let mem = store.get_memory("aqr", "mem").unwrap();
+        let base = mem.data(&store).as_ptr();
+        mem.data_mut(&mut store)[100] = 42;
+        let i = Instance::new(&mut store, &imported).unwrap();
+        let grow = i.get_typed_func::<i32, i32>(&store, "grow").unwrap();
+        let peek = i.get_typed_func::<i32, i32>(&store, "peek").unwrap();
+        assert_eq!(peek.call(&mut store, 100).unwrap(), 42);
+        assert_eq!(grow.call(&mut store, 1).unwrap(), 1);
+        assert_eq!(peek.call(&mut store, (2 << 16) - 1).unwrap(), 0);
+        assert_eq!((mem.data(&store).as_ptr(), mem.data_size(&store)), (base, 2 << 16));
+        assert_eq!(grow.call(&mut store, 3).unwrap(), -1); // beyond the capacity
+        let d = Instance::new(&mut store, &defined).unwrap();
+        assert_eq!(d.get_memory(&store, "own").unwrap().data(&store)[5], 7);
+        // panics in the memory pass through
+        let p = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| grow.call(&mut store, 1)));
+        assert_eq!(p.unwrap_err().downcast_ref::<&str>(), Some(&"grown to 3 pages"));
+        drop(store);
+        let want = [
+            "new 1 65536 Some(327680)",
+            "grow 65536 131072",
+            "new 2 131072 Some(524288)",
+            "free 131072",
+            "free 131072",
+        ];
+        assert_eq!(*log.lock().unwrap(), want);
+        log.lock().unwrap().clear();
+
+        // errors of the creator fail what makes the memory
+        let mut store = Store::new(());
+        store.set_memory_creator(Arc::new(Buffers { log: log.clone(), capacity: 4 << 16, fail: true }));
+        let e = linker.instantiate_hosts(&mut store).unwrap_err();
+        assert!(e.to_string().contains("no memory for you"), "{e}");
+        assert_eq!(e.wah_code(), Some(Code::OutOfMemory));
+        assert!(Instance::new(&mut store, &defined).is_err());
+    }
+}
+
+#[test]
+fn shared_host_modules() {
+    for c in configs() {
+        let m = module(
+            &c,
+            r#"(module
+                (import "env" "get" (func $get (result i32)))
+                (import "env" "mem" (memory 1))
+                (func (export "run") (result i32) (i32.add (call $get) (i32.load8_u (i32.const 0)))))"#,
+        );
+        let mut linker = Linker::<i32>::new();
+        linker.func_wrap("env", "get", |c: Caller<'_, i32>| *c.data()).unwrap();
+        let run = |linker: &Linker<i32>, data: i32, byte: u8| {
+            let mut store = Store::new(data);
+            linker.instantiate_hosts(&mut store).unwrap();
+            store.get_memory("env", "mem").unwrap().data_mut(&mut store)[0] = byte;
+            let i = Instance::new(&mut store, &m).unwrap();
+            i.get_typed_func::<(), i32>(&store, "run").unwrap().call(&mut store, ()).unwrap()
+        };
+        // each store sees its own data through the same host module, also from other threads
+        let mut l1 = linker.clone();
+        l1.memory("env", "mem", MemoryType::new(1, None)).unwrap();
+        assert_eq!(run(&l1, 10, 1), 11);
+        assert_eq!(run(&l1, 20, 2), 22);
+        std::thread::scope(|s| {
+            let l1 = &l1;
+            let t: Vec<_> = (0..4).map(|k| s.spawn(move || run(l1, 100 * k, 3))).collect();
+            let r: Vec<i32> = t.into_iter().map(|t| t.join().unwrap()).collect();
+            assert_eq!(r, [3, 103, 203, 303]);
+        });
+        let mut l2 = linker.clone();
+        l2.memory("env", "mem", MemoryType::new(2, None)).unwrap();
+        assert_eq!(run(&l2, 30, 4), 34);
+    }
+}
