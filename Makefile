@@ -431,5 +431,6 @@ clean:
 	@rm -f $(LIBFUZZER_HARNESS_BIN)
 	@rm -f bench/bench_coremark
 	@rm -f proofs/*.log
+	@rm -rf $(CBMC_STEP_DIR) $(SPEC_DIFF_DIR) proofs/lean/.lake/build $(LEAN_DIFF_DIR)
 	@rm -f *.gcda *.gcno tests/*.gcda tests/*.gcno fuzz/*.gcda fuzz/*.gcno coverage.info
 	@rm -rf cov/ coverage_report/
